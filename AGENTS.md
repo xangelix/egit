@@ -12,7 +12,7 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Foundation: shell, running git, askpass, profile, opening repositories | done; awaiting the owner's review |
-| 2 | Commit graph | not started |
+| 2 | Commit graph | in progress |
 | 3 | Text grid and read-only diff viewer | not started |
 | 4 | Working tree, staging, signed commits | not started |
 | 5 | Clone, pull, push | not started |
@@ -115,6 +115,16 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `Repository::has_commit_graph` (without one, a topological walk outputs nothing until
     git has read all history: 6 s for Linux's 1.5M commits).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
+- `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
+  (commits are any `Copy + Eq + Hash` key).
+  - `layout.rs` — `GraphBuilder::push` lays out each commit as `walk_history` yields it, in
+    time proportional to its parents and the lanes meeting it (never the graph's width: lanes
+    leading to a commit are chained from a hash table, free slots found in a bitmap). Rows
+    (12 bytes) and their edges are kept in `Chunk`s of 1024 rows, each with the lanes open at
+    its start. Linux: 1.49M rows in 21 MB, laid out as fast as git walks them.
+  - `draw.rs` — `for_each_row` draws any range by replaying at most one chunk;
+    `RowView::segments_in` gives a row's lines crossing a window of lanes, so a graph wider
+    than its column costs only what shows.
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
   (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7, `egui-async` 0.7 (stay on 0.36 until
   `egui_tiles` and `egui-phosphor` move).

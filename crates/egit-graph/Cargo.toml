@@ -1,0 +1,12 @@
+[package]
+name = "egit-graph"
+description = "The commit graph's lanes: laid out in one pass over a topologically ordered history, drawn for any range of rows."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
