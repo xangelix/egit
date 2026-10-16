@@ -14,9 +14,9 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use bstr::{BString, ByteSlice as _};
 use egit_git::{
-    CancelToken, Commit, FileChange, Git, GitError, Object, ObjectFormat, ObjectId, ObjectKind,
-    ObjectReader, RefKind, Reference, Repository, TreeEntry, commit_changes, list_references,
-    walk_history,
+    CancelToken, Commit, CountedFile, FileChange, Git, GitError, LineCounts, Object, ObjectFormat,
+    ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, TreeEntry, commit_changes,
+    line_counts, list_references, walk_history,
 };
 use egit_graph::{CHUNK_ROWS, Chunk, GraphBuilder};
 use egit_text::Text;
@@ -640,6 +640,67 @@ pub(crate) async fn read_details(
     .await
 }
 
+/// The lines each file a commit changed gained and lost.
+#[derive(Debug)]
+pub(crate) struct ChangeCounts {
+    /// The commit.
+    pub(crate) id: ObjectId,
+    /// Each file's, in the order of the commit's changes; `None` for a binary file.
+    pub(crate) files: Vec<Option<LineCounts>>,
+    /// Every file's together.
+    pub(crate) total: LineCounts,
+}
+
+/// Counts the lines each file of `details` gained and lost (every file is diffed: for a large
+/// commit, this takes a while after the list is shown).
+pub(crate) async fn read_change_counts(
+    git: Git,
+    repository: Arc<Repository>,
+    details: Arc<CommitDetails>,
+    cancel: CancelToken,
+) -> Result<Arc<ChangeCounts>, Problem> {
+    jobs::blocking(move || {
+        let parent = details.commit.parents.first().copied();
+        let counted = line_counts(&git, &repository, details.id, parent, &cancel)
+            .map_err(|error| Problem::git("The changed lines couldn't be counted", &error))?;
+        let files = align_counts(&details.changes, counted);
+        let total = files
+            .iter()
+            .flatten()
+            .fold(LineCounts::default(), |total, lines| LineCounts {
+                added: total.added.saturating_add(lines.added),
+                removed: total.removed.saturating_add(lines.removed),
+            });
+        Ok(Arc::new(ChangeCounts {
+            id: details.id,
+            files,
+            total,
+        }))
+    })
+    .await
+}
+
+/// `counted`'s counts in the order of `changes`: git lists both in the same order, but should
+/// they differ, by path.
+fn align_counts(changes: &[FileChange], counted: Vec<CountedFile>) -> Vec<Option<LineCounts>> {
+    let in_order = changes.len() == counted.len()
+        && changes
+            .iter()
+            .zip(&counted)
+            .all(|(change, file)| change.path == file.path);
+    if in_order {
+        return counted.into_iter().map(|file| file.lines).collect();
+    }
+    let by_path: HashMap<&[u8], Option<LineCounts>> = counted
+        .iter()
+        .map(|file| (file.path.as_slice(), file.lines))
+        .collect();
+    changes
+        .iter()
+        .map(|change| by_path.get(change.path.as_slice()).copied().flatten())
+        .collect()
+}
+
 /// A repository's history as its tab keeps it.
 #[derive(Debug)]
 pub(crate) struct HistoryState {
@@ -732,6 +793,38 @@ mod tests {
             kind,
             target: id(target),
         }
+    }
+
+    #[test]
+    fn counts_line_up_with_the_changes_listed() {
+        let change = |path: &str| FileChange {
+            path: path.into(),
+            kind: egit_git::ChangeKind::Modified,
+            old: None,
+            new: None,
+        };
+        let counted = |path: &str, added| CountedFile {
+            path: path.into(),
+            lines: Some(LineCounts { added, removed: 0 }),
+        };
+        let changes = [change("a"), change("b"), change("c")];
+        let added = |files: Vec<Option<LineCounts>>| -> Vec<Option<u32>> {
+            files
+                .into_iter()
+                .map(|lines| lines.map(|lines| lines.added))
+                .collect()
+        };
+        let in_order = vec![counted("a", 1), counted("b", 2), counted("c", 3)];
+        assert_eq!(
+            added(align_counts(&changes, in_order)),
+            [Some(1), Some(2), Some(3)]
+        );
+        // Otherwise by path; a file not counted has no counts.
+        let apart = vec![counted("c", 3), counted("a", 1)];
+        assert_eq!(
+            added(align_counts(&changes, apart)),
+            [Some(1), None, Some(3)]
+        );
     }
 
     #[test]

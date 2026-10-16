@@ -8,16 +8,16 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bstr::ByteSlice as _;
-use egit_git::{ChangeKind, ConfigEntry, ConfigSnapshot, FileChange, ObjectId};
-use egui::{RichText, Ui};
+use egit_git::{ChangeKind, ConfigEntry, ConfigSnapshot, FileChange, LineCounts, ObjectId};
+use egui::{Align, Color32, Label, Layout, Response, RichText, Ui};
 use egui_table_kit::error::TableError;
 use egui_table_kit::interaction::RowEventKind;
 use egui_table_kit::operations::{HeaderIter, Row, RowCallback, TableCell, TableProvider};
 use egui_table_kit::state::TableState;
 use egui_table_kit::table::TableKit;
 
-use crate::format::{ago, display_path};
-use crate::history::CommitDetails;
+use crate::format::{ago, count, display_path};
+use crate::history::{ChangeCounts, CommitDetails};
 use crate::settings::Recent;
 use crate::theme::Palette;
 use crate::widgets::scope_name;
@@ -294,18 +294,22 @@ impl ChangesTable {
         }
     }
 
-    /// Shows the files `details`' commit changed, `height` tall at most; returns the one
-    /// clicked, if any.
+    /// Shows the files `details`' commit changed, and the lines each gained and lost once
+    /// `counts` has them, `height` tall at most; returns the one clicked, if any.
     pub(crate) fn show(
         &mut self,
         ui: &mut Ui,
         details: &Arc<CommitDetails>,
+        counts: Option<&ChangeCounts>,
         height: f32,
     ) -> Option<usize> {
         if self.shown != Some(details.id) {
             self.state = TableState::new(self.id.as_str(), details.changes.len());
             self.shown = Some(details.id);
         }
+        let counts = counts
+            .filter(|counts| counts.id == details.id)
+            .map(|counts| counts.files.as_slice());
         let provider = ChangeRows {
             changes: &details.changes,
         };
@@ -316,12 +320,23 @@ impl ChangesTable {
                 .range(100.0..=f32::INFINITY)
                 .remainder(true),
         ];
+        let palette = Palette::of(ui.ctx());
         let shown = TableKit::new(self.id.as_str(), &provider, &mut self.state)
             .with_columns(columns)
             .with_row_height(22.0)
             .with_max_height(Some(height))
             .with_striped(true)
-            .show_with_output(ui, |_, _, _, _| None);
+            .show_with_output(ui, |ui, cell, row, text_color| {
+                if cell.col_nr != FILE_COLUMN {
+                    return None;
+                }
+                let lines = lines_of(counts, usize::try_from(cell.row_nr).ok()?);
+                if matches!(lines, Lines::Unknown) {
+                    return None;
+                }
+                let (path, _) = row.cell(FILE_COLUMN)?;
+                Some(file_cell(ui, &path, lines, text_color, palette))
+            });
         match shown {
             Ok(output) => output
                 .events
@@ -346,6 +361,63 @@ struct ChangeRows<'a> {
 
 /// The columns of [`ChangeRows`].
 const CHANGE_HEADERS: [&str; 2] = ["Change", "File"];
+
+/// The column of [`ChangeRows`] with the file's path, and its lines gained and lost.
+const FILE_COLUMN: usize = 1;
+
+/// A file's cell: its path, cut short to leave room for its lines gained and lost on the right
+/// (labels, not part of the cell's name).
+fn file_cell(
+    ui: &mut Ui,
+    path: &str,
+    lines: Lines,
+    text_color: Color32,
+    palette: Palette,
+) -> Response {
+    let label =
+        |text: String, color| Label::new(RichText::new(text).color(color)).selectable(false);
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        match lines {
+            Lines::Counted(lines) => {
+                ui.add(label(
+                    format!("−{}", count(u64::from(lines.removed))),
+                    palette.danger,
+                ));
+                ui.add(label(
+                    format!("+{}", count(u64::from(lines.added))),
+                    palette.ok,
+                ));
+            }
+            Lines::Binary => {
+                ui.add(label("binary".to_owned(), palette.muted));
+            }
+            Lines::Unknown => {}
+        }
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            ui.add(label(path.to_owned(), text_color).truncate());
+        });
+    })
+    .response
+}
+
+/// A changed file's lines, as far as they are known.
+#[derive(Clone, Copy, Debug)]
+enum Lines {
+    /// Not counted (yet).
+    Unknown,
+    /// A binary file: no lines.
+    Binary,
+    Counted(LineCounts),
+}
+
+/// Change `row`'s lines.
+fn lines_of(counts: Option<&[Option<LineCounts>]>, row: usize) -> Lines {
+    match counts.and_then(|counts| counts.get(row)) {
+        None => Lines::Unknown,
+        Some(None) => Lines::Binary,
+        Some(Some(lines)) => Lines::Counted(*lines),
+    }
+}
 
 /// How a commit changed a file, in a word or two.
 pub(crate) const fn change_name(kind: &ChangeKind) -> &'static str {

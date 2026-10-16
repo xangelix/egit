@@ -201,7 +201,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `Objects`: one shared `cat-file` per repository, restarted after a failure.
     `Summaries`: subject, author, preformatted date, read as rows come into view (at most 512
     a read, one read at a time), about 4,096 kept, least recently drawn forgotten first.
-    `read_details` (the commit and its `commit_changes`). `HistoryState`: the history shown,
+    `read_details` (the commit and its `commit_changes`); `read_change_counts` (its
+    `line_counts`, lined up with the changes by path should their orders differ, and their
+    total). `HistoryState`: the history shown,
     and a re-read (`reload`) that takes over only once complete (`replaced`), so the table
     never empties or jumps meanwhile.
   - `watch.rs` — inotify (`notify`) on git directories and configuration files only, never a
@@ -270,7 +272,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
     selection and the top row's commit in place when a re-read takes over. Details: message,
     names, parents (buttons: egui announces links as plain text), people, signature, refs,
-    and the changed files (`ChangesTable`); clicking one opens a `FileView` in the commit
+    and the changed files (`ChangesTable`), with the lines each gained and lost once counted
+    (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
+    clicking one opens a `FileView` in the commit
     table's place (Escape or "History" goes back): its diff against the first parent (unified
     or side by side, with "Whole file" for all of its context), or the file as the commit left
     it (as it was, if deleted; read the first time it is asked for, `read_file`), or a
@@ -288,7 +292,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     egui's memory).
   - `tables.rs` — egui-table-kit providers (`ConfigRows`, `RecentRows`, `ChangeRows`) with
     O(1) `cell_at`; `SnapshotTable` and `ChangesTable`, whose state starts over only when
-    their snapshot or commit is replaced.
+    their snapshot or commit is replaced. A file's cell is named by its path; its counts are
+    labels drawn at its right (`file_cell`), so the narrow details panel needs no third
+    column.
   - `theme.rs` (palettes, WCAG AA checked by a test; Phosphor icons), `widgets.rs` (cards,
     buttons, origin labels, problem boxes), `format.rs` (`~` paths, "5 minutes ago",
     dates), `settings.rs` (theme, recent repositories, open tabs; non-UTF-8 paths kept as

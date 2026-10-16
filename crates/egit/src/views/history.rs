@@ -31,7 +31,8 @@ use crate::fonts;
 use crate::format::{self, count, date_time};
 use crate::grid::TextGrid;
 use crate::history::{
-    CommitDetails, FileContent, History, HistoryState, Objects, Summaries, read_details, read_file,
+    ChangeCounts, CommitDetails, FileContent, History, HistoryState, Objects, Summaries,
+    read_change_counts, read_details, read_file,
 };
 use crate::problem::Problem;
 use crate::repo::RepoId;
@@ -91,6 +92,9 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) head: Option<&'a Head>,
     /// Writing a commit-graph file.
     pub(crate) writing_commit_graph: &'a mut Bind<(), Problem>,
+    /// Whether the repository is a partial clone, once its configuration is read: lines
+    /// aren't counted there (git could fetch every blob a commit changed).
+    pub(crate) partial_clone: Option<bool>,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -110,6 +114,7 @@ pub(crate) struct HistoryView {
     details: Bind<Arc<CommitDetails>, Problem>,
     /// The commit whose details were last asked for.
     details_for: Option<ObjectId>,
+    counting: Counting,
     changes: ChangesTable,
     /// A changed file being looked at, in place of the commit table.
     file: Option<FileView>,
@@ -178,6 +183,63 @@ impl Drop for FileView {
     }
 }
 
+/// The lines a commit's files gained and lost, counted after its files are listed.
+#[derive(Debug)]
+struct Counting {
+    counts: Bind<Arc<ChangeCounts>, Problem>,
+    /// The commit last counted.
+    of: Option<ObjectId>,
+    cancel: CancelToken,
+}
+
+impl Default for Counting {
+    fn default() -> Self {
+        Self {
+            counts: Bind::new(true),
+            of: None,
+            cancel: CancelToken::new(),
+        }
+    }
+}
+
+impl Counting {
+    /// Counts `details`' lines unless they are counted or being counted (a count under way for
+    /// another commit stops), and returns what is known for them.
+    fn of(
+        &mut self,
+        shared: &Shared<'_>,
+        details: &Arc<CommitDetails>,
+    ) -> Option<Result<Arc<ChangeCounts>, Problem>> {
+        if self.of != Some(details.id)
+            && shared.partial_clone == Some(false)
+            && let Some(git) = shared.git
+        {
+            self.cancel.cancel();
+            self.cancel = CancelToken::new();
+            self.counts.request(read_change_counts(
+                git.clone(),
+                Arc::clone(shared.repository),
+                Arc::clone(details),
+                self.cancel.clone(),
+            ));
+            self.of = Some(details.id);
+        }
+        if self.of != Some(details.id) || self.counts.is_pending() {
+            return None;
+        }
+        match self.counts.read_as_ref()? {
+            Ok(counts) => Some(Ok(Arc::clone(counts))),
+            Err(problem) => Some(Err(problem.clone())),
+        }
+    }
+}
+
+impl Drop for Counting {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 /// What a file view shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shown {
@@ -205,6 +267,7 @@ impl HistoryView {
             graph: GraphRows::default(),
             details: Bind::new(true),
             details_for: None,
+            counting: Counting::default(),
             changes: ChangesTable::new(format!("history-changes-{repo}")),
             file: None,
         }
@@ -271,6 +334,18 @@ impl HistoryView {
     #[cfg(test)]
     pub(crate) fn selected_row(&self) -> Option<u64> {
         self.selected.map(|selected| selected.row)
+    }
+
+    /// Whether the selected commit's lines are counted.
+    #[cfg(test)]
+    pub(crate) fn counts_shown(&mut self) -> bool {
+        let selected = self.selected.map(|selected| selected.id);
+        !self.counting.counts.is_pending()
+            && self
+                .counting
+                .counts
+                .ok_ref()
+                .is_some_and(|counts| Some(counts.id) == selected)
     }
 
     /// Whether the selected commit's details are shown.
@@ -406,6 +481,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         view,
         head,
         writing_commit_graph,
+        partial_clone,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -417,6 +493,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         repository,
         head: HeadAt::of(head),
         palette: Palette::of(ui.ctx()),
+        partial_clone,
     };
 
     egui::Panel::top(Id::new(("history-bar", id)))
@@ -676,6 +753,7 @@ struct Shared<'a> {
     repository: &'a Arc<Repository>,
     head: HeadAt<'a>,
     palette: Palette,
+    partial_clone: Option<bool>,
 }
 
 /// Where `HEAD` is: its commit, and the branch it is on.
@@ -1194,20 +1272,11 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &HistoryState, view: &mut 
             go_to = commit_info(ui, &shown, history.shown.refs().at(&shown.id), shared);
         });
     ui.add_space(8.0);
-    let files = shown.changes.len();
-    widgets::heading(
-        ui,
-        &if files == 1 {
-            "1 file changed".to_owned()
-        } else {
-            format!(
-                "{} files changed",
-                count(u64::try_from(files).unwrap_or(u64::MAX))
-            )
-        },
-    );
+    let counts = view.counting.of(shared, &shown);
+    files_heading(ui, shown.changes.len(), counts.as_ref(), shared.palette);
     let height = ui.available_height();
-    if let Some(index) = view.changes.show(ui, &shown, height)
+    let counts = counts.and_then(Result::ok);
+    if let Some(index) = view.changes.show(ui, &shown, counts.as_deref(), height)
         && let Some(change) = shown.changes.get(index)
     {
         view.open_file(shared, &shown, change.clone());
@@ -1218,6 +1287,45 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &HistoryState, view: &mut 
     {
         view.select(&history.shown, row, Some(Align::Center));
     }
+}
+
+/// "3 files changed", and the lines they gained and lost once counted.
+fn files_heading(
+    ui: &mut Ui,
+    files: usize,
+    counts: Option<&Result<Arc<ChangeCounts>, Problem>>,
+    palette: Palette,
+) {
+    ui.horizontal(|ui| {
+        widgets::heading(
+            ui,
+            &if files == 1 {
+                "1 file changed".to_owned()
+            } else {
+                format!(
+                    "{} files changed",
+                    count(u64::try_from(files).unwrap_or(u64::MAX))
+                )
+            },
+        );
+        match counts {
+            Some(Ok(counts)) => {
+                let total = counts.total;
+                ui.label(
+                    RichText::new(format!("+{}", count(u64::from(total.added)))).color(palette.ok),
+                );
+                ui.label(
+                    RichText::new(format!("−{}", count(u64::from(total.removed))))
+                        .color(palette.danger),
+                );
+            }
+            Some(Err(problem)) => {
+                ui.label(muted(ui, "Lines not counted"))
+                    .on_hover_text(problem.to_string());
+            }
+            None => {}
+        }
+    });
 }
 
 /// The commit's message, names, people, and refs; returns a parent the user chose to go to.

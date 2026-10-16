@@ -80,6 +80,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                     view: self.history_view,
                     head: self.status.ok_ref().map(|status| &status.head),
                     writing_commit_graph: self.writing_commit_graph,
+                    partial_clone: self.config.ok_ref().map(|config| config.is_partial_clone()),
                     actions: self.actions,
                 },
             ),

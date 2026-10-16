@@ -553,9 +553,15 @@ fn the_history_shows_branches_merges_and_a_commits_changes() {
     settle(&mut harness, "the commit's details", |app| {
         app.state.repos[0].history_view.details_shown()
     });
+    settle(&mut harness, "the lines counted", |app| {
+        app.state.repos[0].history_view.counts_shown()
+    });
     harness.get_by_label("1 file changed");
     harness.get_by_role_and_label(Role::Label, "parser.rs");
     harness.get_by_role_and_label(Role::Label, "Added");
+    // The commit's lines, and the file's.
+    assert_eq!(harness.query_all_by_label("+1").count(), 2);
+    assert_eq!(harness.query_all_by_label("−0").count(), 2);
     harness.get_by_label("egit tests <tests@egit.invalid>");
     render(&mut harness, "history-commit");
 
@@ -610,6 +616,9 @@ fn parser_change(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
     settle(&mut harness, "the commit's details", |app| {
         app.state.repos[0].history_view.details_shown()
     });
+    settle(&mut harness, "the lines counted", |app| {
+        app.state.repos[0].history_view.counts_shown()
+    });
     harness
         .get_by_role_and_label(Role::Button, "parser.rs")
         .click();
@@ -622,8 +631,9 @@ fn a_changed_file_opens_in_place_of_the_history() {
     let sandbox = Sandbox::new().unwrap();
     let mut harness = parser_change(&sandbox);
     harness.get_by_role_and_label(Role::Button, &format!("{}  History", icon::ARROW_LEFT));
-    harness.get_by_label("+3");
-    harness.get_by_label("−1");
+    // The diff's lines, beside the commit's and the file's in the details.
+    assert_eq!(harness.query_all_by_label("+3").count(), 3);
+    assert_eq!(harness.query_all_by_label("−1").count(), 3);
     assert!(
         harness
             .query_by_role_and_label(Role::Button, "Greet the world")
