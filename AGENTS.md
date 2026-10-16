@@ -132,6 +132,21 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `draw.rs` — `for_each_row` draws any range by replaying at most one chunk;
     `RowView::segments_in` gives a row's lines crossing a window of lanes, so a graph wider
     than its column costs only what shows.
+- `crates/egit-text` — text on a grid of cells, as a terminal shows it; no egui.
+  - `text.rs` — `Text`: bytes (any; at most 4 GiB) and line starts (`u32` each, counted
+    before they're stored); a final `\n` ends the last line.
+  - `cells.rs` — `Cells`: each character's `Glyph` and width. Printable ASCII 1, wide and emoji
+    2 (East Asian Width, ambiguous narrow), combining marks 0 (drawn over the cell before),
+    tabs to the next stop (8 by default), C0 controls `^X`, bad bytes `<FF>`, invisible and
+    direction-changing characters (zero-width spaces, bidi controls, BOM) and C1 as `<200B>`;
+    only a `\r` ending a line may be hidden. Nothing reorders.
+  - `measure.rs` — `Measure`: each line's cells, measured once in the background (printable
+    ASCII by its length: 66 MB in 14 ms), and for lines over 4 KiB a checkpoint every 4,096
+    cells, so `seek` finds any cell reading at most that much.
+  - `rows.rs` — `Wrap::{Off, At(width)}`: line `k`'s row `r` shows cells `r * width` on; a wide
+    character in a row's last cell hangs past it, so rows never depend on earlier rows.
+    `Position { line, cell }` (a row's start) with `next`/`previous`; `Rows`, the rows before
+    each 1,024 lines (rebuilt at a new width in 1.3 ms for 1M lines), only for scroll bars.
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
   (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io: bump
   `rev` to the owner's pushed commit after each change made there), `egui-async` 0.7 (stay on

@@ -955,6 +955,14 @@ name = "egit-graph"
 version = "0.1.0"
 
 [[package]]
+name = "egit-text"
+version = "0.1.0"
+dependencies = [
+ "memchr",
+ "unicode-width",
+]
+
+[[package]]
 name = "egui"
 version = "0.36.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

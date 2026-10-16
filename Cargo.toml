@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/egit", "crates/egit-git", "crates/egit-graph"]
+members = ["crates/egit", "crates/egit-git", "crates/egit-graph", "crates/egit-text"]
 
 [workspace.package]
 version = "0.1.0"
@@ -22,6 +22,7 @@ egui-phosphor = "0.14.0"
 egui-table-kit = { git = "https://github.com/xangelix/egui-table-kit", rev = "71f4c3b760c9ed58ce3d2ade309188afc9843b0a" }
 egui_kittest = "0.36.2"
 egui_tiles = "0.17.1"
+memchr = "2.8.3"
 notify = { version = "8.2.0", default-features = false }
 parking_lot = "0.12.5"
 rfd = { version = "0.17.2", default-features = false }
@@ -32,6 +33,7 @@ thiserror = "2.0.21"
 tokio = { version = "1.53.3", default-features = false }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false }
+unicode-width = { version = "0.2.2", default-features = false }
 zeroize = "1.9.1"
 
 [workspace.lints.rust]
