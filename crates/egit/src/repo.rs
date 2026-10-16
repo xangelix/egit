@@ -12,6 +12,7 @@ use egui_async::Bind;
 use crate::history::HistoryState;
 use crate::jobs::{self, WriteLock};
 use crate::problem::Problem;
+use crate::staging::{self, StageRequest};
 use crate::tables::SnapshotTable;
 use crate::views::history::HistoryView;
 use crate::watch::{Changes, Taken, Watcher, Watching};
@@ -53,6 +54,10 @@ pub(crate) struct RepoTab {
     pub(crate) work_tree: WorkTree,
     /// Writing a commit-graph file.
     pub(crate) writing_commit_graph: Bind<(), Problem>,
+    /// The last staging or unstaging, while it runs and after (a problem stays shown).
+    pub(crate) staging: Bind<(), Problem>,
+    /// Whether a staging is under way, so its end reads the work tree again.
+    staging_open: bool,
     pub(crate) panels: egui_tiles::Tree<RepoPanel>,
     /// Commands that write to the repository take it.
     writes: WriteLock,
@@ -83,6 +88,8 @@ impl RepoTab {
             config: Bind::new(true),
             config_table: SnapshotTable::new(format!("repo-config-{id}")),
             writing_commit_graph: Bind::new(true),
+            staging: Bind::new(true),
+            staging_open: false,
             panels: egui_tiles::Tree::new_tabs(
                 egui::Id::new(("repo-panels", id)),
                 vec![
@@ -106,6 +113,22 @@ impl RepoTab {
         if matches!(self.writing_commit_graph.read_as_ref(), Some(Ok(()))) {
             self.history.shown.wrote_commit_graph();
         }
+        if self.staging_open && !self.staging.is_pending() {
+            self.staging_open = false;
+            self.work_tree.refresh_now();
+        }
+    }
+
+    /// Stages or unstages as `request` says (after the repository's other writes).
+    pub(crate) fn stage(&mut self, git: &Git, request: StageRequest) {
+        self.staging.request(staging::run(
+            git.clone(),
+            Arc::clone(&self.repository),
+            self.history.objects.clone(),
+            self.writes.clone(),
+            request,
+        ));
+        self.staging_open = true;
     }
 
     /// Reads again what changed outside egit, once the changes have settled; returns how long

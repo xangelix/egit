@@ -26,6 +26,7 @@ mod jobs;
 mod problem;
 mod repo;
 mod settings;
+mod staging;
 mod syntax;
 mod tables;
 mod tabs;

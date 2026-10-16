@@ -418,7 +418,12 @@ fn width_of(fonts: &mut egui::epaint::FontsView<'_>, text: &str, font: &egui::Fo
 
 /// `path` as fits in `width` points of `font`: whole, or its end after "…", from a folder's
 /// boundary where one is in what fits.
-fn elided_start<'p>(ui: &Ui, path: &'p str, font: &egui::FontId, width: f32) -> Cow<'p, str> {
+pub(crate) fn elided_start<'p>(
+    ui: &Ui,
+    path: &'p str,
+    font: &egui::FontId,
+    width: f32,
+) -> Cow<'p, str> {
     ui.fonts_mut(|fonts| {
         if width_of(fonts, path, font) <= width {
             return Cow::Borrowed(path);

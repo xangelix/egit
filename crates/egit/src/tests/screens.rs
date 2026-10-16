@@ -766,6 +766,98 @@ fn the_work_tree_is_followed_as_files_change_outside_egit() {
     shown(6)(&mut harness);
 }
 
+/// Drags across the open file's diff from `from` to `to` (each a line and a cell).
+fn drag(harness: &mut Harness<'_, EgitApp>, from: (u32, u32), to: (u32, u32)) {
+    let spot = |harness: &mut Harness<'_, EgitApp>, (line, cell): (u32, u32)| {
+        harness.state_mut().state.repos[0]
+            .history_view
+            .file_spot(line, cell)
+            .unwrap()
+    };
+    let (from, to) = (spot(harness, from), spot(harness, to));
+    harness.hover_at(from);
+    harness.drag_at(from);
+    harness.run_steps(1);
+    harness.hover_at(to);
+    harness.drop_at(to);
+    harness.run_steps(2);
+}
+
+#[test]
+fn the_work_tree_is_staged_by_file_by_line_and_by_hunk() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    let notes = |changed: &[u32]| -> String {
+        (1..=30)
+            .map(|line| {
+                if changed.contains(&line) {
+                    format!("LINE {line}\n")
+                } else {
+                    format!("line {line}\n")
+                }
+            })
+            .collect()
+    };
+    sandbox
+        .commit_file(&repo, "notes.txt", &notes(&[]), "Write notes")
+        .unwrap();
+    std::fs::write(repo.join("notes.txt"), notes(&[5, 25])).unwrap();
+    std::fs::write(repo.join("todo.md"), "- stage this\n").unwrap();
+    let staged = |sandbox: &Sandbox| -> String {
+        let out = sandbox
+            .run(&repo, "diff", &["--cached", "--no-color"])
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    wait_for_label(&mut harness, &uncommitted(2));
+    harness.get_by_label(&uncommitted(2)).click();
+    wait_for_label(&mut harness, "Not staged");
+
+    // A whole file, by its own button.
+    harness.get_by_label("Stage todo.md").click();
+    wait_for_label(&mut harness, "Unstage todo.md");
+    assert!(staged(&sandbox).contains("+- stage this"));
+    render(&mut harness, "work-tree");
+
+    // A line: the first hunk's change, picked by dragging across it. The diff's lines: a hunk
+    // header, three lines of context, `-line 5`, `+LINE 5`, three more, the next hunk.
+    harness
+        .get_by_role_and_label(Role::Button, "notes.txt")
+        .click();
+    settle(&mut harness, "the diff", |app| {
+        app.state.repos[0].history_view.file_shown() == Some(("notes.txt".to_owned(), true))
+    });
+    drag(&mut harness, (4, 0), (5, 3));
+    harness.get_by_label("Stage lines").click();
+    settle(&mut harness, "the line staged", |_| {
+        staged(&sandbox).contains("+LINE 5")
+    });
+    assert!(!staged(&sandbox).contains("LINE 25"));
+    // The diff follows: the second hunk is all that is left to stage.
+    settle(&mut harness, "the diff read again", |app| {
+        app.state.repos[0].history_view.diff_lines() == Some(9)
+    });
+    render(&mut harness, "work-tree-diff");
+
+    // A hunk: a line of it picks all of it.
+    drag(&mut harness, (4, 0), (4, 3));
+    harness.get_by_label("Stage hunk").click();
+    settle(&mut harness, "the hunk staged", |_| {
+        staged(&sandbox).contains("+LINE 25")
+    });
+
+    // And everything back.
+    harness.get_by_label("Unstage all").click();
+    settle(&mut harness, "everything unstaged", |_| {
+        staged(&sandbox).is_empty()
+    });
+    wait_for_label(&mut harness, "Nothing staged yet.");
+}
+
 #[test]
 fn whole_file_shows_all_of_the_file_and_back() {
     let sandbox = Sandbox::new().unwrap();

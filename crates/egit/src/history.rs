@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
+use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
@@ -322,7 +323,7 @@ pub(crate) struct Objects(Arc<Mutex<Option<ObjectReader>>>);
 
 impl Objects {
     /// Reads `ids` (see [`ObjectReader::read`]), inside a job.
-    fn read(
+    pub(crate) fn read(
         &self,
         git: &Git,
         work_tree: &Path,
@@ -611,6 +612,26 @@ pub(crate) async fn read_file(
                 format!("{} isn't in this repository.", entry.id),
             )
         })
+    })
+    .await
+}
+
+/// Reads the work tree's file at `path` (from its top) and makes it ready to show.
+pub(crate) async fn read_work_tree_file(
+    repository: Arc<Repository>,
+    path: BString,
+) -> Result<Arc<FileContent>, Problem> {
+    jobs::blocking(move || {
+        let file = repository
+            .work_tree()
+            .join(std::ffi::OsStr::from_bytes(&path));
+        let bytes = std::fs::read(&file).map_err(|error| {
+            Problem::new(
+                "The file couldn't be read",
+                format!("{}: {error}", file.display()),
+            )
+        })?;
+        Ok(Arc::new(FileContent::of(&bytes, &path)))
     })
     .await
 }

@@ -268,7 +268,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     text changes). Advances are cached per character until egui's font count changes
     (`fonts::generation`). `show_panes` draws sources side by side, scrolled as one (one
     position, input, and scroll bar; the first pane's measure moves the rows). Dragging
-    selects in one pane between cells (hit-tested against the rows drawn last frame;
+    selects in one pane between cells (`selected_lines` gives the lines it covers; hit-tested
+    against the rows drawn last frame;
     dragging past an edge scrolls), ⌘A selects a pane, Escape clears (focused or not: egui
     drops focus on Escape), and ⌘C (`Event::Copy`) copies the bytes as they are. `find.rs`:
     ⌘F opens a find bar over the top right (Enter, Shift+Enter, Previous, Next; Escape or
@@ -287,7 +288,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     each diff read after, once it has landed: `is_of`), a block's
     removed lines beside its added ones with fillers making up the difference, both sides'
     measures matched (`Measure::match_rows`) so wrapped lines take the same rows. Both are
-    highlighted in the file's language (see `syntax.rs`). A Git LFS pointer's diff is noticed
+    highlighted in the file's language (see `syntax.rs`). `read_uncommitted_diff` reads a
+    work tree's file's diff; `changes_in` picks the changes among some lines (or all of their
+    hunks), and `file_diff` gives the diff back to stage them. A Git LFS pointer's diff is noticed
     from the diff itself (`lfs_change`: one hunk, every side present a pointer, which
     `history::LfsPointer::parse` reads) and shown as the file's sizes before and after, its
     own changes a button away.
@@ -301,6 +304,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     their `Feed` says (context both; a hunk header starts both over). Lines over 4 KiB, and
     lines that aren't UTF-8, are left plain. Dark: `base16-ocean.dark`; light:
     `InspiredGitHub`.
+  - `staging.rs` — `StageRequest`s as jobs under the repository's `WriteLock`: whole files
+    (`stage`, `unstage`), or the lines picked in a file's diff (`LinesRequest`: the index's
+    blob read through the shared `cat-file`, `apply_lines`, `write_index_content` against the
+    entry the diff was read with; a stale diff says so). `RepoTab::stage` runs one
+    (`Action::Stage`), keeps its result for the panel, and reads the work tree again after.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the XDG font directories (CJK families, then
@@ -309,7 +317,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     lowest-priority fallbacks to both families. Kept fonts are leaked once into `'static`
     slices: egui copies owned font data on every rebuild of its fonts, but borrows static.
   - `views/history.rs` — the top bar (the commit count, and how many files have uncommitted
-    changes), and the commit table on egui-table-kit's layout `Table` (its `TableKit`
+    changes: a button showing the working tree beside the history in place of a commit's
+    details, as it always is before the first commit), and the commit table on egui-table-kit's layout `Table` (its `TableKit`
     keeps per-row state a graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
@@ -325,7 +334,14 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     "History" goes back): its diff against the first parent (unified or side by side, with
     "Whole file" for all of its context), or the file as the commit left it (as it was, if
     deleted; read the first time it is asked for, `read_file`), or a placeholder for binary
-    files, LFS pointers, submodules, and files over 256 MiB. A history of 10,000+ commits
+    files, LFS pointers, submodules, and files over 256 MiB. A `FileView` of a work tree's
+    file (`WorkFile`: a path, which `Uncommitted` changes, the index entry its diff was read
+    against) reads its diff again whenever the status changes, and has a second bar: stage
+    or unstage the file, the lines selected in its unified diff, or their hunks; a conflict
+    gets a placeholder (its combined diff isn't read) and only "Stage file" (resolved).
+    `views/work.rs` — `WorkPanel`: "Not staged" and "Staged", each a table-kit list (indices
+    into the status, made once per read) with a button for all and one per file (named
+    "Stage <path>"), a file clicked opened in the `FileView`. A history of 10,000+ commits
     without a commit-graph is offered one (`Action::WriteCommitGraph`).
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;

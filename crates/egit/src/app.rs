@@ -21,6 +21,7 @@ use crate::jobs::{self, WriteLock};
 use crate::problem::{OpenProblem, Problem};
 use crate::repo::{RepoId, RepoTab};
 use crate::settings::{Settings, StoredPath};
+use crate::staging::StageRequest;
 use crate::tabs::{self, Pane};
 use crate::theme::{self, Palette, ThemeChoice};
 use crate::views::home::HomeView;
@@ -100,6 +101,8 @@ pub(crate) enum Action {
     Refresh(RepoId),
     /// Write a commit-graph file for a repository.
     WriteCommitGraph(RepoId),
+    /// Stage or unstage in a repository.
+    Stage(RepoId, StageRequest),
     /// A repository's tab was closed.
     Closed(RepoId),
     /// Use a theme.
@@ -237,6 +240,13 @@ impl EgitApp {
                     && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
                 {
                     repo.write_commit_graph(&git);
+                }
+            }
+            Action::Stage(id, request) => {
+                if let Some(git) = state.git()
+                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
+                {
+                    repo.stage(&git, request);
                 }
             }
             Action::Closed(id) => state.repos.retain(|repo| repo.id != id),

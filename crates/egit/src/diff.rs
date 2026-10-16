@@ -13,7 +13,7 @@ use std::sync::Arc;
 use bstr::BString;
 use egit_git::{
     CancelToken, DiffLine, DiffLineKind, DiffOptions, FileDiff, Git, ObjectId, Repository,
-    file_diff,
+    Uncommitted, file_diff, uncommitted_diff,
 };
 use egit_text::{ChangedWords, Measure, Options, Text, changed_words};
 use egui::Color32;
@@ -188,6 +188,50 @@ impl DiffDocument {
     /// Whether git found the file binary (there are no lines to show then).
     pub(crate) const fn binary(&self) -> bool {
         self.binary
+    }
+
+    /// The diff it shows, as git's patch read it (for staging some of its lines).
+    pub(crate) fn file_diff(&self) -> FileDiff {
+        FileDiff {
+            text: self.text.bytes().to_vec(),
+            lines: self.lines.clone(),
+            binary: self.binary,
+        }
+    }
+
+    /// Which of its lines are changes (added or removed) among `lines`; with `hunks`, every
+    /// change of each hunk `lines` reaches into.
+    pub(crate) fn changes_in(
+        &self,
+        lines: std::ops::RangeInclusive<u32>,
+        hunks: bool,
+    ) -> Vec<bool> {
+        let index = |line: u32| usize::try_from(line).unwrap_or(usize::MAX);
+        let (mut first, mut last) = (index(*lines.start()), index(*lines.end()));
+        if hunks {
+            let is_hunk = |line: &DiffLine| line.kind == DiffLineKind::Hunk;
+            first = self
+                .lines
+                .get(..=first)
+                .and_then(|before| before.iter().rposition(is_hunk))
+                .unwrap_or(0);
+            last = self
+                .lines
+                .get(last.saturating_add(1)..)
+                .and_then(|after| after.iter().position(is_hunk))
+                .map_or(self.lines.len(), |next| {
+                    last.saturating_add(1).saturating_add(next)
+                })
+                .saturating_sub(1);
+        }
+        self.lines
+            .iter()
+            .enumerate()
+            .map(|(at, line)| {
+                (first..=last).contains(&at)
+                    && matches!(line.kind, DiffLineKind::Added | DiffLineKind::Removed)
+            })
+            .collect()
     }
 
     /// The pointers, when the file is a Git LFS pointer.
@@ -620,6 +664,26 @@ pub(crate) async fn read_diff(
     .await
 }
 
+/// Reads the diff of the uncommitted changes `which` to the file at `paths` (a staged rename's
+/// old path first), and measures it; `cancel` stops git.
+pub(crate) async fn read_uncommitted_diff(
+    git: Git,
+    repository: Arc<Repository>,
+    paths: Vec<BString>,
+    which: Uncommitted,
+    options: DiffOptions,
+    cancel: CancelToken,
+) -> Result<Arc<DiffDocument>, Problem> {
+    jobs::blocking(move || {
+        let path = paths.last().cloned().unwrap_or_default();
+        let paths: Vec<&bstr::BStr> = paths.iter().map(AsRef::as_ref).collect();
+        uncommitted_diff(&git, &repository, &paths, which, &options, &cancel)
+            .map(|diff| Arc::new(DiffDocument::new(diff, path)))
+            .map_err(|error| Problem::git("The diff couldn't be read", &error))
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,6 +730,26 @@ mod tests {
             ["       ", " 9  9  ", "10    -", "   10 +", "   11 +"]
         );
         assert_eq!(document.changed(), (2, 1));
+    }
+
+    #[test]
+    fn picks_the_changes_in_lines_or_their_hunks() {
+        // Hunk, context, removed, added, added.
+        let document = document();
+        assert_eq!(
+            document.changes_in(2..=2, false),
+            [false, false, true, false, false]
+        );
+        assert_eq!(
+            document.changes_in(1..=3, false),
+            [false, false, true, true, false]
+        );
+        // A line of a hunk picks every change in it.
+        assert_eq!(
+            document.changes_in(1..=1, true),
+            [false, false, true, true, true]
+        );
+        assert_eq!(document.changes_in(0..=1, false), [false; 5]);
     }
 
     #[test]

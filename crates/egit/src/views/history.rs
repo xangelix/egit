@@ -10,7 +10,9 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
-use egit_git::{CancelToken, FileChange, Git, Head, ObjectId, RefKind, Reference, Repository};
+use egit_git::{
+    CancelToken, FileChange, Git, Head, ObjectId, RefKind, Reference, Repository, Status,
+};
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
 use egui::{
@@ -22,7 +24,8 @@ use egui_table_kit::layout::{
     CellInfo, Column, HeaderCellInfo, HeaderRow, PrefetchInfo, Table, TableDelegate, TableState,
 };
 
-use super::file::{self, FileView};
+use super::file::{self, FileView, WorkFile};
+use super::work::{WorkEvent, WorkPanel};
 use crate::app::Action;
 use crate::fonts;
 use crate::format::{count, date_time};
@@ -93,6 +96,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) partial_clone: Option<bool>,
     /// The working tree's status.
     pub(crate) work_tree: &'a mut WorkTree,
+    /// The last staging or unstaging.
+    pub(crate) staging: &'a mut Bind<(), Problem>,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -116,6 +121,10 @@ pub(crate) struct HistoryView {
     changes: ChangesTable,
     /// A changed file being looked at, in place of the commit table.
     file: Option<FileView>,
+    /// Whether the working tree's changes are shown beside the history, rather than a
+    /// commit's.
+    work_selected: bool,
+    work: WorkPanel,
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -196,6 +205,8 @@ impl HistoryView {
             counting: Counting::default(),
             changes: ChangesTable::new(format!("history-changes-{repo}")),
             file: None,
+            work_selected: false,
+            work: WorkPanel::new(repo),
         }
     }
 
@@ -268,7 +279,21 @@ impl HistoryView {
         if let Some(id) = history.id(row) {
             self.selected = Some(Selected { id, row });
             self.scroll_to = Some((row, align));
+            self.work_selected = false;
         }
+    }
+
+    /// Shows the working tree's changes beside the history.
+    fn select_work(&mut self) {
+        self.work_selected = true;
+        if self.file.as_ref().is_some_and(|file| file.work().is_none()) {
+            self.file = None;
+        }
+    }
+
+    /// Opens `work`'s changes in the file view.
+    fn open_work(&mut self, shared: &Shared<'_>, work: WorkFile) {
+        self.file = Some(FileView::open_work(shared, work, self.file.as_ref()));
     }
 
     /// Finds its place again in a history that replaced the one shown: the selected commit,
@@ -381,11 +406,13 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         writing_commit_graph,
         partial_clone,
         work_tree,
+        staging,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
         view.follow(&history.shown);
     }
+    let work_status = work_tree.status().and_then(Result::ok).cloned();
     let shared = Shared {
         id,
         git,
@@ -393,7 +420,12 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         head: HeadAt::of(head),
         palette: Palette::of(ui.ctx()),
         partial_clone,
+        work_status: work_status.as_ref(),
     };
+    // Before the first commit, the work tree is all there is to look at.
+    if history.shown.rows() == 0 && !history.shown.is_loading() {
+        view.work_selected = true;
+    }
 
     egui::Panel::top(Id::new(("history-bar", id)))
         .frame(Frame::new().inner_margin(Margin::symmetric(12, 8)))
@@ -403,12 +435,14 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
                 &shared,
                 history,
                 work_tree,
+                view,
                 writing_commit_graph,
                 actions,
             );
         });
 
-    if history.shown.rows() == 0 {
+    let no_commits = history.shown.rows() == 0;
+    if no_commits && work_status.as_ref().is_none_or(|status| status.is_empty()) {
         egui::CentralPanel::default()
             .frame(Frame::new().inner_margin(Margin::same(16)))
             .show(ui, |ui| {
@@ -424,23 +458,40 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         .default_size(380.0)
         .size_range(260.0..=900.0)
         .frame(Frame::new().inner_margin(Margin::same(12)))
-        .show(ui, |ui| details(ui, &shared, history, view));
+        .show(ui, |ui| {
+            if view.work_selected {
+                work_details(ui, &shared, view, staging, actions);
+            } else {
+                details(ui, &shared, history, view);
+            }
+        });
 
-    // A file looked at belongs to the selected commit, until another is selected.
-    if view
-        .file
-        .as_ref()
-        .is_some_and(|file| view.selected.map(|selected| selected.id) != Some(file.commit()))
-    {
+    // A file looked at belongs to what is selected: a commit's to that commit, the work
+    // tree's to the work tree.
+    let belongs = view.file.as_ref().is_none_or(|file| match file.commit() {
+        Some(commit) => {
+            !view.work_selected && view.selected.map(|selected| selected.id) == Some(commit)
+        }
+        None => view.work_selected,
+    });
+    if !belongs {
         view.file = None;
     }
     egui::CentralPanel::default()
         .frame(Frame::new())
         .show(ui, |ui| match &mut view.file {
             Some(file) => {
-                if !file::show(ui, &shared, &history.objects, file) {
+                if !file::show(ui, &shared, &history.objects, file, actions) {
                     view.file = None;
                 }
+            }
+            None if no_commits => {
+                Frame::new().inner_margin(Margin::same(16)).show(ui, |ui| {
+                    ui.label(muted(
+                        ui,
+                        "No commits yet. Stage the files for the first one, then commit them.",
+                    ));
+                });
             }
             None => commit_table(ui, &shared, history, view),
         });
@@ -454,6 +505,8 @@ pub(super) struct Shared<'a> {
     head: HeadAt<'a>,
     pub(super) palette: Palette,
     partial_clone: Option<bool>,
+    /// The working tree's latest status, once read.
+    pub(super) work_status: Option<&'a Arc<Status>>,
 }
 
 /// Where `HEAD` is: its commit, and the branch it is on.
@@ -487,6 +540,7 @@ fn top_bar(
     shared: &Shared<'_>,
     history: &HistoryState,
     work_tree: &mut WorkTree,
+    view: &mut HistoryView,
     writing: &mut Bind<(), Problem>,
     actions: &mut Vec<Action>,
 ) {
@@ -503,7 +557,7 @@ fn top_bar(
             ui.spinner();
             ui.label(muted(ui, "Reading the history…"));
         }
-        work_tree_summary(ui, work_tree, palette);
+        work_tree_summary(ui, work_tree, view, palette);
     });
     for problem in [history.shown.problem(), history.summaries.problem.as_ref()]
         .into_iter()
@@ -539,8 +593,14 @@ fn top_bar(
     }
 }
 
-/// How many files have changes not yet committed, if any; or why that isn't known.
-fn work_tree_summary(ui: &mut Ui, work_tree: &mut WorkTree, palette: Palette) {
+/// How many files have changes not yet committed, if any (a button showing them beside the
+/// history); or why that isn't known.
+fn work_tree_summary(
+    ui: &mut Ui,
+    work_tree: &mut WorkTree,
+    view: &mut HistoryView,
+    palette: Palette,
+) {
     match work_tree.status() {
         Some(Ok(status)) if !status.is_empty() => {
             let files = status.len();
@@ -553,7 +613,15 @@ fn work_tree_summary(ui: &mut Ui, work_tree: &mut WorkTree, palette: Palette) {
                 )
             };
             ui.add_space(8.0);
-            ui.label(RichText::new(format!("{}  {text}", icon::PENCIL_SIMPLE)).color(palette.warn));
+            let label =
+                RichText::new(format!("{}  {text}", icon::PENCIL_SIMPLE)).color(palette.warn);
+            if ui
+                .add(egui::Button::selectable(view.work_selected, label))
+                .on_hover_text("Stage them, and commit")
+                .clicked()
+            {
+                view.select_work();
+            }
         }
         Some(Err(problem)) => {
             let problem = problem.to_string();
@@ -957,6 +1025,27 @@ fn badges(ui: &mut Ui, refs: &[Reference], head: &HeadAt<'_>, palette: Palette) 
     }
     if let Some(more) = refs.len().checked_sub(MAX_BADGES).filter(|more| *more > 0) {
         ui.add(Label::new(muted(ui, format!("+{more}"))).selectable(false));
+    }
+}
+
+/// The working tree's changes: what isn't staged and what is.
+fn work_details(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    view: &mut HistoryView,
+    staging: &mut Bind<(), Problem>,
+    actions: &mut Vec<Action>,
+) {
+    let Some(status) = shared.work_status else {
+        widgets::working(ui, "Reading the work tree…");
+        return;
+    };
+    ui.label(RichText::new("Working tree").size(16.0).strong());
+    ui.add_space(8.0);
+    match view.work.show(ui, status, staging) {
+        Some(WorkEvent::Open(work)) => view.open_work(shared, work),
+        Some(WorkEvent::Stage(request)) => actions.push(Action::Stage(shared.id, request)),
+        None => {}
     }
 }
 

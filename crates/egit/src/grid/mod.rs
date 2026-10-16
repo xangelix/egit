@@ -266,6 +266,24 @@ impl TextGrid {
         self.selection.is_some()
     }
 
+    /// The pane a selection is in, and the lines it covers (one ending before a line's first
+    /// cell doesn't cover that line).
+    pub(crate) fn selected_lines(&self) -> Option<(usize, std::ops::RangeInclusive<u32>)> {
+        let selection = self.selection?;
+        let (start, end) = selection.ordered();
+        let last = if end.cell == 0 && end.line > start.line {
+            end.line.saturating_sub(1)
+        } else {
+            end.line
+        };
+        Some((selection.pane, start.line..=last))
+    }
+
+    /// Selects nothing.
+    pub(crate) const fn clear_selection(&mut self) {
+        self.selection = None;
+    }
+
     /// Where on screen the place before cell `cell` of line `line` of pane `pane` was drawn
     /// (the middle of its row), if it was.
     #[cfg(test)]
