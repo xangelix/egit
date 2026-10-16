@@ -107,7 +107,11 @@ impl EgitApp {
         let home_dir = std::env::var_os("HOME").map(PathBuf::from);
         // Every git process asks its questions through this window.
         let (prompts, env) = Prompts::start(&creation.egui_ctx);
-        let options = GitOptions { program: None, env };
+        let options = GitOptions {
+            program: None,
+            env,
+            unset: Vec::new(),
+        };
         Self::start(
             &creation.egui_ctx,
             settings,

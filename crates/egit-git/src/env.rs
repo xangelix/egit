@@ -99,6 +99,13 @@ impl Environment {
         self.set.push((key.into(), value.into()));
     }
 
+    /// Removes a variable, whatever was planned for it.
+    pub(crate) fn unset(&mut self, key: impl Into<OsString>) {
+        let key = key.into();
+        self.set.retain(|(name, _)| *name != key);
+        self.remove.push(key);
+    }
+
     /// Applies the plan to a command about to be spawned.
     pub(crate) fn apply(&self, command: &mut Command) {
         for key in &self.remove {
@@ -205,5 +212,17 @@ mod tests {
         environment.push("HOME", "/sandbox");
         assert_eq!(environment.value("GIT_PAGER"), Some(OsStr::new("less")));
         assert_eq!(environment.value("HOME"), Some(OsStr::new("/sandbox")));
+    }
+
+    #[test]
+    fn unset_variables_go_whatever_was_planned() {
+        let mut environment = plan(&[("GIT_AUTHOR_NAME", "Someone")]);
+        environment.push("GIT_PAGER", "less");
+        environment.unset("GIT_AUTHOR_NAME");
+        environment.unset("GIT_PAGER");
+        assert!(environment.removes("GIT_AUTHOR_NAME"));
+        assert!(environment.removes("GIT_PAGER"));
+        assert_eq!(environment.value("GIT_PAGER"), None);
+        assert_eq!(environment.value("GIT_EDITOR"), Some(OsStr::new(":")));
     }
 }

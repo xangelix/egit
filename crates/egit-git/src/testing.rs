@@ -1,7 +1,8 @@
 //! A sandboxed git for tests (the `testing` feature).
 //!
 //! A sandbox is a temporary directory with a home of its own and a known global configuration.
-//! The system's configuration is ignored, and so is the user's, so tests behave the same on
+//! The system's configuration is ignored, and so is the user's, and so are identities and dates
+//! the environment would give commits (`GIT_AUTHOR_NAME`, say), so tests behave the same on
 //! every machine. Repository discovery stops at the sandbox (`GIT_CEILING_DIRECTORIES`).
 //!
 //! Set `EGIT_TEST_GIT` to a git executable to run the tests against it (an older release, say)
@@ -30,6 +31,17 @@ const GLOBAL_CONFIG: &str = "\
 [core]
 \tautocrlf = false
 ";
+
+/// Variables that would give commits another identity or date than the sandbox's.
+const IDENTITY_VARIABLES: [&str; 7] = [
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+    "EMAIL",
+];
 
 /// What can go wrong setting up a sandbox.
 pub type SandboxError = Box<dyn Error + Send + Sync>;
@@ -86,6 +98,7 @@ impl Sandbox {
         Ok(Git::new(GitOptions {
             program: std::env::var_os("EGIT_TEST_GIT").map(PathBuf::from),
             env,
+            unset: IDENTITY_VARIABLES.map(OsString::from).to_vec(),
         })?)
     }
 

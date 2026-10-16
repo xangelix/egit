@@ -18,6 +18,8 @@ pub struct GitOptions {
     pub program: Option<PathBuf>,
     /// Environment variables for every git process, set after (and so over) egit's own.
     pub env: Vec<(OsString, OsString)>,
+    /// Environment variables no git process gets, whatever egit or [`Self::env`] would set.
+    pub unset: Vec<OsString>,
 }
 
 /// The git binary egit drives: where it is, its version, and the environment it runs in.
@@ -50,6 +52,9 @@ impl Git {
         let mut environment = Environment::plan(std::env::vars_os());
         for (key, value) in options.env {
             environment.push(key, value);
+        }
+        for key in options.unset {
+            environment.unset(key);
         }
         let mut inner = Inner {
             program,
