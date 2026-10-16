@@ -177,11 +177,11 @@ impl Repository {
             }
             // Not a symbolic ref: `HEAD` is detached.
             Some(1) => self.detached_head(git).map(Head::Detached),
-            _ => Err(GitError::Failed(Box::new(crate::error::Failure {
-                subcommand: "symbolic-ref",
-                status: symbolic.status,
-                stderr: symbolic.stderr,
-            }))),
+            _ => Err(GitError::failed(
+                "symbolic-ref",
+                symbolic.status,
+                symbolic.stderr,
+            )),
         }
     }
 

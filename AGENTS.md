@@ -78,6 +78,16 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     paths inside `.git`), `head` (`symbolic-ref`, then `for-each-ref` on that exact ref for the
     commit and `%(upstream:track)`, or `log -1` when detached), and `operations` (merge,
     rebase, am, cherry-pick, revert, bisect from their state files in the git dir).
+  - `config.rs` — `ConfigSnapshot::read(git, ConfigPlace::{User, Repository})`: one
+    `git config --list --show-origin --show-scope --null`, kept as one buffer the entries point
+    into (u32 spans); entries in the command scope (egit's own `-c`) are dropped. `get` is the
+    last value (git's rule), keys compare like git's (section and name in any case, subsection
+    exactly). `set_config` (`--replace-all`) and `unset_config` (`--unset-all`; exit 5 is fine)
+    write `--global` from `/` or `--local` in a work tree.
+  - `profile.rs` — `Profile` over a snapshot: identity, `Signing` (format, key, defaults,
+    program — `gpg.program` and `gpg.openpgp.program` are one setting, the later wins —,
+    allowed signers), credential helpers (an empty value resets the list), pull and push
+    settings; each as a `Setting` or `ConfigEntry` that knows its scope and file.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit` — the application (`egit_app` library, `egit` executable).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.

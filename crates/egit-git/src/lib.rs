@@ -11,12 +11,14 @@
 
 mod cancel;
 mod command;
+mod config;
 mod env;
 mod error;
 mod git;
 mod object_id;
 mod output;
 mod process;
+mod profile;
 mod repo;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -24,10 +26,14 @@ mod version;
 
 pub use cancel::CancelToken;
 pub use command::{Access, GitCommand, Streamed};
+pub use config::{
+    ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, set_config, unset_config,
+};
 pub use error::{Failure, GitError};
 pub use git::{Git, GitOptions};
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use output::{Completed, Stderr};
+pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,
     trust_directory,

@@ -101,6 +101,15 @@ impl GitError {
             .is_some_and(|failure| failure.stderr.held_lock().is_some())
     }
 
+    /// A [`Failed`](Self::Failed) error.
+    pub(crate) fn failed(subcommand: &'static str, status: ExitStatus, stderr: Stderr) -> Self {
+        Self::Failed(Box::new(Failure {
+            subcommand,
+            status,
+            stderr,
+        }))
+    }
+
     /// An [`Unexpected`](Self::Unexpected) error.
     pub(crate) fn unexpected(subcommand: &'static str, detail: impl Into<String>) -> Self {
         Self::Unexpected {

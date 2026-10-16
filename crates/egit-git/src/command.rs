@@ -12,7 +12,7 @@ use std::time::Duration;
 use rustix::process::Pid;
 
 use crate::cancel::{CancelToken, Registration};
-use crate::error::{Failure, GitError};
+use crate::error::GitError;
 use crate::git::Git;
 use crate::output::{Completed, Stderr, TailBuffer};
 use crate::process;
@@ -194,11 +194,11 @@ impl GitCommand {
         if completed.status.success() {
             Ok(completed)
         } else {
-            Err(GitError::Failed(Box::new(Failure {
+            Err(GitError::failed(
                 subcommand,
-                status: completed.status,
-                stderr: completed.stderr,
-            })))
+                completed.status,
+                completed.stderr,
+            ))
         }
     }
 
@@ -272,11 +272,11 @@ impl GitCommand {
                 stopped: attempt.stopped,
             })
         } else {
-            Err(GitError::Failed(Box::new(Failure {
-                subcommand: self.subcommand,
-                status: attempt.status,
-                stderr: attempt.stderr,
-            })))
+            Err(GitError::failed(
+                self.subcommand,
+                attempt.status,
+                attempt.stderr,
+            ))
         }
     }
 
