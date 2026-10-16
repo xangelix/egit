@@ -5,6 +5,7 @@
 //! - `views` — what each tab shows, and the status bar.
 //! - `repo` — an open repository and the jobs that keep it current.
 //! - `history` — a repository's history: rows streamed in by a walk, refs, commits' summaries.
+//! - `diff` — a file's diff on the text grid: lines on their kind's background, numbered.
 //! - `fonts` — system fonts for characters egui's fonts lack (CJK, most scripts).
 //! - `grid` — the text grid: a measured text drawn as a terminal draws it, rows on screen only.
 //! - `jobs` — the runtime and the write locks behind every git command.
@@ -14,6 +15,7 @@
 //! - `watch` — noticing what changes repositories and configuration behind egit's back.
 
 mod app;
+mod diff;
 mod fonts;
 mod format;
 mod grid;

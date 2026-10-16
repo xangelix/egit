@@ -47,6 +47,14 @@ pub(crate) struct Palette {
     pub(crate) danger: Color32,
     /// The commit graph's lanes, in turn.
     pub(crate) lanes: [Color32; 10],
+    /// Behind a diff's added lines, and its changed words.
+    pub(crate) added: Color32,
+    pub(crate) added_word: Color32,
+    /// Behind a diff's removed lines, and its changed words.
+    pub(crate) removed: Color32,
+    pub(crate) removed_word: Color32,
+    /// Behind a diff's hunk headers.
+    pub(crate) hunk: Color32,
 }
 
 impl Palette {
@@ -76,6 +84,11 @@ impl Palette {
             Color32::from_rgb(0x95, 0x75, 0xCD),
             Color32::from_rgb(0xA1, 0x88, 0x7F),
         ],
+        added: Color32::from_rgba_unmultiplied_const(0x3F, 0xB9, 0x50, 40),
+        added_word: Color32::from_rgba_unmultiplied_const(0x3F, 0xB9, 0x50, 100),
+        removed: Color32::from_rgba_unmultiplied_const(0xF8, 0x51, 0x49, 40),
+        removed_word: Color32::from_rgba_unmultiplied_const(0xF8, 0x51, 0x49, 100),
+        hunk: Color32::from_rgba_unmultiplied_const(0x3F, 0xB6, 0xA8, 30),
     };
 
     /// The light theme.
@@ -104,6 +117,11 @@ impl Palette {
             Color32::from_rgb(0x45, 0x27, 0xA0),
             Color32::from_rgb(0x6D, 0x4C, 0x41),
         ],
+        added: Color32::from_rgba_unmultiplied_const(0x1A, 0x7F, 0x37, 32),
+        added_word: Color32::from_rgba_unmultiplied_const(0x1A, 0x7F, 0x37, 80),
+        removed: Color32::from_rgba_unmultiplied_const(0xCF, 0x22, 0x2E, 32),
+        removed_word: Color32::from_rgba_unmultiplied_const(0xCF, 0x22, 0x2E, 80),
+        hunk: Color32::from_rgba_unmultiplied_const(0x0A, 0x84, 0x77, 26),
     };
 
     /// The palette egui is currently showing.

@@ -50,10 +50,10 @@ pub(crate) trait GridSource {
 
     /// Colours for line `line`'s bytes, in order and not overlapping (bytes outside them take
     /// the default text colour).
-    fn styles(&self, _line: u32, _out: &mut Vec<Styled>) {}
+    fn styles(&self, _line: u32, _palette: &Palette, _out: &mut Vec<Styled>) {}
 
     /// The background of line `line`'s rows.
-    fn background(&self, _line: u32) -> Option<Color32> {
+    fn background(&self, _line: u32, _palette: &Palette) -> Option<Color32> {
         None
     }
 
@@ -295,7 +295,7 @@ impl TextGrid {
         while let Some(at) = position
             && y < frame.text.bottom()
         {
-            if let Some(background) = source.background(at.line) {
+            if let Some(background) = source.background(at.line, &palette) {
                 let rect = Rect::from_min_size(
                     pos2(outer.left(), y),
                     vec2(frame.text.right() - outer.left(), frame.row),
@@ -318,7 +318,7 @@ impl TextGrid {
                 Wrap::Off => self.sideways..self.sideways.saturating_add(frame.visible_cells),
             };
             styles.clear();
-            source.styles(at.line, &mut styles);
+            source.styles(at.line, &palette, &mut styles);
             let mut job = LayoutJob::default();
             self.lay_out_row(
                 ui, source, at.line, cells, &styles, font, frame, palette, &mut job,

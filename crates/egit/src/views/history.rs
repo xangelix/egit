@@ -10,7 +10,10 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
-use egit_git::{FileChange, Git, Head, ObjectId, RefKind, Reference, Repository};
+use egit_git::{
+    CancelToken, ChangeKind, DiffOptions, FileChange, Git, Head, ObjectId, RefKind, Reference,
+    Repository, WHOLE_FILE,
+};
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
 use egui::{
@@ -23,6 +26,7 @@ use egui_table_kit::layout::{
 };
 
 use crate::app::Action;
+use crate::diff::{DiffDocument, read_diff};
 use crate::fonts;
 use crate::format::{self, count, date_time};
 use crate::grid::TextGrid;
@@ -111,14 +115,70 @@ pub(crate) struct HistoryView {
     file: Option<FileView>,
 }
 
-/// A file a commit changed, as it was after (before, if the commit deleted it).
+/// A file a commit changed: its diff, or the file as the commit left it (as it was, if the
+/// commit deleted it).
 #[derive(Debug)]
 struct FileView {
-    /// The commit that changed it.
+    /// The commit that changed it, and that commit's first parent.
     commit: ObjectId,
+    parent: Option<ObjectId>,
     change: FileChange,
+    shown: Shown,
+    /// Whether the diff shows the whole file, not just what changed and a little around it.
+    whole: bool,
+    diff: Bind<Arc<DiffDocument>, Problem>,
+    /// Read the first time the file is shown.
     content: Bind<Arc<FileContent>, Problem>,
-    grid: TextGrid,
+    diff_grid: TextGrid,
+    file_grid: TextGrid,
+    /// Stops the diff's git when the view closes first.
+    cancel: CancelToken,
+}
+
+impl FileView {
+    /// Reads the diff (again), with as much context as asked for; a read under way stops.
+    fn read_diff(&mut self, shared: &Shared<'_>) {
+        let Some(git) = shared.git else {
+            return;
+        };
+        self.cancel.cancel();
+        self.cancel = CancelToken::new();
+        let mut paths = Vec::with_capacity(2);
+        if let ChangeKind::Renamed { from, .. } | ChangeKind::Copied { from, .. } =
+            &self.change.kind
+        {
+            paths.push(from.clone());
+        }
+        paths.push(self.change.path.clone());
+        let options = DiffOptions {
+            context: if self.whole { WHOLE_FILE } else { 3 },
+            ..DiffOptions::default()
+        };
+        self.diff.request(read_diff(
+            git.clone(),
+            Arc::clone(shared.repository),
+            self.commit,
+            self.parent,
+            paths,
+            options,
+            self.cancel.clone(),
+        ));
+    }
+}
+
+impl Drop for FileView {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
+/// What a file view shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shown {
+    /// What the commit changed.
+    Diff,
+    /// The whole file.
+    File,
 }
 
 /// The selected commit and its row.
@@ -145,42 +205,42 @@ impl HistoryView {
     }
 
     /// Opens `change` of commit `commit` in a file view, reading the side the commit left.
-    fn open_file(
-        &mut self,
-        shared: &Shared<'_>,
-        objects: &Objects,
-        commit: ObjectId,
-        change: FileChange,
-    ) {
-        let Some(entry) = change.new.or(change.old) else {
-            return;
-        };
-        let mut content = Bind::new(true);
-        if let Some(git) = shared.git {
-            content.request(read_file(
-                git.clone(),
-                Arc::clone(shared.repository),
-                objects.clone(),
-                entry,
-            ));
-        }
-        let mut grid = TextGrid::new(("file", shared.id));
-        if let Some(open) = &self.file {
-            grid.set_wrap(open.grid.wraps());
-        }
-        self.file = Some(FileView {
-            commit,
+    fn open_file(&mut self, shared: &Shared<'_>, details: &CommitDetails, change: FileChange) {
+        let wrap = self
+            .file
+            .as_ref()
+            .is_some_and(|open| open.diff_grid.wraps());
+        let shown = self.file.as_ref().map_or(Shown::Diff, |open| open.shown);
+        let whole = self.file.as_ref().is_some_and(|open| open.whole);
+        let mut diff_grid = TextGrid::new(("diff", shared.id));
+        let mut file_grid = TextGrid::new(("file", shared.id));
+        diff_grid.set_wrap(wrap);
+        file_grid.set_wrap(wrap);
+        let mut file = FileView {
+            commit: details.id,
+            parent: details.commit.parents.first().copied(),
             change,
-            content,
-            grid,
-        });
+            shown,
+            whole,
+            diff: Bind::new(true),
+            content: Bind::new(true),
+            diff_grid,
+            file_grid,
+            cancel: CancelToken::new(),
+        };
+        file.read_diff(shared);
+        self.file = Some(file);
     }
 
     /// The file being looked at: its path, and whether its contents are shown yet.
     #[cfg(test)]
     pub(crate) fn file_shown(&mut self) -> Option<(String, bool)> {
         let file = self.file.as_mut()?;
-        Some((file.change.path.to_string(), file.content.is_ok()))
+        let ready = match file.shown {
+            Shown::Diff => file.diff.is_ok(),
+            Shown::File => file.content.is_ok(),
+        };
+        Some((file.change.path.to_string(), ready))
     }
 
     /// The selected commit's row.
@@ -371,7 +431,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         .frame(Frame::new())
         .show(ui, |ui| match &mut view.file {
             Some(file) => {
-                if !file_view(ui, &shared, file) {
+                if !file_view(ui, &shared, &history.objects, file) {
                     view.file = None;
                 }
             }
@@ -379,11 +439,21 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         });
 }
 
-/// A changed file's contents, under a bar to go back to the commit table; returns whether it
-/// stays open.
-fn file_view(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) -> bool {
-    let palette = shared.palette;
+/// A changed file's diff or contents, under a bar to go back to the commit table; returns
+/// whether it stays open.
+fn file_view(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut FileView) -> bool {
     let mut open = !ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+    file_bar(ui, shared, file, &mut open);
+    match file.shown {
+        Shown::Diff => show_diff(ui, file),
+        Shown::File => show_file(ui, shared, objects, file),
+    }
+    open
+}
+
+/// The bar over a file view: back, how the file changed, and what to show.
+fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bool) {
+    let palette = shared.palette;
     Frame::new()
         .fill(palette.panel)
         .inner_margin(Margin::symmetric(8, 6))
@@ -391,29 +461,105 @@ fn file_view(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) -> bool {
             ui.horizontal(|ui| {
                 if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
                 {
-                    open = false;
+                    *open = false;
                 }
                 ui.add_space(8.0);
                 ui.label(RichText::new(change_name(&file.change.kind)).color(palette.muted));
                 ui.add(
                     Label::new(RichText::new(file.change.path.to_str_lossy()).strong()).truncate(),
                 );
-                if file.change.new.is_none() {
-                    ui.label(muted(ui, "(as it was before this commit)"));
+                if let ChangeKind::Renamed { from, similarity }
+                | ChangeKind::Copied { from, similarity } = &file.change.kind
+                {
+                    ui.label(muted(
+                        ui,
+                        format!("from {} ({similarity}% alike)", from.to_str_lossy()),
+                    ));
+                }
+                if let Some(Ok(diff)) = file.diff.read_as_ref() {
+                    let (added, removed) = diff.changed();
+                    ui.label(RichText::new(format!("+{added}")).color(palette.ok));
+                    ui.label(RichText::new(format!("−{removed}")).color(palette.danger));
                 }
                 ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    let mut wrap = file.grid.wraps();
+                    let mut wrap = file.diff_grid.wraps();
                     if ui.checkbox(&mut wrap, "Wrap lines").changed() {
-                        file.grid.set_wrap(wrap);
+                        file.diff_grid.set_wrap(wrap);
+                        file.file_grid.set_wrap(wrap);
                     }
+                    if file.shown == Shown::Diff
+                        && ui.checkbox(&mut file.whole, "Whole file").changed()
+                    {
+                        file.read_diff(shared);
+                    }
+                    ui.add_space(8.0);
+                    ui.selectable_value(&mut file.shown, Shown::File, "File");
+                    ui.selectable_value(&mut file.shown, Shown::Diff, "Diff");
                 });
             });
         });
-    let placeholder = |ui: &mut Ui, text: String| {
+}
+
+/// A placeholder in place of what can't be shown as text.
+fn placeholder(ui: &mut Ui, text: String) {
+    Frame::new()
+        .inner_margin(Margin::same(16))
+        .show(ui, |ui| ui.label(muted(ui, text)));
+}
+
+/// What the commit changed in the file.
+fn show_diff(ui: &mut Ui, file: &mut FileView) {
+    match file.diff.read_as_ref() {
+        None => {
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::working(ui, "Reading the diff…"));
+        }
+        Some(Err(problem)) => {
+            let problem = problem.clone();
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
+        }
+        Some(Ok(diff)) if diff.binary() => {
+            placeholder(
+                ui,
+                "A binary file: there are no lines to compare.".to_owned(),
+            );
+        }
+        Some(Ok(diff)) if diff.changed() == (0, 0) => {
+            placeholder(
+                ui,
+                "Nothing changed in the file's text (only its mode, say).".to_owned(),
+            );
+        }
+        Some(Ok(diff)) => {
+            let diff = Arc::clone(diff);
+            file.diff_grid.show(ui, &*diff);
+        }
+    }
+}
+
+/// The whole file, read the first time it is shown.
+fn show_file(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut FileView) {
+    if file.content.is_idle()
+        && let Some(git) = shared.git
+        && let Some(entry) = file.change.new.or(file.change.old)
+    {
+        file.content.request(read_file(
+            git.clone(),
+            Arc::clone(shared.repository),
+            objects.clone(),
+            entry,
+        ));
+    }
+    if file.change.new.is_none() {
         Frame::new()
-            .inner_margin(Margin::same(16))
-            .show(ui, |ui| ui.label(muted(ui, text)));
-    };
+            .inner_margin(Margin::symmetric(8, 4))
+            .show(ui, |ui| {
+                ui.label(muted(ui, "As it was before this commit deleted it."));
+            });
+    }
     match file.content.read_as_ref() {
         None => {
             Frame::new()
@@ -428,7 +574,7 @@ fn file_view(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) -> bool {
         }
         Some(Ok(content)) => match &**content {
             FileContent::Text(text) => {
-                file.grid.show(ui, text);
+                file.file_grid.show(ui, text);
             }
             FileContent::Binary { size } => placeholder(
                 ui,
@@ -462,7 +608,6 @@ fn file_view(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) -> bool {
             ),
         },
     }
-    open
 }
 
 /// What the pane's parts share.
@@ -1006,7 +1151,7 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &HistoryState, view: &mut 
     if let Some(index) = view.changes.show(ui, &shown, height)
         && let Some(change) = shown.changes.get(index)
     {
-        view.open_file(shared, &history.objects, shown.id, change.clone());
+        view.open_file(shared, &shown, change.clone());
     }
 
     if let Some(parent) = go_to

@@ -604,17 +604,26 @@ fn a_changed_file_opens_in_place_of_the_history() {
     harness
         .get_by_role_and_label(Role::Button, "parser.rs")
         .click();
-    settle(&mut harness, "the file", |app| {
+    let shown = |app: &mut EgitApp| {
         app.state.repos[0].history_view.file_shown() == Some(("parser.rs".to_owned(), true))
-    });
+    };
+    settle(&mut harness, "the diff", shown);
     harness.get_by_role_and_label(Role::Button, &format!("{}  History", icon::ARROW_LEFT));
-    harness.get_by_label("Wrap lines");
+    harness.get_by_label("+3");
+    harness.get_by_label("−1");
     assert!(
         harness
             .query_by_role_and_label(Role::Button, "Greet the world")
             .is_none(),
-        "the file takes the commit table's place"
+        "the diff takes the commit table's place"
     );
+    render(&mut harness, "history-diff");
+
+    harness.get_by_label("Whole file").click();
+    settle(&mut harness, "the whole file's diff", shown);
+    harness.get_by_role_and_label(Role::Button, "File").click();
+    settle(&mut harness, "the file", shown);
+    harness.get_by_label("Wrap lines");
     render(&mut harness, "history-file");
 
     harness.key_press(egui::Key::Escape);

@@ -213,6 +213,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     ← → Home End sideways), and its own scroll bars (from `Rows`, rebuilt when the width or
     text changes). Advances are cached per character until egui's font count changes
     (`fonts::generation`). `Plain` is a text, numbered.
+  - `diff.rs` — `DiffDocument`: a `FileDiff` measured as a `GridSource` (lines on their kind's
+    background, hunk headers muted, the gutter numbering both files with a `+`/`-` marker), and
+    `read_diff`, its job (cancelled when its view closes).
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the XDG font directories (CJK families, then
@@ -231,9 +234,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     selection and the top row's commit in place when a re-read takes over. Details: message,
     names, parents (buttons: egui announces links as plain text), people, signature, refs,
     and the changed files (`ChangesTable`); clicking one opens a `FileView` in the commit
-    table's place (Escape or "History" goes back): the file as the commit left it (as it was,
-    if deleted), read and measured in a job (`read_file`), or a placeholder for binary files,
-    LFS pointers, submodules, and files over 256 MiB. A history of 10,000+ commits without a
+    table's place (Escape or "History" goes back): its diff against the first parent (the
+    unified view, with "Whole file" for all of its context), or the file as the commit left
+    it (as it was, if deleted; read the first time it is asked for, `read_file`), or a
+    placeholder for binary files, LFS pointers, submodules, and files over 256 MiB. A history of 10,000+ commits without a
     commit-graph is offered one (`Action::WriteCommitGraph`).
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
