@@ -38,15 +38,13 @@ const SEPARATOR: f32 = 2.0;
 /// The fewest cells a wrapped row has.
 const MIN_WRAP: u32 = 8;
 
-/// A colour for some of a line's bytes, and maybe a background behind their cells.
+/// A colour for some of a line's bytes: for their text, or behind their cells.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Styled {
+pub(crate) struct Span {
     /// The bytes, in the line.
     pub(crate) bytes: Range<u32>,
-    /// Their colour.
+    /// The colour.
     pub(crate) color: Color32,
-    /// Behind their cells (over the line's background).
-    pub(crate) background: Option<Color32>,
 }
 
 /// A background behind some of a row's cells (counted from the row's first).
@@ -64,9 +62,23 @@ pub(crate) trait GridSource {
     /// Its measure.
     fn measure(&self) -> &Measure;
 
-    /// Colours for line `line`'s bytes, in order and not overlapping (bytes outside them take
+    /// Colours for line `line`'s text, in order and not overlapping (bytes outside them take
     /// the default text colour).
-    fn styles(&self, _line: u32, _palette: &Palette, _out: &mut Vec<Styled>) {}
+    fn colors(&self, _line: u32, _palette: &Palette, _out: &mut Vec<Span>) {}
+
+    /// Colours behind some of line `line`'s cells (over the line's background), in order and
+    /// not overlapping.
+    fn backgrounds(&self, _line: u32, _palette: &Palette, _out: &mut Vec<Span>) {}
+
+    /// Called once a frame, before any line is drawn (a source spending a frame's budget
+    /// starts it over).
+    fn begin_frame(&self) {}
+
+    /// Whether some line drawn lacked what it will have soon (its colours, say): the grid is
+    /// drawn again shortly.
+    fn needs_repaint(&self) -> bool {
+        false
+    }
 
     /// The background of line `line`'s rows.
     fn background(&self, _line: u32, _palette: &Palette) -> Option<Color32> {
@@ -317,24 +329,7 @@ impl TextGrid {
 
         let painter = ui.painter_at(outer);
         painter.rect_filled(outer, CornerRadius::ZERO, palette.surface);
-        self.drawn.clear();
-        self.drawn_texts.clear();
-        self.drawn_size = (cell, row);
-        for (index, (pane, (rect, text))) in panes.iter().zip(&rects).enumerate() {
-            painter.rect_filled(
-                Rect::from_min_max(rect.min, pos2(text.left(), rect.bottom())),
-                CornerRadius::ZERO,
-                palette.panel,
-            );
-            self.drawn_texts.push(*text);
-            let pane = Pane {
-                index,
-                source: *pane,
-                rect: *rect,
-                text: *text,
-            };
-            self.draw_rows(ui, &painter, &pane, &font, &frame, palette);
-        }
+        self.draw_panes(ui, &painter, panes, &rects, &font, &frame, palette);
         let area = Rect::from_min_max(outer.min, pos2(outer.right() - BAR, bottom));
         self.find_bar(ui, panes, area, &frame, palette);
         for (rect, _) in rects.iter().skip(1) {
@@ -366,6 +361,46 @@ impl TextGrid {
             );
         }
         response
+    }
+
+    /// Draws each pane's gutter and rows (noting them for the pointer), asking for another
+    /// frame while a source is catching up.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_panes(
+        &mut self,
+        ui: &Ui,
+        painter: &Painter,
+        panes: &[&dyn GridSource],
+        rects: &[(Rect, Rect)],
+        font: &FontId,
+        frame: &Frame,
+        palette: Palette,
+    ) {
+        self.drawn.clear();
+        self.drawn_texts.clear();
+        self.drawn_size = (frame.cell, frame.row);
+        for pane in panes {
+            pane.begin_frame();
+        }
+        for (index, (pane, (rect, text))) in panes.iter().zip(rects).enumerate() {
+            painter.rect_filled(
+                Rect::from_min_max(rect.min, pos2(text.left(), rect.bottom())),
+                CornerRadius::ZERO,
+                palette.panel,
+            );
+            self.drawn_texts.push(*text);
+            let pane = Pane {
+                index,
+                source: *pane,
+                rect: *rect,
+                text: *text,
+            };
+            self.draw_rows(ui, painter, &pane, font, frame, palette);
+        }
+        if panes.iter().any(|pane| pane.needs_repaint()) {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(30));
+        }
     }
 
     /// Takes the frame's input: the wheel, pressing and dragging, and keys.
@@ -442,7 +477,8 @@ impl TextGrid {
             ))
             .intersect(pane.rect),
         );
-        let mut styles = Vec::new();
+        let mut colors = Vec::new();
+        let mut backgrounds = Vec::new();
         let mut marks = Vec::new();
         let mut highlights = Vec::new();
         let mut gutter = String::new();
@@ -451,24 +487,7 @@ impl TextGrid {
         while let Some(at) = position
             && y < text.bottom()
         {
-            if let Some(background) = source.background(at.line, &palette) {
-                let rect = Rect::from_min_size(
-                    pos2(pane.rect.left(), y),
-                    vec2(text.right() - pane.rect.left(), frame.row),
-                );
-                painter.rect_filled(rect, CornerRadius::ZERO, background);
-            }
-            if at.cell == 0 {
-                gutter.clear();
-                source.gutter(at.line, &mut gutter);
-                painter.text(
-                    pos2(text.left() - frame.cell * 1.5, y),
-                    egui::Align2::RIGHT_TOP,
-                    &gutter,
-                    font.clone(),
-                    palette.muted,
-                );
-            }
+            paint_row_frame(painter, pane, at, y, frame, font, palette, &mut gutter);
             let cells = match frame.wrap {
                 Wrap::At(width) => at.cell..at.cell.saturating_add(width),
                 Wrap::Off => self.sideways..self.sideways.saturating_add(frame.visible_cells),
@@ -485,15 +504,18 @@ impl TextGrid {
                     painter, selected, measure, at.line, &cells, row, frame.cell, palette,
                 );
             }
-            styles.clear();
+            colors.clear();
+            backgrounds.clear();
             marks.clear();
             highlights.clear();
-            source.styles(at.line, &palette, &mut styles);
+            source.colors(at.line, &palette, &mut colors);
+            source.backgrounds(at.line, &palette, &mut backgrounds);
             self.find
                 .in_line(pane.index, source.text(), at.line, &mut marks);
             let mut job = LayoutJob::default();
             let decorations = Decorations {
-                styles: &styles,
+                colors: &colors,
+                backgrounds: &backgrounds,
                 marks: &marks,
             };
             self.lay_out_row(
@@ -551,7 +573,8 @@ impl TextGrid {
         };
         let found = measure.seek(text, line, cells.start);
         let mut run = Run::new(font, frame.cell);
-        let mut style = decorations.styles.iter().peekable();
+        let mut colors = decorations.colors.iter().peekable();
+        let mut backgrounds = decorations.backgrounds.iter().peekable();
         let mut mark = decorations.marks.iter().peekable();
         let mut shown = String::new();
         for cell in Cells::resume(bytes, found.byte, found.cell, measure.options()) {
@@ -572,17 +595,10 @@ impl TextGrid {
                 }
                 continue;
             }
-            while style
-                .next_if(|styled| styled.bytes.end <= cell.byte)
-                .is_some()
-            {}
-            let covering = style
-                .peek()
-                .filter(|styled| styled.bytes.start <= cell.byte);
             let color = if cell.glyph.is_escaped() {
                 palette.warn
             } else {
-                covering.map_or(palette.text, |styled| styled.color)
+                covering(&mut colors, cell.byte).map_or(palette.text, |span| span.color)
             };
             while mark.next_if(|(bytes, _)| bytes.end <= cell.byte).is_some() {}
             let marked = mark
@@ -593,8 +609,8 @@ impl TextGrid {
                         .warn
                         .gamma_multiply(if *current { 0.75 } else { 0.35 })
                 });
-            let backgrounds = [covering.and_then(|styled| styled.background), marked];
-            for background in backgrounds.into_iter().flatten() {
+            let behind = covering(&mut backgrounds, cell.byte).map(|span| span.color);
+            for background in [behind, marked].into_iter().flatten() {
                 let from = cell.cell.saturating_sub(cells.start);
                 let to = cell.end().saturating_sub(cells.start);
                 match highlights.last_mut() {
@@ -966,6 +982,38 @@ impl TextGrid {
     }
 }
 
+/// Paints a row's line background and, on a line's first row, its gutter.
+#[allow(clippy::too_many_arguments)]
+fn paint_row_frame(
+    painter: &Painter,
+    pane: &Pane<'_>,
+    at: Position,
+    y: f32,
+    frame: &Frame,
+    font: &FontId,
+    palette: Palette,
+    gutter: &mut String,
+) {
+    if let Some(background) = pane.source.background(at.line, &palette) {
+        let rect = Rect::from_min_size(
+            pos2(pane.rect.left(), y),
+            vec2(pane.text.right() - pane.rect.left(), frame.row),
+        );
+        painter.rect_filled(rect, CornerRadius::ZERO, background);
+    }
+    if at.cell == 0 {
+        gutter.clear();
+        pane.source.gutter(at.line, gutter);
+        painter.text(
+            pos2(pane.text.left() - frame.cell * 1.5, y),
+            egui::Align2::RIGHT_TOP,
+            gutter.as_str(),
+            font.clone(),
+            palette.muted,
+        );
+    }
+}
+
 /// Paints the part of `selected` in a row showing cells `cells` of line `line`, at `row`.
 #[allow(clippy::too_many_arguments)]
 fn paint_selection(
@@ -1003,11 +1051,24 @@ fn paint_selection(
     );
 }
 
-/// What a row shows besides its text: its source's styles, and the find bar's matches (byte
-/// ranges in the line, the one moved to marked).
+/// What a row shows besides its text: its source's colours and backgrounds, and the find bar's
+/// matches (byte ranges in the line, the one moved to marked).
 struct Decorations<'a> {
-    styles: &'a [Styled],
+    colors: &'a [Span],
+    backgrounds: &'a [Span],
     marks: &'a [(Range<u32>, bool)],
+}
+
+/// The span of `spans` (in order, not overlapping) covering `byte`, passing those before it.
+fn covering<'a>(
+    spans: &mut std::iter::Peekable<std::slice::Iter<'a, Span>>,
+    byte: u32,
+) -> Option<&'a Span> {
+    while spans.next_if(|span| span.bytes.end <= byte).is_some() {}
+    spans
+        .peek()
+        .copied()
+        .filter(|span| span.bytes.start <= byte)
 }
 
 /// A pane being drawn: its source, and where it and its text go.

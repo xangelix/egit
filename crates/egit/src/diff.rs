@@ -19,7 +19,7 @@ use egit_text::{ChangedWords, Measure, Options, Text, changed_words};
 use egui::Color32;
 use parking_lot::Mutex;
 
-use crate::grid::{GridSource, Styled};
+use crate::grid::{GridSource, Span};
 use crate::jobs;
 use crate::problem::Problem;
 use crate::theme::Palette;
@@ -176,27 +176,27 @@ impl GridSource for DiffDocument {
         &self.measure
     }
 
-    fn styles(&self, line: u32, palette: &Palette, out: &mut Vec<Styled>) {
-        let background = match self.line(line).map(|line| line.kind) {
-            Some(DiffLineKind::Hunk) => {
-                out.push(Styled {
-                    bytes: 0..u32::MAX,
-                    color: palette.muted,
-                    background: None,
-                });
-                return;
-            }
+    fn colors(&self, line: u32, palette: &Palette, out: &mut Vec<Span>) {
+        if self
+            .line(line)
+            .is_some_and(|line| line.kind == DiffLineKind::Hunk)
+        {
+            out.push(Span {
+                bytes: 0..u32::MAX,
+                color: palette.muted,
+            });
+        }
+    }
+
+    fn backgrounds(&self, line: u32, palette: &Palette, out: &mut Vec<Span>) {
+        let color = match self.line(line).map(|line| line.kind) {
             Some(DiffLineKind::Added) => palette.added_word,
             Some(DiffLineKind::Removed) => palette.removed_word,
-            Some(DiffLineKind::Context) | None => return,
+            Some(DiffLineKind::Context | DiffLineKind::Hunk) | None => return,
         };
         let mut changed = Vec::new();
         self.changed_in(line, &mut changed);
-        out.extend(changed.into_iter().map(|bytes| Styled {
-            bytes,
-            color: palette.text,
-            background: Some(background),
-        }));
+        out.extend(changed.into_iter().map(|bytes| Span { bytes, color }));
     }
 
     fn background(&self, line: u32, palette: &Palette) -> Option<Color32> {
@@ -421,32 +421,33 @@ impl GridSource for SideSource<'_> {
         &self.side.measure
     }
 
-    fn styles(&self, line: u32, palette: &Palette, out: &mut Vec<Styled>) {
-        let Some(line) = self.line(line) else {
-            return;
-        };
-        match line.kind {
-            SideKind::Hunk => out.push(Styled {
+    fn colors(&self, line: u32, palette: &Palette, out: &mut Vec<Span>) {
+        if self
+            .line(line)
+            .is_some_and(|line| line.kind == SideKind::Hunk)
+        {
+            out.push(Span {
                 bytes: 0..u32::MAX,
                 color: palette.muted,
-                background: None,
-            }),
-            SideKind::Changed => {
-                let background = if self.side.old {
-                    palette.removed_word
-                } else {
-                    palette.added_word
-                };
-                let mut changed = Vec::new();
-                self.split.unified.changed_in(line.diff_line, &mut changed);
-                out.extend(changed.into_iter().map(|bytes| Styled {
-                    bytes,
-                    color: palette.text,
-                    background: Some(background),
-                }));
-            }
-            SideKind::Context | SideKind::Filler => {}
+            });
         }
+    }
+
+    fn backgrounds(&self, line: u32, palette: &Palette, out: &mut Vec<Span>) {
+        let Some(line) = self
+            .line(line)
+            .filter(|line| line.kind == SideKind::Changed)
+        else {
+            return;
+        };
+        let color = if self.side.old {
+            palette.removed_word
+        } else {
+            palette.added_word
+        };
+        let mut changed = Vec::new();
+        self.split.unified.changed_in(line.diff_line, &mut changed);
+        out.extend(changed.into_iter().map(|bytes| Span { bytes, color }));
     }
 
     fn background(&self, line: u32, palette: &Palette) -> Option<Color32> {
@@ -573,23 +574,27 @@ mod tests {
     fn a_pair_marks_its_changed_words() {
         let document = document();
         let palette = Palette::DARK;
-        let mut styles = Vec::new();
-        document.styles(2, &palette, &mut styles);
+        let mut spans = Vec::new();
+        document.backgrounds(2, &palette, &mut spans);
         assert_eq!(
-            styles,
-            [Styled {
+            spans,
+            [Span {
                 bytes: 8..9,
-                color: palette.text,
-                background: Some(palette.removed_word)
+                color: palette.removed_word
             }]
         );
-        styles.clear();
-        document.styles(3, &palette, &mut styles);
-        assert_eq!(styles[0].bytes, 8..9);
-        assert_eq!(styles[0].background, Some(palette.added_word));
-        styles.clear();
-        document.styles(4, &palette, &mut styles);
-        assert_eq!(styles, [], "the second added line has no partner");
+        spans.clear();
+        document.backgrounds(3, &palette, &mut spans);
+        assert_eq!(
+            spans,
+            [Span {
+                bytes: 8..9,
+                color: palette.added_word
+            }]
+        );
+        spans.clear();
+        document.backgrounds(4, &palette, &mut spans);
+        assert_eq!(spans, [], "the second added line has no partner");
     }
 
     #[test]
@@ -649,10 +654,10 @@ mod tests {
         let palette = Palette::DARK;
         assert_eq!(new.background(3, &palette), Some(palette.surface_alt));
         // The pair's changed words are marked on both sides.
-        let mut styles = Vec::new();
-        old.styles(2, &palette, &mut styles);
-        assert_eq!(styles.len(), 1);
-        assert_eq!(styles[0].background, Some(palette.removed_word));
+        let mut spans = Vec::new();
+        old.backgrounds(2, &palette, &mut spans);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].color, palette.removed_word);
     }
 
     #[test]
