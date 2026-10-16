@@ -109,15 +109,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Advisories, licences, bans, sources
-        uses: EmbarkStudios/cargo-deny-action@v2
-
       - name: Install the pinned toolchain
         run: rustup toolchain install
 
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-shear
+          tool: cargo-deny,cargo-shear
+
+      - name: Advisories, licences, bans, sources
+        run: cargo deny check
 
       - name: Unused dependencies
         run: cargo shear

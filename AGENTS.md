@@ -11,7 +11,7 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
 
 | Phase | Scope | State |
 |---|---|---|
-| 1 | Foundation: shell, running git, askpass, profile, opening repositories | in progress |
+| 1 | Foundation: shell, running git, askpass, profile, opening repositories | done; awaiting the owner's review |
 | 2 | Commit graph | not started |
 | 3 | Text grid and read-only diff viewer | not started |
 | 4 | Working tree, staging, signed commits | not started |
