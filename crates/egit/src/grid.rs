@@ -15,8 +15,8 @@ use std::ops::Range;
 use egit_text::{Cells, Glyph, Measure, Position, Rows, Text, Wrap};
 use egui::text::LayoutJob;
 use egui::{
-    Color32, CornerRadius, FontId, Id, Key, Modifiers, Painter, Rect, Response, Sense, Stroke,
-    TextFormat, Ui, pos2, vec2,
+    Color32, CornerRadius, FontId, Id, Key, Modifiers, Painter, Pos2, Rect, Response, Sense,
+    Stroke, TextFormat, Ui, pos2, vec2,
 };
 
 use crate::fonts;
@@ -126,6 +126,48 @@ pub(crate) struct TextGrid {
     font: Option<(FontId, usize)>,
     /// The rows a screen holds (paging moves by as many).
     screen_rows: u32,
+    /// What is selected, if anything.
+    selection: Option<Selection>,
+    /// The rows drawn last frame, and each pane's text, for finding what the pointer is over.
+    drawn: Vec<Drawn>,
+    drawn_texts: Vec<Rect>,
+    /// Last frame's cell width and row height.
+    drawn_size: (f32, f32),
+}
+
+/// A place between two cells of a line: before cell `cell`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+struct Spot {
+    line: u32,
+    cell: u32,
+}
+
+/// Text selected in one pane: from where the pointer was pressed to where it was dragged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Selection {
+    pane: usize,
+    anchor: Spot,
+    head: Spot,
+}
+
+impl Selection {
+    /// Its start and end, in order.
+    fn ordered(self) -> (Spot, Spot) {
+        if self.anchor <= self.head {
+            (self.anchor, self.head)
+        } else {
+            (self.head, self.anchor)
+        }
+    }
+}
+
+/// A row as drawn: its pane, its top, its line, and the first cell it shows.
+#[derive(Clone, Copy, Debug)]
+struct Drawn {
+    pane: usize,
+    top: f32,
+    line: u32,
+    first: u32,
 }
 
 /// One frame's layout.
@@ -152,7 +194,34 @@ impl TextGrid {
             advances: HashMap::new(),
             font: None,
             screen_rows: 1,
+            selection: None,
+            drawn: Vec::new(),
+            drawn_texts: Vec::new(),
+            drawn_size: (0.0, 0.0),
         }
+    }
+
+    /// Whether anything is selected.
+    pub(crate) const fn has_selection(&self) -> bool {
+        self.selection.is_some()
+    }
+
+    /// Where on screen the place before cell `cell` of line `line` of pane `pane` was drawn
+    /// (the middle of its row), if it was.
+    #[cfg(test)]
+    pub(crate) fn spot_position(&self, pane: usize, line: u32, cell: u32) -> Option<Pos2> {
+        let text = self.drawn_texts.get(pane)?;
+        let (width, height) = self.drawn_size;
+        let drawn = self
+            .drawn
+            .iter()
+            .rev()
+            .find(|drawn| drawn.pane == pane && drawn.line == line && drawn.first <= cell)?;
+        let column = f32::from(u16::try_from(cell.saturating_sub(drawn.first)).ok()?);
+        Some(pos2(
+            column.mul_add(width, text.left()),
+            drawn.top + height / 2.0,
+        ))
     }
 
     /// Whether long lines wrap.
@@ -233,28 +302,27 @@ impl TextGrid {
         }
         self.top.cell = wrap.row_start(self.top.cell.min(measure.cells(self.top.line)));
 
-        if response.hovered() {
-            let delta = ui.input_mut(|input| std::mem::take(&mut input.smooth_scroll_delta));
-            self.scroll(measure, &frame, -delta.y);
-            self.scroll_sideways(measure, &frame, -delta.x / cell);
-        }
-        if response.clicked() || response.drag_started() {
-            response.request_focus();
-        }
-        if response.has_focus() {
-            self.keys(ui, measure, &frame);
-        }
-        self.clamp(measure);
+        self.input(ui, &response, panes, &frame);
 
         let painter = ui.painter_at(outer);
         painter.rect_filled(outer, CornerRadius::ZERO, palette.surface);
-        for (pane, (rect, text)) in panes.iter().zip(&rects) {
+        self.drawn.clear();
+        self.drawn_texts.clear();
+        self.drawn_size = (cell, row);
+        for (index, (pane, (rect, text))) in panes.iter().zip(&rects).enumerate() {
             painter.rect_filled(
                 Rect::from_min_max(rect.min, pos2(text.left(), rect.bottom())),
                 CornerRadius::ZERO,
                 palette.panel,
             );
-            self.draw_rows(ui, &painter, *pane, &font, &frame, *rect, *text, palette);
+            self.drawn_texts.push(*text);
+            let pane = Pane {
+                index,
+                source: *pane,
+                rect: *rect,
+                text: *text,
+            };
+            self.draw_rows(ui, &painter, &pane, &font, &frame, palette);
         }
         for (rect, _) in rects.iter().skip(1) {
             painter.rect_filled(
@@ -287,6 +355,34 @@ impl TextGrid {
         response
     }
 
+    /// Takes the frame's input: the wheel, pressing and dragging, and keys.
+    fn input(&mut self, ui: &Ui, response: &Response, panes: &[&dyn GridSource], frame: &Frame) {
+        let Some(first) = panes.first() else {
+            return;
+        };
+        let measure = first.measure();
+        if response.hovered() {
+            let delta = ui.input_mut(|input| std::mem::take(&mut input.smooth_scroll_delta));
+            self.scroll(measure, frame, -delta.y);
+            self.scroll_sideways(measure, frame, -delta.x / frame.cell);
+        }
+        if response.clicked() || response.drag_started() {
+            response.request_focus();
+        }
+        self.select(ui, response, measure, frame);
+        // Escape clears a selection, focused or not (egui drops focus on Escape).
+        if self.selection.is_some()
+            && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.selection = None;
+        }
+        if response.has_focus() {
+            self.keys(ui, measure, frame);
+            self.copy(ui, panes);
+        }
+        self.clamp(measure);
+    }
+
     /// Builds the row index when the wrap or the text changed.
     fn index_rows(&mut self, measure: &Measure, wrap: Wrap) {
         let size = (measure.lines(), measure.widest());
@@ -305,20 +401,23 @@ impl TextGrid {
         &mut self,
         ui: &Ui,
         painter: &Painter,
-        source: &dyn GridSource,
+        pane: &Pane<'_>,
         font: &FontId,
         frame: &Frame,
-        pane: Rect,
-        text: Rect,
         palette: Palette,
     ) {
+        let (source, text) = (pane.source, pane.text);
+        let selected = self
+            .selection
+            .filter(|selection| selection.pane == pane.index)
+            .map(Selection::ordered);
         let measure = source.measure();
         let text_painter = painter.with_clip_rect(
             text.expand2(vec2(
                 frame.cell * f32::from(u16::try_from(OVERHANG).unwrap_or(1)),
                 0.0,
             ))
-            .intersect(pane),
+            .intersect(pane.rect),
         );
         let mut styles = Vec::new();
         let mut highlights = Vec::new();
@@ -330,8 +429,8 @@ impl TextGrid {
         {
             if let Some(background) = source.background(at.line, &palette) {
                 let rect = Rect::from_min_size(
-                    pos2(pane.left(), y),
-                    vec2(text.right() - pane.left(), frame.row),
+                    pos2(pane.rect.left(), y),
+                    vec2(text.right() - pane.rect.left(), frame.row),
                 );
                 painter.rect_filled(rect, CornerRadius::ZERO, background);
             }
@@ -350,6 +449,18 @@ impl TextGrid {
                 Wrap::At(width) => at.cell..at.cell.saturating_add(width),
                 Wrap::Off => self.sideways..self.sideways.saturating_add(frame.visible_cells),
             };
+            self.drawn.push(Drawn {
+                pane: pane.index,
+                top: y,
+                line: at.line,
+                first: cells.start,
+            });
+            if let Some(selected) = selected {
+                let row = Rect::from_min_size(pos2(text.left(), y), vec2(text.width(), frame.row));
+                paint_selection(
+                    painter, selected, measure, at.line, &cells, row, frame.cell, palette,
+                );
+            }
             styles.clear();
             highlights.clear();
             source.styles(at.line, &palette, &mut styles);
@@ -569,6 +680,111 @@ impl TextGrid {
             self.sideways = 0;
         } else if pressed(Key::End) {
             self.scroll_sideways(measure, frame, f32::from(u16::MAX));
+        } else if command(Key::A) {
+            let last = measure.lines().saturating_sub(1);
+            self.selection = Some(Selection {
+                pane: self.selection.map_or(0, |selection| selection.pane),
+                anchor: Spot::default(),
+                head: Spot {
+                    line: last,
+                    cell: measure.cells(last),
+                },
+            });
+        }
+    }
+
+    /// Selects by dragging (scrolling a row a frame while dragged past the top or bottom); a
+    /// click clears the selection.
+    fn select(&mut self, ui: &Ui, response: &Response, measure: &Measure, frame: &Frame) {
+        if response.clicked() {
+            self.selection = None;
+            return;
+        }
+        if response.drag_started()
+            && let Some(origin) = ui.input(|input| input.pointer.press_origin())
+            && let Some((pane, spot)) = self.spot_at(origin, None)
+        {
+            self.selection = Some(Selection {
+                pane,
+                anchor: spot,
+                head: spot,
+            });
+        }
+        if !response.dragged() {
+            return;
+        }
+        let (Some(pointer), Some(selection)) = (response.interact_pointer_pos(), self.selection)
+        else {
+            return;
+        };
+        if let Some((_, head)) = self.spot_at(pointer, Some(selection.pane)) {
+            self.selection = Some(Selection { head, ..selection });
+        }
+        if let Some(text) = self.drawn_texts.get(selection.pane) {
+            if pointer.y < text.top() {
+                self.scroll(measure, frame, -frame.row);
+            } else if pointer.y > text.bottom() {
+                self.scroll(measure, frame, frame.row);
+            }
+        }
+    }
+
+    /// The place between cells nearest `pointer`, in the pane under it (or in `pane`), from the
+    /// rows drawn last frame.
+    fn spot_at(&self, pointer: Pos2, pane: Option<usize>) -> Option<(usize, Spot)> {
+        let pane = pane.or_else(|| {
+            self.drawn_texts
+                .iter()
+                .position(|text| pointer.x <= text.right())
+        })?;
+        let text = self.drawn_texts.get(pane)?;
+        let (cell, row) = self.drawn_size;
+        let mut rows = self.drawn.iter().filter(|drawn| drawn.pane == pane);
+        let first = rows.clone().next()?;
+        let drawn = rows
+            .find(|drawn| pointer.y < drawn.top + row)
+            .filter(|_| pointer.y >= first.top)
+            .unwrap_or_else(|| {
+                if pointer.y < first.top {
+                    first
+                } else {
+                    self.drawn
+                        .iter()
+                        .rev()
+                        .find(|drawn| drawn.pane == pane)
+                        .unwrap_or(first)
+                }
+            });
+        let column = if cell > 0.0 {
+            fit_cells((pointer.x - text.left()).max(0.0) + cell / 2.0, cell)
+        } else {
+            0
+        };
+        Some((
+            pane,
+            Spot {
+                line: drawn.line,
+                cell: drawn.first.saturating_add(column),
+            },
+        ))
+    }
+
+    /// Copies the selection (its text as it is, tabs and all), on ⌘C.
+    fn copy(&self, ui: &Ui, panes: &[&dyn GridSource]) {
+        let asked = ui.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::Copy))
+        }) || ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::C));
+        if !asked {
+            return;
+        }
+        if let Some(selection) = self.selection
+            && let Some(source) = panes.get(selection.pane)
+        {
+            let (start, end) = selection.ordered();
+            ui.ctx().copy_text(selected_text(*source, start, end));
         }
     }
 
@@ -647,6 +863,83 @@ impl TextGrid {
         }
         bar_thumb(ui, &response, thumb_rect, palette);
     }
+}
+
+/// Paints the part of `selected` in a row showing cells `cells` of line `line`, at `row`.
+#[allow(clippy::too_many_arguments)]
+fn paint_selection(
+    painter: &Painter,
+    (start, end): (Spot, Spot),
+    measure: &Measure,
+    line: u32,
+    cells: &Range<u32>,
+    row: Rect,
+    cell: f32,
+    palette: Palette,
+) {
+    if !(start.line..=end.line).contains(&line) {
+        return;
+    }
+    let from = if line == start.line { start.cell } else { 0 };
+    let to = if line == end.line {
+        end.cell
+    } else {
+        // A whole line is selected to its end, and a cell past it (its newline).
+        measure.cells(line).saturating_add(1)
+    };
+    let (from, to) = (from.max(cells.start), to.min(cells.end));
+    if from >= to {
+        return;
+    }
+    let x = |at: u32| {
+        f32::from(u16::try_from(at.saturating_sub(cells.start)).unwrap_or(u16::MAX))
+            .mul_add(cell, row.left())
+    };
+    painter.with_clip_rect(row).rect_filled(
+        Rect::from_min_max(pos2(x(from), row.top()), pos2(x(to), row.bottom())),
+        CornerRadius::ZERO,
+        palette.accent.gamma_multiply(0.35),
+    );
+}
+
+/// A pane being drawn: its source, and where it and its text go.
+struct Pane<'a> {
+    index: usize,
+    source: &'a dyn GridSource,
+    rect: Rect,
+    text: Rect,
+}
+
+/// The text between `start` and `end` (lines joined by `\n`), as it is: tabs as tabs, bytes
+/// that aren't UTF-8 as U+FFFD.
+fn selected_text(source: &dyn GridSource, start: Spot, end: Spot) -> String {
+    let text = source.text();
+    let measure = source.measure();
+    let mut out = String::new();
+    let last = end.line.min(measure.lines().saturating_sub(1));
+    for line in start.line..=last {
+        let bytes = text.line(line).unwrap_or_default();
+        let from = if line == start.line {
+            measure.seek(text, line, start.cell).byte
+        } else {
+            0
+        };
+        let to = if line == end.line {
+            measure.seek(text, line, end.cell).byte
+        } else {
+            u32::try_from(bytes.len()).unwrap_or(u32::MAX)
+        };
+        let piece = usize::try_from(from)
+            .ok()
+            .zip(usize::try_from(to).ok())
+            .and_then(|(from, to)| bytes.get(from..to.max(from)))
+            .unwrap_or_default();
+        out.push_str(&String::from_utf8_lossy(piece));
+        if line != last {
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Each pane's whole rectangle and its text's, side by side across `outer` (less the scroll
@@ -815,6 +1108,39 @@ mod tests {
         assert_eq!(fit_cells(100.0, 0.0), 0);
         assert_eq!(fit_cells(f32::NAN, 1.0), 0);
         assert_eq!(fit_cells(f32::INFINITY, 1.0), 4_294_967_040);
+    }
+
+    fn plain(text: &str) -> Plain {
+        Plain::new(
+            Text::new(text.as_bytes().to_vec()).unwrap_or_default(),
+            egit_text::Options::default(),
+        )
+    }
+
+    #[test]
+    fn a_selection_copies_the_text_as_it_is() {
+        let source = plain("a\tb\nline two 漢字 end\nlast\n");
+        let copied = |start: (u32, u32), end: (u32, u32)| {
+            selected_text(
+                &source,
+                Spot {
+                    line: start.0,
+                    cell: start.1,
+                },
+                Spot {
+                    line: end.0,
+                    cell: end.1,
+                },
+            )
+        };
+        // Tabs copy as tabs; a selection starting inside one takes all of it.
+        assert_eq!(copied((0, 0), (1, 4)), "a\tb\nline");
+        assert_eq!(copied((0, 3), (0, 9)), "\tb");
+        // A cell inside a wide character belongs to it.
+        assert_eq!(copied((1, 5), (1, 10)), "two ");
+        assert_eq!(copied((1, 9), (1, 13)), "漢字");
+        // Past a line's end, the whole line; a selection may end past the text.
+        assert_eq!(copied((2, 0), (9, 0)), "last");
     }
 
     #[test]

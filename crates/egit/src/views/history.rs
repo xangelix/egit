@@ -244,6 +244,18 @@ impl HistoryView {
         self.file = Some(file);
     }
 
+    /// Where on screen the place before cell `cell` of line `line` was drawn, in the view shown.
+    #[cfg(test)]
+    pub(crate) fn file_spot(&self, line: u32, cell: u32) -> Option<egui::Pos2> {
+        let file = self.file.as_ref()?;
+        let grid = match file.shown {
+            Shown::File => &file.file_grid,
+            Shown::Diff if file.split => &file.sides_grid,
+            Shown::Diff => &file.diff_grid,
+        };
+        grid.spot_position(0, line, cell)
+    }
+
     /// The file being looked at: its path, and whether its contents are shown yet.
     #[cfg(test)]
     pub(crate) fn file_shown(&mut self) -> Option<(String, bool)> {
@@ -454,7 +466,12 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
 /// A changed file's diff or contents, under a bar to go back to the commit table; returns
 /// whether it stays open.
 fn file_view(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut FileView) -> bool {
-    let mut open = !ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+    // Escape clears a selection first (the grid takes it), then closes the view.
+    let selecting = [&file.diff_grid, &file.sides_grid, &file.file_grid]
+        .iter()
+        .any(|grid| grid.has_selection());
+    let mut open =
+        selecting || !ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
     file_bar(ui, shared, file, &mut open);
     match file.shown {
         Shown::Diff => show_diff(ui, file),

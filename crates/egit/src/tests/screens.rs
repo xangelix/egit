@@ -629,7 +629,41 @@ fn a_changed_file_opens_in_place_of_the_history() {
     harness.get_by_role_and_label(Role::Button, "File").click();
     settle(&mut harness, "the file", shown);
     harness.get_by_label("Wrap lines");
+
+    // Dragging across the start of the first line selects it, and ⌘C copies it.
+    let spot = |harness: &mut Harness<'_, EgitApp>, cell| {
+        harness.state_mut().state.repos[0]
+            .history_view
+            .file_spot(0, cell)
+            .unwrap()
+    };
+    let (from, to) = (spot(&mut harness, 0), spot(&mut harness, 9));
+    harness.hover_at(from);
+    harness.drag_at(from);
+    harness.run_steps(1);
+    harness.hover_at(egui::pos2(f32::midpoint(from.x, to.x), from.y));
+    harness.hover_at(to);
+    harness.drop_at(to);
+    harness.run_steps(2);
     render(&mut harness, "history-file");
+    harness.event(egui::Event::Copy);
+    harness.run_steps(1);
+    let copied = harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .any(|command| *command == egui::OutputCommand::CopyText("fn parse(".to_owned()));
+    assert!(copied, "{:?}", harness.output().platform_output.commands);
+    // Escape clears the selection before it closes the file.
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
+    assert!(
+        harness.state_mut().state.repos[0]
+            .history_view
+            .file_shown()
+            .is_some()
+    );
 
     harness.key_press(egui::Key::Escape);
     harness.run_steps(4);

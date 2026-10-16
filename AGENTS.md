@@ -216,7 +216,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     ← → Home End sideways), and its own scroll bars (from `Rows`, rebuilt when the width or
     text changes). Advances are cached per character until egui's font count changes
     (`fonts::generation`). `show_panes` draws sources side by side, scrolled as one (one
-    position, input, and scroll bar; the first pane's measure moves the rows). `Plain` is a
+    position, input, and scroll bar; the first pane's measure moves the rows). Dragging
+    selects in one pane between cells (hit-tested against the rows drawn last frame;
+    dragging past an edge scrolls), ⌘A selects a pane, Escape clears (focused or not: egui
+    drops focus on Escape), and ⌘C (`Event::Copy`) copies the bytes as they are. `Plain` is a
     text, numbered.
   - `diff.rs` — `DiffDocument`: a `FileDiff` measured as a `GridSource` (lines on their kind's
     background, hunk headers muted, the gutter numbering both files with a `+`/`-` marker), and
