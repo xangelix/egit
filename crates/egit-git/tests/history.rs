@@ -249,6 +249,33 @@ fn reads_objects_through_one_process() {
 }
 
 #[test]
+fn reads_large_objects_then_small_ones() {
+    let sandbox = sandbox();
+    let repo = sandbox.init("repo").unwrap();
+    let write = |contents: Vec<u8>| {
+        let written = sandbox
+            .git()
+            .write("hash-object")
+            .args(["-w", "--stdin"])
+            .stdin(contents)
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        ObjectId::from_hex(written.stdout.trim_ascii()).unwrap()
+    };
+    let large = write(b"0123456789abcdef".repeat(200_000));
+    let small = write(b"small\n".to_vec());
+    let mut reader = ObjectReader::start(sandbox.git(), &repo).unwrap();
+    let mut sizes = Vec::new();
+    reader
+        .read(&[large, small, large, small], |_, object| {
+            sizes.push(object.map(|object| object.data.len()));
+        })
+        .unwrap();
+    assert_eq!(sizes, [Some(3_200_000), Some(6), Some(3_200_000), Some(6)]);
+}
+
+#[test]
 fn lists_what_a_commit_changed() {
     let sandbox = sandbox();
     let repo = sandbox.init("repo").unwrap();

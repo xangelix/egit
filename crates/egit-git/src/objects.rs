@@ -59,6 +59,10 @@ impl ObjectReader {
     /// always fit in the pipe, so neither side can block the other.
     const BATCH: usize = 128;
 
+    /// The largest buffer kept between objects: a larger object's is dropped once it was
+    /// handed over, so one big file read doesn't stay allocated for the reader's life.
+    const KEPT_BUFFER: usize = 1 << 20;
+
     /// Starts reading objects from the repository whose work tree is `work_tree`.
     ///
     /// # Errors
@@ -112,6 +116,9 @@ impl ObjectReader {
                         }),
                     ),
                     None => each(id, None),
+                }
+                if self.content.capacity() > Self::KEPT_BUFFER {
+                    self.content = Vec::new();
                 }
             }
         }
