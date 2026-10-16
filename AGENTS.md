@@ -380,7 +380,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     dates), `settings.rs` (theme, recent repositories, open tabs; non-UTF-8 paths kept as
     bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
   - `tests/askpass_helper.rs` — the real `egit` executable (`CARGO_BIN_EXE_egit`) started by
-    git as its helper through the server's link.
+    git as its helper through the server's link: credentials, and an SSH signing key's
+    passphrase (asked as "Signing the commit"; the commit's signature then checked).
   - `src/tests/screens.rs` — the whole application driven through the accessibility tree
     (egui_kittest) against a sandboxed git; renders `target/gui-screens/*.png` where a wgpu
     adapter exists (`EGIT_GUI_RENDER=1` requires one, `0` skips). Look at them after any
