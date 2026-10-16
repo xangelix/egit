@@ -1,5 +1,6 @@
 //! What the tabs show, and the status bar.
 
+mod file;
 pub(crate) mod history;
 pub(crate) mod home;
 pub(crate) mod profile;

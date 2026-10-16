@@ -321,13 +321,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     names, parents (buttons: egui announces links as plain text), people, signature, refs,
     and the changed files (`ChangesTable`), with the lines each gained and lost once counted
     (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
-    clicking one opens a `FileView` in the commit
-    table's place (Escape or "History" goes back): its diff against the first parent (unified
-    or side by side, with "Whole file" for all of its context), or the file as the commit left
-    it (as it was, if deleted; read the first time it is asked for, `read_file`), or a
-    placeholder for binary files, LFS pointers, submodules, and files over 256 MiB. A
-    history of 10,000+ commits without a commit-graph is offered one
-    (`Action::WriteCommitGraph`).
+    clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or
+    "History" goes back): its diff against the first parent (unified or side by side, with
+    "Whole file" for all of its context), or the file as the commit left it (as it was, if
+    deleted; read the first time it is asked for, `read_file`), or a placeholder for binary
+    files, LFS pointers, submodules, and files over 256 MiB. A history of 10,000+ commits
+    without a commit-graph is offered one (`Action::WriteCommitGraph`).
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
     credentials, pull and push, and every setting, each with its origin), `repo` (overview
