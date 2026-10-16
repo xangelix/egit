@@ -42,8 +42,8 @@ pub use diff::{DiffLine, DiffLineKind, DiffOptions, FileDiff, WHOLE_FILE, file_d
 pub use error::{Failure, GitError};
 pub use git::{Git, GitOptions};
 pub use history::{
-    ChangeKind, FileChange, RefKind, Reference, TreeEntry, Walked, commit_changes, list_references,
-    walk_history, write_commit_graph,
+    ChangeKind, CountedFile, FileChange, LineCounts, RefKind, Reference, TreeEntry, Walked,
+    commit_changes, line_counts, list_references, walk_history, write_commit_graph,
 };
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};

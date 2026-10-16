@@ -376,6 +376,102 @@ fn parse_raw(output: &[u8]) -> Result<Vec<FileChange>, GitError> {
     Ok(changes)
 }
 
+/// How many lines a commit added to and removed from a file.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LineCounts {
+    /// Lines added.
+    pub added: u32,
+    /// Lines removed.
+    pub removed: u32,
+}
+
+/// A file as [`line_counts`] lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CountedFile {
+    /// The file's path (after a rename, its new one).
+    pub path: BString,
+    /// Its lines added and removed; `None` for a binary file.
+    pub lines: Option<LineCounts>,
+}
+
+/// How many lines `commit` added to and removed from each file it changed, against
+/// `first_parent` (or nothing: a root commit), in the order [`commit_changes`] lists them.
+///
+/// Every file is diffed, so a large commit takes a while: this is meant to follow the list,
+/// not to hold it up. Git never asks for credentials. In a partial clone
+/// ([`ConfigSnapshot::is_partial_clone`]), a git that honours `GIT_NO_LAZY_FETCH` (2.44, and
+/// 2.43.4's fix) fails rather than fetch the blobs it lacks, but an older one fetches them:
+/// don't count lines there.
+///
+/// # Errors
+///
+/// When git fails, is cancelled, or prints something unexpected.
+pub fn line_counts(
+    git: &Git,
+    repository: &Repository,
+    commit: ObjectId,
+    first_parent: Option<ObjectId>,
+    cancel: &CancelToken,
+) -> Result<Vec<CountedFile>, GitError> {
+    let mut command = git
+        .read("diff-tree")
+        .args([
+            "-r",
+            "-z",
+            "--no-commit-id",
+            "--numstat",
+            "-M",
+            "--no-ext-diff",
+            "--no-textconv",
+        ])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .non_interactive()
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel);
+    command = match first_parent {
+        Some(parent) => command.arg(parent.to_string()).arg(commit.to_string()),
+        None => command.arg("--root").arg(commit.to_string()),
+    };
+    let listed = command.output()?;
+    parse_numstat(&listed.stdout)
+}
+
+/// Parses `--numstat -z`: `added TAB removed TAB path NUL`, or for a rename or copy,
+/// `added TAB removed TAB NUL old NUL new NUL`; a binary file's counts are `-`.
+fn parse_numstat(output: &[u8]) -> Result<Vec<CountedFile>, GitError> {
+    let malformed = || GitError::unexpected("diff-tree", "an incomplete line count");
+    let mut fields = output.split_str(b"\0");
+    let mut files = Vec::new();
+    while let Some(record) = fields.next().filter(|record| !record.is_empty()) {
+        let mut parts = record.splitn_str(3, b"\t");
+        let (added, removed, path) = (
+            parts.next().ok_or_else(malformed)?,
+            parts.next().ok_or_else(malformed)?,
+            parts.next().ok_or_else(malformed)?,
+        );
+        let path = if path.is_empty() {
+            // A rename or copy: its old path, then its new one (neither ever empty).
+            let mut next = || fields.next().filter(|path| !path.is_empty());
+            next().and_then(|_| next()).ok_or_else(malformed)?
+        } else {
+            path
+        };
+        let count = |field: &[u8]| field.to_str().ok().and_then(|field| field.parse().ok());
+        let lines = match (added, removed) {
+            (b"-", b"-") => None,
+            _ => Some(LineCounts {
+                added: count(added).ok_or_else(malformed)?,
+                removed: count(removed).ok_or_else(malformed)?,
+            }),
+        };
+        files.push(CountedFile {
+            path: BString::from(path),
+            lines,
+        });
+    }
+    Ok(files)
+}
+
 /// Writes (or rewrites) the repository's commit-graph file (`git commit-graph write --reachable`).
 ///
 /// It includes the changed-path filters that make a file's history fast (`--changed-paths`)
@@ -396,22 +492,10 @@ pub fn write_commit_graph(
         .args(["write", "--reachable"])
         .current_dir(repository.work_tree())
         .cancel_token(cancel);
-    if !is_partial_clone(&config) {
+    if !config.is_partial_clone() {
         command = command.arg("--changed-paths");
     }
     command.output().map(drop)
-}
-
-/// Whether objects may be missing and fetched on demand: a promisor remote, or a filter a
-/// clone was made with.
-fn is_partial_clone(config: &ConfigSnapshot) -> bool {
-    config.get("extensions.partialClone").is_some()
-        || config.entries().any(|entry| {
-            let key = entry.key.as_bytes();
-            key.starts_with(b"remote.")
-                && (key.ends_with(b".partialclonefilter")
-                    || (key.ends_with(b".promisor") && entry.bool() == Some(true)))
-        })
 }
 
 #[cfg(test)]
@@ -485,6 +569,35 @@ mod tests {
         assert!(parse_raw(b"M\0path\0").is_err());
         assert!(parse_raw(format!(":10064x 100644 {A} {B} M\0p\0").as_bytes()).is_err());
         assert!(parse_raw(format!(":100644 100644 {A} short M\0p\0").as_bytes()).is_err());
+    }
+
+    #[test]
+    fn reads_line_counts() {
+        let output = b"3\t1\tsrc/lib.rs\0\
+                       -\t-\tlogo.png\0\
+                       0\t0\t\0old name\0new name\0\
+                       2\t0\ta\ttab\0";
+        let counted = |path: &str, lines: Option<(u32, u32)>| CountedFile {
+            path: path.into(),
+            lines: lines.map(|(added, removed)| LineCounts { added, removed }),
+        };
+        assert_eq!(
+            parse_numstat(output).unwrap(),
+            [
+                counted("src/lib.rs", Some((3, 1))),
+                counted("logo.png", None),
+                counted("new name", Some((0, 0))),
+                counted("a\ttab", Some((2, 0))),
+            ]
+        );
+        assert_eq!(parse_numstat(b"").unwrap(), []);
+    }
+
+    #[test]
+    fn refuses_what_isnt_a_line_count() {
+        assert!(parse_numstat(b"3\tlib.rs\0").is_err());
+        assert!(parse_numstat(b"x\t1\tlib.rs\0").is_err());
+        assert!(parse_numstat(b"1\t1\t\0only-one\0").is_err());
     }
 
     #[test]

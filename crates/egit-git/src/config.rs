@@ -240,6 +240,19 @@ impl ConfigSnapshot {
             .filter(move |entry| entry.key == wanted.as_bytes())
     }
 
+    /// Whether the repository is a partial clone, its objects possibly missing and fetched on
+    /// demand: a promisor remote, or a filter a clone was made with.
+    #[must_use]
+    pub fn is_partial_clone(&self) -> bool {
+        self.get("extensions.partialClone").is_some()
+            || self.entries().any(|entry| {
+                let key = entry.key.as_bytes();
+                key.starts_with(b"remote.")
+                    && (key.ends_with(b".partialclonefilter")
+                        || (key.ends_with(b".promisor") && entry.bool() == Some(true)))
+            })
+    }
+
     fn entry_at<'s>(&'s self, raw: &RawEntry) -> ConfigEntry<'s> {
         ConfigEntry {
             scope: raw.scope,

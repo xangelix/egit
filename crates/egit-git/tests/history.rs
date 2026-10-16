@@ -16,8 +16,8 @@ use std::path::Path;
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, ChangeKind, Commit, ObjectId, ObjectKind, ObjectReader, RefKind, Repository,
-    commit_changes, list_references, walk_history, write_commit_graph,
+    CancelToken, ChangeKind, Commit, LineCounts, ObjectId, ObjectKind, ObjectReader, RefKind,
+    Repository, commit_changes, line_counts, list_references, walk_history, write_commit_graph,
 };
 
 fn sandbox() -> Sandbox {
@@ -330,6 +330,64 @@ fn lists_what_a_commit_changed() {
     let first = commit_changes(sandbox.git(), &repository, root, None).unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].kind, ChangeKind::Added);
+}
+
+#[test]
+fn counts_the_lines_a_commit_changed_in_the_order_it_lists_them() {
+    let sandbox = sandbox();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(
+            &repo,
+            "old name",
+            "a long enough file to be recognised when renamed\n",
+            "Start",
+        )
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "keep", "one\nsame\n", "Keep")
+        .unwrap();
+    sandbox.run(&repo, "mv", &["old name", "new name"]).unwrap();
+    std::fs::write(repo.join("keep"), "two\nsame\nthree\n").unwrap();
+    std::fs::write(repo.join("logo.png"), b"\x89PNG\0\0binary").unwrap();
+    std::fs::write(repo.join("a\ttab"), "x\n").unwrap();
+    sandbox.run(&repo, "add", &["--all"]).unwrap();
+    sandbox
+        .run(&repo, "commit", &["--quiet", "--message", "Change"])
+        .unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let (head, parent) = (rev(&sandbox, &repo, "HEAD"), rev(&sandbox, &repo, "HEAD^"));
+
+    let counted = line_counts(
+        sandbox.git(),
+        &repository,
+        head,
+        Some(parent),
+        &CancelToken::new(),
+    )
+    .unwrap();
+    let listed = commit_changes(sandbox.git(), &repository, head, Some(parent)).unwrap();
+    let paths = |paths: Vec<&bstr::BString>| -> Vec<String> {
+        paths.into_iter().map(ToString::to_string).collect()
+    };
+    assert_eq!(
+        paths(counted.iter().map(|file| &file.path).collect()),
+        paths(listed.iter().map(|change| &change.path).collect())
+    );
+    let lines: HashMap<String, Option<LineCounts>> = counted
+        .into_iter()
+        .map(|file| (file.path.to_string(), file.lines))
+        .collect();
+    let counts = |added, removed| Some(LineCounts { added, removed });
+    assert_eq!(lines["keep"], counts(2, 1));
+    assert_eq!(lines["new name"], counts(0, 0));
+    assert_eq!(lines["a\ttab"], counts(1, 0));
+    assert_eq!(lines["logo.png"], None, "a binary file has no lines");
+
+    let root = rev(&sandbox, &repo, "HEAD~2");
+    let first = line_counts(sandbox.git(), &repository, root, None, &CancelToken::new()).unwrap();
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].lines, counts(1, 0));
 }
 
 #[test]

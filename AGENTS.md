@@ -92,8 +92,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `git config --list --show-origin --show-scope --null`, kept as one buffer the entries point
     into (u32 spans); entries in the command scope (egit's own `-c`) are dropped. `get` is the
     last value (git's rule), keys compare like git's (section and name in any case, subsection
-    exactly). `set_config` (`--replace-all`) and `unset_config` (`--unset-all`; exit 5 is fine)
-    write `--global` from `/` or `--local` in a work tree.
+    exactly); `is_partial_clone` (a promisor remote or a clone's filter). `set_config`
+    (`--replace-all`) and `unset_config` (`--unset-all`; exit 5 is fine) write `--global` from
+    `/` or `--local` in a work tree.
   - `profile.rs` — `Profile` over a snapshot: identity, `Signing` (format, key, defaults,
     program — `gpg.program` and `gpg.openpgp.program` are one setting, the later wins —,
     allowed signers), credential helpers (an empty value resets the list), pull and push
@@ -123,7 +124,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     --independent` of `--all`'s tips, since git's topological walk first reads down to the
     oldest tip: Linux's first commit in 60 ms instead of 700), `list_references`
     (`for-each-ref`, symbolic refs skipped, tags peeled), `commit_changes` (`diff-tree -r -z
-    --name-status -M` against the first parent, or `--root`), `write_commit_graph`;
+    --raw --no-abbrev -M` against the first parent, or `--root`: each side's mode and object),
+    `line_counts` (the same with `--numstat`, in the same order: every file diffed, so it
+    follows the list; `GIT_NO_LAZY_FETCH` where git honours it, never prompting),
+    `write_commit_graph`;
     `Repository::has_commit_graph` (without one, a topological walk outputs nothing until
     git has read all history: 6 s for Linux's 1.5M commits).
   - `diff.rs` — `file_diff`: one file's patch from `diff-tree -p` (plumbing, so no colour,
