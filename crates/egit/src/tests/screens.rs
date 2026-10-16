@@ -587,11 +587,20 @@ fn the_history_shows_branches_merges_and_a_commits_changes() {
     harness.get_by_label("None: the first commit");
 }
 
-#[test]
-fn a_changed_file_opens_in_place_of_the_history() {
-    let sandbox = Sandbox::new().unwrap();
-    let repo = branchy(&sandbox);
-    let mut harness = harness(&sandbox);
+/// The find bar's field.
+fn find_field<'h>(harness: &'h Harness<'_, EgitApp>) -> egui_kittest::Node<'h> {
+    harness.get_by_role_and_label(Role::TextInput, "Find")
+}
+
+/// Whether the first repository shows `parser.rs`, ready.
+fn parser_shown(app: &mut EgitApp) -> bool {
+    app.state.repos[0].history_view.file_shown() == Some(("parser.rs".to_owned(), true))
+}
+
+/// The application with `branchy`'s "Make the parser answer" commit's `parser.rs` open.
+fn parser_change(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
+    let repo = branchy(sandbox);
+    let mut harness = harness(sandbox);
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &repo);
     settle(&mut harness, "the history", history_shown);
@@ -604,10 +613,14 @@ fn a_changed_file_opens_in_place_of_the_history() {
     harness
         .get_by_role_and_label(Role::Button, "parser.rs")
         .click();
-    let shown = |app: &mut EgitApp| {
-        app.state.repos[0].history_view.file_shown() == Some(("parser.rs".to_owned(), true))
-    };
-    settle(&mut harness, "the diff", shown);
+    settle(&mut harness, "the diff", parser_shown);
+    harness
+}
+
+#[test]
+fn a_changed_file_opens_in_place_of_the_history() {
+    let sandbox = Sandbox::new().unwrap();
+    let mut harness = parser_change(&sandbox);
     harness.get_by_role_and_label(Role::Button, &format!("{}  History", icon::ARROW_LEFT));
     harness.get_by_label("+3");
     harness.get_by_label("−1");
@@ -620,15 +633,31 @@ fn a_changed_file_opens_in_place_of_the_history() {
     render(&mut harness, "history-diff");
 
     harness.get_by_label("Side by side").click();
-    settle(&mut harness, "the sides", shown);
+    settle(&mut harness, "the sides", parser_shown);
     render(&mut harness, "history-diff-split");
     harness.get_by_label("Side by side").click();
 
     harness.get_by_label("Whole file").click();
-    settle(&mut harness, "the whole file's diff", shown);
+    settle(&mut harness, "the whole file's diff", parser_shown);
     harness.get_by_role_and_label(Role::Button, "File").click();
-    settle(&mut harness, "the file", shown);
+    settle(&mut harness, "the file", parser_shown);
     harness.get_by_label("Wrap lines");
+
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(4);
+    assert_eq!(
+        harness.state_mut().state.repos[0].history_view.file_shown(),
+        None
+    );
+    harness.get_by_role_and_label(Role::Button, "Greet the world");
+}
+
+#[test]
+fn text_on_the_grid_is_selected_copied_and_found() {
+    let sandbox = Sandbox::new().unwrap();
+    let mut harness = parser_change(&sandbox);
+    harness.get_by_role_and_label(Role::Button, "File").click();
+    settle(&mut harness, "the file", parser_shown);
 
     // Dragging across the start of the first line selects it, and ⌘C copies it.
     let spot = |harness: &mut Harness<'_, EgitApp>, cell| {
@@ -665,13 +694,34 @@ fn a_changed_file_opens_in_place_of_the_history() {
             .is_some()
     );
 
-    harness.key_press(egui::Key::Escape);
+    // ⌘F finds in the file; Enter moves to a match; Escape closes the bar first.
+    harness.hover_at(from);
+    harness.drag_at(from);
+    harness.drop_at(from);
+    harness.run_steps(1);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
+    harness.run_steps(2);
+    find_field(&harness).type_text("TRUE");
     harness.run_steps(4);
-    assert_eq!(
-        harness.state_mut().state.repos[0].history_view.file_shown(),
-        None
+    harness.get_by_label("No matches");
+    find_field(&harness).focus();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    find_field(&harness).type_text("true");
+    harness.run_steps(4);
+    harness.get_by_label("1 found");
+    harness.key_press(egui::Key::Enter);
+    harness.run_steps(2);
+    harness.get_by_label("1 of 1");
+    render(&mut harness, "history-file-find");
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
+    assert!(harness.query_by_label("1 of 1").is_none());
+    assert!(
+        harness.state_mut().state.repos[0]
+            .history_view
+            .file_shown()
+            .is_some()
     );
-    harness.get_by_role_and_label(Role::Button, "Greet the world");
 }
 
 #[test]

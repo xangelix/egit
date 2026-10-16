@@ -466,10 +466,11 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
 /// A changed file's diff or contents, under a bar to go back to the commit table; returns
 /// whether it stays open.
 fn file_view(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut FileView) -> bool {
-    // Escape clears a selection first (the grid takes it), then closes the view.
+    // Escape closes a find bar or clears a selection first (the grid takes it), then closes
+    // the view.
     let selecting = [&file.diff_grid, &file.sides_grid, &file.file_grid]
         .iter()
-        .any(|grid| grid.has_selection());
+        .any(|grid| grid.has_selection() || grid.is_finding());
     let mut open =
         selecting || !ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
     file_bar(ui, shared, file, &mut open);

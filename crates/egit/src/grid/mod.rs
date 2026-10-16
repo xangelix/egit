@@ -22,6 +22,10 @@ use egui::{
 use crate::fonts;
 use crate::theme::Palette;
 
+mod find;
+
+use find::Find;
+
 /// Cells of padding right of the text, where a wide character in a row's last cell hangs.
 const OVERHANG: u32 = 1;
 
@@ -133,6 +137,7 @@ pub(crate) struct TextGrid {
     drawn_texts: Vec<Rect>,
     /// Last frame's cell width and row height.
     drawn_size: (f32, f32),
+    find: Find,
 }
 
 /// A place between two cells of a line: before cell `cell`.
@@ -198,7 +203,13 @@ impl TextGrid {
             drawn: Vec::new(),
             drawn_texts: Vec::new(),
             drawn_size: (0.0, 0.0),
+            find: Find::default(),
         }
+    }
+
+    /// Whether the find bar is open.
+    pub(crate) const fn is_finding(&self) -> bool {
+        self.find.is_open()
     }
 
     /// Whether anything is selected.
@@ -324,6 +335,8 @@ impl TextGrid {
             };
             self.draw_rows(ui, &painter, &pane, &font, &frame, palette);
         }
+        let area = Rect::from_min_max(outer.min, pos2(outer.right() - BAR, bottom));
+        self.find_bar(ui, panes, area, &frame, palette);
         for (rect, _) in rects.iter().skip(1) {
             painter.rect_filled(
                 Rect::from_min_max(
@@ -370,11 +383,21 @@ impl TextGrid {
             response.request_focus();
         }
         self.select(ui, response, measure, frame);
-        // Escape clears a selection, focused or not (egui drops focus on Escape).
-        if self.selection.is_some()
+        if response.has_focus()
+            && ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::F))
+        {
+            self.find.open();
+        }
+        // Escape closes the find bar, else clears a selection, focused or not (egui drops focus
+        // on Escape).
+        if (self.find.is_open() || self.selection.is_some())
             && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
         {
-            self.selection = None;
+            if self.find.is_open() {
+                self.find.close();
+            } else {
+                self.selection = None;
+            }
         }
         if response.has_focus() {
             self.keys(ui, measure, frame);
@@ -420,6 +443,7 @@ impl TextGrid {
             .intersect(pane.rect),
         );
         let mut styles = Vec::new();
+        let mut marks = Vec::new();
         let mut highlights = Vec::new();
         let mut gutter = String::new();
         let mut position = (measure.lines() > 0).then_some(self.top);
@@ -462,15 +486,22 @@ impl TextGrid {
                 );
             }
             styles.clear();
+            marks.clear();
             highlights.clear();
             source.styles(at.line, &palette, &mut styles);
+            self.find
+                .in_line(pane.index, source.text(), at.line, &mut marks);
             let mut job = LayoutJob::default();
+            let decorations = Decorations {
+                styles: &styles,
+                marks: &marks,
+            };
             self.lay_out_row(
                 ui,
                 source,
                 at.line,
                 cells,
-                &styles,
+                &decorations,
                 font,
                 frame,
                 palette,
@@ -506,7 +537,7 @@ impl TextGrid {
         source: &dyn GridSource,
         line: u32,
         cells: Range<u32>,
-        styles: &[Styled],
+        decorations: &Decorations<'_>,
         font: &FontId,
         frame: &Frame,
         palette: Palette,
@@ -520,7 +551,8 @@ impl TextGrid {
         };
         let found = measure.seek(text, line, cells.start);
         let mut run = Run::new(font, frame.cell);
-        let mut style = styles.iter().peekable();
+        let mut style = decorations.styles.iter().peekable();
+        let mut mark = decorations.marks.iter().peekable();
         let mut shown = String::new();
         for cell in Cells::resume(bytes, found.byte, found.cell, measure.options()) {
             if cell.cell >= cells.end {
@@ -552,7 +584,17 @@ impl TextGrid {
             } else {
                 covering.map_or(palette.text, |styled| styled.color)
             };
-            if let Some(background) = covering.and_then(|styled| styled.background) {
+            while mark.next_if(|(bytes, _)| bytes.end <= cell.byte).is_some() {}
+            let marked = mark
+                .peek()
+                .filter(|(bytes, _)| bytes.start <= cell.byte)
+                .map(|(_, current)| {
+                    palette
+                        .warn
+                        .gamma_multiply(if *current { 0.75 } else { 0.35 })
+                });
+            let backgrounds = [covering.and_then(|styled| styled.background), marked];
+            for background in backgrounds.into_iter().flatten() {
                 let from = cell.cell.saturating_sub(cells.start);
                 let to = cell.end().saturating_sub(cells.start);
                 match highlights.last_mut() {
@@ -769,6 +811,65 @@ impl TextGrid {
         ))
     }
 
+    /// The find bar, when open, over the top right of `area`: searches the panes as the query
+    /// changes, and moves to the match asked for.
+    fn find_bar(
+        &mut self,
+        ui: &mut Ui,
+        panes: &[&dyn GridSource],
+        area: Rect,
+        frame: &Frame,
+        palette: Palette,
+    ) {
+        if !self.find.is_open() {
+            return;
+        }
+        self.find.search(panes);
+        if let Some(step) = self.find.bar(ui, area, palette)
+            && let Some((pane, offset)) = self.find.step(step)
+            && let Some(source) = panes.get(pane)
+        {
+            self.reveal(*source, offset, frame);
+            ui.ctx().request_repaint();
+        }
+    }
+
+    /// Scrolls the match at byte `offset` of `source`'s text into view: its line a few rows
+    /// below the top unless on screen, and sideways to its first cell.
+    fn reveal(&mut self, source: &dyn GridSource, offset: u32, frame: &Frame) {
+        let text = source.text();
+        let measure = source.measure();
+        let line = text.line_of(offset);
+        let within = offset.saturating_sub(text.start(line).unwrap_or(0));
+        let cell = Cells::new(text.line(line).unwrap_or_default(), measure.options())
+            .find(|cell| cell.byte >= within)
+            .map_or_else(|| measure.cells(line), |cell| cell.cell);
+        let on_screen = self
+            .drawn
+            .iter()
+            .any(|drawn| drawn.line == line && frame.wrap.row_start(cell) == drawn.first);
+        if !on_screen {
+            let mut top = Position {
+                line,
+                cell: frame.wrap.row_start(cell),
+            };
+            for _ in 0..3 {
+                match frame.wrap.previous(measure, top) {
+                    Some(previous) => top = previous,
+                    None => break,
+                }
+            }
+            self.top = top;
+            self.offset = 0.0;
+        }
+        if frame.wrap == Wrap::Off {
+            let visible = frame.visible_cells.saturating_sub(2);
+            if cell < self.sideways || cell >= self.sideways.saturating_add(visible) {
+                self.sideways = cell.saturating_sub(visible.checked_div(3).unwrap_or(0));
+            }
+        }
+    }
+
     /// Copies the selection (its text as it is, tabs and all), on ⌘C.
     fn copy(&self, ui: &Ui, panes: &[&dyn GridSource]) {
         let asked = ui.input(|input| {
@@ -900,6 +1001,13 @@ fn paint_selection(
         CornerRadius::ZERO,
         palette.accent.gamma_multiply(0.35),
     );
+}
+
+/// What a row shows besides its text: its source's styles, and the find bar's matches (byte
+/// ranges in the line, the one moved to marked).
+struct Decorations<'a> {
+    styles: &'a [Styled],
+    marks: &'a [(Range<u32>, bool)],
 }
 
 /// A pane being drawn: its source, and where it and its text go.

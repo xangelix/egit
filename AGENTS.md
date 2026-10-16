@@ -163,6 +163,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `words.rs` — `changed_words`: two lines' changed bytes, by the longest common sequence of
     tokens (words, whitespace runs, single punctuation); none past 500 tokens a line, or for
     lines sharing under 40% of their words.
+  - `find.rs` — `find_all`: a query's matches as byte offsets (`memmem`, or ASCII case folded
+    by a two-byte scan), in 4 MiB windows overlapping by the query's length, asking whether
+    to stop between them; `matches_case` is smart case.
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
   (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io: bump
   `rev` to the owner's pushed commit after each change made there), `egui-async` 0.7 (stay on
@@ -219,8 +222,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     position, input, and scroll bar; the first pane's measure moves the rows). Dragging
     selects in one pane between cells (hit-tested against the rows drawn last frame;
     dragging past an edge scrolls), ⌘A selects a pane, Escape clears (focused or not: egui
-    drops focus on Escape), and ⌘C (`Event::Copy`) copies the bytes as they are. `Plain` is a
-    text, numbered.
+    drops focus on Escape), and ⌘C (`Event::Copy`) copies the bytes as they are. `find.rs`:
+    ⌘F opens a find bar over the top right (Enter, Shift+Enter, Previous, Next; Escape or
+    Close); every pane is searched in a job as the query changes (its text shared), at most
+    100,000 matches a pane; matches on screen are marked, the current one stronger, and moving
+    to one scrolls it a few rows below the top and sideways into view. `Plain` is a text,
+    numbered.
   - `diff.rs` — `DiffDocument`: a `FileDiff` measured as a `GridSource` (lines on their kind's
     background, hunk headers muted, the gutter numbering both files with a `+`/`-` marker), and
     `read_diff`, its job (cancelled when its view closes). Each block's removed lines pair with
