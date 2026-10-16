@@ -18,6 +18,7 @@ mod config;
 mod env;
 mod error;
 mod git;
+mod history;
 mod object_id;
 mod objects;
 mod output;
@@ -37,6 +38,10 @@ pub use config::{
 };
 pub use error::{Failure, GitError};
 pub use git::{Git, GitOptions};
+pub use history::{
+    ChangeKind, FileChange, RefKind, Reference, Walked, commit_changes, list_references,
+    walk_history, write_commit_graph,
+};
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};

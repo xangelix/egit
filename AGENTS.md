@@ -101,6 +101,19 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     labels a command's prompts; `non_interactive` makes them fail at once (and
     `GCM_INTERACTIVE=never`). `tests/askpass.rs` runs without libtest so its executable can be
     the helper git starts.
+  - `batch.rs` — `GitProcess` from `GitCommand::spawn`: a git kept running for a batch
+    protocol (stdin requests, stdout answers); dropping it closes stdin, SIGTERMs its group,
+    reaps it.
+  - `objects.rs` — `ObjectReader`: one `cat-file --batch-command --buffer` per reader;
+    requests go 128 at a time then `flush` (both pipes stay under their buffers), answers are
+    read into one reused buffer. `commit.rs` — `Commit::parse` (raw commit objects; `subject`
+    is `%s`).
+  - `history.rs` — `walk_history` (`rev-list --topo-order --parents --exclude=refs/stash
+    --all`, streamed, lines split across chunks without copying), `list_references`
+    (`for-each-ref`, symbolic refs skipped, tags peeled), `commit_changes` (`diff-tree -r -z
+    --name-status -M` against the first parent, or `--root`), `write_commit_graph`;
+    `Repository::has_commit_graph` (without one, a topological walk outputs nothing until
+    git has read all history: 6 s for Linux's 1.5M commits).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
   (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7, `egui-async` 0.7 (stay on 0.36 until

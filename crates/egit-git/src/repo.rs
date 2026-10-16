@@ -153,6 +153,15 @@ impl Repository {
         self.object_format
     }
 
+    /// Whether git keeps a commit-graph file for the repository, which lets a walk of its history
+    /// in topological order start at once (see [`write_commit_graph`](crate::write_commit_graph)).
+    #[must_use]
+    pub fn has_commit_graph(&self) -> bool {
+        let info = self.common_dir.join("objects/info");
+        info.join("commit-graph").is_file()
+            || info.join("commit-graphs/commit-graph-chain").is_file()
+    }
+
     /// Whether this is a linked work tree (`git worktree add`) rather than the main one.
     #[must_use]
     pub fn is_linked_worktree(&self) -> bool {
