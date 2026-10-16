@@ -977,6 +977,69 @@ fn staged_changes_are_committed_and_amended_from_the_form() {
 }
 
 #[test]
+fn signed_commits_show_whether_their_signatures_hold() {
+    let has_ssh_keygen = std::process::Command::new("ssh-keygen")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok();
+    assert!(
+        has_ssh_keygen || std::env::var_os("EGIT_REQUIRE_SIGNERS").is_none(),
+        "ssh-keygen is needed to test signatures"
+    );
+    if !has_ssh_keygen {
+        return;
+    }
+    let sandbox = Sandbox::new().unwrap();
+    let key = sandbox.home().join("id_ed25519");
+    let made = std::process::Command::new("ssh-keygen")
+        .args(["-q", "-t", "ed25519", "-N", "", "-C", "tests", "-f"])
+        .arg(&key)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    let public = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+    let allowed = sandbox.home().join("allowed_signers");
+    std::fs::write(
+        &allowed,
+        format!("tests@egit.invalid namespaces=\"git\" {}", public.trim()),
+    )
+    .unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    for setting in [
+        ["gpg.format", "ssh"],
+        ["user.signingKey", key.to_str().unwrap()],
+        ["gpg.ssh.allowedSignersFile", allowed.to_str().unwrap()],
+        ["commit.gpgSign", "true"],
+    ] {
+        sandbox.run(&repo, "config", &setting).unwrap();
+    }
+    sandbox.commit_file(&repo, "a", "x\n", "Signed").unwrap();
+    sandbox
+        .run(&repo, "config", &["commit.gpgSign", "false"])
+        .unwrap();
+    sandbox.commit_file(&repo, "b", "x\n", "Plain").unwrap();
+
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    // Checked once on screen: one seal, the signed commit's.
+    wait_for_label(&mut harness, icon::SEAL_CHECK);
+    assert_eq!(harness.query_all_by_label(icon::SEAL_CHECK).count(), 1);
+    harness
+        .get_by_role_and_label(Role::Button, "Signed")
+        .click();
+    wait_for_label(
+        &mut harness,
+        &format!("{}  Good signature", icon::SEAL_CHECK),
+    );
+    harness.get_by_label("by tests@egit.invalid");
+    render(&mut harness, "history-signed");
+}
+
+#[test]
 fn whole_file_shows_all_of_the_file_and_back() {
     let sandbox = Sandbox::new().unwrap();
     let repo = sandbox.init("repo").unwrap();

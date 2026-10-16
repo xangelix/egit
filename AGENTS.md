@@ -246,7 +246,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     scan from `near`; no id→row index is kept), `Refs::at(id)` (sorted, binary search).
     `Objects`: one shared `cat-file` per repository, restarted after a failure.
     `Summaries`: subject, author, preformatted date, read as rows come into view (at most 512
-    a read, one read at a time), about 4,096 kept, least recently drawn forgotten first.
+    a read, one read at a time), about 4,096 kept, least recently drawn forgotten first; each
+    says whether its commit is signed. `Signatures`: the signed commits on screen (and the one
+    selected) checked with `check_signatures`, 64 at a time, one batch at a time (each check
+    runs a program); a failed batch counts as checked without a verdict, so it isn't retried
+    every frame; forgotten when the configuration is read again.
     `read_details` (the commit and its `commit_changes`); `read_change_counts` (its
     `line_counts`, lined up with the changes by path should their orders differ, and their
     total). `HistoryState`: the history shown,
@@ -341,10 +345,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
     screen, then a screen below and above). Graph cells paint lines (cubic curves between
     lanes) and nodes (hollow for merges, ringed for `HEAD`); rows are buttons named by their
-    subject; ref badges; a focusable area takes ↑ ↓ PgUp PgDn Home End. The message column
+    subject; ref badges; a signed commit's seal by its verdict (good, doubtful, bad, or
+    unchecked, its meaning on hover); a focusable area takes ↑ ↓ PgUp PgDn Home End. The message column
     is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
     selection and the top row's commit in place when a re-read takes over. Details: message,
-    names, parents (buttons: egui announces links as plain text), people, signature, refs,
+    names, parents (buttons: egui announces links as plain text), people, the signature (its
+    verdict, signer, and key), refs,
     and the changed files (`ChangesTable`), with the lines each gained and lost once counted
     (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
     clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or

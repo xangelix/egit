@@ -16,8 +16,8 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use bstr::{BString, ByteSlice as _};
 use egit_git::{
     CancelToken, Commit, CountedFile, FileChange, Git, GitError, LineCounts, Object, ObjectFormat,
-    ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, TreeEntry, commit_changes,
-    line_counts, list_references, walk_history,
+    ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, SignatureCheck, TreeEntry,
+    Verdict, check_signatures, commit_changes, line_counts, list_references, walk_history,
 };
 use egit_graph::{CHUNK_ROWS, Chunk, GraphBuilder};
 use egit_text::Text;
@@ -356,6 +356,8 @@ pub(crate) struct Summary {
     pub(crate) email: Box<str>,
     /// When it was written, in the author's time zone.
     pub(crate) date: Box<str>,
+    /// Whether it carries a signature (whether it holds is checked apart).
+    pub(crate) signed: bool,
 }
 
 impl Summary {
@@ -366,6 +368,7 @@ impl Summary {
             author: text(&commit.author.name),
             email: text(&commit.author.email),
             date: date_time(commit.author.time, commit.author.offset_minutes).into_boxed_str(),
+            signed: commit.signed,
         }
     }
 
@@ -376,7 +379,116 @@ impl Summary {
             author: Box::default(),
             email: Box::default(),
             date: Box::default(),
+            signed: false,
         }
+    }
+}
+
+/// The most signatures checked at once.
+const CHECK_AT_ONCE: usize = 64;
+
+/// About how many checked signatures are kept (each took a program's run to check).
+const KEPT_CHECKS: usize = 8192;
+
+/// The signatures of the signed commits on screen (and the one selected), checked as they come
+/// into view: each check runs its format's program, so only what is shown is checked, a batch
+/// at a time.
+#[derive(Debug)]
+pub(crate) struct Signatures {
+    checked: HashMap<ObjectId, SignatureCheck>,
+    checking: Bind<Checked, Problem>,
+    /// Why the last check failed.
+    pub(crate) problem: Option<Problem>,
+}
+
+/// A batch checked: the commits asked about, and what checking them found.
+#[derive(Debug)]
+pub(crate) struct Checked {
+    ids: Vec<ObjectId>,
+    found: Result<Vec<SignatureCheck>, Problem>,
+}
+
+impl Default for Signatures {
+    fn default() -> Self {
+        Self {
+            checked: HashMap::new(),
+            checking: Bind::new(true),
+            problem: None,
+        }
+    }
+}
+
+impl Signatures {
+    /// `id`'s signature, if it was checked.
+    pub(crate) fn get(&self, id: &ObjectId) -> Option<&SignatureCheck> {
+        self.checked.get(id)
+    }
+
+    /// Starts checking the signatures of `wanted` (signed commits) not checked yet, unless a
+    /// check is under way. Called once a frame.
+    pub(crate) fn want(
+        &mut self,
+        git: &Git,
+        repository: &Arc<Repository>,
+        wanted: impl IntoIterator<Item = ObjectId>,
+    ) {
+        if self.checking.is_pending() {
+            return;
+        }
+        let missing: Vec<ObjectId> = wanted
+            .into_iter()
+            .filter(|id| !self.checked.contains_key(id))
+            .take(CHECK_AT_ONCE)
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        let (git, repository) = (git.clone(), Arc::clone(repository));
+        self.checking.request(jobs::blocking(move || {
+            let found = check_signatures(&git, &repository, &missing, &CancelToken::new())
+                .map_err(|error| Problem::git("Signatures couldn't be checked", &error));
+            Ok(Checked {
+                ids: missing,
+                found,
+            })
+        }));
+    }
+
+    /// Keeps what a finished check found; commits a failed check asked about count as checked
+    /// without a verdict (they aren't asked about again and again).
+    pub(crate) fn poll(&mut self) {
+        let Some(Ok(Checked { ids, found })) = self.checking.take() else {
+            return;
+        };
+        if self.checked.len() > KEPT_CHECKS {
+            self.checked.clear();
+        }
+        match found {
+            Ok(checks) => {
+                self.problem = None;
+                self.checked
+                    .extend(checks.into_iter().map(|check| (check.id, check)));
+            }
+            Err(problem) => {
+                self.problem = Some(problem);
+                self.checked.extend(ids.into_iter().map(|id| {
+                    (
+                        id,
+                        SignatureCheck {
+                            id,
+                            verdict: Verdict::Unchecked,
+                            signer: BString::default(),
+                            key: BString::default(),
+                        },
+                    )
+                }));
+            }
+        }
+    }
+
+    /// Forgets every check (the keys trusted may have changed).
+    pub(crate) fn forget(&mut self) {
+        self.checked.clear();
     }
 }
 
@@ -772,6 +884,7 @@ pub(crate) struct HistoryState {
     /// replaced.
     restarted: bool,
     pub(crate) summaries: Summaries,
+    pub(crate) signatures: Signatures,
     pub(crate) objects: Objects,
 }
 
@@ -784,6 +897,7 @@ impl HistoryState {
             replaced: false,
             restarted: false,
             summaries: Summaries::default(),
+            signatures: Signatures::default(),
             objects: Objects::default(),
         }
     }
@@ -807,6 +921,7 @@ impl HistoryState {
             self.replaced = true;
         }
         self.summaries.poll();
+        self.signatures.poll();
         let Some(next) = &mut self.next else {
             return;
         };
@@ -970,6 +1085,7 @@ mod tests {
             replaced: false,
             restarted: false,
             summaries: Summaries::default(),
+            signatures: Signatures::default(),
             objects: Objects::default(),
         }
     }

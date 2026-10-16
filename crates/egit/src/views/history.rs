@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
 use egit_git::{
-    CancelToken, Committed, FileChange, Git, Head, ObjectId, RefKind, Reference, Repository, Status,
+    CancelToken, Committed, FileChange, Git, Head, ObjectId, RefKind, Reference, Repository,
+    SignatureCheck, Status, Verdict,
 };
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
@@ -30,8 +31,8 @@ use crate::app::Action;
 use crate::fonts;
 use crate::format::{count, date_time};
 use crate::history::{
-    ChangeCounts, CommitDetails, History, HistoryState, Objects, Summaries, read_change_counts,
-    read_details,
+    ChangeCounts, CommitDetails, History, HistoryState, Objects, Signatures, Summaries,
+    read_change_counts, read_details,
 };
 use crate::problem::Problem;
 use crate::repo::RepoId;
@@ -701,6 +702,7 @@ fn commit_table(
     let HistoryState {
         shown,
         summaries,
+        signatures,
         objects,
         ..
     } = history;
@@ -708,6 +710,7 @@ fn commit_table(
         shared,
         history: shown,
         summaries,
+        signatures,
         objects,
         view,
         clicked: None,
@@ -796,6 +799,7 @@ struct CommitRows<'a> {
     shared: &'a Shared<'a>,
     history: &'a History,
     summaries: &'a mut Summaries,
+    signatures: &'a mut Signatures,
     objects: &'a Objects,
     view: &'a mut HistoryView,
     /// The row clicked this frame.
@@ -817,11 +821,18 @@ impl TableDelegate for CommitRows<'_> {
             let above = rows.start.saturating_sub(screen)..rows.start;
             let history = self.history;
             let wanted = rows
+                .clone()
                 .chain(below)
                 .chain(above.rev())
                 .filter_map(|row| history.id(row));
             self.summaries
                 .want(git, self.shared.repository, self.objects, wanted);
+            // Only the rows on screen: each check runs a program.
+            let summaries = &*self.summaries;
+            let signed = rows
+                .filter_map(|row| history.id(row))
+                .filter(|id| summaries.peek(id).is_some_and(|summary| summary.signed));
+            self.signatures.want(git, self.shared.repository, signed);
         }
     }
 
@@ -919,6 +930,9 @@ impl TableDelegate for CommitRows<'_> {
         let Some(summary) = self.summaries.get(&id) else {
             return;
         };
+        if cell.col_nr == 1 && summary.signed {
+            seal(ui, self.signatures.get(&id), self.shared.palette);
+        }
         let (text, color) = match cell.col_nr {
             1 => (&summary.subject, self.shared.palette.text),
             2 => (&summary.author, self.shared.palette.text),
@@ -988,6 +1002,59 @@ impl CommitRows<'_> {
         if self.shared.head.commit == Some(id) {
             painter.circle_stroke(center, NODE_RADIUS + 3.0, Stroke::new(1.5, color));
         }
+    }
+}
+
+/// A signed commit's seal, by what checking it found (still checking: a plain one), what it
+/// means on hover.
+fn seal(ui: &mut Ui, check: Option<&SignatureCheck>, palette: Palette) {
+    let (glyph, color, meaning) = check.map_or(
+        (icon::SEAL, palette.muted, "Signed: checking it…"),
+        |check| verdict_look(check.verdict, palette),
+    );
+    ui.add(
+        Label::new(RichText::new(glyph).color(color))
+            .selectable(false)
+            .sense(Sense::hover()),
+    )
+    .on_hover_text(meaning);
+}
+
+/// How a verdict looks: its seal, colour, and words.
+const fn verdict_look(verdict: Verdict, palette: Palette) -> (&'static str, Color32, &'static str) {
+    match verdict {
+        Verdict::Good => (icon::SEAL_CHECK, palette.ok, "Good signature"),
+        Verdict::Untrusted => (
+            icon::SEAL_QUESTION,
+            palette.warn,
+            "Good signature, by a key not known to be its owner's",
+        ),
+        Verdict::ExpiredSignature => (
+            icon::SEAL_QUESTION,
+            palette.warn,
+            "Good signature, but expired",
+        ),
+        Verdict::ExpiredKey => (
+            icon::SEAL_QUESTION,
+            palette.warn,
+            "Good signature, by a key since expired",
+        ),
+        Verdict::RevokedKey => (
+            icon::SEAL_WARNING,
+            palette.danger,
+            "Signed by a key since revoked",
+        ),
+        Verdict::Bad => (
+            icon::SEAL_WARNING,
+            palette.danger,
+            "Bad signature: the commit doesn't match it",
+        ),
+        Verdict::Unchecked => (
+            icon::SEAL,
+            palette.muted,
+            "Signed, but it couldn't be checked (its key or program is missing)",
+        ),
+        Verdict::Unsigned => (icon::SEAL, palette.muted, "Not signed"),
     }
 }
 
@@ -1079,7 +1146,7 @@ fn work_details(
 }
 
 /// The selected commit's details and changed files.
-fn details(ui: &mut Ui, shared: &Shared<'_>, history: &HistoryState, view: &mut HistoryView) {
+fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &mut HistoryView) {
     let Some(selected) = view.selected else {
         ui.label(muted(ui, "Select a commit to see what it changed."));
         return;
@@ -1121,7 +1188,19 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &HistoryState, view: &mut 
         .max_height(height * 0.5)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            go_to = commit_info(ui, &shown, history.shown.refs().at(&shown.id), shared);
+            if shown.commit.signed
+                && let Some(git) = shared.git
+            {
+                history.signatures.want(git, shared.repository, [shown.id]);
+            }
+            let check = history.signatures.get(&shown.id);
+            go_to = commit_info(
+                ui,
+                &shown,
+                history.shown.refs().at(&shown.id),
+                check,
+                shared,
+            );
         });
     ui.add_space(8.0);
     let counts = view.counting.of(shared, &shown);
@@ -1185,6 +1264,7 @@ fn commit_info(
     ui: &mut Ui,
     details: &CommitDetails,
     refs: &[Reference],
+    check: Option<&SignatureCheck>,
     shared: &Shared<'_>,
 ) -> Option<ObjectId> {
     let commit = &details.commit;
@@ -1253,7 +1333,7 @@ fn commit_info(
             }
             if commit.signed {
                 ui.label(muted(ui, "Signature"));
-                ui.label(format!("{}  Signed (not verified yet)", icon::SEAL));
+                signature(ui, check, shared.palette);
                 ui.end_row();
             }
             if !refs.is_empty() {
@@ -1263,6 +1343,35 @@ fn commit_info(
             }
         });
     go_to
+}
+
+/// What checking a commit's signature found: the verdict, who signed it, and with which key.
+fn signature(ui: &mut Ui, check: Option<&SignatureCheck>, palette: Palette) {
+    ui.vertical(|ui| {
+        let Some(check) = check else {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(muted(ui, "Checking the signature…"));
+            });
+            return;
+        };
+        let (glyph, color, meaning) = verdict_look(check.verdict, palette);
+        ui.add(Label::new(RichText::new(format!("{glyph}  {meaning}")).color(color)).wrap());
+        if !check.signer.is_empty() {
+            ui.add(Label::new(format!("by {}", check.signer.to_str_lossy())).wrap());
+        }
+        if !check.key.is_empty() {
+            ui.add(
+                Label::new(
+                    RichText::new(format!("key {}", check.key.to_str_lossy()))
+                        .monospace()
+                        .small()
+                        .color(palette.muted),
+                )
+                .wrap(),
+            );
+        }
+    });
 }
 
 /// A grid row for an author or committer: name, email, and when.

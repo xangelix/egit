@@ -263,8 +263,10 @@ impl RepoTab {
         }));
     }
 
-    /// Reads the configuration in effect in the repository.
+    /// Reads the configuration in effect in the repository; signatures are checked again (the
+    /// keys and signers trusted may have changed).
     pub(crate) fn refresh_config(&mut self, git: &Git) {
+        self.history.signatures.forget();
         let (git, repository) = (git.clone(), Arc::clone(&self.repository));
         self.config.request(jobs::blocking(move || {
             ConfigSnapshot::read(&git, ConfigPlace::Repository(repository.work_tree()))
