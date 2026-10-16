@@ -32,5 +32,38 @@ pub(crate) const CONTEXT_VAR: &str = "EGIT_ASKPASS_CONTEXT";
 /// `0` when the command may not ask anyone (`GitCommand::non_interactive`).
 pub(crate) const INTERACTIVE_VAR: &str = "EGIT_ASKPASS_INTERACTIVE";
 
+/// Asks through a server as a helper started with `environment` would (the `testing`
+/// feature): for tests of whatever shows the prompts.
+///
+/// # Errors
+///
+/// When the environment names no server, or it can't be reached.
+#[cfg(feature = "testing")]
+pub fn ask_as_helper(
+    environment: &[(std::ffi::OsString, std::ffi::OsString)],
+    kind: PromptKind,
+    prompt: &str,
+    context: &str,
+) -> std::io::Result<Option<zeroize::Zeroizing<Vec<u8>>>> {
+    let find = |name: &str| {
+        environment
+            .iter()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value)
+    };
+    let missing = || std::io::Error::other("the environment names no askpass server");
+    let socket = find(SOCKET_VAR).ok_or_else(missing)?;
+    let token = find(TOKEN_VAR)
+        .and_then(|token| protocol::Token::from_hex(token.as_encoded_bytes()))
+        .ok_or_else(missing)?;
+    client::ask(
+        std::path::Path::new(socket),
+        &token,
+        kind,
+        prompt.as_bytes(),
+        context.as_bytes(),
+    )
+}
+
 #[cfg(test)]
 mod tests;
