@@ -166,6 +166,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `restore --staged`, works before the first commit) of whole files: paths on standard
     input (`--pathspec-from-file`, NUL-separated) as literal pathspecs; no paths do nothing
     (`reset` would otherwise unstage everything).
+  - `tree.rs` — for watching a work tree's folders: `tree_folders` (a commit's folders,
+    `ls-tree -r -d`) and `ignored_paths` (`check-ignore -z --stdin`, which exits 1 when none
+    is; folders end with `/` so folder-only patterns match them).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).

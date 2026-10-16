@@ -33,6 +33,7 @@ mod stage;
 mod status;
 #[cfg(feature = "testing")]
 pub mod testing;
+mod tree;
 mod version;
 
 pub use batch::GitProcess;
@@ -63,4 +64,5 @@ pub use repo::{
 };
 pub use stage::{stage, unstage};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
+pub use tree::{ignored_paths, tree_folders};
 pub use version::{GitVersion, VersionParseError};
