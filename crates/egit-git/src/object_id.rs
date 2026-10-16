@@ -76,6 +76,16 @@ impl ObjectId {
         }
     }
 
+    /// Reads a name's raw bytes; their length decides the format.
+    #[must_use]
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        match bytes.len() {
+            20 => bytes.try_into().ok().map(Self::Sha1),
+            32 => bytes.try_into().ok().map(Self::Sha256),
+            _ => None,
+        }
+    }
+
     /// The raw bytes.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8] {
@@ -184,6 +194,16 @@ mod tests {
         assert_eq!(sha256.format(), ObjectFormat::Sha256);
         assert_eq!(sha256.as_bytes().len(), 32);
         assert_eq!(sha256.to_string(), SHA256);
+    }
+
+    #[test]
+    fn raw_bytes_round_trip() {
+        for hex in [SHA1, SHA256] {
+            let id = ObjectId::from_hex(hex.as_bytes()).unwrap();
+            assert_eq!(ObjectId::from_bytes(id.as_bytes()), Some(id));
+        }
+        assert_eq!(ObjectId::from_bytes(&[0; 21]), None);
+        assert_eq!(ObjectId::from_bytes(&[]), None);
     }
 
     #[test]
