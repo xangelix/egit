@@ -10,15 +10,18 @@
 //! from there, a screen costs the same at line 1 as at line 1,000,000, and wrapping at another
 //! width keeps the same text at the top. [`Rows`] is only needed for a scroll bar.
 //!
-//! [`changed_words`] finds which words of an edited line changed, for a diff to mark.
+//! [`changed_words`] finds which words of an edited line changed, for a diff to mark, and
+//! [`find_all`] every place a query occurs.
 
 mod cells;
+mod find;
 mod measure;
 mod rows;
 mod text;
 mod words;
 
 pub use cells::{Cell, Cells, Glyph, Options, line_cells};
+pub use find::{find_all, matches_case};
 pub use measure::{CHECKPOINT_CELLS, Found, Measure};
 pub use rows::{Position, Rows, Wrap};
 pub use text::{Text, TooLarge};
