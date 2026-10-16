@@ -1,8 +1,10 @@
 //! One file's changes as git shows them, parsed into lines ready to display.
 //!
-//! The patch comes from `git diff-tree -p` (plumbing: no colour, pager, external diff, textconv,
-//! or prefix settings apply) and is parsed as it streams: each line is kept without its `+`,
-//! `-`, or ` ` prefix, numbered in the old and new file, so the raw patch is never held whole.
+//! A commit's patch comes from `git diff-tree -p` (plumbing: no colour, pager, external diff,
+//! textconv, or prefix settings apply); uncommitted changes from `git diff`, its every setting
+//! that changes the patch pinned. Either is parsed as it streams: each line is kept without its
+//! `+`, `-`, or ` ` prefix, numbered in the old and new file, so the raw patch is never held
+//! whole.
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
@@ -10,6 +12,7 @@ use std::os::unix::ffi::OsStrExt as _;
 use bstr::{BStr, ByteSlice as _};
 
 use crate::cancel::CancelToken;
+use crate::command::GitCommand;
 use crate::error::GitError;
 use crate::git::Git;
 use crate::lines::Lines;
@@ -76,6 +79,81 @@ impl Default for DiffOptions {
     }
 }
 
+/// Which of a file's uncommitted changes a diff shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Uncommitted {
+    /// The work tree against the index: what isn't staged.
+    Unstaged,
+    /// The index against `HEAD` (against nothing before the first commit): what is staged.
+    Staged,
+    /// An untracked file, all of it new.
+    Untracked,
+}
+
+/// The diff of the uncommitted changes `which` to the file at `paths` (a staged rename's old
+/// path first).
+///
+/// The work tree's side is as git would store it: through the file's clean filters and
+/// line-ending conversion, as `git add` makes it.
+///
+/// # Errors
+///
+/// When git fails, is cancelled, or prints something that isn't a patch.
+pub fn uncommitted_diff(
+    git: &Git,
+    repository: &Repository,
+    paths: &[&BStr],
+    which: Uncommitted,
+    options: &DiffOptions,
+    cancel: &CancelToken,
+) -> Result<FileDiff, GitError> {
+    let mut command = git
+        .read("diff")
+        .args([
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--full-index",
+            "--no-relative",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+        ])
+        .arg(format!("--unified={}", options.context))
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel);
+    if let Some(algorithm) = &options.algorithm {
+        command = command.arg(format!("--diff-algorithm={algorithm}"));
+    }
+    let paths = paths.iter().map(|path| OsStr::from_bytes(path));
+    match which {
+        Uncommitted::Unstaged => parse_streamed(command.arg("--").args(paths)),
+        Uncommitted::Staged => parse_streamed(command.args(["--cached", "-M", "--"]).args(paths)),
+        Uncommitted::Untracked => {
+            // Against nothing: `--no-index` says whether they differ by exiting 1.
+            let output = command
+                .args(["--no-index", "--", "/dev/null"])
+                .args(paths)
+                .output_unchecked()?;
+            if !matches!(output.status.code(), Some(0 | 1)) {
+                return Err(GitError::failed("diff", output.status, output.stderr));
+            }
+            let mut parser = Parser::default();
+            let mut failed = None;
+            let _ = Lines::default().feed(&output.stdout, &mut |line| {
+                parser
+                    .line(line)
+                    .map_err(|error| failed = Some(error))
+                    .map_or(
+                        std::ops::ControlFlow::Break(()),
+                        std::ops::ControlFlow::Continue,
+                    )
+            });
+            failed.map_or(Ok(parser.diff), Err)
+        }
+    }
+}
+
 /// The diff of the file at `paths` (a rename's or copy's old path first) between `parent` and
 /// `commit` (or everything `commit` holds, when it is a root commit).
 ///
@@ -120,6 +198,11 @@ pub fn file_diff(
     command = command
         .arg("--")
         .args(paths.iter().map(|path| OsStr::from_bytes(path)));
+    parse_streamed(command)
+}
+
+/// Runs `command`, parsing the patch it prints as it streams.
+fn parse_streamed(command: GitCommand) -> Result<FileDiff, GitError> {
     let mut parser = Parser::default();
     let mut lines = Lines::default();
     let mut failed = None;
@@ -151,15 +234,12 @@ struct Parser {
 
 impl Parser {
     fn line(&mut self, line: &[u8]) -> Result<(), GitError> {
-        if let Some(header) = line.strip_prefix(b"@@ ") {
-            let (old, new) = hunk_starts(header).ok_or_else(|| {
-                GitError::unexpected(
-                    "diff-tree",
-                    format!("{} isn't a hunk's header", BStr::new(line)),
-                )
+        if line.starts_with(b"@@ ") {
+            let ranges = HunkRanges::parse(line).ok_or_else(|| {
+                GitError::unexpected("diff", format!("{} isn't a hunk's header", BStr::new(line)))
             })?;
-            self.old = old;
-            self.new = new;
+            self.old = ranges.old_start;
+            self.new = ranges.new_start;
             self.in_hunk = true;
             self.push(DiffLineKind::Hunk, line, 0, 0);
             return Ok(());
@@ -220,18 +300,38 @@ impl Parser {
     }
 }
 
-/// The first old and new line numbers of a hunk, from its header after `@@ `:
-/// `-12,7 +12,9 @@ …` (a count of one is left out: `-12 +12 @@`).
-fn hunk_starts(header: &[u8]) -> Option<(u32, u32)> {
-    let mut fields = header.split_str(b" ");
-    let start = |field: &[u8], sign: u8| -> Option<u32> {
-        let range = field.strip_prefix(&[sign])?;
-        let start = range.split_str(b",").next()?;
-        start.to_str().ok()?.parse().ok()
-    };
-    let old = start(fields.next()?, b'-')?;
-    let new = start(fields.next()?, b'+')?;
-    (fields.next()? == b"@@").then_some((old, new))
+/// The lines a hunk covers in the old and the new file, from its header.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HunkRanges {
+    /// The old file's first line (when `old_count` is 0, the line after which the new lines go).
+    pub(crate) old_start: u32,
+    pub(crate) old_count: u32,
+    /// The new file's first line (likewise).
+    pub(crate) new_start: u32,
+    pub(crate) new_count: u32,
+}
+
+impl HunkRanges {
+    /// Reads a hunk's header line: `@@ -12,7 +12,9 @@ …` (a count of one is left out:
+    /// `@@ -12 +12 @@`).
+    pub(crate) fn parse(line: &[u8]) -> Option<Self> {
+        let mut fields = line.strip_prefix(b"@@ ")?.split_str(b" ");
+        let range = |field: &[u8], sign: u8| -> Option<(u32, u32)> {
+            let mut parts = field.strip_prefix(&[sign])?.split_str(b",");
+            let number = |part: &[u8]| part.to_str().ok()?.parse().ok();
+            let start = number(parts.next()?)?;
+            let count = parts.next().map_or(Some(1), number)?;
+            parts.next().is_none().then_some((start, count))
+        };
+        let (old_start, old_count) = range(fields.next()?, b'-')?;
+        let (new_start, new_count) = range(fields.next()?, b'+')?;
+        (fields.next()? == b"@@").then_some(Self {
+            old_start,
+            old_count,
+            new_start,
+            new_count,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -301,12 +401,23 @@ mod tests {
 
     #[test]
     fn reads_hunk_headers_with_and_without_counts() {
-        assert_eq!(hunk_starts(b"-12,7 +12,9 @@ fn x()"), Some((12, 12)));
-        assert_eq!(hunk_starts(b"-1 +1 @@"), Some((1, 1)));
-        assert_eq!(hunk_starts(b"-0,0 +1,3 @@"), Some((0, 1)));
-        assert_eq!(hunk_starts(b"+1 -1 @@"), None);
-        assert_eq!(hunk_starts(b"-1 +1"), None);
-        assert_eq!(hunk_starts(b"-x +1 @@"), None);
+        let ranges = |line: &[u8]| {
+            HunkRanges::parse(line).map(|ranges| {
+                (
+                    ranges.old_start,
+                    ranges.old_count,
+                    ranges.new_start,
+                    ranges.new_count,
+                )
+            })
+        };
+        assert_eq!(ranges(b"@@ -12,7 +12,9 @@ fn x()"), Some((12, 7, 12, 9)));
+        assert_eq!(ranges(b"@@ -1 +1 @@"), Some((1, 1, 1, 1)));
+        assert_eq!(ranges(b"@@ -0,0 +1,3 @@"), Some((0, 0, 1, 3)));
+        assert_eq!(ranges(b"@@ +1 -1 @@"), None);
+        assert_eq!(ranges(b"@@ -1 +1"), None);
+        assert_eq!(ranges(b"@@ -x +1 @@"), None);
+        assert_eq!(ranges(b"@@ -1,2,3 +1 @@"), None);
     }
 
     #[test]

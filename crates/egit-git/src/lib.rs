@@ -41,7 +41,10 @@ pub use commit::{Commit, CommitParseError, Signature};
 pub use config::{
     ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, set_config, unset_config,
 };
-pub use diff::{DiffLine, DiffLineKind, DiffOptions, FileDiff, WHOLE_FILE, file_diff};
+pub use diff::{
+    DiffLine, DiffLineKind, DiffOptions, FileDiff, Uncommitted, WHOLE_FILE, file_diff,
+    uncommitted_diff,
+};
 pub use error::{Failure, GitError};
 pub use git::{Git, GitOptions};
 pub use history::{

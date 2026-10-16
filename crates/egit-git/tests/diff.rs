@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 use bstr::{BStr, ByteSlice as _};
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, DiffLineKind, DiffOptions, FileDiff, ObjectId, Repository, WHOLE_FILE, file_diff,
+    CancelToken, DiffLineKind, DiffOptions, FileDiff, ObjectId, Repository, Uncommitted,
+    WHOLE_FILE, file_diff, uncommitted_diff,
 };
 
 fn sandbox() -> Sandbox {
@@ -212,4 +213,74 @@ fn paths_are_never_patterns() {
         shown(&diff),
         ["@ 0 0 @@ -1 +1 @@", "- 1 0 first", "+ 0 1 second"]
     );
+}
+
+/// The diff of the uncommitted changes `which` to `paths`.
+fn uncommitted(sandbox: &Sandbox, repo: &Path, paths: &[&str], which: Uncommitted) -> FileDiff {
+    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let paths: Vec<&BStr> = paths.iter().copied().map(BStr::new).collect();
+    uncommitted_diff(
+        sandbox.git(),
+        &repository,
+        &paths,
+        which,
+        &DiffOptions::default(),
+        &CancelToken::new(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn shows_what_is_staged_and_what_is_not() {
+    let sandbox = sandbox();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(&repo, "f", "one\ntwo\n", "Add")
+        .unwrap();
+    std::fs::write(repo.join("f"), "one\nTWO\n").unwrap();
+    sandbox.run(&repo, "add", &["f"]).unwrap();
+    std::fs::write(repo.join("f"), "one\nTWO\nthree\n").unwrap();
+
+    let staged = uncommitted(&sandbox, &repo, &["f"], Uncommitted::Staged);
+    assert_eq!(
+        shown(&staged),
+        [
+            "@ 0 0 @@ -1,2 +1,2 @@",
+            "  1 1 one",
+            "- 2 0 two",
+            "+ 0 2 TWO"
+        ]
+    );
+    let unstaged = uncommitted(&sandbox, &repo, &["f"], Uncommitted::Unstaged);
+    assert_eq!(
+        shown(&unstaged),
+        [
+            "@ 0 0 @@ -1,2 +1,3 @@",
+            "  1 1 one",
+            "  2 2 TWO",
+            "+ 0 3 three"
+        ]
+    );
+}
+
+#[test]
+fn shows_a_new_file_before_the_first_commit_and_untracked() {
+    let sandbox = sandbox();
+    let repo = sandbox.init("repo").unwrap();
+    std::fs::write(repo.join("staged"), "a\n").unwrap();
+    sandbox.run(&repo, "add", &["staged"]).unwrap();
+    let staged = uncommitted(&sandbox, &repo, &["staged"], Uncommitted::Staged);
+    assert_eq!(shown(&staged), ["@ 0 0 @@ -0,0 +1 @@", "+ 0 1 a"]);
+
+    // Untracked: through the file's line-ending conversion, as `git add` would store it.
+    sandbox
+        .run(&repo, "config", &["core.autocrlf", "true"])
+        .unwrap();
+    std::fs::write(repo.join("new file.txt"), "x\r\ny\r\n").unwrap();
+    let untracked = uncommitted(&sandbox, &repo, &["new file.txt"], Uncommitted::Untracked);
+    assert_eq!(
+        shown(&untracked),
+        ["@ 0 0 @@ -0,0 +1,2 @@", "+ 0 1 x", "+ 0 2 y"]
+    );
+    assert_eq!(untracked.text, b"@@ -0,0 +1,2 @@\nx\ny\n");
 }

@@ -136,7 +136,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     prefix, external-diff, or textconv setting applies; `--no-textconv --full-index
     --src-prefix=a/ --dst-prefix=b/`; `GIT_LITERAL_PATHSPECS`; a rename's both paths;
     `DiffOptions`: context (`WHOLE_FILE` for all of it) and the user's `diff.algorithm`, which
-    plumbing doesn't read). Parsed as it streams into `FileDiff`: each line's text without
+    plumbing doesn't read). `uncommitted_diff`: a file's `Uncommitted` changes from `git
+    diff` (`Unstaged`; `Staged`, `--cached -M`, before the first commit too; `Untracked`,
+    `--no-index` against `/dev/null`, which exits 1 when they differ), with every setting that
+    changes the patch pinned (`--no-relative`, prefixes, colour, external diff, textconv); the
+    work tree's side comes through clean filters and line-ending conversion, in the form git
+    stores. Parsed as it streams into `FileDiff`: each line's text without
     its prefix (hunk headers as lines), its `DiffLineKind`, old and new numbers, and a
     missing final newline; a binary file is flagged and has no lines. `lines.rs` — `Lines`,
     the streamed-output splitter `walk_history` and `file_diff` share.
