@@ -28,6 +28,9 @@ const OVERHANG: u32 = 1;
 /// The scroll bars' thickness.
 const BAR: f32 = 10.0;
 
+/// The space between panes side by side.
+const SEPARATOR: f32 = 2.0;
+
 /// The fewest cells a wrapped row has.
 const MIN_WRAP: u32 = 8;
 
@@ -135,8 +138,6 @@ struct Frame {
     wrap: Wrap,
     /// The cells an unwrapped row shows.
     visible_cells: u32,
-    /// Where the text goes (without gutter or scroll bars).
-    text: Rect,
 }
 
 impl TextGrid {
@@ -179,6 +180,13 @@ impl TextGrid {
 
     /// Draws `source` in the space left in `ui`.
     pub(crate) fn show(&mut self, ui: &mut Ui, source: &dyn GridSource) -> Response {
+        self.show_panes(ui, &[source])
+    }
+
+    /// Draws `panes` side by side in the space left in `ui`, scrolled as one: the sides of a
+    /// diff, whose lines line up one for one and take the same rows when wrapped (their
+    /// measures matched). The first pane's measure moves the rows.
+    pub(crate) fn show_panes(&mut self, ui: &mut Ui, panes: &[&dyn GridSource]) -> Response {
         let palette = Palette::of(ui.ctx());
         let font = egui::TextStyle::Monospace.resolve(ui.style());
         let measured_in = (font.clone(), fonts::generation(ui.ctx()));
@@ -188,23 +196,22 @@ impl TextGrid {
         }
         let (cell, row) =
             ui.fonts_mut(|fonts| (fonts.glyph_width(&font, '0'), fonts.row_height(&font)));
-        let measure = source.measure();
-
         let outer = ui.available_rect_before_wrap();
         let response = ui.allocate_rect(outer, Sense::click_and_drag());
-        // The gutter's cells, then a cell and a half before the text.
-        let gutter = f32::from(u16::try_from(source.gutter_cells()).unwrap_or(u16::MAX))
-            .mul_add(cell, cell * 1.5);
-        let text = Rect::from_min_max(
-            pos2(outer.left() + gutter, outer.top()),
-            pos2(
-                outer.right() - BAR,
-                outer.bottom() - if self.wrap { 0.0 } else { BAR },
-            ),
-        );
+        let Some(first) = panes.first() else {
+            return response;
+        };
+        let measure = first.measure();
+
+        let bottom = outer.bottom() - if self.wrap { 0.0 } else { BAR };
+        let rects = pane_rects(outer, bottom, panes, cell);
+        let narrowest = rects
+            .iter()
+            .map(|(_, text)| text.width())
+            .fold(f32::INFINITY, f32::min);
         let wrap = if self.wrap {
             Wrap::at(
-                fit_cells(text.width(), cell)
+                fit_cells(narrowest, cell)
                     .saturating_sub(OVERHANG)
                     .max(MIN_WRAP),
             )
@@ -215,10 +222,9 @@ impl TextGrid {
             cell,
             row,
             wrap,
-            visible_cells: fit_cells(text.width(), cell).saturating_add(1),
-            text,
+            visible_cells: fit_cells(narrowest, cell).saturating_add(1),
         };
-        self.screen_rows = fit_cells(text.height(), row).max(1);
+        self.screen_rows = fit_cells(bottom - outer.top(), row).max(1);
         self.index_rows(measure, wrap);
 
         // The top stays on a row start, in the text.
@@ -242,15 +248,33 @@ impl TextGrid {
 
         let painter = ui.painter_at(outer);
         painter.rect_filled(outer, CornerRadius::ZERO, palette.surface);
-        painter.rect_filled(
-            Rect::from_min_max(outer.min, pos2(text.left(), outer.bottom())),
-            CornerRadius::ZERO,
-            palette.panel,
-        );
-        self.draw_rows(ui, &painter, source, &font, &frame, outer, palette);
+        for (pane, (rect, text)) in panes.iter().zip(&rects) {
+            painter.rect_filled(
+                Rect::from_min_max(rect.min, pos2(text.left(), rect.bottom())),
+                CornerRadius::ZERO,
+                palette.panel,
+            );
+            self.draw_rows(ui, &painter, *pane, &font, &frame, *rect, *text, palette);
+        }
+        for (rect, _) in rects.iter().skip(1) {
+            painter.rect_filled(
+                Rect::from_min_max(
+                    pos2(rect.left() - SEPARATOR, outer.top()),
+                    pos2(rect.left(), outer.bottom()),
+                ),
+                CornerRadius::ZERO,
+                palette.border,
+            );
+        }
         self.scroll_bar(ui, measure, outer, palette);
-        if !self.wrap {
-            self.sideways_bar(ui, measure, &frame, outer, palette);
+        if !self.wrap
+            && let (Some((_, first_text)), Some((last, _))) = (rects.first(), rects.last())
+        {
+            let track = Rect::from_min_max(
+                pos2(first_text.left(), outer.bottom() - BAR),
+                pos2(last.right(), outer.bottom()),
+            );
+            self.sideways_bar(ui, measure, &frame, track, palette);
         }
         if response.has_focus() {
             painter.rect_stroke(
@@ -284,31 +308,30 @@ impl TextGrid {
         source: &dyn GridSource,
         font: &FontId,
         frame: &Frame,
-        outer: Rect,
+        pane: Rect,
+        text: Rect,
         palette: Palette,
     ) {
         let measure = source.measure();
         let text_painter = painter.with_clip_rect(
-            frame
-                .text
-                .expand2(vec2(
-                    frame.cell * f32::from(u16::try_from(OVERHANG).unwrap_or(1)),
-                    0.0,
-                ))
-                .intersect(outer),
+            text.expand2(vec2(
+                frame.cell * f32::from(u16::try_from(OVERHANG).unwrap_or(1)),
+                0.0,
+            ))
+            .intersect(pane),
         );
         let mut styles = Vec::new();
         let mut highlights = Vec::new();
         let mut gutter = String::new();
         let mut position = (measure.lines() > 0).then_some(self.top);
-        let mut y = frame.text.top() - self.offset;
+        let mut y = text.top() - self.offset;
         while let Some(at) = position
-            && y < frame.text.bottom()
+            && y < text.bottom()
         {
             if let Some(background) = source.background(at.line, &palette) {
                 let rect = Rect::from_min_size(
-                    pos2(outer.left(), y),
-                    vec2(frame.text.right() - outer.left(), frame.row),
+                    pos2(pane.left(), y),
+                    vec2(text.right() - pane.left(), frame.row),
                 );
                 painter.rect_filled(rect, CornerRadius::ZERO, background);
             }
@@ -316,7 +339,7 @@ impl TextGrid {
                 gutter.clear();
                 source.gutter(at.line, &mut gutter);
                 painter.text(
-                    pos2(frame.text.left() - frame.cell * 1.5, y),
+                    pos2(text.left() - frame.cell * 1.5, y),
                     egui::Align2::RIGHT_TOP,
                     &gutter,
                     font.clone(),
@@ -346,7 +369,7 @@ impl TextGrid {
             for highlight in &highlights {
                 let x = |cell: u32| {
                     f32::from(u16::try_from(cell).unwrap_or(u16::MAX))
-                        .mul_add(frame.cell, frame.text.left())
+                        .mul_add(frame.cell, text.left())
                 };
                 let rect = Rect::from_min_max(
                     pos2(x(highlight.cells.0), y),
@@ -356,7 +379,7 @@ impl TextGrid {
             }
             if !job.text.is_empty() {
                 let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
-                text_painter.galley(pos2(frame.text.left(), y), galley, palette.text);
+                text_painter.galley(pos2(text.left(), y), galley, palette.text);
             }
             y += frame.row;
             position = frame.wrap.next(measure, at);
@@ -593,7 +616,7 @@ impl TextGrid {
         ui: &Ui,
         measure: &Measure,
         frame: &Frame,
-        outer: Rect,
+        track: Rect,
         palette: Palette,
     ) {
         let widest = u64::from(measure.widest());
@@ -601,10 +624,6 @@ impl TextGrid {
         if widest <= visible {
             return;
         }
-        let track = Rect::from_min_max(
-            pos2(frame.text.left(), outer.bottom() - BAR),
-            pos2(frame.text.right(), outer.bottom()),
-        );
         let scrollable = widest.saturating_sub(visible);
         let thumb = (ratio(visible, widest) * track.width())
             .max(24.0)
@@ -628,6 +647,29 @@ impl TextGrid {
         }
         bar_thumb(ui, &response, thumb_rect, palette);
     }
+}
+
+/// Each pane's whole rectangle and its text's, side by side across `outer` (less the scroll
+/// bar) down to `bottom`: its gutter's cells, a cell and a half, then its text.
+fn pane_rects(outer: Rect, bottom: f32, panes: &[&dyn GridSource], cell: f32) -> Vec<(Rect, Rect)> {
+    let count = f32::from(u16::try_from(panes.len()).unwrap_or(1));
+    let pane_width = SEPARATOR.mul_add(-(count - 1.0), outer.width() - BAR) / count;
+    (0..panes.len())
+        .zip(panes)
+        .map(|(index, pane)| {
+            let index = f32::from(u16::try_from(index).unwrap_or(0));
+            let left = (pane_width + SEPARATOR).mul_add(index, outer.left());
+            let gutter = f32::from(u16::try_from(pane.gutter_cells()).unwrap_or(u16::MAX))
+                .mul_add(cell, cell * 1.5);
+            (
+                Rect::from_min_max(pos2(left, outer.top()), pos2(left + pane_width, bottom)),
+                Rect::from_min_max(
+                    pos2(left + gutter, outer.top()),
+                    pos2(left + pane_width, bottom),
+                ),
+            )
+        })
+        .collect()
 }
 
 /// A scroll bar's thumb, brighter while hovered or dragged.

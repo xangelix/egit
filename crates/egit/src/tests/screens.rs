@@ -619,6 +619,11 @@ fn a_changed_file_opens_in_place_of_the_history() {
     );
     render(&mut harness, "history-diff");
 
+    harness.get_by_label("Side by side").click();
+    settle(&mut harness, "the sides", shown);
+    render(&mut harness, "history-diff-split");
+    harness.get_by_label("Side by side").click();
+
     harness.get_by_label("Whole file").click();
     settle(&mut harness, "the whole file's diff", shown);
     harness.get_by_role_and_label(Role::Button, "File").click();

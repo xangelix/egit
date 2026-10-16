@@ -26,7 +26,7 @@ use egui_table_kit::layout::{
 };
 
 use crate::app::Action;
-use crate::diff::{DiffDocument, read_diff};
+use crate::diff::{DiffDocument, SplitDiff, read_diff, split_diff};
 use crate::fonts;
 use crate::format::{self, count, date_time};
 use crate::grid::TextGrid;
@@ -126,7 +126,12 @@ struct FileView {
     shown: Shown,
     /// Whether the diff shows the whole file, not just what changed and a little around it.
     whole: bool,
+    /// Whether the diff's sides are shown side by side.
+    split: bool,
     diff: Bind<Arc<DiffDocument>, Problem>,
+    /// The diff split in two, made the first time it is shown so.
+    sides: Bind<Arc<SplitDiff>, Problem>,
+    sides_grid: TextGrid,
     /// Read the first time the file is shown.
     content: Bind<Arc<FileContent>, Problem>,
     diff_grid: TextGrid,
@@ -154,6 +159,7 @@ impl FileView {
             context: if self.whole { WHOLE_FILE } else { 3 },
             ..DiffOptions::default()
         };
+        self.sides = Bind::new(true);
         self.diff.request(read_diff(
             git.clone(),
             Arc::clone(shared.repository),
@@ -212,9 +218,12 @@ impl HistoryView {
             .is_some_and(|open| open.diff_grid.wraps());
         let shown = self.file.as_ref().map_or(Shown::Diff, |open| open.shown);
         let whole = self.file.as_ref().is_some_and(|open| open.whole);
+        let split = self.file.as_ref().is_some_and(|open| open.split);
         let mut diff_grid = TextGrid::new(("diff", shared.id));
+        let mut sides_grid = TextGrid::new(("sides", shared.id));
         let mut file_grid = TextGrid::new(("file", shared.id));
         diff_grid.set_wrap(wrap);
+        sides_grid.set_wrap(wrap);
         file_grid.set_wrap(wrap);
         let mut file = FileView {
             commit: details.id,
@@ -222,7 +231,10 @@ impl HistoryView {
             change,
             shown,
             whole,
+            split,
             diff: Bind::new(true),
+            sides: Bind::new(true),
+            sides_grid,
             content: Bind::new(true),
             diff_grid,
             file_grid,
@@ -237,7 +249,7 @@ impl HistoryView {
     pub(crate) fn file_shown(&mut self) -> Option<(String, bool)> {
         let file = self.file.as_mut()?;
         let ready = match file.shown {
-            Shown::Diff => file.diff.is_ok(),
+            Shown::Diff => file.diff.is_ok() && (!file.split || file.sides.is_ok()),
             Shown::File => file.content.is_ok(),
         };
         Some((file.change.path.to_string(), ready))
@@ -485,7 +497,11 @@ fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bo
                     let mut wrap = file.diff_grid.wraps();
                     if ui.checkbox(&mut wrap, "Wrap lines").changed() {
                         file.diff_grid.set_wrap(wrap);
+                        file.sides_grid.set_wrap(wrap);
                         file.file_grid.set_wrap(wrap);
+                    }
+                    if file.shown == Shown::Diff {
+                        ui.checkbox(&mut file.split, "Side by side");
                     }
                     if file.shown == Shown::Diff
                         && ui.checkbox(&mut file.whole, "Whole file").changed()
@@ -532,6 +548,30 @@ fn show_diff(ui: &mut Ui, file: &mut FileView) {
                 ui,
                 "Nothing changed in the file's text (only its mode, say).".to_owned(),
             );
+        }
+        Some(Ok(diff)) if file.split => {
+            let diff = Arc::clone(diff);
+            if file.sides.is_idle() {
+                file.sides.request(split_diff(diff));
+            }
+            match file.sides.read_as_ref() {
+                Some(Ok(sides)) => {
+                    let sides = Arc::clone(sides);
+                    file.sides_grid
+                        .show_panes(ui, &[&sides.side(true), &sides.side(false)]);
+                }
+                Some(Err(problem)) => {
+                    let problem = problem.clone();
+                    Frame::new()
+                        .inner_margin(Margin::same(16))
+                        .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
+                }
+                None => {
+                    Frame::new()
+                        .inner_margin(Margin::same(16))
+                        .show(ui, |ui| widgets::working(ui, "Lining up the sides…"));
+                }
+            }
         }
         Some(Ok(diff)) => {
             let diff = Arc::clone(diff);
