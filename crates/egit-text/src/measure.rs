@@ -94,6 +94,17 @@ impl Measure {
         })
     }
 
+    /// Gives each line at least as many cells as `other`'s line of the same number, so that
+    /// wrapped at one width, both texts' lines take the same rows (two sides of a diff shown
+    /// side by side). The rows past a line's own cells are empty; lines past `other`'s last are
+    /// left as they are.
+    pub fn match_rows(&mut self, other: &Self) {
+        for (cells, &theirs) in self.cells.iter_mut().zip(&other.cells) {
+            *cells = (*cells).max(theirs);
+        }
+        self.widest = self.widest.max(other.widest);
+    }
+
     /// How lines were laid out.
     #[must_use]
     pub const fn options(&self) -> Options {
@@ -212,6 +223,18 @@ mod tests {
         assert_eq!(cells, [5, 11, 4, 0, 4]);
         assert_eq!(measure.widest(), 11);
         assert_eq!(measure.cells(99), 0);
+    }
+
+    #[test]
+    fn two_sides_take_the_same_rows() {
+        let (left_text, mut left) = measured(b"short\n\nlonger line here\n");
+        let (_, right) = measured(b"a much longer line\nmid\nx\nextra");
+        left.match_rows(&right);
+        let cells: Vec<u32> = (0..left.lines()).map(|line| left.cells(line)).collect();
+        assert_eq!(cells, [18, 3, 16]);
+        assert_eq!(left.widest(), 18);
+        // Past a line's own cells, a seek finds its end.
+        assert_eq!(left.seek(&left_text, 0, 10), Found { byte: 5, cell: 18 });
     }
 
     #[test]
