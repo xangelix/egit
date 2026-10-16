@@ -6,6 +6,7 @@ use std::ops::ControlFlow;
 use bstr::{BStr, BString, ByteSlice as _};
 
 use crate::cancel::CancelToken;
+use crate::config::{ConfigPlace, ConfigSnapshot};
 use crate::error::GitError;
 use crate::git::Git;
 use crate::object_id::ObjectId;
@@ -313,8 +314,11 @@ fn parse_name_status(output: &[u8]) -> Result<Vec<FileChange>, GitError> {
     Ok(changes)
 }
 
-/// Writes (or rewrites) the repository's commit-graph file, with the changed-path filters that
-/// make a file's history fast: `git commit-graph write --reachable --changed-paths`.
+/// Writes (or rewrites) the repository's commit-graph file (`git commit-graph write --reachable`).
+///
+/// It includes the changed-path filters that make a file's history fast (`--changed-paths`)
+/// unless the repository is a partial clone, where computing them would fetch every tree and
+/// blob it left out.
 ///
 /// # Errors
 ///
@@ -324,12 +328,28 @@ pub fn write_commit_graph(
     repository: &Repository,
     cancel: &CancelToken,
 ) -> Result<(), GitError> {
-    git.write("commit-graph")
-        .args(["write", "--reachable", "--changed-paths"])
+    let config = ConfigSnapshot::read(git, ConfigPlace::Repository(repository.work_tree()))?;
+    let mut command = git
+        .write("commit-graph")
+        .args(["write", "--reachable"])
         .current_dir(repository.work_tree())
-        .cancel_token(cancel)
-        .output()
-        .map(drop)
+        .cancel_token(cancel);
+    if !is_partial_clone(&config) {
+        command = command.arg("--changed-paths");
+    }
+    command.output().map(drop)
+}
+
+/// Whether objects may be missing and fetched on demand: a promisor remote, or a filter a
+/// clone was made with.
+fn is_partial_clone(config: &ConfigSnapshot) -> bool {
+    config.get("extensions.partialClone").is_some()
+        || config.entries().any(|entry| {
+            let key = entry.key.as_bytes();
+            key.starts_with(b"remote.")
+                && (key.ends_with(b".partialclonefilter")
+                    || (key.ends_with(b".promisor") && entry.bool() == Some(true)))
+        })
 }
 
 #[cfg(test)]

@@ -309,3 +309,53 @@ fn writes_a_commit_graph() {
     assert!(repository.has_commit_graph());
     assert_eq!(walk(&sandbox, &repo).len(), 6);
 }
+
+/// How many trees a repository holds.
+fn trees(sandbox: &Sandbox, repo: &Path) -> usize {
+    let listed = sandbox
+        .run(
+            repo,
+            "cat-file",
+            &["--batch-all-objects", "--batch-check=%(objecttype)"],
+        )
+        .unwrap();
+    listed
+        .stdout
+        .split(|&byte| byte == b'\n')
+        .filter(|kind| *kind == b"tree")
+        .count()
+}
+
+#[test]
+fn a_partial_clones_commit_graph_fetches_nothing() {
+    let sandbox = sandbox();
+    let source = branchy(&sandbox);
+    sandbox
+        .run(&source, "config", &["uploadpack.allowFilter", "true"])
+        .unwrap();
+    let url = format!("file://{}", source.display());
+    let clone = sandbox.path("clone");
+    sandbox
+        .run(
+            sandbox.home(),
+            "clone",
+            &[
+                "--quiet",
+                "--filter=tree:0",
+                "--no-checkout",
+                &url,
+                clone.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+    let before = trees(&sandbox, &clone);
+
+    let repository = Repository::discover(sandbox.git(), &clone).unwrap();
+    write_commit_graph(sandbox.git(), &repository, &CancelToken::new()).unwrap();
+    assert!(repository.has_commit_graph());
+    assert_eq!(
+        trees(&sandbox, &clone),
+        before,
+        "computing changed paths fetched trees"
+    );
+}
