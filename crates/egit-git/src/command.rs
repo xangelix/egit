@@ -157,6 +157,19 @@ impl GitCommand {
         self
     }
 
+    /// Says what this command is doing, shown with any prompt it causes ("Fetching origin").
+    pub fn prompt_context(self, context: impl AsRef<OsStr>) -> Self {
+        self.env(crate::askpass::CONTEXT_VAR, context)
+    }
+
+    /// Makes every prompt fail at once instead of asking the user: for work nobody is
+    /// watching, such as a background fetch.
+    pub fn non_interactive(self) -> Self {
+        self.env(crate::askpass::INTERACTIVE_VAR, "0")
+            // Git Credential Manager asks in windows of its own.
+            .env("GCM_INTERACTIVE", "never")
+    }
+
     /// Runs under `token`: cancelling it stops the command.
     pub fn cancel_token(mut self, token: &CancelToken) -> Self {
         self.cancel = Some(token.clone());

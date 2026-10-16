@@ -90,17 +90,24 @@ impl Sandbox {
     }
 
     /// The sandbox's git with more environment variables, such as git's own test switches
-    /// (`GIT_TEST_ASSUME_DIFFERENT_OWNER`).
+    /// (`GIT_TEST_ASSUME_DIFFERENT_OWNER`) or an askpass server's.
     ///
     /// # Errors
     ///
     /// When git can't be started.
-    pub fn git_with(&self, extra: &[(&str, &str)]) -> Result<Git, SandboxError> {
+    pub fn git_with<K, V>(
+        &self,
+        extra: impl IntoIterator<Item = (K, V)>,
+    ) -> Result<Git, SandboxError>
+    where
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
         let mut env = self.env.clone();
         env.extend(
             extra
-                .iter()
-                .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
         );
         Self::git_from(env)
     }

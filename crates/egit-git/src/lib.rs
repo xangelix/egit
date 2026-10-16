@@ -9,6 +9,7 @@
 //! [`Git::write`] build a [`GitCommand`], which runs git in a session of its own and can be
 //! cancelled through a [`CancelToken`].
 
+pub mod askpass;
 mod cancel;
 mod command;
 mod config;

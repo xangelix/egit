@@ -114,7 +114,7 @@ fn a_repository_another_user_owns_opens_once_trusted() {
     let sandbox = sandbox();
     let repo = sandbox.init("repo").unwrap();
     let suspicious = sandbox
-        .git_with(&[("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")])
+        .git_with([("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")])
         .unwrap();
 
     let error = Repository::discover(&suspicious, &repo).unwrap_err();

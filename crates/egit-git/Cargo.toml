@@ -21,6 +21,12 @@ rustix.workspace = true
 tempfile = { workspace = true, optional = true }
 thiserror.workspace = true
 tracing.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 egit-git = { workspace = true, features = ["testing"] }
+
+# Its own `main`: the test executable doubles as the askpass helper git starts.
+[[test]]
+name = "askpass"
+harness = false

@@ -88,6 +88,19 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     program — `gpg.program` and `gpg.openpgp.program` are one setting, the later wins —,
     allowed signers), credential helpers (an empty value resets the list), pull and push
     settings; each as a `Setting` or `ConfigEntry` that knows its scope and file.
+  - `askpass/` — prompts from git's and ssh's helpers relayed to the window. `AskpassServer`
+    makes `egit-<uid>/<pid>-<nonce>/` (0700, ownership checked) under `$XDG_RUNTIME_DIR` or
+    the temporary directory, holding a Unix socket and `egit-askpass`, a link to egit's
+    executable; `environment()` sets `GIT_ASKPASS`, `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`,
+    the socket, and a random token. Started under that name, egit is the helper
+    (`run_helper`). Connections must come from the same uid (`SO_PEERCRED`) and carry the
+    token; fields are bounded (`protocol.rs`); answers are zeroized. Its accept loop polls the
+    listener and an eventfd, so stopping never depends on the socket's path. `Prompt`s
+    (`PromptKind`: visible, secret, yes/no, confirm, notice) are answered, refused, or dropped
+    (refused); `is_abandoned` notices an asker that went away. `GitCommand::prompt_context`
+    labels a command's prompts; `non_interactive` makes them fail at once (and
+    `GCM_INTERACTIVE=never`). `tests/askpass.rs` runs without libtest so its executable can be
+    the helper git starts.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit` — the application (`egit_app` library, `egit` executable).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
