@@ -588,6 +588,45 @@ fn the_history_shows_branches_merges_and_a_commits_changes() {
 }
 
 #[test]
+fn a_changed_file_opens_in_place_of_the_history() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = branchy(&sandbox);
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness
+        .get_by_role_and_label(Role::Button, "Make the parser answer")
+        .click();
+    settle(&mut harness, "the commit's details", |app| {
+        app.state.repos[0].history_view.details_shown()
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "parser.rs")
+        .click();
+    settle(&mut harness, "the file", |app| {
+        app.state.repos[0].history_view.file_shown() == Some(("parser.rs".to_owned(), true))
+    });
+    harness.get_by_role_and_label(Role::Button, &format!("{}  History", icon::ARROW_LEFT));
+    harness.get_by_label("Wrap lines");
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Greet the world")
+            .is_none(),
+        "the file takes the commit table's place"
+    );
+    render(&mut harness, "history-file");
+
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(4);
+    assert_eq!(
+        harness.state_mut().state.repos[0].history_view.file_shown(),
+        None
+    );
+    harness.get_by_role_and_label(Role::Button, "Greet the world");
+}
+
+#[test]
 fn a_long_history_without_a_commit_graph_is_offered_one() {
     let sandbox = Sandbox::new().unwrap();
     let repo = sandbox.init("long").unwrap();

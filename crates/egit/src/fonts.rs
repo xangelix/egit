@@ -65,6 +65,12 @@ pub(crate) fn note_text(ui: &Ui, font: &FontId, text: &str) {
     }
 }
 
+/// How many fonts egui is using: a view caching glyph advances drops them when it changes. (A
+/// font added takes effect at the next frame's start, and only then does this count it.)
+pub(crate) fn generation(ctx: &Context) -> usize {
+    ctx.fonts(|fonts| fonts.definitions().font_data.len())
+}
+
 /// A system font kept for its glyphs.
 #[derive(Debug)]
 struct Kept {

@@ -15,13 +15,16 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use bstr::ByteSlice as _;
 use egit_git::{
     CancelToken, Commit, FileChange, Git, GitError, Object, ObjectFormat, ObjectId, ObjectKind,
-    ObjectReader, RefKind, Reference, Repository, commit_changes, list_references, walk_history,
+    ObjectReader, RefKind, Reference, Repository, TreeEntry, commit_changes, list_references,
+    walk_history,
 };
 use egit_graph::{CHUNK_ROWS, Chunk, GraphBuilder};
+use egit_text::Text;
 use egui_async::Bind;
 use parking_lot::Mutex;
 
 use crate::format::date_time;
+use crate::grid::Plain;
 use crate::jobs;
 use crate::problem::Problem;
 
@@ -30,6 +33,15 @@ const KEPT_SUMMARIES: usize = 4096;
 
 /// The most commits one read of summaries asks for.
 const READ_AT_ONCE: usize = 512;
+
+/// The largest file shown, in bytes.
+const MAX_SHOWN: usize = 256 << 20;
+
+/// How much of a file git looks through for a NUL to call it binary.
+const BINARY_PROBE: usize = 8_000;
+
+/// How a Git LFS pointer file starts.
+const LFS_POINTER: &[u8] = b"version https://git-lfs.github.com/spec/v1\n";
 
 /// A history: every commit reachable from a ref, children first, as rows.
 #[derive(Debug)]
@@ -500,6 +512,89 @@ pub(crate) struct CommitDetails {
     pub(crate) id: ObjectId,
     pub(crate) commit: Commit,
     pub(crate) changes: Vec<FileChange>,
+}
+
+/// A file as a file view shows it.
+#[derive(Debug)]
+pub(crate) enum FileContent {
+    /// Text, measured.
+    Text(Plain),
+    /// What git would call binary: a NUL in its first 8,000 bytes.
+    Binary {
+        /// Its size, in bytes.
+        size: u64,
+    },
+    /// A Git LFS pointer: the file itself is stored elsewhere.
+    Lfs {
+        /// The file's size, as the pointer gives it.
+        size: Option<u64>,
+    },
+    /// A submodule: a commit of another repository.
+    Submodule {
+        /// The commit.
+        commit: ObjectId,
+    },
+    /// Larger than egit shows.
+    TooLarge {
+        /// Its size, in bytes.
+        size: u64,
+    },
+}
+
+impl FileContent {
+    /// What `bytes` show as: binary, an LFS pointer, too large, or text.
+    fn of(bytes: &[u8]) -> Self {
+        let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        if bytes.len() > MAX_SHOWN {
+            return Self::TooLarge { size };
+        }
+        let probe = bytes.get(..BINARY_PROBE).unwrap_or(bytes);
+        if memchr::memchr(0, probe).is_some() {
+            return Self::Binary { size };
+        }
+        if bytes.len() < 1024
+            && let Some(rest) = bytes.strip_prefix(LFS_POINTER)
+        {
+            let size = rest
+                .lines()
+                .find_map(|line| line.strip_prefix(b"size "))
+                .and_then(|size| size.to_str().ok()?.trim().parse().ok());
+            return Self::Lfs { size };
+        }
+        Text::new(Arc::<[u8]>::from(bytes)).map_or(Self::TooLarge { size }, |text| {
+            Self::Text(Plain::new(text, egit_text::Options::default()))
+        })
+    }
+}
+
+/// Reads what `entry` names (a file's blob) and makes it ready to show.
+pub(crate) async fn read_file(
+    git: Git,
+    repository: Arc<Repository>,
+    objects: Objects,
+    entry: TreeEntry,
+) -> Result<Arc<FileContent>, Problem> {
+    if entry.mode == TreeEntry::SUBMODULE {
+        return Ok(Arc::new(FileContent::Submodule { commit: entry.id }));
+    }
+    jobs::blocking(move || {
+        const UNREADABLE: &str = "The file couldn't be read";
+        let mut content = None;
+        objects
+            .read(&git, repository.work_tree(), &[entry.id], |_, object| {
+                content = object
+                    .filter(|object| object.kind == ObjectKind::Blob)
+                    .map(|object| FileContent::of(object.data));
+            })
+            .map_err(|error| Problem::git(UNREADABLE, &error))?;
+        content.map(Arc::new).ok_or_else(|| {
+            Problem::new(
+                UNREADABLE,
+                format!("{} isn't in this repository.", entry.id),
+            )
+        })
+    })
+    .await
 }
 
 /// Reads commit `id` and lists the files it changed (against its first parent).

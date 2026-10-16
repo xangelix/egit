@@ -66,6 +66,30 @@ pub(crate) fn date_time(unix: i64, offset_minutes: i32) -> String {
     format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
 }
 
+/// A size in bytes, in the largest unit it fills: `512 bytes`, `3.2 MB` (decimal units, as
+/// file managers show them).
+pub(crate) fn size(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["KB", "MB", "GB", "TB", "PB"];
+    if bytes < 1_000 {
+        return format!("{bytes} bytes");
+    }
+    let mut divisor = 1_000_u64;
+    let mut unit = 0;
+    while unit < UNITS.len().saturating_sub(1) && bytes.checked_div(divisor).unwrap_or(0) >= 1_000 {
+        divisor = divisor.saturating_mul(1_000);
+        unit = unit.saturating_add(1);
+    }
+    let tenths = bytes
+        .checked_div(divisor.checked_div(10).unwrap_or(1))
+        .unwrap_or(0);
+    format!(
+        "{}.{} {}",
+        tenths.checked_div(10).unwrap_or(0),
+        tenths.checked_rem(10).unwrap_or(0),
+        UNITS.get(unit).copied().unwrap_or("PB")
+    )
+}
+
 /// `n` with its thousands apart: `1,485,335`.
 pub(crate) fn count(n: u64) -> String {
     let digits = n.to_string();
@@ -163,6 +187,17 @@ mod tests {
         assert_eq!(date_time(unix, -300), "2026-10-15 18:30");
         assert_eq!(date_time(-1, 0), "1969-12-31 23:59");
         assert_eq!(date_time(-86_400 * 366, 0), "1968-12-31 00:00");
+    }
+
+    #[test]
+    fn sizes_in_the_largest_unit_they_fill() {
+        assert_eq!(size(0), "0 bytes");
+        assert_eq!(size(999), "999 bytes");
+        assert_eq!(size(1_000), "1.0 KB");
+        assert_eq!(size(3_250_000), "3.2 MB");
+        assert_eq!(size(999_999_999), "999.9 MB");
+        assert_eq!(size(268_435_456), "268.4 MB");
+        assert_eq!(size(u64::MAX), "18446.7 PB");
     }
 
     #[test]

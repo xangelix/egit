@@ -11,6 +11,7 @@ use bstr::ByteSlice as _;
 use egit_git::{ChangeKind, ConfigEntry, ConfigSnapshot, FileChange, ObjectId};
 use egui::{RichText, Ui};
 use egui_table_kit::error::TableError;
+use egui_table_kit::interaction::RowEventKind;
 use egui_table_kit::operations::{HeaderIter, Row, RowCallback, TableCell, TableProvider};
 use egui_table_kit::state::TableState;
 use egui_table_kit::table::TableKit;
@@ -293,8 +294,14 @@ impl ChangesTable {
         }
     }
 
-    /// Shows the files `details`' commit changed, `height` tall at most.
-    pub(crate) fn show(&mut self, ui: &mut Ui, details: &Arc<CommitDetails>, height: f32) {
+    /// Shows the files `details`' commit changed, `height` tall at most; returns the one
+    /// clicked, if any.
+    pub(crate) fn show(
+        &mut self,
+        ui: &mut Ui,
+        details: &Arc<CommitDetails>,
+        height: f32,
+    ) -> Option<usize> {
         if self.shown != Some(details.id) {
             self.state = TableState::new(self.id.as_str(), details.changes.len());
             self.shown = Some(details.id);
@@ -314,12 +321,20 @@ impl ChangesTable {
             .with_row_height(22.0)
             .with_max_height(Some(height))
             .with_striped(true)
-            .show(ui, |_, _, _, _| None);
-        if let Err(error) = shown {
-            ui.label(
-                RichText::new(format!("The table couldn't be drawn: {error}"))
-                    .color(Palette::of(ui.ctx()).danger),
-            );
+            .show_with_output(ui, |_, _, _, _| None);
+        match shown {
+            Ok(output) => output
+                .events
+                .iter()
+                .find(|event| matches!(event.kind, RowEventKind::Clicked | RowEventKind::Activated))
+                .map(|event| event.row_index),
+            Err(error) => {
+                ui.label(
+                    RichText::new(format!("The table couldn't be drawn: {error}"))
+                        .color(Palette::of(ui.ctx()).danger),
+                );
+                None
+            }
         }
     }
 }
@@ -333,7 +348,7 @@ struct ChangeRows<'a> {
 const CHANGE_HEADERS: [&str; 2] = ["Change", "File"];
 
 /// How a commit changed a file, in a word or two.
-const fn change_name(kind: &ChangeKind) -> &'static str {
+pub(crate) const fn change_name(kind: &ChangeKind) -> &'static str {
     match kind {
         ChangeKind::Added => "Added",
         ChangeKind::Copied { .. } => "Copied",

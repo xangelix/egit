@@ -32,6 +32,11 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
   `EGIT_TEST_GIT=$PWD/target/git/2.43.0/bin/git cargo test --workspace` runs every test against
   it. Do this after touching anything that runs git (CI does it in `ubuntu:24.04`).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
+- Text corpus: `cargo test -p egit --release --lib -- --ignored --nocapture corpus` draws the
+  text grid through the roadmap's worst cases (1M lines of code, a 10 MB line wrapped and not,
+  CJK and emoji, resizing wrapped at line 900k) and prints frame times, laid out and
+  tessellated (it fails past 8 ms at p99); renders `corpus-*.png` where it can. Every case
+  stays under 2 ms.
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a
@@ -191,6 +196,15 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     up (inotify's per-user limits, often used up by editors) trying again, backing off from
     1 s to 30 s, and hands over `Changes::ALL` once it works, as it does when inotify's queue
     overflowed (a rescan); meanwhile the status bar says outside changes aren't followed.
+  - `grid.rs` — the text grid: a `GridSource` (a measured `egit_text::Text`, colours, line
+    backgrounds, a gutter) drawn as a terminal draws it. Each visible row is one galley of
+    sections of one colour and advance, letter-spaced so every glyph takes exactly its cells
+    (egui spaces before each glyph but a row's first, so a section's leading space trades its
+    spacing for the previous one's; thin spaces take half a cell, egui's rule). The view keeps
+    the `Position` at its top and an offset: wheel, keys (↑ ↓ PgUp PgDn Space, ⌘Home/End;
+    ← → Home End sideways), and its own scroll bars (from `Rows`, rebuilt when the width or
+    text changes). Advances are cached per character until egui's font count changes
+    (`fonts::generation`). `Plain` is a text, numbered.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the XDG font directories (CJK families, then
@@ -208,7 +222,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
     selection and the top row's commit in place when a re-read takes over. Details: message,
     names, parents (buttons: egui announces links as plain text), people, signature, refs,
-    and the changed files (`ChangesTable`). A history of 10,000+ commits without a
+    and the changed files (`ChangesTable`); clicking one opens a `FileView` in the commit
+    table's place (Escape or "History" goes back): the file as the commit left it (as it was,
+    if deleted), read and measured in a job (`read_file`), or a placeholder for binary files,
+    LFS pointers, submodules, and files over 256 MiB. A history of 10,000+ commits without a
     commit-graph is offered one (`Action::WriteCommitGraph`).
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
@@ -236,8 +253,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     no egui id clashes, no text or control drawn partly over another on the same layer,
     nothing moving while idle, and every control named in words or numbers (link a field to
     its visible label with `labelled_by`). Not yet audited, as eshine does: hover response,
-    cursors, focus rings, and 24-point targets. `src/tests/scale.rs` is the opt-in
-    large-history measurement (see Scale above).
+    cursors, focus rings, and 24-point targets. `src/tests/scale.rs` and `src/tests/corpus.rs`
+    are the opt-in measurements (see Scale and Text corpus above).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
 - `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older
   releases don't compile as C23).

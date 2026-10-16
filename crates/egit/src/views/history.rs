@@ -10,7 +10,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
-use egit_git::{Git, Head, ObjectId, RefKind, Reference, Repository};
+use egit_git::{FileChange, Git, Head, ObjectId, RefKind, Reference, Repository};
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
 use egui::{
@@ -24,11 +24,15 @@ use egui_table_kit::layout::{
 
 use crate::app::Action;
 use crate::fonts;
-use crate::format::{count, date_time};
-use crate::history::{CommitDetails, History, HistoryState, Objects, Summaries, read_details};
+use crate::format::{self, count, date_time};
+use crate::grid::TextGrid;
+use crate::history::{
+    CommitDetails, FileContent, History, HistoryState, Objects, Summaries, read_details, read_file,
+};
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::tables::ChangesTable;
+use crate::tables::change_name;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -103,6 +107,18 @@ pub(crate) struct HistoryView {
     /// The commit whose details were last asked for.
     details_for: Option<ObjectId>,
     changes: ChangesTable,
+    /// A changed file being looked at, in place of the commit table.
+    file: Option<FileView>,
+}
+
+/// A file a commit changed, as it was after (before, if the commit deleted it).
+#[derive(Debug)]
+struct FileView {
+    /// The commit that changed it.
+    commit: ObjectId,
+    change: FileChange,
+    content: Bind<Arc<FileContent>, Problem>,
+    grid: TextGrid,
 }
 
 /// The selected commit and its row.
@@ -124,7 +140,47 @@ impl HistoryView {
             details: Bind::new(true),
             details_for: None,
             changes: ChangesTable::new(format!("history-changes-{repo}")),
+            file: None,
         }
+    }
+
+    /// Opens `change` of commit `commit` in a file view, reading the side the commit left.
+    fn open_file(
+        &mut self,
+        shared: &Shared<'_>,
+        objects: &Objects,
+        commit: ObjectId,
+        change: FileChange,
+    ) {
+        let Some(entry) = change.new.or(change.old) else {
+            return;
+        };
+        let mut content = Bind::new(true);
+        if let Some(git) = shared.git {
+            content.request(read_file(
+                git.clone(),
+                Arc::clone(shared.repository),
+                objects.clone(),
+                entry,
+            ));
+        }
+        let mut grid = TextGrid::new(("file", shared.id));
+        if let Some(open) = &self.file {
+            grid.set_wrap(open.grid.wraps());
+        }
+        self.file = Some(FileView {
+            commit,
+            change,
+            content,
+            grid,
+        });
+    }
+
+    /// The file being looked at: its path, and whether its contents are shown yet.
+    #[cfg(test)]
+    pub(crate) fn file_shown(&mut self) -> Option<(String, bool)> {
+        let file = self.file.as_mut()?;
+        Some((file.change.path.to_string(), file.content.is_ok()))
     }
 
     /// The selected commit's row.
@@ -303,9 +359,110 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         .frame(Frame::new().inner_margin(Margin::same(12)))
         .show(ui, |ui| details(ui, &shared, history, view));
 
+    // A file looked at belongs to the selected commit, until another is selected.
+    if view
+        .file
+        .as_ref()
+        .is_some_and(|file| view.selected.map(|selected| selected.id) != Some(file.commit))
+    {
+        view.file = None;
+    }
     egui::CentralPanel::default()
         .frame(Frame::new())
-        .show(ui, |ui| commit_table(ui, &shared, history, view));
+        .show(ui, |ui| match &mut view.file {
+            Some(file) => {
+                if !file_view(ui, &shared, file) {
+                    view.file = None;
+                }
+            }
+            None => commit_table(ui, &shared, history, view),
+        });
+}
+
+/// A changed file's contents, under a bar to go back to the commit table; returns whether it
+/// stays open.
+fn file_view(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) -> bool {
+    let palette = shared.palette;
+    let mut open = !ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+    Frame::new()
+        .fill(palette.panel)
+        .inner_margin(Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
+                {
+                    open = false;
+                }
+                ui.add_space(8.0);
+                ui.label(RichText::new(change_name(&file.change.kind)).color(palette.muted));
+                ui.add(
+                    Label::new(RichText::new(file.change.path.to_str_lossy()).strong()).truncate(),
+                );
+                if file.change.new.is_none() {
+                    ui.label(muted(ui, "(as it was before this commit)"));
+                }
+                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
+                    let mut wrap = file.grid.wraps();
+                    if ui.checkbox(&mut wrap, "Wrap lines").changed() {
+                        file.grid.set_wrap(wrap);
+                    }
+                });
+            });
+        });
+    let placeholder = |ui: &mut Ui, text: String| {
+        Frame::new()
+            .inner_margin(Margin::same(16))
+            .show(ui, |ui| ui.label(muted(ui, text)));
+    };
+    match file.content.read_as_ref() {
+        None => {
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::working(ui, "Reading the file…"));
+        }
+        Some(Err(problem)) => {
+            let problem = problem.clone();
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
+        }
+        Some(Ok(content)) => match &**content {
+            FileContent::Text(text) => {
+                file.grid.show(ui, text);
+            }
+            FileContent::Binary { size } => placeholder(
+                ui,
+                format!(
+                    "A binary file ({}): there is no text to show.",
+                    format::size(*size)
+                ),
+            ),
+            FileContent::Lfs { size } => placeholder(
+                ui,
+                size.map_or_else(
+                    || "A Git LFS pointer: the file itself is stored elsewhere.".to_owned(),
+                    |bytes| {
+                        format!(
+                            "A Git LFS pointer: the file itself ({}) is stored elsewhere.",
+                            format::size(bytes)
+                        )
+                    },
+                ),
+            ),
+            FileContent::Submodule { commit } => placeholder(
+                ui,
+                format!(
+                    "A submodule, at commit {}: its files are another repository's.",
+                    commit.abbreviated(ID_DIGITS * 2)
+                ),
+            ),
+            FileContent::TooLarge { size } => placeholder(
+                ui,
+                format!("A file of {}: too large to show.", format::size(*size)),
+            ),
+        },
+    }
+    open
 }
 
 /// What the pane's parts share.
@@ -846,7 +1003,11 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &HistoryState, view: &mut 
         },
     );
     let height = ui.available_height();
-    view.changes.show(ui, &shown, height);
+    if let Some(index) = view.changes.show(ui, &shown, height)
+        && let Some(change) = shown.changes.get(index)
+    {
+        view.open_file(shared, &history.objects, shown.id, change.clone());
+    }
 
     if let Some(parent) = go_to
         && let Some(row) = history.shown.row_of(&parent, selected.row)
