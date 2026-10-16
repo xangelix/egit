@@ -24,6 +24,7 @@ mod lines;
 mod object_id;
 mod objects;
 mod output;
+mod patch;
 mod process;
 mod profile;
 mod repo;
@@ -54,6 +55,7 @@ pub use history::{
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};
+pub use patch::{Direction, LinesError, apply_lines, write_index_content};
 pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,

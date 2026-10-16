@@ -145,6 +145,16 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     its prefix (hunk headers as lines), its `DiffLineKind`, old and new numbers, and a
     missing final newline; a binary file is flagged and has no lines. `lines.rs` — `Lines`,
     the streamed-output splitter `walk_history` and `file_diff` share.
+  - `patch.rs` — staging or unstaging picked lines. `apply_lines`: the index's blob with the
+    picked lines of a diff moved across (`Direction::Stage`: the index against the work tree,
+    picked additions go in and removals go out; `Unstage`: `HEAD` against the index, the other
+    way); base lines are copied in bulk, every line the diff says the index holds is checked
+    (`LinesError::Stale` otherwise), and a line left without a newline gains one when picked
+    lines follow it. `write_index_content`: `ls-files --stage` must still show the entry the
+    diff was made from, then `hash-object -w --no-filters --stdin` and
+    `update-index -z --index-info`. `tests/lines.rs` checks both directions against
+    `git apply --cached` on random edits and picks (250 cases each way; zero-context cases
+    touching a missing final newline are skipped, as git's `--unidiff-zero` mishandles them).
   - `status.rs` — `Status::read`: `git status --porcelain=v2 -z --untracked-files=all` (each
     untracked file on its own), kept as git's output plus a table of byte ranges into it
     (`span.rs`, shared with `config.rs`); modes and object names are checked once and decoded
