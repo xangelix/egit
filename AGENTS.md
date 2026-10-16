@@ -171,7 +171,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     sorted into `Changes` (refs, state, config, index; `*.lock`, objects, logs ignored), access
     and attribute events ignored, and handed over once quiet for `SETTLE` (120 ms), so one git
     command causes one refresh. The app watches the files its user snapshot names and reads
-    every configuration again when one changes.
+    every configuration again when one changes. `Watching` keeps a watch that couldn't be set
+    up (inotify's per-user limits, often used up by editors) trying again, backing off from
+    1 s to 30 s, and hands over `Changes::ALL` once it works, as it does when inotify's queue
+    overflowed (a rescan); meanwhile the status bar says outside changes aren't followed.
   - `views/history.rs` — the commit table on egui-table-kit's layout `Table` (its `TableKit`
     keeps per-row state a graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen

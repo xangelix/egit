@@ -1,4 +1,4 @@
-//! The bar along the window's bottom: which git egit runs, and the theme.
+//! The bar along the window's bottom: which git egit runs, what isn't working, and the theme.
 
 use egui::Ui;
 
@@ -22,6 +22,19 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
             None => format!("{}  Looking for git…", icon::HOURGLASS),
         };
         ui.label(muted(ui, git_text).small());
+        if let Some(reason) = state.watch_problem() {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}  Changes made outside egit aren't followed",
+                    icon::WARNING
+                ))
+                .small()
+                .color(crate::theme::Palette::of(ui.ctx()).warn),
+            )
+            .on_hover_text(format!(
+                "egit can't watch for them: {reason}. It keeps trying, and catches up once it can."
+            ));
+        }
         if let Some(reason) = &state.prompts.unavailable {
             ui.label(
                 egui::RichText::new(format!(

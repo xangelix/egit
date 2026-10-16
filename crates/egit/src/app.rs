@@ -26,7 +26,7 @@ use crate::views::home::HomeView;
 use crate::views::profile::ProfileView;
 use crate::views::prompts::Prompts;
 use crate::views::status_bar;
-use crate::watch::{Taken, Watcher};
+use crate::watch::{Taken, Watcher, Watching};
 
 /// The application.
 pub(crate) struct EgitApp {
@@ -53,7 +53,7 @@ pub(crate) struct AppState {
     pub(crate) home_dir: Option<PathBuf>,
     opening: Vec<Opening>,
     /// Watches the files the user's configuration comes from (and which they are).
-    user_watcher: Option<(Vec<PathBuf>, Watcher)>,
+    user_watcher: Option<(Vec<PathBuf>, Watching)>,
     /// Paths to open once git is ready.
     waiting: Vec<PathBuf>,
     pub(crate) actions: Vec<Action>,
@@ -353,17 +353,16 @@ impl AppState {
             files.dedup();
             let watched = self.user_watcher.as_ref().map(|(watched, _)| watched);
             if watched != Some(&files) {
-                let waker = ctx.clone();
-                self.user_watcher = Watcher::files(files.clone(), move |delay| waker.request_repaint_after(delay))
-                    .inspect_err(|error| tracing::warn!(%error, "changes to your configuration won't show until egit restarts"))
-                    .ok()
-                    .map(|watcher| (files, watcher));
+                let watching = Watching::new(now, || watch_files(files.clone(), ctx));
+                self.user_watcher = Some((files, watching));
             }
         }
         let taken = self
             .user_watcher
-            .as_ref()
-            .map_or(Taken::Nothing, |(_, watcher)| watcher.take(now));
+            .as_mut()
+            .map_or(Taken::Nothing, |(files, watching)| {
+                watching.take(now, || watch_files(files.clone(), ctx))
+            });
         match taken {
             Taken::Nothing => {}
             Taken::Wait(delay) => wait = sooner(wait, Some(delay)),
@@ -377,6 +376,15 @@ impl AppState {
         if let Some(delay) = wait {
             ctx.request_repaint_after(delay);
         }
+    }
+
+    /// Why changes made outside egit aren't being followed (in the user's configuration or a
+    /// repository), while they aren't.
+    pub(crate) fn watch_problem(&self) -> Option<&str> {
+        self.user_watcher
+            .as_ref()
+            .and_then(|(_, watching)| watching.problem())
+            .or_else(|| self.repos.iter().find_map(RepoTab::watch_problem))
     }
 
     /// Whether repositories are being opened.
@@ -470,6 +478,12 @@ impl eframe::App for EgitApp {
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         visuals.panel_fill.to_normalized_gamma_f32()
     }
+}
+
+/// Watches the user's configuration `files`, waking `ctx` when one changes.
+fn watch_files(files: Vec<PathBuf>, ctx: &egui::Context) -> notify::Result<Watcher> {
+    let waker = ctx.clone();
+    Watcher::files(files, move |delay| waker.request_repaint_after(delay))
 }
 
 /// The sooner of two optional delays.

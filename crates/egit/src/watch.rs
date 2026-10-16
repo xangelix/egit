@@ -6,6 +6,10 @@
 //! changed for [`SETTLE`], so a command that writes many files causes one refresh. Reads change
 //! nothing: egit's own (`--no-optional-locks`) never trigger a refresh, and access events are
 //! ignored.
+//!
+//! A watch can fail to be set up: inotify's limits are per user, and an editor watching a large
+//! tree can use them all. [`Watching`] then tries again, ever less often, and once it works it
+//! hands over every kind of change, since what changed meanwhile went unseen.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -17,6 +21,13 @@ use parking_lot::Mutex;
 
 /// How long things must stay quiet before what changed is handed over.
 pub(crate) const SETTLE: Duration = Duration::from_millis(120);
+
+/// How long after a watch failed it is first tried again; each failure doubles it, up to
+/// [`MAX_RETRY`].
+const FIRST_RETRY: Duration = Duration::from_secs(1);
+
+/// The longest wait between tries of a watch that keeps failing.
+const MAX_RETRY: Duration = Duration::from_secs(30);
 
 /// What changed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -33,6 +44,11 @@ impl Changes {
     pub(crate) const CONFIG: Self = Self(1 << 2);
     /// The index (what is staged).
     pub(crate) const INDEX: Self = Self(1 << 3);
+    /// Everything.
+    pub(crate) const ALL: Self = Self::REFS
+        .union(Self::STATE)
+        .union(Self::CONFIG)
+        .union(Self::INDEX);
 
     pub(crate) const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -90,13 +106,17 @@ impl Watcher {
                         return;
                     }
                 };
-                if !matters(event.kind) {
-                    return;
-                }
-                let changes = event
-                    .paths
-                    .iter()
-                    .fold(Changes::NONE, |changes, path| changes.union(classify(path)));
+                // Events were dropped (inotify's queue overflowed): anything may have changed.
+                let changes = if event.need_rescan() {
+                    Changes::ALL
+                } else if matters(event.kind) {
+                    event
+                        .paths
+                        .iter()
+                        .fold(Changes::NONE, |changes, path| changes.union(classify(path)))
+                } else {
+                    Changes::NONE
+                };
                 if changes.is_empty() {
                     return;
                 }
@@ -184,6 +204,90 @@ impl Watcher {
         pending.last = None;
         drop(pending);
         Taken::Changed(changes)
+    }
+}
+
+/// A watch kept trying: a [`Watcher`], or why there is none and when to try again.
+pub(crate) struct Watching {
+    state: State,
+}
+
+enum State {
+    Active(Watcher),
+    Failed {
+        /// Why, for people.
+        reason: String,
+        retry_at: Instant,
+        /// The wait before `retry_at`, doubled at each failure.
+        backoff: Duration,
+    },
+}
+
+impl Watching {
+    /// Starts a watch with `start` at `now`; one that fails is tried again by [`Self::take`].
+    pub(crate) fn new(now: Instant, start: impl FnOnce() -> notify::Result<Watcher>) -> Self {
+        let state = match start() {
+            Ok(watcher) => State::Active(watcher),
+            Err(error) => failed(&error, now, FIRST_RETRY),
+        };
+        Self { state }
+    }
+
+    /// What changed (see [`Watcher::take`]). A failed watch is tried again with `start` once due,
+    /// and everything counts as changed when it then works.
+    pub(crate) fn take(
+        &mut self,
+        now: Instant,
+        start: impl FnOnce() -> notify::Result<Watcher>,
+    ) -> Taken {
+        let State::Failed {
+            retry_at, backoff, ..
+        } = &self.state
+        else {
+            return match &self.state {
+                State::Active(watcher) => watcher.take(now),
+                State::Failed { .. } => Taken::Nothing,
+            };
+        };
+        if now < *retry_at {
+            return Taken::Wait(retry_at.saturating_duration_since(now));
+        }
+        let backoff = backoff.saturating_mul(2).min(MAX_RETRY);
+        match start() {
+            Ok(watcher) => {
+                tracing::info!("watching for changes made outside egit again");
+                self.state = State::Active(watcher);
+                Taken::Changed(Changes::ALL)
+            }
+            Err(error) => {
+                self.state = failed(&error, now, backoff);
+                Taken::Wait(backoff)
+            }
+        }
+    }
+
+    /// Why changes aren't being followed, while they aren't.
+    pub(crate) fn problem(&self) -> Option<&str> {
+        match &self.state {
+            State::Active(_) => None,
+            State::Failed { reason, .. } => Some(reason),
+        }
+    }
+}
+
+/// The state of a watch that failed at `now`, tried again after `backoff`.
+fn failed(error: &notify::Error, now: Instant, backoff: Duration) -> State {
+    let reason = match error.kind {
+        notify::ErrorKind::MaxFilesWatch => "the system's limit on watched folders is reached \
+             (fs.inotify.max_user_watches); other programs may be using it up"
+            .to_owned(),
+        _ => error.to_string(),
+    };
+    tracing::warn!(%error, ?backoff, "changes made outside egit aren't followed; trying again");
+    State::Failed {
+        reason,
+        retry_at: now.checked_add(backoff).unwrap_or(now),
+        backoff,
     }
 }
 
@@ -320,6 +424,57 @@ mod tests {
         );
         assert_eq!(watcher.take(start + SETTLE), Taken::Changed(Changes::REFS));
         assert_eq!(watcher.take(start + SETTLE * 2), Taken::Nothing);
+    }
+
+    fn quiet_watcher() -> notify::Result<Watcher> {
+        Ok(Watcher {
+            _inner: notify::recommended_watcher(|_: notify::Result<notify::Event>| {})?,
+            pending: Arc::new(Mutex::new(Pending::default())),
+        })
+    }
+
+    fn at_limit() -> notify::Result<Watcher> {
+        Err(notify::Error::new(notify::ErrorKind::MaxFilesWatch))
+    }
+
+    #[test]
+    fn a_failed_watch_is_tried_again_ever_less_often_and_then_reports_everything() {
+        let start = Instant::now();
+        let mut watching = Watching::new(start, at_limit);
+        assert!(watching.problem().unwrap().contains("max_user_watches"));
+        assert_eq!(
+            watching.take(start + Duration::from_millis(400), || panic!("not due")),
+            Taken::Wait(Duration::from_millis(600))
+        );
+        assert_eq!(
+            watching.take(start + FIRST_RETRY, at_limit),
+            Taken::Wait(FIRST_RETRY * 2)
+        );
+        assert_eq!(
+            watching.take(start + FIRST_RETRY * 3, at_limit),
+            Taken::Wait(FIRST_RETRY * 4)
+        );
+        let later = start + FIRST_RETRY * 7;
+        assert_eq!(
+            watching.take(later, quiet_watcher),
+            Taken::Changed(Changes::ALL)
+        );
+        assert_eq!(watching.problem(), None);
+        assert_eq!(watching.take(later, || panic!("working")), Taken::Nothing);
+    }
+
+    #[test]
+    fn retries_slow_down_no_further_than_the_limit() {
+        let mut now = Instant::now();
+        let mut watching = Watching::new(now, at_limit);
+        let mut last = Duration::ZERO;
+        for _ in 0..12 {
+            now += MAX_RETRY;
+            if let Taken::Wait(wait) = watching.take(now, at_limit) {
+                last = wait;
+            }
+        }
+        assert_eq!(last, MAX_RETRY);
     }
 
     #[test]

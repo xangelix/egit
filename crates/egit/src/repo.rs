@@ -13,7 +13,7 @@ use crate::jobs::{self, WriteLock};
 use crate::problem::Problem;
 use crate::tables::SnapshotTable;
 use crate::views::history::HistoryView;
-use crate::watch::{Changes, Taken, Watcher};
+use crate::watch::{Changes, Taken, Watcher, Watching};
 
 /// Tells open repositories apart for the life of the window.
 pub(crate) type RepoId = u64;
@@ -52,8 +52,8 @@ pub(crate) struct RepoTab {
     pub(crate) panels: egui_tiles::Tree<RepoPanel>,
     /// Commands that write to the repository take it.
     writes: WriteLock,
-    /// Notices what changes the repository outside egit; `None` when it can't be watched.
-    watcher: Option<Watcher>,
+    /// Notices what changes the repository outside egit.
+    watching: Watching,
     /// Wakes the window when a job has news.
     waker: egui::Context,
 }
@@ -66,13 +66,7 @@ impl RepoTab {
             || repository.work_tree().display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
-        let waker = ctx.clone();
-        let watcher =
-            Watcher::repository(&repository, move |delay| waker.request_repaint_after(delay))
-                .inspect_err(|error| {
-                    tracing::warn!(%error, "changes made outside egit won't show until refreshed");
-                })
-                .ok();
+        let watching = Watching::new(Instant::now(), || watch(&repository, ctx));
         let repository = Arc::new(repository);
         let mut tab = Self {
             id,
@@ -93,7 +87,7 @@ impl RepoTab {
                 ],
             ),
             writes: WriteLock::default(),
-            watcher,
+            watching,
             waker: ctx.clone(),
         };
         tab.refresh_status(git);
@@ -112,10 +106,8 @@ impl RepoTab {
     /// Reads again what changed outside egit, once the changes have settled; returns how long
     /// to wait before asking again while they haven't.
     pub(crate) fn follow_changes(&mut self, git: &Git, now: Instant) -> Option<Duration> {
-        let taken = self
-            .watcher
-            .as_ref()
-            .map_or(Taken::Nothing, |watcher| watcher.take(now));
+        let (repository, waker) = (&self.repository, &self.waker);
+        let taken = self.watching.take(now, || watch(repository, waker));
         match taken {
             Taken::Nothing => None,
             Taken::Wait(delay) => Some(delay),
@@ -132,6 +124,11 @@ impl RepoTab {
                 None
             }
         }
+    }
+
+    /// Why changes made outside egit aren't being followed, while they aren't.
+    pub(crate) fn watch_problem(&self) -> Option<&str> {
+        self.watching.problem()
     }
 
     /// Reads everything again; what is shown stays until the new state arrives.
@@ -178,4 +175,10 @@ impl RepoTab {
                 .map_err(|error| Problem::git("The repository's settings couldn't be read", &error))
         }));
     }
+}
+
+/// Watches `repository`, waking `ctx` when it changes.
+fn watch(repository: &Repository, ctx: &egui::Context) -> notify::Result<Watcher> {
+    let waker = ctx.clone();
+    Watcher::repository(repository, move |delay| waker.request_repaint_after(delay))
 }
