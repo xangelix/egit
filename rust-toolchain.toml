@@ -1,0 +1,5 @@
+# The latest stable release when egit began; bump deliberately, with the lints kept clean.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

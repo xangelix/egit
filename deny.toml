@@ -1,0 +1,41 @@
+# cargo-deny policy: advisories, licences, banned crates, and where crates may come from.
+
+[graph]
+# Every target egit ships for (Linux only, for now).
+targets = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
+exclude-dev = false
+all-features = true
+
+[advisories]
+# Unmaintained or unsound crates fail the build; yanked versions too.
+unmaintained = "all"
+yanked = "deny"
+ignore = []
+
+[licenses]
+# Workspace crates are unpublished and carry no licence yet.
+private = { ignore = true }
+confidence-threshold = 0.93
+# Only licences actually present; additions are reviewed when a dependency needs them.
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    # egit drives the system's git binary for every repository operation (docs/ROADMAP.md): a
+    # second implementation of git inside the process would disagree with the one the user runs.
+    { crate = "git2", reason = "egit drives the git binary; no in-process git (docs/ROADMAP.md)" },
+    { crate = "libgit2-sys", reason = "egit drives the git binary; no in-process git (docs/ROADMAP.md)" },
+    # egit never speaks to the network itself (git does), so no TLS stack belongs in its graph.
+    { crate = "openssl", reason = "egit makes no network connections of its own" },
+    { crate = "openssl-sys", reason = "egit makes no network connections of its own" },
+    { crate = "native-tls", reason = "egit makes no network connections of its own" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

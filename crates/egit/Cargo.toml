@@ -1,0 +1,16 @@
+[package]
+name = "egit"
+description = "A fast, native git client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# The application as a library (the tests drive it).
+[lib]
+name = "egit_app"
+
+[dependencies]

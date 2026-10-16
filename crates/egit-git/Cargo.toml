@@ -1,0 +1,12 @@
+[package]
+name = "egit-git"
+description = "egit's interface to the git binary: running it safely, and reading what it says."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
