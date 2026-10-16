@@ -13,6 +13,7 @@ use bstr::{BStr, ByteSlice as _};
 
 use crate::error::GitError;
 use crate::git::Git;
+use crate::span::{Span, SpanSplitter, as_u32, span_bytes};
 
 /// Which configuration a snapshot reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,13 +83,6 @@ pub struct ConfigSnapshot {
     entries: Box<[RawEntry]>,
     /// Where git ran: relative origins (`file:.git/config`) are relative to it.
     base: PathBuf,
-}
-
-/// A byte range of the buffer.
-#[derive(Clone, Copy, Debug)]
-struct Span {
-    start: u32,
-    end: u32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -340,52 +334,6 @@ fn canonical_key(key: &str) -> String {
     canonical.push_str(subsection);
     canonical.push_str(&name.to_ascii_lowercase());
     canonical
-}
-
-fn span_bytes(buffer: &[u8], span: Span) -> &[u8] {
-    let index = |position: u32| usize::try_from(position).unwrap_or(usize::MAX);
-    buffer
-        .get(index(span.start)..index(span.end))
-        .unwrap_or_default()
-}
-
-/// A position known to fit: the whole buffer was checked to be under 4 GiB.
-fn as_u32(position: usize) -> u32 {
-    u32::try_from(position).unwrap_or(u32::MAX)
-}
-
-/// Splits a buffer at NUL bytes into spans; the final NUL terminates the last field.
-struct SpanSplitter<'a> {
-    buffer: &'a [u8],
-    position: usize,
-}
-
-impl<'a> SpanSplitter<'a> {
-    const fn new(buffer: &'a [u8]) -> Self {
-        Self {
-            buffer,
-            position: 0,
-        }
-    }
-}
-
-impl Iterator for SpanSplitter<'_> {
-    type Item = Span;
-
-    fn next(&mut self) -> Option<Span> {
-        let rest = self.buffer.get(self.position..)?;
-        if rest.is_empty() {
-            return None;
-        }
-        let length = rest.find_byte(b'\0').unwrap_or(rest.len());
-        let start = self.position;
-        let end = start.saturating_add(length);
-        self.position = end.saturating_add(1);
-        Some(Span {
-            start: as_u32(start),
-            end: as_u32(end),
-        })
-    }
 }
 
 #[cfg(test)]

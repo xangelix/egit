@@ -27,6 +27,7 @@ mod output;
 mod process;
 mod profile;
 mod repo;
+mod span;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod version;
