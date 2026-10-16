@@ -125,13 +125,21 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
     credentials, pull and push, and every setting, each with its origin), `repo` (overview
-    and settings table), `status_bar` (git's version and path, the theme).
+    and settings table), `status_bar` (git's version and path, the theme, a warning when
+    questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
+    `AskpassServer` at launch and gives git its environment; questions queue and show one
+    at a time in a modal (`PromptKind` decides the field and buttons); the abandoned are
+    dropped (checked every 250 ms while shown); answers are handed over off the interface
+    thread (`jobs::detached`), then wiped, with the text field's own undo copy removed from
+    egui's memory).
   - `tables.rs` — egui-table-kit providers (`ConfigRows`, `RecentRows`) with O(1) `cell_at`,
     and `SnapshotTable`, whose state starts over only when its snapshot is replaced.
   - `theme.rs` (palettes, WCAG AA checked by a test; Phosphor icons), `widgets.rs` (cards,
     buttons, origin labels, problem boxes), `format.rs` (`~` paths, "5 minutes ago",
     dates), `settings.rs` (theme, recent repositories, open tabs; non-UTF-8 paths kept as
     bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
+  - `tests/askpass_helper.rs` — the real `egit` executable (`CARGO_BIN_EXE_egit`) started by
+    git as its helper through the server's link.
   - `tests/screens.rs` — the whole application driven through the accessibility tree
     (egui_kittest) against a sandboxed git; renders `target/gui-screens/*.png` where a wgpu
     adapter exists (`EGIT_GUI_RENDER=1` requires one, `0` skips). Look at them after any

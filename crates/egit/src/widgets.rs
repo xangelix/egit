@@ -108,6 +108,16 @@ pub(crate) fn problem_box(ui: &mut Ui, problem: &Problem, add_actions: impl FnOn
         });
 }
 
+/// A dialog's row of buttons, laid out from the right (the first added is the rightmost), as
+/// tall as its buttons.
+pub(crate) fn buttons_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), 0.0),
+        egui::Layout::right_to_left(egui::Align::Center),
+        add,
+    );
+}
+
 /// A note that something is happening in the background.
 pub(crate) fn working(ui: &mut Ui, text: &str) {
     ui.horizontal(|ui| {

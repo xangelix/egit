@@ -2,6 +2,7 @@
 
 pub(crate) mod home;
 pub(crate) mod profile;
+pub(crate) mod prompts;
 pub(crate) mod repo;
 pub(crate) mod status_bar;
 

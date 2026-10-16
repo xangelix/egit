@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use egit_git::askpass::{PromptKind, ask_as_helper};
 use egit_git::testing::Sandbox;
 use egit_git::{ConfigPlace, ConfigSnapshot, Git};
 use egui::accesskit::Role;
@@ -15,6 +16,7 @@ use egui_kittest::kittest::Queryable as _;
 
 use crate::app::EgitApp;
 use crate::settings::Settings;
+use crate::views::prompts::Prompts;
 
 /// Where renderings are written.
 fn screens() -> PathBuf {
@@ -41,7 +43,13 @@ fn harness_with(git: Git, home: &Path, theme: egui::Theme) -> Harness<'static, E
         .with_theme(theme);
     let builder = if rendering() { builder.wgpu() } else { builder };
     builder.build_eframe(move |creation| {
-        EgitApp::with_git(&creation.egui_ctx, git, Settings::default(), Some(home))
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            Some(home),
+            Prompts::none(),
+        )
     })
 }
 
@@ -242,4 +250,121 @@ fn an_invalid_email_cant_be_saved() {
     email.type_text(" <oops>");
     harness.run_steps(2);
     harness.get_by_label("An email can't contain spaces, < or >, or line breaks.");
+}
+
+/// The application with git's questions relayed through a server in the sandbox.
+fn harness_with_prompts(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
+    let git = sandbox.git().clone();
+    let home = sandbox.home().to_owned();
+    let base = sandbox.path("askpass");
+    std::fs::create_dir(&base).unwrap();
+    std::fs::set_permissions(&base, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let builder = Harness::builder().with_size([1180.0, 800.0]);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    builder.build_eframe(move |creation| {
+        let (prompts, _) =
+            Prompts::start_with(&creation.egui_ctx, Path::new("/usr/bin/egit"), Some(&base));
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            Some(home),
+            prompts,
+        )
+    })
+}
+
+/// Asks the application `prompt` from another thread, as git's helper would.
+fn ask(
+    harness: &Harness<'_, EgitApp>,
+    kind: PromptKind,
+    prompt: &'static str,
+    context: &'static str,
+) -> std::thread::JoinHandle<Option<String>> {
+    let environment = harness.state().state.prompts.environment();
+    std::thread::spawn(move || {
+        ask_as_helper(&environment, kind, prompt, context)
+            .unwrap()
+            .map(|answer| String::from_utf8(answer.to_vec()).unwrap())
+    })
+}
+
+#[test]
+fn a_password_is_asked_in_the_window() {
+    let sandbox = Sandbox::new().unwrap();
+    let mut harness = harness_with_prompts(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    let helper = ask(
+        &harness,
+        PromptKind::Secret,
+        "Password for 'https://me@example.com': ",
+        "Fetching origin",
+    );
+    settle(&mut harness, "the question", |app| {
+        app.state.prompts.waiting() == 1
+    });
+    harness.get_by_label_contains("A password or passphrase is needed");
+    harness.get_by_label("While fetching origin");
+    harness.get_by_label("Password for 'https://me@example.com':");
+    let field = harness.get_by_role(Role::PasswordInput);
+    field.focus();
+    field.type_text("correct horse");
+    harness.run_steps(2);
+    render(&mut harness, "prompt-password");
+
+    harness.get_by_role_and_label(Role::Button, "OK").click();
+    harness.run_steps(2);
+    assert_eq!(helper.join().unwrap().as_deref(), Some("correct horse"));
+    settle(&mut harness, "the dialog to close", |app| {
+        app.state.prompts.waiting() == 0
+    });
+    assert!(
+        harness
+            .query_by_label_contains("A password or passphrase")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_cancelled_question_is_refused() {
+    let sandbox = Sandbox::new().unwrap();
+    let mut harness = harness_with_prompts(&sandbox);
+    let helper = ask(
+        &harness,
+        PromptKind::Visible,
+        "Username for 'https://example.com': ",
+        "",
+    );
+    settle(&mut harness, "the question", |app| {
+        app.state.prompts.waiting() == 1
+    });
+    harness.get_by_label_contains("A user name is needed");
+    assert!(harness.query_by_label_contains("While").is_none());
+    harness
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    harness.run_steps(2);
+    assert_eq!(helper.join().unwrap(), None);
+}
+
+#[test]
+fn a_host_question_is_answered_yes_or_no() {
+    let sandbox = Sandbox::new().unwrap();
+    let mut harness = harness_with_prompts(&sandbox);
+    let helper = ask(
+        &harness,
+        PromptKind::YesNo,
+        "The authenticity of host 'example.com' can't be established.\n\
+         ED25519 key fingerprint is SHA256:Hjw2Wr8Y5xKKgWYH3GSaNDfzTtFjk6RoFKlJmUDwTGM.\n\
+         Are you sure you want to continue connecting (yes/no/[fingerprint])? ",
+        "Cloning example.com/repo",
+    );
+    settle(&mut harness, "the question", |app| {
+        app.state.prompts.waiting() == 1
+    });
+    harness.get_by_label_contains("Your decision is needed");
+    render(&mut harness, "prompt-host");
+    harness.get_by_role_and_label(Role::Button, "Yes").click();
+    harness.run_steps(2);
+    assert_eq!(helper.join().unwrap().as_deref(), Some("yes"));
 }

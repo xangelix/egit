@@ -57,6 +57,15 @@ where
         })
 }
 
+/// Runs `work` on the blocking pool without waiting for it (or here, without a runtime).
+pub(crate) fn detached(work: impl FnOnce() + Send + 'static) {
+    match RUNTIME.get() {
+        // The handle is dropped: the work runs to its end on its own.
+        Some(runtime) => drop(runtime.spawn_blocking(work)),
+        None => work(),
+    }
+}
+
 /// Serializes the commands that write to one place (a repository, or the user's configuration).
 #[derive(Clone, Debug, Default)]
 pub(crate) struct WriteLock(Arc<Mutex<()>>);

@@ -22,6 +22,17 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
             None => format!("{}  Looking for git…", icon::HOURGLASS),
         };
         ui.label(muted(ui, git_text).small());
+        if let Some(reason) = &state.prompts.unavailable {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{}  git can't ask you for passwords",
+                    icon::WARNING
+                ))
+                .small()
+                .color(crate::theme::Palette::of(ui.ctx()).warn),
+            )
+            .on_hover_text(reason.as_str());
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let current = state.settings.theme;

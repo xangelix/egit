@@ -23,6 +23,7 @@ use crate::tabs::{self, Pane};
 use crate::theme::{self, Palette, ThemeChoice};
 use crate::views::home::HomeView;
 use crate::views::profile::ProfileView;
+use crate::views::prompts::Prompts;
 use crate::views::status_bar;
 
 /// The application.
@@ -43,6 +44,8 @@ pub(crate) struct AppState {
     pub(crate) repos: Vec<RepoTab>,
     pub(crate) home: HomeView,
     pub(crate) profile: ProfileView,
+    /// Git's and ssh's questions, waiting for the user.
+    pub(crate) prompts: Prompts,
     pub(crate) settings: Settings,
     /// The user's home folder, shown as `~`.
     pub(crate) home_dir: Option<PathBuf>,
@@ -98,12 +101,16 @@ impl EgitApp {
     pub(crate) fn new(creation: &eframe::CreationContext<'_>, paths: Vec<PathBuf>) -> Self {
         let settings = Settings::load(creation.storage);
         let home_dir = std::env::var_os("HOME").map(PathBuf::from);
+        // Every git process asks its questions through this window.
+        let (prompts, env) = Prompts::start(&creation.egui_ctx);
+        let options = GitOptions { program: None, env };
         Self::start(
             &creation.egui_ctx,
             settings,
             home_dir,
             None,
-            GitOptions::default(),
+            options,
+            prompts,
             paths,
         )
     }
@@ -115,6 +122,7 @@ impl EgitApp {
         git: Git,
         settings: Settings,
         home_dir: Option<PathBuf>,
+        prompts: Prompts,
     ) -> Self {
         Self::start(
             ctx,
@@ -122,6 +130,7 @@ impl EgitApp {
             home_dir,
             Some(git),
             GitOptions::default(),
+            prompts,
             Vec::new(),
         )
     }
@@ -132,6 +141,7 @@ impl EgitApp {
         home_dir: Option<PathBuf>,
         git: Option<Git>,
         git_options: GitOptions,
+        prompts: Prompts,
         paths: Vec<PathBuf>,
     ) -> Self {
         theme::install_fonts(ctx);
@@ -152,6 +162,7 @@ impl EgitApp {
             repos: Vec::new(),
             home: HomeView::default(),
             profile: ProfileView::default(),
+            prompts,
             settings,
             home_dir,
             opening: Vec::new(),
@@ -243,6 +254,7 @@ impl AppState {
 
     /// Advances the jobs: what finished becomes state or actions.
     fn poll(&mut self) {
+        self.prompts.poll();
         if let Some(git) = self.git() {
             if self.user_config.is_idle() {
                 self.refresh_user_config(&git);
@@ -369,6 +381,7 @@ impl eframe::App for EgitApp {
         CentralPanel::default()
             .frame(Frame::new().fill(palette.background))
             .show(ui, |ui| tabs::draw(&mut self.tabs, &mut self.state, ui));
+        self.state.prompts.show(ui.ctx());
         self.apply_actions(ui.ctx());
     }
 
