@@ -26,6 +26,8 @@ pub(crate) struct ProfileView {
     /// Why the last save failed.
     pub(crate) problem: Option<Problem>,
     form: Form,
+    /// What the settings the form was filled from say.
+    saved: Form,
     /// The settings the form was filled from.
     filled_from: Option<Arc<ConfigSnapshot>>,
     table: SnapshotTable,
@@ -37,6 +39,7 @@ impl Default for ProfileView {
             saving: Bind::new(true),
             problem: None,
             form: Form::default(),
+            saved: Form::default(),
             filled_from: None,
             table: SnapshotTable::new("profile-config".to_owned()),
         }
@@ -174,20 +177,17 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         };
         let home = state.home_dir.clone();
         let view = &mut state.profile;
-        let saved = Form::from_snapshot(&snapshot);
-        // New settings refill the form, unless it holds edits not yet saved.
-        let dirty = view
-            .filled_from
-            .as_ref()
-            .is_some_and(|filled| view.form != Form::from_snapshot(filled));
         let fresh = !view
             .filled_from
             .as_ref()
             .is_some_and(|filled| Arc::ptr_eq(filled, &snapshot));
-        if fresh && !dirty {
-            view.form = saved.clone();
-        }
         if fresh {
+            let saved = Form::from_snapshot(&snapshot);
+            // New settings refill the form, unless it holds edits not yet saved.
+            if view.form == view.saved {
+                view.form = saved.clone();
+            }
+            view.saved = saved;
             view.filled_from = Some(Arc::clone(&snapshot));
         }
 
@@ -195,7 +195,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         ui.add_space(12.0);
         signing_card(ui, view, &snapshot, home.as_deref());
         ui.add_space(8.0);
-        save_row(ui, view, &saved, &mut state.actions);
+        save_row(ui, view, &mut state.actions);
         ui.add_space(12.0);
         credentials_card(ui, &snapshot, home.as_deref());
         ui.add_space(12.0);
@@ -340,9 +340,9 @@ fn signing_card(
     });
 }
 
-fn save_row(ui: &mut Ui, view: &mut ProfileView, saved: &Form, actions: &mut Vec<Action>) {
+fn save_row(ui: &mut Ui, view: &mut ProfileView, actions: &mut Vec<Action>) {
     let palette = Palette::of(ui.ctx());
-    let changes = view.form.changes(saved);
+    let changes = view.form.changes(&view.saved);
     let invalid = view.form.problem();
     let saving = view.saving.is_pending();
     ui.horizontal(|ui| {
@@ -351,7 +351,7 @@ fn save_row(ui: &mut Ui, view: &mut ProfileView, saved: &Form, actions: &mut Vec
             actions.push(Action::SaveProfile(changes.clone()));
         }
         if widgets::secondary(ui, !changes.is_empty() && !saving, "Revert").clicked() {
-            view.form = saved.clone();
+            view.form = view.saved.clone();
         }
         if saving {
             ui.spinner();

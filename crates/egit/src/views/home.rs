@@ -183,15 +183,16 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
             return;
         }
         let table = &mut state.home.recent;
-        let listed: Vec<StoredPath> = state
-            .settings
-            .recent
-            .iter()
-            .map(|recent| recent.path.clone())
-            .collect();
-        if table.shown != listed {
-            table.state = TableState::new("home-recent", listed.len());
-            table.shown = listed;
+        let recent = &state.settings.recent;
+        let unchanged = table.shown.len() == recent.len()
+            && table
+                .shown
+                .iter()
+                .zip(recent)
+                .all(|(shown, recent)| *shown == recent.path);
+        if !unchanged {
+            table.shown = recent.iter().map(|recent| recent.path.clone()).collect();
+            table.state = TableState::new("home-recent", recent.len());
         }
         let provider = RecentRows::new(&state.settings.recent, state.home_dir.as_deref(), now());
         let rows = state.settings.recent.len().min(10);
