@@ -1,16 +1,18 @@
 //! Noticing what changes repositories and the user's configuration behind egit's back: a commit
 //! or checkout in a terminal, a fetch, an edited configuration file.
 //!
-//! inotify watches (through `notify`) cover git directories and configuration files only, never
-//! a work tree. What changed accumulates as [`Changes`] and is handed over once nothing has
-//! changed for [`SETTLE`], so a command that writes many files causes one refresh. Reads change
-//! nothing: egit's own (`--no-optional-locks`) never trigger a refresh, and access events are
-//! ignored.
+//! inotify watches (through `notify`) cover git directories, configuration files, and a work
+//! tree's folders, each folder on its own ([`TreeWatcher`]: only those git has files in, so a
+//! build's output or downloaded dependencies cost no watch). What changed accumulates as
+//! [`Changes`] and is handed over once nothing has changed for [`SETTLE`], so a command that
+//! writes many files causes one refresh. Reads change nothing: egit's own
+//! (`--no-optional-locks`) never trigger a refresh, and access events are ignored.
 //!
 //! A watch can fail to be set up: inotify's limits are per user, and an editor watching a large
 //! tree can use them all. [`Watching`] then tries again, ever less often, and once it works it
 //! hands over every kind of change, since what changed meanwhile went unseen.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -44,11 +46,14 @@ impl Changes {
     pub(crate) const CONFIG: Self = Self(1 << 2);
     /// The index (what is staged).
     pub(crate) const INDEX: Self = Self(1 << 3);
+    /// A file in the work tree.
+    pub(crate) const WORK_TREE: Self = Self(1 << 4);
     /// Everything.
     pub(crate) const ALL: Self = Self::REFS
         .union(Self::STATE)
         .union(Self::CONFIG)
-        .union(Self::INDEX);
+        .union(Self::INDEX)
+        .union(Self::WORK_TREE);
 
     pub(crate) const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
@@ -78,6 +83,27 @@ pub(crate) enum Taken {
 struct Pending {
     changes: Changes,
     last: Option<Instant>,
+}
+
+impl Pending {
+    /// Notes `changes`, made at `now`.
+    const fn note(&mut self, changes: Changes, now: Instant) {
+        self.changes = self.changes.union(changes);
+        self.last = Some(now);
+    }
+
+    /// What changed, once things have settled for [`SETTLE`] at `now`.
+    fn take(&mut self, now: Instant) -> Taken {
+        let Some(last) = self.last else {
+            return Taken::Nothing;
+        };
+        let quiet = now.saturating_duration_since(last);
+        if quiet < SETTLE {
+            return Taken::Wait(SETTLE.saturating_sub(quiet));
+        }
+        self.last = None;
+        Taken::Changed(std::mem::take(&mut self.changes))
+    }
 }
 
 /// Watches some directories and accumulates what changed in them.
@@ -120,11 +146,7 @@ impl Watcher {
                 if changes.is_empty() {
                     return;
                 }
-                {
-                    let mut pending = shared.lock();
-                    pending.changes = pending.changes.union(changes);
-                    pending.last = Some(Instant::now());
-                }
+                shared.lock().note(changes, Instant::now());
                 wake(SETTLE);
             })?;
         for (path, mode) in watches {
@@ -192,18 +214,155 @@ impl Watcher {
 
     /// What changed, once things have settled for [`SETTLE`] at `now`.
     pub(crate) fn take(&self, now: Instant) -> Taken {
-        let mut pending = self.pending.lock();
-        let Some(last) = pending.last else {
-            return Taken::Nothing;
-        };
-        let quiet = now.saturating_duration_since(last);
-        if quiet < SETTLE {
-            return Taken::Wait(SETTLE.saturating_sub(quiet));
+        self.pending.lock().take(now)
+    }
+}
+
+/// Watches a work tree's folders, each on its own (never their subfolders), reporting
+/// [`Changes::WORK_TREE`].
+///
+/// Which folders is up to its owner ([`Self::watch`]): those git has files in, so a build's
+/// output or downloaded dependencies cost no watch. Folders created meanwhile are noted for the
+/// owner to consider ([`Self::take_created`]), and a folder removed loses its watch.
+pub(crate) struct TreeWatcher {
+    watches: Mutex<TreeWatches>,
+    events: Arc<Mutex<TreeEvents>>,
+}
+
+/// The watcher and the folders it watches.
+struct TreeWatches {
+    watcher: RecommendedWatcher,
+    folders: HashSet<PathBuf>,
+}
+
+/// What the watcher's events left for its owner.
+#[derive(Debug, Default)]
+struct TreeEvents {
+    pending: Pending,
+    /// Folders created since last asked.
+    created: Vec<PathBuf>,
+    /// Folders removed (their watches went with them).
+    removed: HashSet<PathBuf>,
+}
+
+impl TreeWatcher {
+    /// A watcher for the work tree whose git directory is `git_dir` (its changes are left to the
+    /// repository's own watcher), watching nothing yet; `wake` is called when something
+    /// changed, to have [`Self::take`] called after [`SETTLE`].
+    pub(crate) fn new(
+        git_dir: PathBuf,
+        wake: impl Fn(Duration) + Send + 'static,
+    ) -> notify::Result<Self> {
+        let events = Arc::new(Mutex::new(TreeEvents::default()));
+        let shared = Arc::clone(&events);
+        let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+            let event = match event {
+                Ok(event) => event,
+                Err(error) => {
+                    tracing::debug!(%error, "a work tree watch failed");
+                    return;
+                }
+            };
+            let in_work_tree = |path: &&PathBuf| !path.starts_with(&git_dir);
+            let changed = event.need_rescan()
+                || (matters(event.kind) && event.paths.iter().any(|path| in_work_tree(&path)));
+            if !changed {
+                return;
+            }
+            {
+                let mut events = shared.lock();
+                events.pending.note(Changes::WORK_TREE, Instant::now());
+                let folders = event.paths.iter().filter(in_work_tree).cloned();
+                match event.kind {
+                    EventKind::Create(notify::event::CreateKind::Folder) => {
+                        events.created.extend(folders);
+                    }
+                    EventKind::Remove(notify::event::RemoveKind::Folder) => {
+                        events.removed.extend(folders);
+                    }
+                    _ => {}
+                }
+            }
+            wake(SETTLE);
+        })?;
+        Ok(Self {
+            watches: Mutex::new(TreeWatches {
+                watcher,
+                folders: HashSet::new(),
+            }),
+            events,
+        })
+    }
+
+    /// Watches exactly `folders`: those new are added, those gone dropped. A folder that no
+    /// longer exists is left out. Each new watch is a system call: run it in a job.
+    ///
+    /// # Errors
+    ///
+    /// When a watch can't be added (inotify's per-user limit, most likely); those added
+    /// before it stay.
+    pub(crate) fn watch(&self, folders: HashSet<PathBuf>) -> notify::Result<()> {
+        let removed = std::mem::take(&mut self.events.lock().removed);
+        let mut state = self.watches.lock();
+        let TreeWatches {
+            watcher,
+            folders: watched,
+        } = &mut *state;
+        watched.retain(|folder| !removed.contains(folder));
+        let gone: Vec<PathBuf> = watched.difference(&folders).cloned().collect();
+        for folder in gone {
+            // A folder deleted took its watch with it: there is nothing to undo.
+            let _ = watcher.unwatch(&folder);
+            watched.remove(&folder);
         }
-        let changes = std::mem::take(&mut pending.changes);
-        pending.last = None;
-        drop(pending);
-        Taken::Changed(changes)
+        let mut outcome = Ok(());
+        for folder in folders {
+            if watched.contains(&folder) {
+                continue;
+            }
+            match watcher.watch(&folder, RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    watched.insert(folder);
+                }
+                Err(error) if gone_already(&error) => {}
+                Err(error) => {
+                    outcome = Err(error);
+                    break;
+                }
+            }
+        }
+        drop(state);
+        outcome
+    }
+
+    /// Whether `folder` is watched.
+    #[cfg(test)]
+    pub(crate) fn watches(&self, folder: &Path) -> bool {
+        self.watches.lock().folders.contains(folder)
+    }
+
+    /// How many folders are watched.
+    pub(crate) fn len(&self) -> usize {
+        self.watches.lock().folders.len()
+    }
+
+    /// The folders created since last asked.
+    pub(crate) fn take_created(&self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.events.lock().created)
+    }
+
+    /// What changed, once things have settled for [`SETTLE`] at `now`.
+    pub(crate) fn take(&self, now: Instant) -> Taken {
+        self.events.lock().pending.take(now)
+    }
+}
+
+/// Whether a watch failed because its folder no longer exists.
+fn gone_already(error: &notify::Error) -> bool {
+    match &error.kind {
+        notify::ErrorKind::PathNotFound => true,
+        notify::ErrorKind::Io(error) => error.kind() == std::io::ErrorKind::NotFound,
+        _ => false,
     }
 }
 

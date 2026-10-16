@@ -40,6 +40,7 @@ use crate::tables::ChangesTable;
 use crate::tables::change_name;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
+use crate::worktree::WorkTree;
 
 /// A row's height.
 const ROW_HEIGHT: f32 = 24.0;
@@ -95,6 +96,8 @@ pub(crate) struct HistoryPane<'a> {
     /// Whether the repository is a partial clone, once its configuration is read: lines
     /// aren't counted there (git could fetch every blob a commit changed).
     pub(crate) partial_clone: Option<bool>,
+    /// The working tree's status.
+    pub(crate) work_tree: &'a mut WorkTree,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -507,6 +510,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         head,
         writing_commit_graph,
         partial_clone,
+        work_tree,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -524,7 +528,14 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
     egui::Panel::top(Id::new(("history-bar", id)))
         .frame(Frame::new().inner_margin(Margin::symmetric(12, 8)))
         .show(ui, |ui| {
-            top_bar(ui, &shared, history, writing_commit_graph, actions);
+            top_bar(
+                ui,
+                &shared,
+                history,
+                work_tree,
+                writing_commit_graph,
+                actions,
+            );
         });
 
     if history.shown.rows() == 0 {
@@ -855,6 +866,7 @@ fn top_bar(
     ui: &mut Ui,
     shared: &Shared<'_>,
     history: &HistoryState,
+    work_tree: &mut WorkTree,
     writing: &mut Bind<(), Problem>,
     actions: &mut Vec<Action>,
 ) {
@@ -871,6 +883,7 @@ fn top_bar(
             ui.spinner();
             ui.label(muted(ui, "Reading the history…"));
         }
+        work_tree_summary(ui, work_tree, palette);
     });
     for problem in [history.shown.problem(), history.summaries.problem.as_ref()]
         .into_iter()
@@ -903,6 +916,38 @@ fn top_bar(
         if let Some(problem) = writing.err_ref() {
             ui.label(RichText::new(problem.to_string()).color(palette.danger));
         }
+    }
+}
+
+/// How many files have changes not yet committed, if any; or why that isn't known.
+fn work_tree_summary(ui: &mut Ui, work_tree: &mut WorkTree, palette: Palette) {
+    match work_tree.status() {
+        Some(Ok(status)) if !status.is_empty() => {
+            let files = status.len();
+            let text = if files == 1 {
+                "1 file with uncommitted changes".to_owned()
+            } else {
+                format!(
+                    "{} files with uncommitted changes",
+                    count(u64::try_from(files).unwrap_or(u64::MAX))
+                )
+            };
+            ui.add_space(8.0);
+            ui.label(RichText::new(format!("{}  {text}", icon::PENCIL_SIMPLE)).color(palette.warn));
+        }
+        Some(Err(problem)) => {
+            let problem = problem.to_string();
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(format!(
+                    "{}  The work tree couldn't be read",
+                    icon::WARNING_CIRCLE
+                ))
+                .color(palette.danger),
+            )
+            .on_hover_text(problem);
+        }
+        _ => {}
     }
 }
 

@@ -61,6 +61,8 @@ pub(crate) struct AppState {
     next_repo: RepoId,
     /// System fonts for characters egui's fonts lack.
     fonts: Fallbacks,
+    /// Whether the window had the focus last frame (coming back to it reads work trees again).
+    focused: bool,
 }
 
 /// A repository being opened.
@@ -189,6 +191,7 @@ impl EgitApp {
             waiting,
             actions: Vec::new(),
             next_repo: 0,
+            focused: true,
             fonts: Fallbacks::default(),
         };
         match git {
@@ -284,8 +287,14 @@ impl AppState {
     fn poll(&mut self, ctx: &egui::Context) {
         self.prompts.poll();
         self.fonts.poll(ctx);
+        // Back from an editor or a terminal: what the user did there is what they look for.
+        let focused = ctx.input(|input| input.focused);
+        let regained = focused && !std::mem::replace(&mut self.focused, focused);
         for repo in &mut self.repos {
             repo.poll();
+            if regained {
+                repo.work_tree.refresh_now();
+            }
         }
         if let Some(git) = self.git() {
             if self.user_config.is_idle() {
@@ -385,10 +394,11 @@ impl AppState {
 
     /// Why changes made outside egit aren't being followed (in the user's configuration or a
     /// repository), while they aren't.
-    pub(crate) fn watch_problem(&self) -> Option<&str> {
+    pub(crate) fn watch_problem(&self) -> Option<String> {
         self.user_watcher
             .as_ref()
             .and_then(|(_, watching)| watching.problem())
+            .map(ToOwned::to_owned)
             .or_else(|| self.repos.iter().find_map(RepoTab::watch_problem))
     }
 

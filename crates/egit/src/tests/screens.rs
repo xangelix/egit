@@ -682,6 +682,87 @@ fn a_git_lfs_pointers_diff_shows_what_it_stands_for() {
     );
 }
 
+/// The label of the history's count of files with uncommitted changes.
+fn uncommitted(files: usize) -> String {
+    let files = if files == 1 {
+        "1 file".to_owned()
+    } else {
+        format!("{files} files")
+    };
+    format!("{}  {files} with uncommitted changes", icon::PENCIL_SIMPLE)
+}
+
+#[test]
+fn the_work_tree_is_followed_as_files_change_outside_egit() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(&repo, ".gitignore", "build/\n", "Ignore builds")
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "src/lib.rs", "one\n", "Add a library")
+        .unwrap();
+    std::fs::write(repo.join(".gitignore"), "build/\n*.log\n").unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    let shown = |files: usize| {
+        let label = uncommitted(files);
+        move |harness: &mut Harness<'_, EgitApp>| {
+            for _ in 0..2_000 {
+                harness.step();
+                if harness.query_by_label(&label).is_some() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            panic!("timed out waiting for {label:?}");
+        }
+    };
+    shown(1)(&mut harness);
+
+    // A file in folders made at once.
+    std::fs::create_dir_all(repo.join("notes/drafts")).unwrap();
+    std::fs::write(repo.join("notes/drafts/idea.md"), "x\n").unwrap();
+    shown(2)(&mut harness);
+    // Another in a folder now watched.
+    std::fs::write(repo.join("notes/drafts/second.md"), "x\n").unwrap();
+    shown(3)(&mut harness);
+
+    // Empty folders are watched once seen, so a file put in them later is seen too.
+    std::fs::create_dir_all(repo.join("later/deeper")).unwrap();
+    let deeper = repo.join("later/deeper");
+    settle(&mut harness, "the new folder watched", move |app| {
+        app.state.repos[0].work_tree.watches(&deeper)
+    });
+    std::fs::write(repo.join("later/deeper/third.md"), "x\n").unwrap();
+    shown(4)(&mut harness);
+
+    // An ignored folder isn't watched: a build's output costs nothing.
+    std::fs::create_dir_all(repo.join("build/out")).unwrap();
+    std::fs::write(repo.join("debug.log"), "x\n").unwrap();
+    std::fs::write(repo.join("README"), "x\n").unwrap();
+    shown(5)(&mut harness);
+    let work_tree = &harness.state().state.repos[0].work_tree;
+    assert!(!work_tree.watches(&repo.join("build")));
+    assert!(!work_tree.watches(&repo.join("build/out")));
+    assert!(work_tree.watches(&repo.join("later")));
+
+    // A tracked folder deleted and made again (as a checkout does) is watched again.
+    std::fs::remove_dir_all(repo.join("src")).unwrap();
+    shown(6)(&mut harness);
+    std::fs::create_dir(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/lib.rs"), "one\n").unwrap();
+    shown(5)(&mut harness);
+    let src = repo.join("src");
+    settle(&mut harness, "the folder watched again", move |app| {
+        app.state.repos[0].work_tree.watches(&src)
+    });
+    std::fs::write(repo.join("src/lib.rs"), "two\n").unwrap();
+    shown(6)(&mut harness);
+}
+
 #[test]
 fn whole_file_shows_all_of_the_file_and_back() {
     let sandbox = Sandbox::new().unwrap();

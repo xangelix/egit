@@ -19,6 +19,7 @@ use crate::tables::SnapshotTable;
 use crate::theme::{Palette, icon};
 use crate::views::history::{HistoryPane, HistoryView};
 use crate::widgets::{self, muted};
+use crate::worktree::WorkTree;
 
 /// Draws repository `id`'s tab.
 pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
@@ -44,6 +45,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         config_table: &mut repo.config_table,
         history: &mut repo.history,
         history_view: &mut repo.history_view,
+        work_tree: &mut repo.work_tree,
         writing_commit_graph: &mut repo.writing_commit_graph,
         home: home_dir.as_deref(),
         actions,
@@ -62,6 +64,7 @@ struct Panels<'a> {
     config_table: &'a mut SnapshotTable,
     history: &'a mut HistoryState,
     history_view: &'a mut HistoryView,
+    work_tree: &'a mut WorkTree,
     writing_commit_graph: &'a mut Bind<(), Problem>,
     home: Option<&'a Path>,
     actions: &'a mut Vec<Action>,
@@ -81,6 +84,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                     head: self.status.ok_ref().map(|status| &status.head),
                     writing_commit_graph: self.writing_commit_graph,
                     partial_clone: self.config.ok_ref().map(|config| config.is_partial_clone()),
+                    work_tree: self.work_tree,
                     actions: self.actions,
                 },
             ),

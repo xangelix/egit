@@ -14,6 +14,7 @@
 //! - `settings` — what is remembered between runs.
 //! - `syntax` — syntax highlighting: grammars parsed in the background, lines coloured on screen.
 //! - `watch` — noticing what changes repositories and configuration behind egit's back.
+//! - `worktree` — a repository's working tree: its status, kept current.
 
 mod app;
 mod diff;
@@ -32,6 +33,7 @@ mod theme;
 mod views;
 mod watch;
 mod widgets;
+mod worktree;
 
 #[cfg(test)]
 mod tests;

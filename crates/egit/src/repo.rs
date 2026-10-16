@@ -4,7 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    CancelToken, ConfigPlace, ConfigSnapshot, Git, Head, Operation, Repository, write_commit_graph,
+    CancelToken, ConfigPlace, ConfigSnapshot, Git, Head, ObjectId, Operation, Repository,
+    write_commit_graph,
 };
 use egui_async::Bind;
 
@@ -14,6 +15,7 @@ use crate::problem::Problem;
 use crate::tables::SnapshotTable;
 use crate::views::history::HistoryView;
 use crate::watch::{Changes, Taken, Watcher, Watching};
+use crate::worktree::WorkTree;
 
 /// Tells open repositories apart for the life of the window.
 pub(crate) type RepoId = u64;
@@ -47,6 +49,8 @@ pub(crate) struct RepoTab {
     pub(crate) config_table: SnapshotTable,
     pub(crate) history: HistoryState,
     pub(crate) history_view: HistoryView,
+    /// The working tree's status, kept current.
+    pub(crate) work_tree: WorkTree,
     /// Writing a commit-graph file.
     pub(crate) writing_commit_graph: Bind<(), Problem>,
     pub(crate) panels: egui_tiles::Tree<RepoPanel>,
@@ -72,6 +76,7 @@ impl RepoTab {
             id,
             history: HistoryState::new(git, &repository, ctx),
             history_view: HistoryView::new(id),
+            work_tree: WorkTree::new(Arc::clone(&repository), ctx),
             repository,
             title,
             status: Bind::new(true),
@@ -108,7 +113,7 @@ impl RepoTab {
     pub(crate) fn follow_changes(&mut self, git: &Git, now: Instant) -> Option<Duration> {
         let (repository, waker) = (&self.repository, &self.waker);
         let taken = self.watching.take(now, || watch(repository, waker));
-        match taken {
+        let wait = match taken {
             Taken::Nothing => None,
             Taken::Wait(delay) => Some(delay),
             Taken::Changed(changes) => {
@@ -121,20 +126,46 @@ impl RepoTab {
                 if changes.intersects(Changes::CONFIG) {
                     self.refresh_config(git);
                 }
+                if changes.intersects(
+                    Changes::INDEX
+                        .union(Changes::REFS)
+                        .union(Changes::STATE)
+                        .union(Changes::WORK_TREE),
+                ) {
+                    self.work_tree.changed();
+                }
                 None
             }
+        };
+        let head = self.head_commit();
+        let tree_wait = self.work_tree.poll(git, head, now);
+        match (wait, tree_wait) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    /// The commit `HEAD` points at, once read (`None` before the first commit too).
+    fn head_commit(&mut self) -> Option<ObjectId> {
+        match &self.status.ok_ref()?.head {
+            Head::Branch(branch) => branch.commit.as_ref().map(|commit| commit.id),
+            Head::Detached(commit) => Some(commit.id),
         }
     }
 
     /// Why changes made outside egit aren't being followed, while they aren't.
-    pub(crate) fn watch_problem(&self) -> Option<&str> {
-        self.watching.problem()
+    pub(crate) fn watch_problem(&self) -> Option<String> {
+        self.watching
+            .problem()
+            .map(ToOwned::to_owned)
+            .or_else(|| self.work_tree.problem())
     }
 
     /// Reads everything again; what is shown stays until the new state arrives.
     pub(crate) fn refresh(&mut self, git: &Git) {
         self.refresh_status(git);
         self.refresh_config(git);
+        self.work_tree.refresh_now();
         self.history.reload(git, &self.repository, &self.waker);
     }
 

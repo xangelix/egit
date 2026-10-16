@@ -224,7 +224,7 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     lands), its `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph),
     its own tiles (`RepoPanel::{History, Overview, Configuration}`), and its `Watcher`
     (`follow_changes`: refs or operation state changed → status read again, refs → history
-    read again; config → config). `poll` (each frame, every tab) takes in its jobs' results.
+    read again; config → config; the index, refs, state, or a file → the `WorkTree`'s status). `poll` (each frame, every tab) takes in its jobs' results.
   - `history.rs` — `History`: a walk (`jobs::detached`) streams `Piece`s through a channel:
     the refs and whether a commit-graph exists, then each completed `egit-graph` chunk with
     its commits' names packed (20 bytes each), then the end. `id(row)`, `row_of(id, near)` (a
@@ -237,8 +237,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     total). `HistoryState`: the history shown,
     and a re-read (`reload`) that takes over only once complete (`replaced`), so the table
     never empties or jumps meanwhile.
-  - `watch.rs` — inotify (`notify`) on git directories and configuration files only, never a
-    work tree: a repository's git dir and common dir (non-recursive) and `refs/` (recursive);
+  - `watch.rs` — inotify (`notify`) on git directories, configuration files, and a work tree's
+    folders, never a work tree recursively: a repository's git dir and common dir
+    (non-recursive) and `refs/` (recursive);
     the user's configuration files through their folders (editors replace files). Paths are
     sorted into `Changes` (refs, state, config, index; `*.lock`, objects, logs ignored), access
     and attribute events ignored, and handed over once quiet for `SETTLE` (120 ms), so one git
@@ -247,6 +248,16 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     up (inotify's per-user limits, often used up by editors) trying again, backing off from
     1 s to 30 s, and hands over `Changes::ALL` once it works, as it does when inotify's queue
     overflowed (a rescan); meanwhile the status bar says outside changes aren't followed.
+    `TreeWatcher`: a work tree's folders, each on its own (`Changes::WORK_TREE`); its owner sets
+    which (`watch`, from a job: a system call each), and it notes folders created (for the owner
+    to consider) and removed (their watches went with them).
+  - `worktree.rs` — `WorkTree`: a repository's `Status`, read at once after egit's own writes
+    and when the window regains focus, soon after the repository's watcher (index, `HEAD`,
+    operations) or the work tree's; one read at a time, at most one a second while files keep
+    changing, every 5 s while the work tree can't be watched. The read's job also sets the
+    folders watched: the top, `HEAD`'s (`tree_folders`, cached by commit), those of the
+    status's entries, and folders created since (with up to 1,024 inside) that `ignored_paths`
+    doesn't name, so `mkdir -p` then a new file is seen, and `node_modules` costs no watch.
   - `grid.rs` — the text grid: a `GridSource` (a measured `egit_text::Text`, colours, line
     backgrounds, a gutter) drawn as a terminal draws it. Each visible row is one galley of
     sections of one colour and advance, letter-spaced so every glyph takes exactly its cells
@@ -297,7 +308,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     the user's `LANG` first; outlines required, so no colour bitmaps) and adds what it finds as
     lowest-priority fallbacks to both families. Kept fonts are leaked once into `'static`
     slices: egui copies owned font data on every rebuild of its fonts, but borrows static.
-  - `views/history.rs` — the commit table on egui-table-kit's layout `Table` (its `TableKit`
+  - `views/history.rs` — the top bar (the commit count, and how many files have uncommitted
+    changes), and the commit table on egui-table-kit's layout `Table` (its `TableKit`
     keeps per-row state a graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
