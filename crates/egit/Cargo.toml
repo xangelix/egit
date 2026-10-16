@@ -9,8 +9,39 @@ publish.workspace = true
 [lints]
 workspace = true
 
-# The application as a library (the tests drive it).
+# The application as a library (the tests drive it) and the executable.
 [lib]
 name = "egit_app"
 
+[[bin]]
+name = "egit"
+path = "src/main.rs"
+
 [dependencies]
+bstr.workspace = true
+eframe = { workspace = true, features = [
+    "accesskit",
+    "default_fonts",
+    "persistence",
+    # Xorg sessions: without it winit can't open a window outside Wayland.
+    "wayland",
+    "wgpu",
+    "x11",
+] }
+egit-git.workspace = true
+egui.workspace = true
+egui-async.workspace = true
+egui-phosphor.workspace = true
+egui-table-kit.workspace = true
+egui_tiles.workspace = true
+parking_lot.workspace = true
+# Native folder dialogs through the desktop portal (no GTK).
+rfd = { workspace = true, features = ["xdg-portal"] }
+serde.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "std"] }
+
+[dev-dependencies]
+egit-git = { workspace = true, features = ["testing"] }
+egui_kittest = { workspace = true, features = ["eframe", "snapshot", "wgpu"] }

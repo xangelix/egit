@@ -102,7 +102,40 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `GCM_INTERACTIVE=never`). `tests/askpass.rs` runs without libtest so its executable can be
     the helper git starts.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
-- `crates/egit` — the application (`egit_app` library, `egit` executable).
+- `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
+  (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7, `egui-async` 0.7 (stay on 0.36 until
+  `egui_tiles` and `egui-phosphor` move).
+  - `main.rs` — started as `egit-askpass` it is the askpass helper (`run_helper`); otherwise
+    `lib.rs`'s `run`: `-h`/`-V`, paths to open, `EGIT_LOG` logging, the runtime, the window.
+  - `app.rs` — `EgitApp { tabs, state }`. Views never change `AppState` directly: they push
+    `Action`s, applied after the frame (`apply_actions`); `AppState::poll` (each frame's
+    start) turns finished jobs into state or actions. Git is detected by a job
+    (`Bind<Git, Problem>`); paths asked for before it is ready wait in `waiting`. The tabs
+    open at the last close (`Settings::open`) come back. Profile edits are `ConfigChange`s
+    written under the user's `WriteLock`, then the user's and every repository's settings
+    are read again.
+  - `jobs.rs` — the runtime (2 workers, at most 16 blocking jobs: git processes queue
+    beyond), `blocking` (a closure on the blocking pool as a future for a `Bind`), and
+    `WriteLock` (taken inside jobs, never on the interface thread).
+  - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Repo(id)}`; `show`
+    focuses or adds a tab; Home can't be closed; closing a repository's tab pushes `Closed`.
+  - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head + operations) and the
+    repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
+    lands), and its own tiles (`RepoPanel::{Overview, Configuration}`).
+  - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
+    repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
+    credentials, pull and push, and every setting, each with its origin), `repo` (overview
+    and settings table), `status_bar` (git's version and path, the theme).
+  - `tables.rs` — egui-table-kit providers (`ConfigRows`, `RecentRows`) with O(1) `cell_at`,
+    and `SnapshotTable`, whose state starts over only when its snapshot is replaced.
+  - `theme.rs` (palettes, WCAG AA checked by a test; Phosphor icons), `widgets.rs` (cards,
+    buttons, origin labels, problem boxes), `format.rs` (`~` paths, "5 minutes ago",
+    dates), `settings.rs` (theme, recent repositories, open tabs; non-UTF-8 paths kept as
+    bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
+  - `tests/screens.rs` — the whole application driven through the accessibility tree
+    (egui_kittest) against a sandboxed git; renders `target/gui-screens/*.png` where a wgpu
+    adapter exists (`EGIT_GUI_RENDER=1` requires one, `0` skips). Look at them after any
+    interface change.
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
 - `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older
   releases don't compile as C23).
@@ -118,6 +151,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   is for.
 - **Tests:** unit tests beside the logic (`mod tests`); tests against a real git live in the
   crate's `tests/` directory and run in a sandbox (a temporary `HOME`, no system config).
+- **Interface:** never block the interface thread: every git command, dialog, and file read is
+  a job. Colours come from `theme::Palette::of(ctx)`, icons from `theme::icon`, shared pieces
+  from `widgets`. Text inside an `egui::Grid` is sized explicitly (`add_sized`): a grid sizes
+  cells to their content. Names and paths come from people: assume them long, in any script.
 - **Performance:** CPU time and peak memory are features. Nothing proportional to a
   repository is loaded or drawn unless it is visible or being prepared off the interface thread;
   parsers work on borrowed bytes and reuse their buffers.

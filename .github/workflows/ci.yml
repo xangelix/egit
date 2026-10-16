@@ -42,8 +42,16 @@ jobs:
   test:
     name: Tests (current git)
     runs-on: ubuntu-24.04
+    env:
+      # The screens are rendered (by lavapipe, Mesa's software Vulkan) and uploaded for review.
+      EGIT_GUI_RENDER: "1"
     steps:
       - uses: actions/checkout@v7
+
+      - name: Install Mesa's software renderer
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends mesa-vulkan-drivers
 
       - name: Install the pinned toolchain
         run: rustup toolchain install
@@ -56,6 +64,14 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+      - name: Upload the rendered screens
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gui-screens
+          path: target/gui-screens/
+          if-no-files-found: ignore
+
   test-floor:
     # The oldest platform egit supports: Ubuntu 24.04's glibc and its own git (2.43.0).
     name: Tests (Ubuntu 24.04, git 2.43)
@@ -66,7 +82,7 @@ jobs:
         run: |
           apt-get update
           apt-get install --yes --no-install-recommends \
-            build-essential ca-certificates curl git pkg-config
+            build-essential ca-certificates curl git mesa-vulkan-drivers pkg-config
 
       - uses: actions/checkout@v7
 

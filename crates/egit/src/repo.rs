@@ -1,0 +1,95 @@
+//! An open repository: what egit knows about it, kept current by background jobs.
+
+use std::sync::Arc;
+
+use egit_git::{ConfigPlace, ConfigSnapshot, Git, Head, Operation, Repository};
+use egui_async::Bind;
+
+use crate::jobs;
+use crate::problem::Problem;
+use crate::tables::SnapshotTable;
+
+/// Tells open repositories apart for the life of the window.
+pub(crate) type RepoId = u64;
+
+/// Where `HEAD` points and what the repository is in the middle of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Status {
+    pub(crate) head: Head,
+    pub(crate) operations: Vec<Operation>,
+}
+
+/// The parts of a repository's tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RepoPanel {
+    /// The branch, its commit and upstream, the identity in effect, and the paths.
+    Overview,
+    /// Every configuration entry in effect.
+    Configuration,
+}
+
+/// An open repository.
+pub(crate) struct RepoTab {
+    pub(crate) id: RepoId,
+    pub(crate) repository: Arc<Repository>,
+    /// The tab's title: the work tree's folder name.
+    pub(crate) title: String,
+    pub(crate) status: Bind<Status, Problem>,
+    pub(crate) config: Bind<Arc<ConfigSnapshot>, Problem>,
+    pub(crate) config_table: SnapshotTable,
+    pub(crate) panels: egui_tiles::Tree<RepoPanel>,
+}
+
+impl RepoTab {
+    /// A tab for `repository`, starting to read its state.
+    pub(crate) fn new(id: RepoId, repository: Repository, git: &Git) -> Self {
+        let title = repository.work_tree().file_name().map_or_else(
+            || repository.work_tree().display().to_string(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let mut tab = Self {
+            id,
+            repository: Arc::new(repository),
+            title,
+            status: Bind::new(true),
+            config: Bind::new(true),
+            config_table: SnapshotTable::new(format!("repo-config-{id}")),
+            panels: egui_tiles::Tree::new_tabs(
+                egui::Id::new(("repo-panels", id)),
+                vec![RepoPanel::Overview, RepoPanel::Configuration],
+            ),
+        };
+        tab.refresh(git);
+        tab
+    }
+
+    /// Reads everything again; what is shown stays until the new state arrives.
+    pub(crate) fn refresh(&mut self, git: &Git) {
+        self.refresh_status(git);
+        self.refresh_config(git);
+    }
+
+    /// Reads where `HEAD` points and what is in progress.
+    pub(crate) fn refresh_status(&mut self, git: &Git) {
+        let (git, repository) = (git.clone(), Arc::clone(&self.repository));
+        self.status.request(jobs::blocking(move || {
+            let head = repository
+                .head(&git)
+                .map_err(|error| Problem::git("Where HEAD points couldn't be read", &error))?;
+            let operations = repository.operations().map_err(|error| {
+                Problem::new("The repository's state couldn't be read", error.to_string())
+            })?;
+            Ok(Status { head, operations })
+        }));
+    }
+
+    /// Reads the configuration in effect in the repository.
+    pub(crate) fn refresh_config(&mut self, git: &Git) {
+        let (git, repository) = (git.clone(), Arc::clone(&self.repository));
+        self.config.request(jobs::blocking(move || {
+            ConfigSnapshot::read(&git, ConfigPlace::Repository(repository.work_tree()))
+                .map(Arc::new)
+                .map_err(|error| Problem::git("The repository's settings couldn't be read", &error))
+        }));
+    }
+}

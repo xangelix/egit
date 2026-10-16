@@ -18,11 +18,20 @@ private = { ignore = true }
 confidence-threshold = 0.93
 # Only licences actually present; additions are reviewed when a dependency needs them.
 allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
-exceptions = []
+exceptions = [
+    # Each permissive, and scoped to the one crate that needs it: egui's bundled fonts (Ubuntu
+    # Light under the Ubuntu Font Licence, emoji under the SIL Open Font License), egui's hasher
+    # (zlib), and the loader wgpu opens graphics drivers with (ISC).
+    { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
+    { crate = "foldhash", allow = ["Zlib"] },
+    { crate = "libloading", allow = ["ISC"] },
+]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# The workspace's own crates depend on each other by path.
+allow-wildcard-paths = true
 deny = [
     # egit drives the system's git binary for every repository operation (docs/ROADMAP.md): a
     # second implementation of git inside the process would disagree with the one the user runs.
