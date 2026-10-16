@@ -288,6 +288,28 @@ pub struct FileChange {
     pub path: BString,
     /// How it changed.
     pub kind: ChangeKind,
+    /// What the tree held before (`None` when the file was added).
+    pub old: Option<TreeEntry>,
+    /// What the tree holds after (`None` when the file was deleted).
+    pub new: Option<TreeEntry>,
+}
+
+/// What a tree holds at a path: a mode and an object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TreeEntry {
+    /// The mode, as git records it (`0o100644` a file, `0o100755` an executable, `0o120000` a
+    /// symbolic link, `0o160000` a submodule).
+    pub mode: u32,
+    /// The object: a blob, or for a submodule, its commit (not in this repository).
+    pub id: ObjectId,
+}
+
+impl TreeEntry {
+    /// A submodule's mode: its object is a commit of another repository.
+    pub const SUBMODULE: u32 = 0o160_000;
+
+    /// A symbolic link's mode: its blob is the link's target.
+    pub const SYMLINK: u32 = 0o120_000;
 }
 
 /// The files `commit` changed: against `first_parent`, or everything it holds when it has none
@@ -308,7 +330,8 @@ pub fn commit_changes(
             "-r",
             "-z",
             "--no-commit-id",
-            "--name-status",
+            "--raw",
+            "--no-abbrev",
             "-M",
             "--no-ext-diff",
         ])
@@ -318,16 +341,31 @@ pub fn commit_changes(
         None => command.arg("--root").arg(commit.to_string()),
     };
     let listed = command.output()?;
-    parse_name_status(&listed.stdout)
+    parse_raw(&listed.stdout)
 }
 
-/// Parses `--name-status -z`: a status, then one path (or two, for renames and copies), each
-/// ended by a NUL.
-fn parse_name_status(output: &[u8]) -> Result<Vec<FileChange>, GitError> {
+/// Parses `--raw -z --no-abbrev`: `:old-mode new-mode old-id new-id status`, then one path (or
+/// two, for renames and copies), each ended by a NUL. A side's mode is zero when it is absent.
+fn parse_raw(output: &[u8]) -> Result<Vec<FileChange>, GitError> {
     let malformed = || GitError::unexpected("diff-tree", "an incomplete change");
     let mut fields = output.split_str(b"\0").filter(|field| !field.is_empty());
     let mut changes = Vec::new();
-    while let Some(status) = fields.next() {
+    while let Some(head) = fields.next() {
+        let head = head.strip_prefix(b":").ok_or_else(malformed)?;
+        let mut parts = head.split_str(b" ");
+        let mut part = || parts.next().ok_or_else(malformed);
+        let (old_mode, new_mode, old_id, new_id, status) =
+            (part()?, part()?, part()?, part()?, part()?);
+        let side = |mode: &[u8], id: &[u8]| -> Result<Option<TreeEntry>, GitError> {
+            let mode = mode
+                .to_str()
+                .ok()
+                .and_then(|mode| u32::from_str_radix(mode, 8).ok())
+                .ok_or_else(malformed)?;
+            let id = ObjectId::from_hex(id).ok_or_else(malformed)?;
+            Ok((mode != 0).then_some(TreeEntry { mode, id }))
+        };
+        let (old, new) = (side(old_mode, old_id)?, side(new_mode, new_id)?);
         let (&letter, score) = status.split_first().ok_or_else(malformed)?;
         let similarity = || {
             score
@@ -361,7 +399,12 @@ fn parse_name_status(output: &[u8]) -> Result<Vec<FileChange>, GitError> {
             }
             _ => (path, ChangeKind::Unknown),
         };
-        changes.push(FileChange { path, kind });
+        changes.push(FileChange {
+            path,
+            kind,
+            old,
+            new,
+        });
     }
     Ok(changes)
 }
@@ -428,30 +471,54 @@ mod tests {
         assert_eq!(lines_of(&[b"no end"]), Vec::<String>::new());
     }
 
+    const A: &str = "ce013625030ba8dba906f756967f9e9ca394464a";
+    const B: &str = "2cf8d83d9ee29543b34a87727421fdecb7e3f3a1";
+    const ZERO: &str = "0000000000000000000000000000000000000000";
+
+    fn entry(mode: u32, hex: &str) -> TreeEntry {
+        TreeEntry {
+            mode,
+            id: ObjectId::from_hex(hex.as_bytes()).unwrap(),
+        }
+    }
+
     #[test]
-    fn reads_name_status() {
-        let output =
-            b"M\0src/lib.rs\0A\0new\0D\0gone\0R087\0old name\0new name\0C100\0a\0b\0T\0link\0";
-        let changes = parse_name_status(output).unwrap();
+    fn reads_raw_changes() {
+        let output = format!(
+            ":100644 100644 {A} {B} M\0src/lib.rs\0\
+             :000000 100755 {ZERO} {B} A\0new\0\
+             :100644 000000 {A} {ZERO} D\0gone\0\
+             :100644 100644 {A} {B} R087\0old name\0new name\0\
+             :100644 100644 {A} {A} C100\0a\0b\0\
+             :100644 120000 {A} {B} T\0link\0"
+        );
+        let changes = parse_raw(output.as_bytes()).unwrap();
         assert_eq!(changes.len(), 6);
         assert_eq!(
             changes[0],
             FileChange {
                 path: "src/lib.rs".into(),
-                kind: ChangeKind::Modified
+                kind: ChangeKind::Modified,
+                old: Some(entry(0o100_644, A)),
+                new: Some(entry(0o100_644, B)),
             }
         );
         assert_eq!(changes[1].kind, ChangeKind::Added);
-        assert_eq!(changes[2].kind, ChangeKind::Deleted);
         assert_eq!(
-            changes[3],
-            FileChange {
-                path: "new name".into(),
-                kind: ChangeKind::Renamed {
+            (changes[1].old, changes[1].new),
+            (None, Some(entry(0o100_755, B)))
+        );
+        assert_eq!(changes[2].kind, ChangeKind::Deleted);
+        assert_eq!(changes[2].new, None);
+        assert_eq!(
+            (changes[3].path.to_string(), &changes[3].kind),
+            (
+                "new name".to_owned(),
+                &ChangeKind::Renamed {
                     from: "old name".into(),
                     similarity: 87
                 }
-            }
+            )
         );
         assert_eq!(
             changes[4].kind,
@@ -461,8 +528,16 @@ mod tests {
             }
         );
         assert_eq!(changes[5].kind, ChangeKind::TypeChanged);
-        assert!(parse_name_status(b"M\0").is_err());
-        assert!(parse_name_status(b"R100\0only-one\0").is_err());
+        assert_eq!(changes[5].new.unwrap().mode, TreeEntry::SYMLINK);
+    }
+
+    #[test]
+    fn refuses_what_isnt_a_raw_change() {
+        assert!(parse_raw(format!(":100644 100644 {A} {B} M\0").as_bytes()).is_err());
+        assert!(parse_raw(format!(":100644 100644 {A} {B} R100\0only-one\0").as_bytes()).is_err());
+        assert!(parse_raw(b"M\0path\0").is_err());
+        assert!(parse_raw(format!(":10064x 100644 {A} {B} M\0p\0").as_bytes()).is_err());
+        assert!(parse_raw(format!(":100644 100644 {A} short M\0p\0").as_bytes()).is_err());
     }
 
     #[test]

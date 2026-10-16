@@ -274,6 +274,12 @@ fn lists_what_a_commit_changed() {
     let parent = rev(&sandbox, &repo, "HEAD^");
     let mut changes = commit_changes(sandbox.git(), &repository, head, Some(parent)).unwrap();
     changes.sort_by(|a, b| a.path.cmp(&b.path));
+    // Each side names what the tree holds there.
+    let keep = &changes[1];
+    assert_eq!(keep.old.unwrap().id, rev(&sandbox, &repo, "HEAD^:keep"));
+    assert_eq!(keep.new.unwrap().id, rev(&sandbox, &repo, "HEAD:keep"));
+    assert_eq!(keep.new.unwrap().mode, 0o100_644);
+    assert_eq!(changes[0].old, None);
     let kinds: Vec<(String, ChangeKind)> = changes
         .into_iter()
         .map(|change| (change.path.to_string(), change.kind))
