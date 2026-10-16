@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  lint:
+    name: Format, lints, docs
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Documentation
+        run: cargo doc --workspace --no-deps --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: Tests (current git)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Git version
+        run: git --version
+
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  test-floor:
+    # The oldest platform egit supports: Ubuntu 24.04's glibc and its own git (2.43.0).
+    name: Tests (Ubuntu 24.04, git 2.43)
+    runs-on: ubuntu-24.04
+    container: ubuntu:24.04
+    steps:
+      - name: Install system packages
+        run: |
+          apt-get update
+          apt-get install --yes --no-install-recommends \
+            build-essential ca-certificates curl git pkg-config
+
+      - uses: actions/checkout@v7
+
+      - name: Install rustup and the pinned toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the git version is the floor
+        run: |
+          git --version
+          git --version | grep -qx 'git version 2\.43\.[0-9]*'
+
+      - name: Tests
+        run: cargo test --workspace --locked
+
+  supply-chain:
+    name: Supply chain
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Advisories, licences, bans, sources
+        uses: EmbarkStudios/cargo-deny-action@v2
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-shear
+
+      - name: Unused dependencies
+        run: cargo shear
