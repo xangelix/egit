@@ -26,8 +26,8 @@ pub(crate) fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R
 }
 
 /// A card's or a section's title.
-pub(crate) fn heading(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(15.0).strong());
+pub(crate) fn heading(ui: &mut Ui, text: &str) -> Response {
+    ui.label(RichText::new(text).size(15.0).strong())
 }
 
 /// Secondary text.

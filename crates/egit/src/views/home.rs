@@ -116,7 +116,7 @@ fn git_problem(ui: &mut Ui, state: &mut AppState) {
 fn open_card(ui: &mut Ui, state: &mut AppState) {
     let ready = state.git.is_ok();
     widgets::card(ui, |ui| {
-        widgets::heading(ui, "Open a repository");
+        let heading = widgets::heading(ui, "Open a repository");
         ui.label(muted(
             ui,
             "Any folder inside a repository opens the whole repository.",
@@ -133,11 +133,13 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
             {
                 state.actions.push(Action::PickFolder);
             }
-            let field = ui.add(
-                TextEdit::singleline(&mut state.home.path)
-                    .hint_text("…or type a path")
-                    .desired_width((ui.available_width() - 72.0).max(120.0)),
-            );
+            let field = ui
+                .add(
+                    TextEdit::singleline(&mut state.home.path)
+                        .hint_text("…or type a path")
+                        .desired_width((ui.available_width() - 72.0).max(120.0)),
+                )
+                .labelled_by(heading.id);
             let typed = state.home.path.trim();
             let submitted = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
             let clicked = widgets::secondary(ui, ready && !typed.is_empty(), "Open").clicked();

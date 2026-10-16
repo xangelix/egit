@@ -223,23 +223,25 @@ fn identity_card(
             .num_columns(3)
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
-                ui.label("Name");
+                let label = ui.label("Name");
                 ui.add_sized(
                     FIELD,
                     TextEdit::singleline(&mut view.form.name)
                         .hint_text("Your Name")
                         .vertical_align(egui::Align::Center),
-                );
+                )
+                .labelled_by(label.id);
                 widgets::origin(ui, profile.name(), home);
                 ui.end_row();
 
-                ui.label("Email");
+                let label = ui.label("Email");
                 ui.add_sized(
                     FIELD,
                     TextEdit::singleline(&mut view.form.email)
                         .hint_text("you@example.com")
                         .vertical_align(egui::Align::Center),
-                );
+                )
+                .labelled_by(label.id);
                 widgets::origin(ui, profile.email(), home);
                 ui.end_row();
 
@@ -291,7 +293,7 @@ fn signing_card(
                 widgets::origin(ui, signing.format.entry, home);
                 ui.end_row();
 
-                ui.label("Key");
+                let label = ui.label("Key");
                 let hint = match view.form.format {
                     SigningFormat::OpenPgp => "A key id, or empty: gpg picks one by your email",
                     SigningFormat::Ssh => "~/.ssh/id_ed25519.pub, or a key itself",
@@ -302,7 +304,8 @@ fn signing_card(
                     TextEdit::singleline(&mut view.form.key)
                         .hint_text(hint)
                         .vertical_align(egui::Align::Center),
-                );
+                )
+                .labelled_by(label.id);
                 widgets::origin(ui, signing.key, home);
                 ui.end_row();
 

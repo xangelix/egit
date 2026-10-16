@@ -164,7 +164,7 @@ impl Prompts {
                 ui.label(muted(ui, format!("While {}", lowercase_first(context))));
             }
             ui.add_space(8.0);
-            ui.add(
+            let question = ui.add(
                 egui::Label::new(prompt.text().trim_end())
                     .selectable(true)
                     .wrap(),
@@ -172,12 +172,14 @@ impl Prompts {
             ui.add_space(8.0);
             match kind {
                 PromptKind::Visible | PromptKind::Secret => {
-                    let field = ui.add(
-                        TextEdit::singleline(&mut *self.answer)
-                            .id(field_id)
-                            .password(kind == PromptKind::Secret)
-                            .desired_width(f32::INFINITY),
-                    );
+                    let field = ui
+                        .add(
+                            TextEdit::singleline(&mut *self.answer)
+                                .id(field_id)
+                                .password(kind == PromptKind::Secret)
+                                .desired_width(f32::INFINITY),
+                        )
+                        .labelled_by(question.id);
                     if !field.has_focus() && !field.lost_focus() {
                         field.request_focus();
                     }
