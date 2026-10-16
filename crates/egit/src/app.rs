@@ -93,6 +93,8 @@ pub(crate) enum Action {
     SaveProfile(Vec<ConfigChange>),
     /// Read a repository's state again.
     Refresh(RepoId),
+    /// Write a commit-graph file for a repository.
+    WriteCommitGraph(RepoId),
     /// A repository's tab was closed.
     Closed(RepoId),
     /// Use a theme.
@@ -223,6 +225,13 @@ impl EgitApp {
                     repo.refresh(&git);
                 }
             }
+            Action::WriteCommitGraph(id) => {
+                if let Some(git) = state.git()
+                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
+                {
+                    repo.write_commit_graph(&git);
+                }
+            }
             Action::Closed(id) => state.repos.retain(|repo| repo.id != id),
             Action::SetTheme(choice) => {
                 state.settings.theme = choice;
@@ -270,6 +279,9 @@ impl AppState {
     /// Advances the jobs and the watchers: what finished or changed becomes state or actions.
     fn poll(&mut self, ctx: &egui::Context) {
         self.prompts.poll();
+        for repo in &mut self.repos {
+            repo.poll();
+        }
         if let Some(git) = self.git() {
             if self.user_config.is_idle() {
                 self.refresh_user_config(&git);

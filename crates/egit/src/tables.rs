@@ -1,18 +1,24 @@
-//! What egit's tables show, as `egui-table-kit` providers: configuration entries and recent
-//! repositories. Cells are produced on demand for the rows drawn, borrowing where the data is
-//! already text.
+//! What egit's tables show, as `egui-table-kit` providers: configuration entries, recent
+//! repositories, and the files a commit changed. Cells are produced on demand for the rows
+//! drawn, borrowing where the data is already text.
 
 use std::borrow::Cow;
 use std::path::Path;
 
+use std::sync::Arc;
+
 use bstr::ByteSlice as _;
-use egit_git::{ConfigEntry, ConfigSnapshot};
+use egit_git::{ChangeKind, ConfigEntry, ConfigSnapshot, FileChange, ObjectId};
+use egui::{RichText, Ui};
 use egui_table_kit::error::TableError;
 use egui_table_kit::operations::{HeaderIter, Row, RowCallback, TableCell, TableProvider};
 use egui_table_kit::state::TableState;
+use egui_table_kit::table::TableKit;
 
 use crate::format::{ago, display_path};
+use crate::history::CommitDetails;
 use crate::settings::Recent;
+use crate::theme::Palette;
 use crate::widgets::scope_name;
 
 /// A table of a configuration snapshot: its state starts over when the snapshot is replaced
@@ -264,6 +270,156 @@ impl TableProvider for RecentRows<'_> {
                 home: self.home,
                 now: self.now,
             })?;
+        }
+        Ok(())
+    }
+}
+
+/// The table of a commit's changed files: its state starts over for another commit.
+#[derive(Debug)]
+pub(crate) struct ChangesTable {
+    id: String,
+    shown: Option<ObjectId>,
+    state: TableState,
+}
+
+impl ChangesTable {
+    pub(crate) fn new(id: String) -> Self {
+        let state = TableState::new(id.as_str(), 0);
+        Self {
+            id,
+            shown: None,
+            state,
+        }
+    }
+
+    /// Shows the files `details`' commit changed, `height` tall at most.
+    pub(crate) fn show(&mut self, ui: &mut Ui, details: &Arc<CommitDetails>, height: f32) {
+        if self.shown != Some(details.id) {
+            self.state = TableState::new(self.id.as_str(), details.changes.len());
+            self.shown = Some(details.id);
+        }
+        let provider = ChangeRows {
+            changes: &details.changes,
+        };
+        let width = ui.available_width();
+        let columns = vec![
+            egui_table_kit::layout::Column::new(96.0).range(70.0..=160.0),
+            egui_table_kit::layout::Column::new((width - 96.0).max(120.0))
+                .range(100.0..=f32::INFINITY)
+                .remainder(true),
+        ];
+        let shown = TableKit::new(self.id.as_str(), &provider, &mut self.state)
+            .with_columns(columns)
+            .with_row_height(22.0)
+            .with_max_height(Some(height))
+            .with_striped(true)
+            .show(ui, |_, _, _, _| None);
+        if let Err(error) = shown {
+            ui.label(
+                RichText::new(format!("The table couldn't be drawn: {error}"))
+                    .color(Palette::of(ui.ctx()).danger),
+            );
+        }
+    }
+}
+
+/// The files a commit changed: how, and which.
+struct ChangeRows<'a> {
+    changes: &'a [FileChange],
+}
+
+/// The columns of [`ChangeRows`].
+const CHANGE_HEADERS: [&str; 2] = ["Change", "File"];
+
+/// How a commit changed a file, in a word or two.
+const fn change_name(kind: &ChangeKind) -> &'static str {
+    match kind {
+        ChangeKind::Added => "Added",
+        ChangeKind::Copied { .. } => "Copied",
+        ChangeKind::Deleted => "Deleted",
+        ChangeKind::Modified => "Modified",
+        ChangeKind::Renamed { .. } => "Renamed",
+        ChangeKind::TypeChanged => "Type changed",
+        ChangeKind::Unmerged => "Unmerged",
+        ChangeKind::Unknown => "Changed",
+    }
+}
+
+fn change_cell(change: &FileChange, col_index: usize) -> Option<TableCell<'_>> {
+    let text = match col_index {
+        0 => Cow::Borrowed(change_name(&change.kind)),
+        1 => match &change.kind {
+            ChangeKind::Renamed { from, .. } | ChangeKind::Copied { from, .. } => Cow::Owned(
+                format!("{} → {}", from.to_str_lossy(), change.path.to_str_lossy()),
+            ),
+            _ => change.path.to_str_lossy(),
+        },
+        _ => return None,
+    };
+    Some((text, None))
+}
+
+struct ChangeRow<'a>(&'a FileChange);
+
+impl Row for ChangeRow<'_> {
+    fn cell(&self, col_index: usize) -> Option<TableCell<'_>> {
+        change_cell(self.0, col_index)
+    }
+
+    fn column_count(&self) -> usize {
+        CHANGE_HEADERS.len()
+    }
+}
+
+impl TableProvider for ChangeRows<'_> {
+    fn column_count(&self) -> usize {
+        CHANGE_HEADERS.len()
+    }
+
+    fn header(&self, index: usize) -> Option<Cow<'_, str>> {
+        CHANGE_HEADERS.get(index).map(|&name| Cow::Borrowed(name))
+    }
+
+    fn headers(&self) -> HeaderIter<'_> {
+        HeaderIter::new(self)
+    }
+
+    fn row_count(&self) -> usize {
+        self.changes.len()
+    }
+
+    fn cell_at(
+        &self,
+        row_index: usize,
+        col_index: usize,
+    ) -> Result<Option<TableCell<'_>>, TableError> {
+        Ok(self
+            .changes
+            .get(row_index)
+            .and_then(|change| change_cell(change, col_index)))
+    }
+
+    fn for_row_at(&self, index: usize, f: &mut RowCallback<'_>) -> Result<(), TableError> {
+        self.changes
+            .get(index)
+            .map_or(Ok(()), |change| f(&ChangeRow(change)))
+    }
+
+    fn for_selected_rows(
+        &self,
+        state: &TableState,
+        f: &mut RowCallback<'_>,
+    ) -> Result<(), TableError> {
+        for index in &state.selected_rows {
+            self.for_row_at(usize::try_from(index).unwrap_or(usize::MAX), f)?;
+        }
+        Ok(())
+    }
+
+    fn for_all_rows(&self, f: &mut RowCallback<'_>) -> Result<(), TableError> {
+        for change in self.changes {
+            f(&ChangeRow(change))?;
         }
         Ok(())
     }

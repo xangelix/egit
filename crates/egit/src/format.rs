@@ -51,41 +51,54 @@ pub(crate) fn ago(then: u64, now: u64) -> String {
 
 /// A Unix time's date, `YYYY-MM-DD` (UTC).
 pub(crate) fn date(unix: u64) -> String {
-    let (year, month, day) = civil_from_days(unix.checked_div(86_400).unwrap_or(0));
+    let days = i64::try_from(unix).unwrap_or(i64::MAX).div_euclid(86_400);
+    let (year, month, day) = civil_from_days(days);
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// The proleptic Gregorian date of a day count since 1970-01-01 (Howard Hinnant's algorithm,
-/// for days on or after the epoch). The values involved stay far below `u64`'s range.
-fn civil_from_days(days: u64) -> (u64, u64, u64) {
+/// A time as someone saw it: `YYYY-MM-DD HH:MM` in their time zone, `offset_minutes` from
+/// UTC (as `git log` shows a commit's dates).
+pub(crate) fn date_time(unix: i64, offset_minutes: i32) -> String {
+    let local = unix.saturating_add(i64::from(offset_minutes).saturating_mul(60));
+    let (year, month, day) = civil_from_days(local.div_euclid(86_400));
+    let minutes = local.rem_euclid(86_400).div_euclid(60);
+    let (hour, minute) = (minutes.div_euclid(60), minutes.rem_euclid(60));
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}")
+}
+
+/// `n` with its thousands apart: `1,485,335`.
+pub(crate) fn count(n: u64) -> String {
+    let digits = n.to_string();
+    let mut grouped = String::with_capacity(digits.len().saturating_mul(2));
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && digits.len().saturating_sub(index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+/// The proleptic Gregorian date of a day count since 1970-01-01 (Howard Hinnant's algorithm).
+/// Day counts from Unix times in seconds keep every step far inside `i64`'s range.
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
     let shifted = days.wrapping_add(719_468);
-    let era = shifted.checked_div(146_097).unwrap_or(0);
-    let day_of_era = shifted.wrapping_sub(era.wrapping_mul(146_097));
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
     let year_of_era = day_of_era
-        .wrapping_sub(day_of_era.checked_div(1_460).unwrap_or(0))
-        .wrapping_add(day_of_era.checked_div(36_524).unwrap_or(0))
-        .wrapping_sub(day_of_era.checked_div(146_096).unwrap_or(0))
-        .checked_div(365)
-        .unwrap_or(0);
+        .wrapping_sub(day_of_era.div_euclid(1_460))
+        .wrapping_add(day_of_era.div_euclid(36_524))
+        .wrapping_sub(day_of_era.div_euclid(146_096))
+        .div_euclid(365);
     let day_of_year = day_of_era.wrapping_sub(
         year_of_era
             .wrapping_mul(365)
-            .wrapping_add(year_of_era.checked_div(4).unwrap_or(0))
-            .wrapping_sub(year_of_era.checked_div(100).unwrap_or(0)),
+            .wrapping_add(year_of_era.div_euclid(4))
+            .wrapping_sub(year_of_era.div_euclid(100)),
     );
-    let month_index = day_of_year
-        .wrapping_mul(5)
-        .wrapping_add(2)
-        .checked_div(153)
-        .unwrap_or(0);
+    let month_index = day_of_year.wrapping_mul(5).wrapping_add(2).div_euclid(153);
     let day = day_of_year
-        .wrapping_sub(
-            month_index
-                .wrapping_mul(153)
-                .wrapping_add(2)
-                .checked_div(5)
-                .unwrap_or(0),
-        )
+        .wrapping_sub(month_index.wrapping_mul(153).wrapping_add(2).div_euclid(5))
         .wrapping_add(1);
     let month = if month_index < 10 {
         month_index.wrapping_add(3)
@@ -94,7 +107,7 @@ fn civil_from_days(days: u64) -> (u64, u64, u64) {
     };
     let year = year_of_era
         .wrapping_add(era.wrapping_mul(400))
-        .wrapping_add(u64::from(month <= 2));
+        .wrapping_add(i64::from(month <= 2));
     (year, month, day)
 }
 
@@ -138,5 +151,26 @@ mod tests {
         assert_eq!(date(951_782_400), "2000-02-29");
         assert_eq!(date(1_792_022_400), "2026-10-15");
         assert_eq!(date(4_107_542_400), "2100-03-01");
+    }
+
+    #[test]
+    fn dates_and_times_in_their_own_time_zone() {
+        assert_eq!(date_time(0, 0), "1970-01-01 00:00");
+        // 2026-10-15 23:30 UTC, seen from UTC+2 and UTC-5.
+        let unix = 1_792_022_400 + 23 * 3600 + 30 * 60;
+        assert_eq!(date_time(unix, 0), "2026-10-15 23:30");
+        assert_eq!(date_time(unix, 120), "2026-10-16 01:30");
+        assert_eq!(date_time(unix, -300), "2026-10-15 18:30");
+        assert_eq!(date_time(-1, 0), "1969-12-31 23:59");
+        assert_eq!(date_time(-86_400 * 366, 0), "1968-12-31 00:00");
+    }
+
+    #[test]
+    fn counts_with_thousands_apart() {
+        assert_eq!(count(0), "0");
+        assert_eq!(count(999), "999");
+        assert_eq!(count(1_000), "1,000");
+        assert_eq!(count(1_485_335), "1,485,335");
+        assert_eq!(count(u64::MAX), "18,446,744,073,709,551,615");
     }
 }

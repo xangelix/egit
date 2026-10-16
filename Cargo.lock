@@ -919,6 +919,7 @@ dependencies = [
  "bstr",
  "eframe",
  "egit-git",
+ "egit-graph",
  "egui",
  "egui-async",
  "egui-phosphor",

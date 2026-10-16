@@ -12,7 +12,7 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
 | Phase | Scope | State |
 |---|---|---|
 | 1 | Foundation: shell, running git, askpass, profile, opening repositories | done; awaiting the owner's review |
-| 2 | Commit graph | in progress |
+| 2 | Commit graph: lanes, the commit table, details and changed files | done; awaiting the owner's review (past ~700k rows it needs egui-table-kit's row-precision fix, pinned once pushed) |
 | 3 | Text grid and read-only diff viewer | not started |
 | 4 | Working tree, staging, signed commits | not started |
 | 5 | Clone, pull, push | not started |
@@ -32,6 +32,11 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
   `EGIT_TEST_GIT=$PWD/target/git/2.43.0/bin/git cargo test --workspace` runs every test against
   it. Do this after touching anything that runs git (CI does it in `ubuntu:24.04`).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
+- Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
+  --nocapture scale` opens it headless and prints time to first rows, to the whole history,
+  frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a
+  frame). Linux (1.49M commits): first rows 135 ms, all 1.45–1.6 s, slowest frame 2.1 ms,
+  peak 69 MB (with rendering: 190 MB, and `scale-*.png` screens).
 
 ## Supported platforms
 
@@ -146,8 +151,20 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     focuses or adds a tab; Home can't be closed; closing a repository's tab pushes `Closed`.
   - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head + operations) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
-    lands), its own tiles (`RepoPanel::{Overview, Configuration}`), and its `Watcher`
-    (`follow_changes`: refs or operation state changed → status read again; config → config).
+    lands), its `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph),
+    its own tiles (`RepoPanel::{History, Overview, Configuration}`), and its `Watcher`
+    (`follow_changes`: refs or operation state changed → status read again, refs → history
+    read again; config → config). `poll` (each frame, every tab) takes in its jobs' results.
+  - `history.rs` — `History`: a walk (`jobs::detached`) streams `Piece`s through a channel:
+    the refs and whether a commit-graph exists, then each completed `egit-graph` chunk with
+    its commits' names packed (20 bytes each), then the end. `id(row)`, `row_of(id, near)` (a
+    scan from `near`; no id→row index is kept), `Refs::at(id)` (sorted, binary search).
+    `Objects`: one shared `cat-file` per repository, restarted after a failure.
+    `Summaries`: subject, author, preformatted date, read as rows come into view (at most 512
+    a read, one read at a time), about 4,096 kept, least recently drawn forgotten first.
+    `read_details` (the commit and its `commit_changes`). `HistoryState`: the history shown,
+    and a re-read (`reload`) that takes over only once complete (`replaced`), so the table
+    never empties or jumps meanwhile.
   - `watch.rs` — inotify (`notify`) on git directories and configuration files only, never a
     work tree: a repository's git dir and common dir (non-recursive) and `refs/` (recursive);
     the user's configuration files through their folders (editors replace files). Paths are
@@ -155,6 +172,18 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     and attribute events ignored, and handed over once quiet for `SETTLE` (120 ms), so one git
     command causes one refresh. The app watches the files its user snapshot names and reads
     every configuration again when one changes.
+  - `views/history.rs` — the commit table on egui-table-kit's layout `Table` (its `TableKit`
+    keeps per-row state a graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
+    replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
+    when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
+    screen, then a screen below and above). Graph cells paint lines (cubic curves between
+    lanes) and nodes (hollow for merges, ringed for `HEAD`); rows are buttons named by their
+    subject; ref badges; a focusable area takes ↑ ↓ PgUp PgDn Home End. The message column
+    is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
+    selection and the top row's commit in place when a re-read takes over. Details: message,
+    names, parents (buttons: egui announces links as plain text), people, signature, refs,
+    and the changed files (`ChangesTable`). A history of 10,000+ commits without a
+    commit-graph is offered one (`Action::WriteCommitGraph`).
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
     credentials, pull and push, and every setting, each with its origin), `repo` (overview
@@ -165,22 +194,24 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     dropped (checked every 250 ms while shown); answers are handed over off the interface
     thread (`jobs::detached`), then wiped, with the text field's own undo copy removed from
     egui's memory).
-  - `tables.rs` — egui-table-kit providers (`ConfigRows`, `RecentRows`) with O(1) `cell_at`,
-    and `SnapshotTable`, whose state starts over only when its snapshot is replaced.
+  - `tables.rs` — egui-table-kit providers (`ConfigRows`, `RecentRows`, `ChangeRows`) with
+    O(1) `cell_at`; `SnapshotTable` and `ChangesTable`, whose state starts over only when
+    their snapshot or commit is replaced.
   - `theme.rs` (palettes, WCAG AA checked by a test; Phosphor icons), `widgets.rs` (cards,
     buttons, origin labels, problem boxes), `format.rs` (`~` paths, "5 minutes ago",
     dates), `settings.rs` (theme, recent repositories, open tabs; non-UTF-8 paths kept as
     bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
   - `tests/askpass_helper.rs` — the real `egit` executable (`CARGO_BIN_EXE_egit`) started by
     git as its helper through the server's link.
-  - `tests/screens.rs` — the whole application driven through the accessibility tree
+  - `src/tests/screens.rs` — the whole application driven through the accessibility tree
     (egui_kittest) against a sandboxed git; renders `target/gui-screens/*.png` where a wgpu
     adapter exists (`EGIT_GUI_RENDER=1` requires one, `0` skips). Look at them after any
-    interface change. Every rendered screen first passes `tests/audit.rs` (after eshine's):
+    interface change. Every rendered screen first passes `src/tests/audit.rs` (after eshine's):
     no egui id clashes, no text or control drawn partly over another on the same layer,
     nothing moving while idle, and every control named in words or numbers (link a field to
     its visible label with `labelled_by`). Not yet audited, as eshine does: hover response,
-    cursors, focus rings, and 24-point targets.
+    cursors, focus rings, and 24-point targets. `src/tests/scale.rs` is the opt-in
+    large-history measurement (see Scale above).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
 - `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older
   releases don't compile as C23).

@@ -29,6 +29,7 @@ eframe = { workspace = true, features = [
     "x11",
 ] }
 egit-git.workspace = true
+egit-graph.workspace = true
 egui.workspace = true
 egui-async.workspace = true
 egui-phosphor.workspace = true

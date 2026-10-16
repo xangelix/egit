@@ -4,6 +4,7 @@
 //! - `tabs` — the tabs across the window (`egui_tiles`): Home, the profile, one per repository.
 //! - `views` — what each tab shows, and the status bar.
 //! - `repo` — an open repository and the jobs that keep it current.
+//! - `history` — a repository's history: rows streamed in by a walk, refs, commits' summaries.
 //! - `jobs` — the runtime and the write locks behind every git command.
 //! - `tables` — what the tables show, as `egui-table-kit` providers.
 //! - `theme`, `widgets`, `format` — colours and fonts, shared pieces, text for people.
@@ -12,6 +13,7 @@
 
 mod app;
 mod format;
+mod history;
 mod jobs;
 mod problem;
 mod repo;

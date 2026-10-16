@@ -3,6 +3,7 @@
 //! screen is also rendered to `target/gui-screens/<name>.png` for review; `EGIT_GUI_RENDER=1`
 //! requires rendering and `0` skips it.
 
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -16,17 +17,18 @@ use egui_kittest::kittest::Queryable as _;
 
 use crate::app::EgitApp;
 use crate::settings::Settings;
+use crate::theme::icon;
 use crate::views::prompts::Prompts;
 
 /// Where renderings are written.
-fn screens() -> PathBuf {
+pub(super) fn screens() -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/gui-screens");
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
 /// Whether screens are rendered (see the module's documentation).
-fn rendering() -> bool {
+pub(super) fn rendering() -> bool {
     static RENDERING: OnceLock<bool> = OnceLock::new();
     *RENDERING.get_or_init(|| match std::env::var("EGIT_GUI_RENDER").as_deref() {
         Ok("1") => true,
@@ -102,6 +104,21 @@ fn repository_shown(app: &mut EgitApp) -> bool {
         .is_some_and(|repo| repo.status.is_ok() && repo.config.is_ok())
 }
 
+/// Whether the first repository's history is read, with the summaries of the rows on screen.
+fn history_shown(app: &mut EgitApp) -> bool {
+    app.state.repos.first_mut().is_some_and(|repo| {
+        !repo.history.is_loading()
+            && !repo.history.summaries.is_reading()
+            && (repo.history.shown.rows() == 0 || repo.history.summaries.len() > 0)
+    })
+}
+
+/// Clicks a repository's panel tab.
+fn show_panel(harness: &mut Harness<'_, EgitApp>, panel: &str) {
+    harness.get_by_label_contains(panel).click();
+    harness.run_steps(4);
+}
+
 /// Types `path` into Home's path field and opens it.
 fn open_path(harness: &mut Harness<'_, EgitApp>, path: &Path) {
     let field = harness.get_by_role(Role::TextInput);
@@ -144,6 +161,9 @@ fn a_typed_path_opens_its_repository() {
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &inside);
     settle(&mut harness, "the repository", repository_shown);
+    settle(&mut harness, "the history", history_shown);
+    harness.get_by_role_and_label(Role::Button, "Start the project");
+    show_panel(&mut harness, "Overview");
 
     harness.get_by_label("project");
     harness.get_by_label_contains("main");
@@ -196,6 +216,9 @@ fn a_repository_another_user_owns_opens_once_trusted() {
 
     harness.get_by_label("Trust this folder").click();
     settle(&mut harness, "the repository", repository_shown);
+    settle(&mut harness, "the history", history_shown);
+    harness.get_by_label("No commits yet.");
+    show_panel(&mut harness, "Overview");
     harness.get_by_label("No commits yet");
 }
 
@@ -391,7 +414,9 @@ fn work_done_outside_egit_shows_up_by_itself() {
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &repo);
     settle(&mut harness, "the repository", repository_shown);
-    harness.get_by_label("First");
+    settle(&mut harness, "the history", history_shown);
+    harness.get_by_role_and_label(Role::Button, "First").click();
+    harness.run_steps(2);
 
     // As from a terminal: a commit, then a new branch checked out, then a setting.
     sandbox
@@ -399,14 +424,22 @@ fn work_done_outside_egit_shows_up_by_itself() {
         .unwrap();
     settle(&mut harness, "the new commit", |app| {
         shown_subject(app).as_deref() == Some("Second, from a terminal")
+            && app.state.repos[0].history.shown.rows() == 2
+            && history_shown(app)
     });
+    harness.get_by_role_and_label(Role::Button, "Second, from a terminal");
+    assert_eq!(
+        harness.state().state.repos[0].history_view.selected_row(),
+        Some(1),
+        "the selected commit stays selected, a row down"
+    );
     sandbox
         .run(&repo, "switch", &["--quiet", "--create", "topic"])
         .unwrap();
     settle(&mut harness, "the new branch", |app| {
-        shown_branch(app).as_deref() == Some("topic")
+        shown_branch(app).as_deref() == Some("topic") && history_shown(app)
     });
-    harness.get_by_label_contains("topic");
+    harness.get_by_label(&format!("{} topic", icon::GIT_BRANCH));
     sandbox
         .run(&repo, "config", &["user.email", "elsewhere@egit.invalid"])
         .unwrap();
@@ -422,7 +455,184 @@ fn work_done_outside_egit_shows_up_by_itself() {
             })
             .unwrap_or(false)
     });
+    show_panel(&mut harness, "Overview");
+    harness.get_by_label_contains("topic");
     harness.get_by_label("elsewhere@egit.invalid");
+}
+
+/// A history with branches, a merge, and a tag: `main` merged `parser` and goes on to `docs`.
+fn branchy(sandbox: &Sandbox) -> PathBuf {
+    let repo = sandbox.init("project").unwrap();
+    sandbox
+        .commit_file(&repo, "README", "hello\n", "Start the project")
+        .unwrap();
+    sandbox.run(&repo, "tag", &["v0.1"]).unwrap();
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--create", "parser"])
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "parser.rs", "fn parse() {}\n", "Add a parser")
+        .unwrap();
+    sandbox
+        .commit_file(
+            &repo,
+            "parser.rs",
+            "fn parse() -> bool {\n    true\n}\n",
+            "Make the parser answer",
+        )
+        .unwrap();
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    sandbox
+        .commit_file(&repo, "README", "hello, world\n", "Greet the world")
+        .unwrap();
+    sandbox
+        .run(
+            &repo,
+            "merge",
+            &[
+                "--quiet",
+                "--no-ff",
+                "--message",
+                "Merge the parser",
+                "parser",
+            ],
+        )
+        .unwrap();
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--create", "docs"])
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "docs.md", "# Docs\n", "Start the docs")
+        .unwrap();
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    repo
+}
+
+#[test]
+fn the_history_shows_branches_merges_and_a_commits_changes() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = branchy(&sandbox);
+    for (theme, name) in [
+        (egui::Theme::Dark, "history-dark"),
+        (egui::Theme::Light, "history-light"),
+    ] {
+        let mut harness = harness_with(sandbox.git().clone(), sandbox.home(), theme);
+        settle(&mut harness, "the profile", profile_loaded);
+        open_path(&mut harness, &repo);
+        settle(&mut harness, "the history", history_shown);
+        harness.get_by_label("6 commits");
+        for subject in [
+            "Start the docs",
+            "Merge the parser",
+            "Greet the world",
+            "Make the parser answer",
+            "Add a parser",
+            "Start the project",
+        ] {
+            harness.get_by_role_and_label(Role::Button, subject);
+        }
+        for badge in [
+            format!("{} main", icon::GIT_BRANCH),
+            format!("{} parser", icon::GIT_BRANCH),
+            format!("{} docs", icon::GIT_BRANCH),
+            format!("{} v0.1", icon::TAG),
+        ] {
+            harness.get_by_label(&badge);
+        }
+        harness.get_by_label("Select a commit to see what it changed.");
+        render(&mut harness, name);
+    }
+
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness
+        .get_by_role_and_label(Role::Button, "Add a parser")
+        .click();
+    settle(&mut harness, "the commit's details", |app| {
+        app.state.repos[0].history_view.details_shown()
+    });
+    harness.get_by_label("1 file changed");
+    harness.get_by_role_and_label(Role::Label, "parser.rs");
+    harness.get_by_role_and_label(Role::Label, "Added");
+    harness.get_by_label("egit tests <tests@egit.invalid>");
+    render(&mut harness, "history-commit");
+
+    // Down a row and back with the keyboard, then to its parent (the first commit) by its link.
+    let row = harness.state().state.repos[0]
+        .history_view
+        .selected_row()
+        .unwrap();
+    harness.key_press(egui::Key::ArrowDown);
+    settle(&mut harness, "the next commit's details", |app| {
+        app.state.repos[0].history_view.selected_row() == Some(row + 1)
+            && app.state.repos[0].history_view.details_shown()
+    });
+    // Its row, the row's cell, and the details' heading.
+    assert_eq!(harness.get_all_by_label("Greet the world").count(), 3);
+    harness.key_press(egui::Key::ArrowUp);
+    settle(&mut harness, "the commit's details again", |app| {
+        app.state.repos[0].history_view.selected_row() == Some(row)
+            && app.state.repos[0].history_view.details_shown()
+    });
+    let first = harness.state().state.repos[0].history.shown.id(5).unwrap();
+    harness
+        .get_by_role_and_label(Role::Button, &first.abbreviated(8).to_string())
+        .click();
+    settle(&mut harness, "the parent's details", |app| {
+        app.state.repos[0].history_view.selected_row() == Some(5)
+            && app.state.repos[0].history_view.details_shown()
+    });
+    harness.get_by_label("None: the first commit");
+}
+
+#[test]
+fn a_long_history_without_a_commit_graph_is_offered_one() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("long").unwrap();
+    let mut stream = String::new();
+    for index in 1..=10_000 {
+        let message = format!("Commit number {index}\n");
+        let _ = write!(
+            stream,
+            "commit refs/heads/main\nmark :{index}\ncommitter Test <t@example.com> {} +0000\ndata {}\n{message}",
+            1_700_000_000 + index,
+            message.len()
+        );
+        if index > 1 {
+            let _ = writeln!(stream, "from :{}", index - 1);
+        }
+        stream.push('\n');
+    }
+    sandbox
+        .git()
+        .write("fast-import")
+        .arg("--quiet")
+        .stdin(stream.into_bytes())
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness.get_by_label("10,000 commits");
+    harness.get_by_role_and_label(Role::Button, "Commit number 10000");
+    render(&mut harness, "history-commit-graph-offer");
+
+    harness
+        .get_by_role_and_label(Role::Button, "Write a commit-graph")
+        .click();
+    settle(&mut harness, "the commit-graph", |app| {
+        app.state.repos[0].history.shown.commit_graph() == Some(true)
+    });
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, "Write a commit-graph")
+            .is_none()
+    );
+    assert!(harness.state().state.repos[0].repository.has_commit_graph());
 }
 
 #[test]

@@ -5,38 +5,46 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bstr::ByteSlice as _;
-use egit_git::{ConfigSnapshot, Head, Operation, Repository, Tracking};
+use egit_git::{ConfigSnapshot, Git, Head, Operation, Repository, Tracking};
 use egui::{Color32, Grid, RichText, Ui, WidgetText};
 use egui_async::Bind;
 use egui_tiles::{TileId, Tiles, UiResponse};
 
 use crate::app::{Action, AppState};
 use crate::format::display_path;
+use crate::history::HistoryState;
 use crate::problem::Problem;
 use crate::repo::{RepoId, RepoPanel, Status};
 use crate::tables::SnapshotTable;
 use crate::theme::{Palette, icon};
+use crate::views::history::{HistoryPane, HistoryView};
 use crate::widgets::{self, muted};
 
 /// Draws repository `id`'s tab.
 pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
     let AppState {
+        git,
         repos,
         actions,
         home_dir,
         ..
     } = state;
+    let git = git.ok_ref();
     let Some(repo) = repos.iter_mut().find(|repo| repo.id == id) else {
         ui.label(muted(ui, "This repository was closed."));
         return;
     };
     let mut behavior = Panels {
         id,
+        git,
         title: &repo.title,
         repository: &repo.repository,
         status: &mut repo.status,
         config: &mut repo.config,
         config_table: &mut repo.config_table,
+        history: &mut repo.history,
+        history_view: &mut repo.history_view,
+        writing_commit_graph: &mut repo.writing_commit_graph,
         home: home_dir.as_deref(),
         actions,
     };
@@ -46,11 +54,15 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
 /// What a repository's panels share while they are drawn.
 struct Panels<'a> {
     id: RepoId,
+    git: Option<&'a Git>,
     title: &'a str,
     repository: &'a Arc<Repository>,
     status: &'a mut Bind<Status, Problem>,
     config: &'a mut Bind<Arc<ConfigSnapshot>, Problem>,
     config_table: &'a mut SnapshotTable,
+    history: &'a mut HistoryState,
+    history_view: &'a mut HistoryView,
+    writing_commit_graph: &'a mut Bind<(), Problem>,
     home: Option<&'a Path>,
     actions: &'a mut Vec<Action>,
 }
@@ -58,6 +70,19 @@ struct Panels<'a> {
 impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
     fn pane_ui(&mut self, ui: &mut Ui, _tile_id: TileId, panel: &mut RepoPanel) -> UiResponse {
         match panel {
+            RepoPanel::History => super::history::show(
+                ui,
+                HistoryPane {
+                    id: self.id,
+                    git: self.git,
+                    repository: self.repository,
+                    history: self.history,
+                    view: self.history_view,
+                    head: self.status.ok_ref().map(|status| &status.head),
+                    writing_commit_graph: self.writing_commit_graph,
+                    actions: self.actions,
+                },
+            ),
             RepoPanel::Overview => overview(ui, self),
             RepoPanel::Configuration => configuration(ui, self),
         }
@@ -66,6 +91,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
 
     fn tab_title_for_pane(&mut self, panel: &RepoPanel) -> WidgetText {
         match panel {
+            RepoPanel::History => format!("{}  History", icon::GIT_COMMIT).into(),
             RepoPanel::Overview => format!("{}  Overview", icon::INFO).into(),
             RepoPanel::Configuration => format!("{}  Settings", icon::SLIDERS_HORIZONTAL).into(),
         }

@@ -11,6 +11,7 @@ publish = false
 
 [workspace.dependencies]
 egit-git = { path = "crates/egit-git" }
+egit-graph = { path = "crates/egit-graph" }
 
 bstr = { version = "1.13.1", default-features = false, features = ["std"] }
 eframe = { version = "0.36.2", default-features = false }

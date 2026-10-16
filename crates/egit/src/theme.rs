@@ -45,6 +45,8 @@ pub(crate) struct Palette {
     pub(crate) warn: Color32,
     /// Something wrong.
     pub(crate) danger: Color32,
+    /// The commit graph's lanes, in turn.
+    pub(crate) lanes: [Color32; 10],
 }
 
 impl Palette {
@@ -62,6 +64,18 @@ impl Palette {
         ok: Color32::from_rgb(0x5B, 0xC9, 0x87),
         warn: Color32::from_rgb(0xE5, 0xB5, 0x46),
         danger: Color32::from_rgb(0xF5, 0x7A, 0x77),
+        lanes: [
+            Color32::from_rgb(0x4F, 0xC3, 0xF7),
+            Color32::from_rgb(0x81, 0xC7, 0x84),
+            Color32::from_rgb(0xFF, 0xB7, 0x4D),
+            Color32::from_rgb(0xBA, 0x68, 0xC8),
+            Color32::from_rgb(0xF0, 0x62, 0x92),
+            Color32::from_rgb(0x4D, 0xD0, 0xE1),
+            Color32::from_rgb(0xDC, 0xE7, 0x75),
+            Color32::from_rgb(0xFF, 0x8A, 0x65),
+            Color32::from_rgb(0x95, 0x75, 0xCD),
+            Color32::from_rgb(0xA1, 0x88, 0x7F),
+        ],
     };
 
     /// The light theme.
@@ -78,6 +92,18 @@ impl Palette {
         ok: Color32::from_rgb(0x18, 0x76, 0x35),
         warn: Color32::from_rgb(0x8F, 0x5B, 0x00),
         danger: Color32::from_rgb(0xC0, 0x2B, 0x26),
+        lanes: [
+            Color32::from_rgb(0x02, 0x77, 0xBD),
+            Color32::from_rgb(0x2E, 0x7D, 0x32),
+            Color32::from_rgb(0xEF, 0x6C, 0x00),
+            Color32::from_rgb(0x7B, 0x1F, 0xA2),
+            Color32::from_rgb(0xC2, 0x18, 0x5B),
+            Color32::from_rgb(0x00, 0x83, 0x8F),
+            Color32::from_rgb(0x82, 0x77, 0x17),
+            Color32::from_rgb(0xD8, 0x43, 0x15),
+            Color32::from_rgb(0x45, 0x27, 0xA0),
+            Color32::from_rgb(0x6D, 0x4C, 0x41),
+        ],
     };
 
     /// The palette egui is currently showing.
