@@ -212,9 +212,15 @@ impl ConfigSnapshot {
         self.entries.is_empty()
     }
 
+    /// The entry at `index` in the order git reads them.
+    #[must_use]
+    pub fn entry(&self, index: usize) -> Option<ConfigEntry<'_>> {
+        self.entries.get(index).map(|raw| self.entry_at(raw))
+    }
+
     /// Every entry, in the order git reads them.
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = ConfigEntry<'_>> + ExactSizeIterator {
-        self.entries.iter().map(|raw| self.entry(raw))
+        self.entries.iter().map(|raw| self.entry_at(raw))
     }
 
     /// The entry in effect for `key` (the last one git reads), such as `user.name` or
@@ -234,7 +240,7 @@ impl ConfigSnapshot {
             .filter(move |entry| entry.key == wanted.as_bytes())
     }
 
-    fn entry<'s>(&'s self, raw: &RawEntry) -> ConfigEntry<'s> {
+    fn entry_at<'s>(&'s self, raw: &RawEntry) -> ConfigEntry<'s> {
         ConfigEntry {
             scope: raw.scope,
             origin: BStr::new(span_bytes(&self.buffer, raw.origin)),
@@ -399,6 +405,14 @@ mod tests {
                 .entries()
                 .all(|entry| entry.scope != ConfigScope::Command)
         );
+    }
+
+    #[test]
+    fn entries_are_reachable_by_position() {
+        let snapshot = snapshot(LISTING);
+        assert_eq!(snapshot.entry(0), snapshot.entries().next());
+        assert_eq!(snapshot.entry(5), snapshot.entries().last());
+        assert_eq!(snapshot.entry(6), None);
     }
 
     #[test]
