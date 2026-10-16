@@ -246,9 +246,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
 - Never sign: commit with `--no-gpg-sign` (the owner's config signs by default). The owner reviews
   by rebasing, signs, and pushes. Never push, never create signed tags, never rewrite the owner's
   history.
-- Changes to `egui-table-kit` are made in its own clone (`~/egui-table-kit`), each an
-  independent commit appended to the previous ones, so they can be reviewed and released on
-  their own.
+- Changes to `egui-table-kit` are made in its own clone (`~/egui-table-kit`), directly on
+  `main` (no branches), each an independent commit appended to the previous ones, so they can
+  be reviewed and released on their own.
 
 ## CI
 
