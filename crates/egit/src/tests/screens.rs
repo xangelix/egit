@@ -57,8 +57,9 @@ fn harness(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
     harness_with(sandbox.git().clone(), sandbox.home(), egui::Theme::Dark)
 }
 
-/// Renders the window into `name.png` (where screens are rendered).
+/// Checks the screen (`audit`) and renders it into `name.png` (where screens are rendered).
 fn render(harness: &mut Harness<'_, EgitApp>, name: &str) {
+    super::audit::assert_clean(harness, name);
     if !rendering() {
         return;
     }

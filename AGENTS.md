@@ -151,7 +151,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `tests/screens.rs` — the whole application driven through the accessibility tree
     (egui_kittest) against a sandboxed git; renders `target/gui-screens/*.png` where a wgpu
     adapter exists (`EGIT_GUI_RENDER=1` requires one, `0` skips). Look at them after any
-    interface change.
+    interface change. Every rendered screen first passes `tests/audit.rs` (after eshine's):
+    no egui id clashes, no text or control drawn partly over another on the same layer,
+    nothing moving while idle, and every control named in words or numbers (link a field to
+    its visible label with `labelled_by`). Not yet audited, as eshine does: hover response,
+    cursors, focus rings, and 24-point targets.
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
 - `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older
   releases don't compile as C23).
