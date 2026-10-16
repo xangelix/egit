@@ -26,7 +26,11 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
   `arithmetic_side_effects`, `as_conversions`, lossy casts, printing, and `missing_docs`, and
   warn on pedantic + nursery + cargo; `clippy.toml` relaxes the first four inside tests.
 - Format: `cargo fmt --all`
-- Tests: `cargo test --workspace`
+- Tests: `cargo test --workspace`. Tests against git run in a sandbox
+  (`egit_git::testing::Sandbox`: a temporary `HOME`, no system or user configuration).
+- The git floor: `scripts/build-git.sh 2.43.0` builds that release into `target/git/2.43.0`;
+  `EGIT_TEST_GIT=$PWD/target/git/2.43.0/bin/git cargo test --workspace` runs every test against
+  it. Do this after touching anything that runs git (CI does it in `ubuntu:24.04`).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
 
 ## Supported platforms
@@ -49,8 +53,26 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
 ## Repository layout
 
 - `crates/egit-git` — the git binary: running it, and parsing what it prints. No egui.
+  - `git.rs` — `Git`: the executable (found on `PATH` or given), its version checked against
+    `GitVersion::MINIMUM` (`version.rs`), and the environment every git process gets
+    (`env.rs`: repository variables (`git rev-parse --local-env-vars`) removed, `LC_MESSAGES=C`
+    with the character set kept, no pager, editor `:`, `GIT_TERMINAL_PROMPT=0`, no `GPG_TTY`).
+  - `command.rs` — `GitCommand` from `Git::read` / `Git::write`: `-c` settings, arguments,
+    directory, stdin, and a `CancelToken`; `output` (collected up to `stdout_limit`, failing
+    unless git succeeds), `output_unchecked` (any exit), `stream` (chunks through one reused
+    buffer; the consumer may stop it). Reads add `--no-optional-locks`; writes are retried
+    (25 ms … 800 ms) while `Stderr::held_lock` finds another git's lock. Every command gets
+    `-c color.ui=never -c core.quotePath=false`. Stderr is drained on a helper thread into a
+    64 KiB tail (`output.rs`); stdin is fed from another.
+  - `process.rs` — the crate's only `unsafe`: `setsid` in `pre_exec` (no controlling
+    terminal; git leads its process group). The leader is waited for with `waitid(WNOWAIT)`
+    so a cancel can't signal a reused id; `cancel.rs` holds the running groups under one lock.
+  - `error.rs` — `GitError`, with `Failure` (exit status + stderr tail, `message()`).
+  - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit` — the application (`egit_app` library, `egit` executable).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
+- `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older
+  releases don't compile as C23).
 
 ## Conventions
 

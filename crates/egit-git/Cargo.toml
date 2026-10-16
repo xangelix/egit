@@ -9,4 +9,18 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# `testing`: a sandboxed git (a temporary `HOME`, no system configuration) for tests in this
+# workspace.
+testing = ["dep:tempfile"]
+
 [dependencies]
+bstr.workspace = true
+parking_lot.workspace = true
+rustix.workspace = true
+tempfile = { workspace = true, optional = true }
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+egit-git = { workspace = true, features = ["testing"] }

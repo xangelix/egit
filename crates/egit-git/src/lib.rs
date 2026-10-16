@@ -4,3 +4,25 @@
 //! the system, so hooks, signing, credential helpers, filters, and every repository format git
 //! understands work exactly as they do on the command line. This crate runs that binary safely
 //! and turns what it prints into types.
+//!
+//! [`Git`] is the binary (found, version-checked, with a scrubbed environment); [`Git::read`] and
+//! [`Git::write`] build a [`GitCommand`], which runs git in a session of its own and can be
+//! cancelled through a [`CancelToken`].
+
+mod cancel;
+mod command;
+mod env;
+mod error;
+mod git;
+mod output;
+mod process;
+#[cfg(feature = "testing")]
+pub mod testing;
+mod version;
+
+pub use cancel::CancelToken;
+pub use command::{Access, GitCommand, Streamed};
+pub use error::{Failure, GitError};
+pub use git::{Git, GitOptions};
+pub use output::{Completed, Stderr};
+pub use version::{GitVersion, VersionParseError};
