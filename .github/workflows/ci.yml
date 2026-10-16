@@ -45,13 +45,16 @@ jobs:
     env:
       # The screens are rendered (by lavapipe, Mesa's software Vulkan) and uploaded for review.
       EGIT_GUI_RENDER: "1"
+      # Every way of signing is tested: none may be skipped for want of its tools.
+      EGIT_REQUIRE_SIGNERS: "1"
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Mesa's software renderer
+      - name: Install Mesa's software renderer, and the signers (GnuPG, gpgsm, OpenSSH)
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends mesa-vulkan-drivers
+          sudo apt-get install --yes --no-install-recommends \
+            mesa-vulkan-drivers gnupg gpgsm openssh-client
 
       - name: Install the pinned toolchain
         run: rustup toolchain install
@@ -77,12 +80,15 @@ jobs:
     name: Tests (Ubuntu 24.04, git 2.43)
     runs-on: ubuntu-24.04
     container: ubuntu:24.04
+    env:
+      EGIT_REQUIRE_SIGNERS: "1"
     steps:
       - name: Install system packages
         run: |
           apt-get update
           apt-get install --yes --no-install-recommends \
-            build-essential ca-certificates curl git mesa-vulkan-drivers pkg-config
+            build-essential ca-certificates curl git gnupg gpgsm mesa-vulkan-drivers \
+            openssh-client pkg-config
 
       - uses: actions/checkout@v7
 

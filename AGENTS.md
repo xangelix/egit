@@ -174,6 +174,16 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `--no-gpg-sign`, or the configuration's choice); a passphrase is asked through askpass,
     labelled "Signing the commit"; `Committed::output` is what git and its hooks printed (a
     refusal's whole standard error is on the failure).
+  - `signatures.rs` — `check_signatures`: some commits' signatures checked as `git log
+    --show-signature` checks them (`log --no-walk=unsorted --stdin -z
+    --format=%H%x1f%G?%x1f%GS%x1f%GK`, `log.showSignature` off), each by its format's program;
+    a `Verdict` (good, untrusted, bad, expired, revoked, unchecked, unsigned), signer, and key.
+    `tests/signing.rs` signs commits made by `create_commit` each way and checks them both
+    there and in `git log --show-signature`: an SSH key file, an SSH agent holding the key
+    (the file deleted), a signing program of the user's own, OpenPGP, and X.509 (gpgsm
+    certifying a key gpg made, since gpgsm can't make one without a passphrase; trusted by
+    `trustlist.txt`). A test whose tools are missing is skipped, unless
+    `EGIT_REQUIRE_SIGNERS` is set (CI installs GnuPG, gpgsm, and OpenSSH and sets it).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
