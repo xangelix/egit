@@ -93,6 +93,18 @@ fn settle(harness: &mut Harness<'_, EgitApp>, what: &str, done: impl Fn(&mut Egi
     panic!("timed out waiting for {what}");
 }
 
+/// Steps until something labelled `label` is shown (a job's result, say), or panics.
+fn wait_for_label(harness: &mut Harness<'_, EgitApp>, label: &str) {
+    for _ in 0..2_000 {
+        harness.step();
+        if harness.query_by_label(label).is_some() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("timed out waiting for {label:?}");
+}
+
 fn profile_loaded(app: &mut EgitApp) -> bool {
     app.state.user_config.is_ok()
 }
@@ -709,16 +721,7 @@ fn the_work_tree_is_followed_as_files_change_outside_egit() {
     settle(&mut harness, "the history", history_shown);
     let shown = |files: usize| {
         let label = uncommitted(files);
-        move |harness: &mut Harness<'_, EgitApp>| {
-            for _ in 0..2_000 {
-                harness.step();
-                if harness.query_by_label(&label).is_some() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(5));
-            }
-            panic!("timed out waiting for {label:?}");
-        }
+        move |harness: &mut Harness<'_, EgitApp>| wait_for_label(harness, &label)
     };
     shown(1)(&mut harness);
 
@@ -905,13 +908,11 @@ fn text_on_the_grid_is_selected_copied_and_found() {
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F);
     harness.run_steps(2);
     find_field(&harness).type_text("TRUE");
-    harness.run_steps(4);
-    harness.get_by_label("No matches");
+    wait_for_label(&mut harness, "No matches");
     find_field(&harness).focus();
     harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
     find_field(&harness).type_text("true");
-    harness.run_steps(4);
-    harness.get_by_label("1 found");
+    wait_for_label(&mut harness, "1 found");
     harness.key_press(egui::Key::Enter);
     harness.run_steps(2);
     harness.get_by_label("1 of 1");
