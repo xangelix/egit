@@ -136,7 +136,8 @@ struct FileView {
     /// Whether a Git LFS pointer's own changes are shown, rather than what it stands for.
     pointer: bool,
     diff: Bind<Arc<DiffDocument>, Problem>,
-    /// The diff split in two, made the first time it is shown so.
+    /// The diff split in two: made the first time it is shown so, and again for each diff
+    /// read after (the last split shows until then).
     sides: Bind<Arc<SplitDiff>, Problem>,
     sides_grid: TextGrid,
     /// Read the first time the file is shown.
@@ -162,11 +163,14 @@ impl FileView {
             paths.push(from.clone());
         }
         paths.push(self.change.path.clone());
+        // A split that failed is tried again for this diff; a good one shows until it lands.
+        if self.sides.is_err() {
+            self.sides = Bind::new(true);
+        }
         let options = DiffOptions {
             context: if self.whole { WHOLE_FILE } else { 3 },
             ..DiffOptions::default()
         };
-        self.sides = Bind::new(true);
         self.diff.request(read_diff(
             git.clone(),
             Arc::clone(shared.repository),
@@ -331,6 +335,24 @@ impl HistoryView {
             Shown::File => file.content.is_ok(),
         };
         Some((file.change.path.to_string(), ready))
+    }
+
+    /// How many lines the open file's diff has, once read.
+    #[cfg(test)]
+    pub(crate) fn diff_lines(&mut self) -> Option<u32> {
+        let file = self.file.as_mut()?;
+        file.diff
+            .ok_ref()
+            .map(|diff| crate::grid::GridSource::measure(&**diff).lines())
+    }
+
+    /// How many lines the new side of the open file's split diff has, once split.
+    #[cfg(test)]
+    pub(crate) fn split_lines(&mut self) -> Option<u32> {
+        let file = self.file.as_mut()?;
+        file.sides
+            .ok_ref()
+            .map(|sides| crate::grid::GridSource::measure(&sides.side(false)).lines())
     }
 
     /// The selected commit's row.
@@ -690,7 +712,10 @@ fn show_diff(ui: &mut Ui, file: &mut FileView) {
         }
         Some(Ok(diff)) if file.split => {
             let diff = Arc::clone(diff);
-            if file.sides.is_idle() {
+            // The sides shown are another diff's after a re-read (more context, say): split
+            // this one once it has landed, showing the old split meanwhile.
+            let stale = file.sides.ok_ref().is_some_and(|sides| !sides.is_of(&diff));
+            if (file.sides.is_idle() || stale) && !file.diff.is_pending() {
                 file.sides.request(split_diff(diff));
             }
             match file.sides.read_as_ref() {

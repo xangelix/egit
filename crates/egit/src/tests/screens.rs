@@ -683,6 +683,62 @@ fn a_git_lfs_pointers_diff_shows_what_it_stands_for() {
 }
 
 #[test]
+fn whole_file_shows_all_of_the_file_and_back() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    let lines = |changed: &str| -> String {
+        (1..=30)
+            .map(|line| {
+                if line == 15 {
+                    format!("{changed}\n")
+                } else {
+                    format!("line {line}\n")
+                }
+            })
+            .collect()
+    };
+    sandbox
+        .commit_file(&repo, "notes.txt", &lines("before"), "Write notes")
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "notes.txt", &lines("after"), "Change a note")
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness
+        .get_by_role_and_label(Role::Button, "Change a note")
+        .click();
+    settle(&mut harness, "the commit's details", |app| {
+        app.state.repos[0].history_view.details_shown()
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "notes.txt")
+        .click();
+    // A hunk header, three lines either side, and the line removed and added.
+    let shown = |lines| {
+        move |app: &mut EgitApp| app.state.repos[0].history_view.diff_lines() == Some(lines)
+    };
+    settle(&mut harness, "the diff", shown(9));
+    harness.get_by_label("Whole file").click();
+    settle(&mut harness, "the whole file", shown(32));
+    harness.get_by_label("Whole file").click();
+    settle(&mut harness, "the diff again", shown(9));
+
+    // Side by side, the new side has the hunk header and its own lines.
+    let split = |lines| {
+        move |app: &mut EgitApp| app.state.repos[0].history_view.split_lines() == Some(lines)
+    };
+    harness.get_by_label("Side by side").click();
+    settle(&mut harness, "the sides", split(8));
+    harness.get_by_label("Whole file").click();
+    settle(&mut harness, "the whole file's sides", split(31));
+    harness.get_by_label("Whole file").click();
+    settle(&mut harness, "the sides again", split(8));
+}
+
+#[test]
 fn a_changed_file_opens_in_place_of_the_history() {
     let sandbox = Sandbox::new().unwrap();
     let mut harness = parser_change(&sandbox);

@@ -243,7 +243,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `read_diff`, its job (cancelled when its view closes). Each block's removed lines pair with
     its added ones in order (found in the job); a pair's changed words are compared when first
     drawn and kept (up to 4,096 pairs), and marked with `Styled` backgrounds. `SplitDiff`:
-    the old side beside the new (`split_diff`, a job, the first time it is shown), a block's
+    the old side beside the new (`split_diff`, a job, the first time it is shown and again for
+    each diff read after, once it has landed: `is_of`), a block's
     removed lines beside its added ones with fillers making up the difference, both sides'
     measures matched (`Measure::match_rows`) so wrapped lines take the same rows. Both are
     highlighted in the file's language (see `syntax.rs`). A Git LFS pointer's diff is noticed

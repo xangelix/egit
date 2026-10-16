@@ -366,6 +366,11 @@ pub(crate) struct SplitDiff {
 }
 
 impl SplitDiff {
+    /// Whether it is `diff` split.
+    pub(crate) fn is_of(&self, diff: &Arc<DiffDocument>) -> bool {
+        Arc::ptr_eq(&self.unified, diff)
+    }
+
     /// Splits `unified` (on a job's thread, for a large diff).
     fn new(unified: Arc<DiffDocument>) -> Self {
         let mut old = SideBuilder::default();
