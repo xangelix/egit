@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use rustix::process::Pid;
 
+use crate::batch::GitProcess;
 use crate::cancel::{CancelToken, Registration};
 use crate::error::GitError;
 use crate::git::Git;
@@ -290,6 +291,49 @@ impl GitCommand {
                 attempt.status,
                 attempt.stderr,
             ))
+        }
+    }
+
+    /// Starts git and keeps it running for one of its batch protocols (such as
+    /// `cat-file --batch-command`): requests go to its standard input, answers come from its
+    /// standard output. Any [`Self::stdin`] given is ignored; a [`CancelToken`] isn't watched
+    /// (dropping the process stops it).
+    ///
+    /// # Errors
+    ///
+    /// [`GitError::Cancelled`] when the token is already cancelled, [`GitError::Launch`] when
+    /// git can't be started, and [`GitError::Io`] when its pipes or helper can't be set up.
+    pub fn spawn(self) -> Result<GitProcess, GitError> {
+        if self.cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+            return Err(self.cancelled());
+        }
+        tracing::debug!(subcommand = self.subcommand, "starting git");
+        let mut command = self.build();
+        command.stdin(Stdio::piped());
+        let mut child = process::spawn_in_new_session(&mut command)
+            .map_err(|source| self.launch_error(source))?;
+        let group = process::group_of(&child);
+        let pipes = (child.stdin.take(), child.stdout.take(), child.stderr.take());
+        let (Some(stdin), Some(stdout), Some(stderr)) = pipes else {
+            abandon(child, group, None);
+            return Err(self.io_error(io::Error::other("git's pipes weren't set up")));
+        };
+        let drain = thread::Builder::new()
+            .name(format!("git {} stderr", self.subcommand))
+            .stack_size(HELPER_STACK)
+            .spawn(move || drain(stderr));
+        match drain {
+            Ok(drain) => Ok(GitProcess::new(
+                self.subcommand,
+                child,
+                stdin,
+                stdout,
+                drain,
+            )),
+            Err(error) => {
+                abandon(child, group, None);
+                Err(self.io_error(error))
+            }
         }
     }
 

@@ -10,13 +10,16 @@
 //! cancelled through a [`CancelToken`].
 
 pub mod askpass;
+mod batch;
 mod cancel;
 mod command;
+mod commit;
 mod config;
 mod env;
 mod error;
 mod git;
 mod object_id;
+mod objects;
 mod output;
 mod process;
 mod profile;
@@ -25,14 +28,17 @@ mod repo;
 pub mod testing;
 mod version;
 
+pub use batch::GitProcess;
 pub use cancel::CancelToken;
 pub use command::{Access, GitCommand, Streamed};
+pub use commit::{Commit, CommitParseError, Signature};
 pub use config::{
     ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, set_config, unset_config,
 };
 pub use error::{Failure, GitError};
 pub use git::{Git, GitOptions};
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
+pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};
 pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use repo::{
