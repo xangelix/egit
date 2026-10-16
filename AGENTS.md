@@ -160,6 +160,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     character in a row's last cell hangs past it, so rows never depend on earlier rows.
     `Position { line, cell }` (a row's start) with `next`/`previous`; `Rows`, the rows before
     each 1,024 lines (rebuilt at a new width in 1.3 ms for 1M lines), only for scroll bars.
+  - `words.rs` — `changed_words`: two lines' changed bytes, by the longest common sequence of
+    tokens (words, whitespace runs, single punctuation); none past 500 tokens a line, or for
+    lines sharing under 40% of their words.
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
   (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io: bump
   `rev` to the owner's pushed commit after each change made there), `egui-async` 0.7 (stay on
@@ -215,7 +218,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     (`fonts::generation`). `Plain` is a text, numbered.
   - `diff.rs` — `DiffDocument`: a `FileDiff` measured as a `GridSource` (lines on their kind's
     background, hunk headers muted, the gutter numbering both files with a `+`/`-` marker), and
-    `read_diff`, its job (cancelled when its view closes).
+    `read_diff`, its job (cancelled when its view closes). Each block's removed lines pair with
+    its added ones in order (found in the job); a pair's changed words are compared when first
+    drawn and kept (up to 4,096 pairs), and marked with `Styled` backgrounds.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the XDG font directories (CJK families, then

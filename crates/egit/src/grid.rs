@@ -31,13 +31,22 @@ const BAR: f32 = 10.0;
 /// The fewest cells a wrapped row has.
 const MIN_WRAP: u32 = 8;
 
-/// A colour for some of a line's bytes.
+/// A colour for some of a line's bytes, and maybe a background behind their cells.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Styled {
     /// The bytes, in the line.
     pub(crate) bytes: Range<u32>,
     /// Their colour.
     pub(crate) color: Color32,
+    /// Behind their cells (over the line's background).
+    pub(crate) background: Option<Color32>,
+}
+
+/// A background behind some of a row's cells (counted from the row's first).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Highlight {
+    cells: (u32, u32),
+    color: Color32,
 }
 
 /// What a grid shows: a measured text, and how to colour it.
@@ -289,6 +298,7 @@ impl TextGrid {
                 .intersect(outer),
         );
         let mut styles = Vec::new();
+        let mut highlights = Vec::new();
         let mut gutter = String::new();
         let mut position = (measure.lines() > 0).then_some(self.top);
         let mut y = frame.text.top() - self.offset;
@@ -318,11 +328,32 @@ impl TextGrid {
                 Wrap::Off => self.sideways..self.sideways.saturating_add(frame.visible_cells),
             };
             styles.clear();
+            highlights.clear();
             source.styles(at.line, &palette, &mut styles);
             let mut job = LayoutJob::default();
             self.lay_out_row(
-                ui, source, at.line, cells, &styles, font, frame, palette, &mut job,
+                ui,
+                source,
+                at.line,
+                cells,
+                &styles,
+                font,
+                frame,
+                palette,
+                &mut job,
+                &mut highlights,
             );
+            for highlight in &highlights {
+                let x = |cell: u32| {
+                    f32::from(u16::try_from(cell).unwrap_or(u16::MAX))
+                        .mul_add(frame.cell, frame.text.left())
+                };
+                let rect = Rect::from_min_max(
+                    pos2(x(highlight.cells.0), y),
+                    pos2(x(highlight.cells.1), y + frame.row),
+                );
+                text_painter.rect_filled(rect, CornerRadius::ZERO, highlight.color);
+            }
             if !job.text.is_empty() {
                 let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
                 text_painter.galley(pos2(frame.text.left(), y), galley, palette.text);
@@ -332,8 +363,8 @@ impl TextGrid {
         }
     }
 
-    /// Lays out cells `cells` of line `line` into `job`: sections of one colour and one advance,
-    /// spaced to their cells.
+    /// Lays out cells `cells` of line `line` into `job` (sections of one colour and one
+    /// advance, spaced to their cells), and the styles' backgrounds into `highlights`.
     #[allow(clippy::too_many_arguments)]
     fn lay_out_row(
         &mut self,
@@ -346,6 +377,7 @@ impl TextGrid {
         frame: &Frame,
         palette: Palette,
         job: &mut LayoutJob,
+        highlights: &mut Vec<Highlight>,
     ) {
         let text = source.text();
         let measure = source.measure();
@@ -378,14 +410,27 @@ impl TextGrid {
                 .next_if(|styled| styled.bytes.end <= cell.byte)
                 .is_some()
             {}
+            let covering = style
+                .peek()
+                .filter(|styled| styled.bytes.start <= cell.byte);
             let color = if cell.glyph.is_escaped() {
                 palette.warn
             } else {
-                style
-                    .peek()
-                    .filter(|styled| styled.bytes.start <= cell.byte)
-                    .map_or(palette.text, |styled| styled.color)
+                covering.map_or(palette.text, |styled| styled.color)
             };
+            if let Some(background) = covering.and_then(|styled| styled.background) {
+                let from = cell.cell.saturating_sub(cells.start);
+                let to = cell.end().saturating_sub(cells.start);
+                match highlights.last_mut() {
+                    Some(last) if last.cells.1 == from && last.color == background => {
+                        last.cells.1 = to;
+                    }
+                    _ => highlights.push(Highlight {
+                        cells: (from, to),
+                        color: background,
+                    }),
+                }
+            }
             match cell.glyph {
                 Glyph::Char(c) => {
                     let advance = self.advance(ui, font, c, frame.cell);

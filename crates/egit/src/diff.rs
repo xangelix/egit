@@ -1,6 +1,12 @@
 //! A file's diff on the text grid: its lines without their `+`, `-`, or ` `, each on the
 //! background of what it is, numbered in the old and new file in the gutter.
+//!
+//! In a block of removed lines followed by added ones, the first removed line pairs with the
+//! first added, and so on; the words that changed between a pair are marked. Pairs are found
+//! when the diff is read; their words are compared the first time they are drawn, then kept
+//! (comparing every pair of a large rewrite up front could take seconds).
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -9,13 +15,20 @@ use egit_git::{
     CancelToken, DiffLine, DiffLineKind, DiffOptions, FileDiff, Git, ObjectId, Repository,
     file_diff,
 };
-use egit_text::{Measure, Options, Text};
+use egit_text::{ChangedWords, Measure, Options, Text, changed_words};
 use egui::Color32;
+use parking_lot::Mutex;
 
 use crate::grid::{GridSource, Styled};
 use crate::jobs;
 use crate::problem::Problem;
 use crate::theme::Palette;
+
+/// The most pairs whose changed words are kept; past it, they are compared again.
+const KEPT_WORDS: usize = 4096;
+
+/// A line without a partner.
+const NO_PARTNER: u32 = u32::MAX;
 
 /// A file's diff, measured, ready to draw.
 #[derive(Debug)]
@@ -23,6 +36,12 @@ pub(crate) struct DiffDocument {
     text: Text,
     measure: Measure,
     lines: Vec<DiffLine>,
+    /// Each line's partner: a removed line's added one and the other way round
+    /// ([`NO_PARTNER`] for the rest).
+    partners: Vec<u32>,
+    /// The words that changed between pairs drawn so far, by the pair's removed line (`None`
+    /// where the lines share too little to mark).
+    words: Mutex<HashMap<u32, Option<ChangedWords>>>,
     binary: bool,
     /// Digits of the largest line number.
     digits: u32,
@@ -53,12 +72,51 @@ impl DiffDocument {
         Self {
             added: count(DiffLineKind::Added),
             removed: count(DiffLineKind::Removed),
+            partners: partners(&lines),
+            words: Mutex::new(HashMap::new()),
             text,
             measure,
             lines,
             binary,
             digits: largest.max(1).ilog10().saturating_add(1),
         }
+    }
+
+    /// The words that changed in line `line`, if it is half of a pair (compared once).
+    fn changed_in(&self, line: u32, out: &mut Vec<std::ops::Range<u32>>) {
+        let Some(&partner) = usize::try_from(line)
+            .ok()
+            .and_then(|line| self.partners.get(line))
+        else {
+            return;
+        };
+        if partner == NO_PARTNER {
+            return;
+        }
+        let removed_first = self
+            .line(line)
+            .is_some_and(|line| line.kind == DiffLineKind::Removed);
+        let (old, new) = if removed_first {
+            (line, partner)
+        } else {
+            (partner, line)
+        };
+        let mut words = self.words.lock();
+        if words.len() >= KEPT_WORDS && !words.contains_key(&old) {
+            words.clear();
+        }
+        let changed = words.entry(old).or_insert_with(|| {
+            let text = |line| self.text.line(line).unwrap_or_default();
+            changed_words(text(old), text(new))
+        });
+        if let Some(changed) = changed {
+            out.extend_from_slice(if removed_first {
+                &changed.old
+            } else {
+                &changed.new
+            });
+        }
+        drop(words);
     }
 
     /// Whether git found the file binary (there are no lines to show then).
@@ -76,6 +134,39 @@ impl DiffDocument {
     }
 }
 
+/// Pairs each block's removed lines with its added ones, in order.
+fn partners(lines: &[DiffLine]) -> Vec<u32> {
+    let mut partners = vec![NO_PARTNER; lines.len()];
+    let kind = |index: usize| lines.get(index).map(|line| line.kind);
+    let mut index = 0;
+    while index < lines.len() {
+        if kind(index) != Some(DiffLineKind::Removed) {
+            index = index.saturating_add(1);
+            continue;
+        }
+        let removed = index;
+        while kind(index) == Some(DiffLineKind::Removed) {
+            index = index.saturating_add(1);
+        }
+        let added = index;
+        while kind(index) == Some(DiffLineKind::Added) {
+            index = index.saturating_add(1);
+        }
+        let pairs = (added.saturating_sub(removed)).min(index.saturating_sub(added));
+        for pair in 0..pairs {
+            let (old, new) = (removed.saturating_add(pair), added.saturating_add(pair));
+            let number = |index: usize| u32::try_from(index).unwrap_or(NO_PARTNER);
+            if let Some(partner) = partners.get_mut(old) {
+                *partner = number(new);
+            }
+            if let Some(partner) = partners.get_mut(new) {
+                *partner = number(old);
+            }
+        }
+    }
+    partners
+}
+
 impl GridSource for DiffDocument {
     fn text(&self) -> &Text {
         &self.text
@@ -86,15 +177,26 @@ impl GridSource for DiffDocument {
     }
 
     fn styles(&self, line: u32, palette: &Palette, out: &mut Vec<Styled>) {
-        if self
-            .line(line)
-            .is_some_and(|line| line.kind == DiffLineKind::Hunk)
-        {
-            out.push(Styled {
-                bytes: 0..u32::MAX,
-                color: palette.muted,
-            });
-        }
+        let background = match self.line(line).map(|line| line.kind) {
+            Some(DiffLineKind::Hunk) => {
+                out.push(Styled {
+                    bytes: 0..u32::MAX,
+                    color: palette.muted,
+                    background: None,
+                });
+                return;
+            }
+            Some(DiffLineKind::Added) => palette.added_word,
+            Some(DiffLineKind::Removed) => palette.removed_word,
+            Some(DiffLineKind::Context) | None => return,
+        };
+        let mut changed = Vec::new();
+        self.changed_in(line, &mut changed);
+        out.extend(changed.into_iter().map(|bytes| Styled {
+            bytes,
+            color: palette.text,
+            background: Some(background),
+        }));
     }
 
     fn background(&self, line: u32, palette: &Palette) -> Option<Color32> {
@@ -169,7 +271,7 @@ mod tests {
 
     fn document() -> DiffDocument {
         DiffDocument::new(FileDiff {
-            text: b"@@ -9,2 +9,3 @@\nkeep\nold\nnew\nmore\n".to_vec(),
+            text: b"@@ -9,2 +9,3 @@\nkeep\nlet a = 1;\nlet a = 2;\nmore\n".to_vec(),
             lines: vec![
                 line(DiffLineKind::Hunk, 0, 0),
                 line(DiffLineKind::Context, 9, 9),
@@ -197,6 +299,46 @@ mod tests {
             ["       ", " 9  9  ", "10    -", "   10 +", "   11 +"]
         );
         assert_eq!(document.changed(), (2, 1));
+    }
+
+    #[test]
+    fn removed_and_added_lines_pair_up_in_order() {
+        let lines = [
+            line(DiffLineKind::Hunk, 0, 0),
+            line(DiffLineKind::Removed, 1, 0),
+            line(DiffLineKind::Removed, 2, 0),
+            line(DiffLineKind::Added, 0, 1),
+            line(DiffLineKind::Context, 3, 2),
+            line(DiffLineKind::Added, 0, 3),
+            line(DiffLineKind::Removed, 4, 0),
+            line(DiffLineKind::Added, 0, 4),
+            line(DiffLineKind::Added, 0, 5),
+        ];
+        let none = NO_PARTNER;
+        assert_eq!(partners(&lines), [none, 3, none, 1, none, none, 7, 6, none]);
+    }
+
+    #[test]
+    fn a_pair_marks_its_changed_words() {
+        let document = document();
+        let palette = Palette::DARK;
+        let mut styles = Vec::new();
+        document.styles(2, &palette, &mut styles);
+        assert_eq!(
+            styles,
+            [Styled {
+                bytes: 8..9,
+                color: palette.text,
+                background: Some(palette.removed_word)
+            }]
+        );
+        styles.clear();
+        document.styles(3, &palette, &mut styles);
+        assert_eq!(styles[0].bytes, 8..9);
+        assert_eq!(styles[0].background, Some(palette.added_word));
+        styles.clear();
+        document.styles(4, &palette, &mut styles);
+        assert_eq!(styles, [], "the second added line has no partner");
     }
 
     #[test]
