@@ -140,6 +140,13 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     its prefix (hunk headers as lines), its `DiffLineKind`, old and new numbers, and a
     missing final newline; a binary file is flagged and has no lines. `lines.rs` — `Lines`,
     the streamed-output splitter `walk_history` and `file_diff` share.
+  - `status.rs` — `Status::read`: `git status --porcelain=v2 -z --untracked-files=all` (each
+    untracked file on its own), kept as git's output plus a table of byte ranges into it
+    (`span.rs`, shared with `config.rs`); modes and object names are checked once and decoded
+    when asked for, so 100,000 untracked files cost a few megabytes. `StatusEntry`: its kind
+    (changed, renamed, copied, unmerged, untracked), path and a rename's old one, `staged` and
+    `unstaged` `Change`s, `head` and `index` tree entries (the index's blob is what lines are
+    staged against), the work tree's mode, a conflict's sides, a submodule's changes.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).

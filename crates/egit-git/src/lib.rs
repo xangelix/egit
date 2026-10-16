@@ -28,6 +28,7 @@ mod process;
 mod profile;
 mod repo;
 mod span;
+mod status;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod version;
@@ -54,4 +55,5 @@ pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,
     trust_directory,
 };
+pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
 pub use version::{GitVersion, VersionParseError};
