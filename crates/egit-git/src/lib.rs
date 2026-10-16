@@ -15,10 +15,12 @@ mod cancel;
 mod command;
 mod commit;
 mod config;
+mod diff;
 mod env;
 mod error;
 mod git;
 mod history;
+mod lines;
 mod object_id;
 mod objects;
 mod output;
@@ -36,6 +38,7 @@ pub use commit::{Commit, CommitParseError, Signature};
 pub use config::{
     ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, set_config, unset_config,
 };
+pub use diff::{DiffLine, DiffLineKind, DiffOptions, FileDiff, WHOLE_FILE, file_diff};
 pub use error::{Failure, GitError};
 pub use git::{Git, GitOptions};
 pub use history::{

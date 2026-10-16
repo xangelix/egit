@@ -126,6 +126,14 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     --name-status -M` against the first parent, or `--root`), `write_commit_graph`;
     `Repository::has_commit_graph` (without one, a topological walk outputs nothing until
     git has read all history: 6 s for Linux's 1.5M commits).
+  - `diff.rs` — `file_diff`: one file's patch from `diff-tree -p` (plumbing, so no colour,
+    prefix, external-diff, or textconv setting applies; `--no-textconv --full-index
+    --src-prefix=a/ --dst-prefix=b/`; `GIT_LITERAL_PATHSPECS`; a rename's both paths;
+    `DiffOptions`: context (`WHOLE_FILE` for all of it) and the user's `diff.algorithm`, which
+    plumbing doesn't read). Parsed as it streams into `FileDiff`: each line's text without
+    its prefix (hunk headers as lines), its `DiffLineKind`, old and new numbers, and a
+    missing final newline; a binary file is flagged and has no lines. `lines.rs` — `Lines`,
+    the streamed-output splitter `walk_history` and `file_diff` share.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
