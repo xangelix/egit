@@ -1,12 +1,13 @@
 //! The text grid against its worst cases (the roadmap's corpus): a million lines of code, plain
 //! and highlighted, a 10 MB line wrapped and not, CJK and emoji, and resizing while wrapped at
 //! line 900,000. Each case reports frame times (laid out and tessellated) jumping across the
-//! text and scrolling it.
+//! text and scrolling it. Then the whole application on a commit that moves 100,000 files:
+//! how soon they are listed and counted, and frames scrolling through them beside a diff.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
 //! ```text
-//! cargo test -p egit --release --lib -- --ignored --nocapture corpus
+//! cargo test -p egit --release --lib -- --ignored --nocapture --test-threads=1 corpus
 //! ```
 //!
 //! Where screens are rendered, each case is saved as `target/gui-screens/corpus-*.png`.
@@ -20,14 +21,22 @@
 )]
 
 use std::fmt::Write as _;
+use std::io::Write as _;
 use std::time::{Duration, Instant};
 
+use egit_git::testing::Sandbox;
 use egit_text::{Options, Text};
+use egui::accesskit::Role;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable as _;
 
+use super::scale::{peak_memory_mb, step_until};
 use super::screens::{rendering, screens};
+use crate::app::{Action, EgitApp};
 use crate::fonts::{self, Fallbacks};
 use crate::grid::{Plain, TextGrid};
+use crate::settings::Settings;
+use crate::views::prompts::Prompts;
 
 /// The grid, what it shows, and the system fonts for what egui's lack.
 struct Shown {
@@ -74,10 +83,10 @@ fn shown(bytes: Vec<u8>, wrap: bool) -> Harness<'static, Shown> {
 
 /// Steps `frames` frames, calling `before` ahead of each, and returns each frame's time: laid
 /// out, then tessellated as the window would.
-fn measure_frames(
-    harness: &mut Harness<'_, Shown>,
+fn measure_frames<S>(
+    harness: &mut Harness<'_, S>,
     frames: usize,
-    mut before: impl FnMut(&mut Harness<'_, Shown>, usize),
+    mut before: impl FnMut(&mut Harness<'_, S>, usize),
 ) -> Vec<Duration> {
     let mut times = Vec::with_capacity(frames);
     for frame in 0..frames {
@@ -106,24 +115,8 @@ fn report(what: &str, mut frames: Vec<Duration>) -> Duration {
     p99
 }
 
-/// The memory the process holds now, in megabytes.
-fn resident_mb() -> f64 {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))
-        .and_then(|rest| {
-            rest.trim()
-                .trim_end_matches("kB")
-                .trim()
-                .parse::<f64>()
-                .ok()
-        })
-        .map_or(0.0, |kb| kb / 1024.0)
-}
-
 /// Renders the screen as `corpus-name.png`, where screens are rendered.
-fn snapshot(harness: &mut Harness<'_, Shown>, name: &str) {
+fn snapshot<S>(harness: &mut Harness<'_, S>, name: &str) {
     if rendering() {
         harness.run_steps(2);
         let image = harness.render().unwrap();
@@ -185,7 +178,6 @@ fn cjk(lines: usize) -> Vec<u8> {
 /// then jumping and scrolling once it is done. Returns the worst 99th percentile.
 fn highlighted(seed: &mut u64) -> Duration {
     println!("a million lines of C, highlighted:");
-    let before = resident_mb();
     let mut harness = shown_as(code(1_000_000), Some("probe.c"), false);
     let started = Instant::now();
     let jumps = measure_frames(&mut harness, 400, |harness, _| {
@@ -203,11 +195,7 @@ fn highlighted(seed: &mut u64) -> Duration {
     while !parsed(&harness) && started.elapsed() < Duration::from_secs(600) {
         std::thread::sleep(Duration::from_millis(20));
     }
-    println!(
-        "  parsed in {:?}; {:.0} MB held for the text, its measure, and its states",
-        started.elapsed(),
-        resident_mb() - before
-    );
+    println!("  parsed in {:?}", started.elapsed());
     let jumps = measure_frames(&mut harness, 400, |harness, _| {
         let line = u32::try_from(random(seed, 1_000_000)).unwrap();
         harness.state_mut().grid.scroll_to_line(line);
@@ -332,6 +320,151 @@ fn corpus() {
         assert!(
             worst < budget,
             "a case's 99th percentile frame took {worst:?}"
+        );
+    }
+}
+
+/// Files the mass rename moves.
+const MOVED: usize = 100_000;
+
+/// A repository whose last commit moves `MOVED` files from `src/old` to `src/new`, every
+/// thousandth also edited (a rename less than exact), made by `git fast-import`.
+fn mass_rename(sandbox: &Sandbox) -> std::path::PathBuf {
+    let repo = sandbox.init("moved").unwrap();
+    let mut stream = Vec::new();
+    let file = |index: usize| {
+        format!("/* file {index} */\nint f{index}(void)\n{{\n\treturn {index};\n}}\n")
+    };
+    for index in 0..MOVED {
+        let data = file(index);
+        let _ = write!(
+            stream,
+            "blob\nmark :{}\ndata {}\n{data}\n",
+            index + 1,
+            data.len()
+        );
+    }
+    let _ = write!(
+        stream,
+        "commit refs/heads/main\ncommitter T <t@egit.invalid> 1700000000 +0000\ndata 16\nLay out the tree\n"
+    );
+    for index in 0..MOVED {
+        let _ = writeln!(
+            stream,
+            "M 100644 :{} src/old/d{:03}/f{index:06}.c",
+            index + 1,
+            index / 1000
+        );
+    }
+    let _ = write!(
+        stream,
+        "\ncommit refs/heads/main\ncommitter T <t@egit.invalid> 1700000100 +0000\ndata 15\nMove everything\nR src/old src/new\n"
+    );
+    for index in (0..MOVED).step_by(1000) {
+        let data = format!("{}/* moved */\n", file(index));
+        let _ = write!(
+            stream,
+            "M 100644 inline src/new/d{:03}/f{index:06}.c\ndata {}\n{data}\n",
+            index / 1000,
+            data.len()
+        );
+    }
+    stream.push(b'\n');
+    sandbox
+        .git()
+        .write("fast-import")
+        .arg("--quiet")
+        .current_dir(&repo)
+        .stdin(stream)
+        .output()
+        .unwrap();
+    sandbox
+        .run(&repo, "symbolic-ref", &["HEAD", "refs/heads/main"])
+        .unwrap();
+    repo
+}
+
+#[test]
+#[ignore = "a release-build measurement: see the module's documentation"]
+fn corpus_mass_rename() {
+    println!("a commit moving {MOVED} files:");
+    let sandbox = Sandbox::new().unwrap();
+    let started = Instant::now();
+    let repo = mass_rename(&sandbox);
+    println!("  made in {:?}", started.elapsed());
+    let git = sandbox.git().clone();
+    let builder = Harness::builder().with_size([1400.0, 900.0]);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    let mut harness = builder.build_eframe(move |creation| {
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            None,
+            Prompts::none(),
+        )
+    });
+    harness.run_steps(2);
+    harness.state_mut().state.actions.push(Action::Open(repo));
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state
+            .repos
+            .first()
+            .is_some_and(|repo| !repo.history.is_loading() && repo.history.shown.rows() == 2)
+    });
+
+    // Its subject is read once its row is drawn.
+    let started = Instant::now();
+    while harness
+        .query_by_role_and_label(Role::Button, "Move everything")
+        .is_none()
+    {
+        assert!(started.elapsed() < Duration::from_secs(30), "no subject");
+        harness.step();
+    }
+    let started = Instant::now();
+    harness
+        .get_by_role_and_label(Role::Button, "Move everything")
+        .click();
+    step_until(&mut harness, Duration::from_secs(60), |app| {
+        app.state.repos[0].history_view.details_shown()
+    });
+    println!("  listed in {:?}", started.elapsed());
+    step_until(&mut harness, Duration::from_secs(60), |app| {
+        app.state.repos[0].history_view.counts_shown()
+    });
+    println!("  counted in {:?}", started.elapsed());
+
+    let started = Instant::now();
+    harness
+        .get_by_role_and_label(
+            Role::Button,
+            "src/old/d000/f000000.c → src/new/d000/f000000.c",
+        )
+        .click();
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state.repos[0].history_view.file_shown()
+            == Some(("src/new/d000/f000000.c".to_owned(), true))
+    });
+    println!("  a file's diff shown in {:?}", started.elapsed());
+
+    // Through the files beside the diff, a few hundred rows a frame.
+    harness.hover_at(egui::pos2(1250.0, 600.0));
+    let scrolling = measure_frames(&mut harness, 600, |harness, _| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -3_000.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+    let worst = report("scrolling the files", scrolling);
+    snapshot(&mut harness, "mass-rename");
+    println!("  peak memory {:.0} MB", peak_memory_mb());
+    if !cfg!(debug_assertions) {
+        assert!(
+            worst < Duration::from_millis(8),
+            "the 99th percentile frame took {worst:?}"
         );
     }
 }

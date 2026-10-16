@@ -32,11 +32,13 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
   `EGIT_TEST_GIT=$PWD/target/git/2.43.0/bin/git cargo test --workspace` runs every test against
   it. Do this after touching anything that runs git (CI does it in `ubuntu:24.04`).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
-- Text corpus: `cargo test -p egit --release --lib -- --ignored --nocapture corpus` draws the
-  text grid through the roadmap's worst cases (1M lines of code, plain and highlighted, a 10 MB
-  line wrapped and not, CJK and emoji, resizing wrapped at line 900k) and prints frame times,
-  laid out and tessellated (it fails past 8 ms at p99); renders `corpus-*.png` where it can.
-  Every case stays under 2 ms, but highlighted jumps: 3.7 ms (the colouring budget is 3 ms).
+- Text corpus: `cargo test -p egit --release --lib -- --ignored --nocapture --test-threads=1
+  corpus` draws the text grid through the roadmap's worst cases (1M lines of code, plain and
+  highlighted, a 10 MB line wrapped and not, CJK and emoji, resizing wrapped at line 900k),
+  then the whole application on a commit moving 100,000 files (listed in 105 ms, counted in
+  430 ms), and prints frame times, laid out and tessellated (it fails past 8 ms at p99);
+  renders `corpus-*.png` where it can. Every case stays under 2 ms but the highlighted ones
+  (3.7 ms jumping, up to 2.6 ms scrolling: colouring takes up to 3 ms a frame).
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a

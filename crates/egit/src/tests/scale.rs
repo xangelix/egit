@@ -31,7 +31,7 @@ use crate::settings::Settings;
 use crate::views::prompts::Prompts;
 
 /// Steps until `done` holds, or panics after `limit`.
-fn step_until(
+pub(super) fn step_until(
     harness: &mut Harness<'_, EgitApp>,
     limit: Duration,
     done: impl Fn(&mut EgitApp) -> bool,
@@ -45,7 +45,7 @@ fn step_until(
 }
 
 /// The process's peak resident memory, in MB.
-fn peak_memory_mb() -> f64 {
+pub(super) fn peak_memory_mb() -> f64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     status
         .lines()
