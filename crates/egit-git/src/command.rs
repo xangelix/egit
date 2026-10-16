@@ -17,6 +17,7 @@ use crate::error::GitError;
 use crate::git::Git;
 use crate::output::{Completed, Stderr, TailBuffer};
 use crate::process;
+use crate::progress::{Progress, ProgressReader};
 
 /// Whether a command only reads the repository or may change it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +67,8 @@ pub struct GitCommand {
     env: Vec<(OsString, OsString)>,
     cancel: Option<CancelToken>,
     stdout_limit: usize,
+    /// Where git's `--progress` lines are reported, if anywhere.
+    progress: Option<Progress>,
 }
 
 /// A streamed command that finished, or was stopped by its consumer.
@@ -108,7 +111,15 @@ impl GitCommand {
             env: Vec::new(),
             cancel: None,
             stdout_limit: Self::DEFAULT_STDOUT_LIMIT,
+            progress: None,
         }
+    }
+
+    /// Reports what git prints to standard error as it works into `progress` (pass git's own
+    /// `--progress` too: it reports only to a terminal unless asked).
+    pub fn progress(mut self, progress: &Progress) -> Self {
+        self.progress = Some(progress.clone());
+        self
     }
 
     /// Adds an argument after the subcommand.
@@ -318,10 +329,11 @@ impl GitCommand {
             abandon(child, group, None);
             return Err(self.io_error(io::Error::other("git's pipes weren't set up")));
         };
+        let reader = self.progress.as_ref().map(Progress::reader);
         let drain = thread::Builder::new()
             .name(format!("git {} stderr", self.subcommand))
             .stack_size(HELPER_STACK)
-            .spawn(move || drain(stderr));
+            .spawn(move || drain(stderr, reader));
         match drain {
             Ok(drain) => Ok(GitProcess::new(
                 self.subcommand,
@@ -432,10 +444,11 @@ impl GitCommand {
 
     /// Starts the threads that feed git's standard input and drain its standard error.
     fn start_helpers(&self, stdin: Option<ChildStdin>, stderr: ChildStderr) -> io::Result<Helpers> {
+        let reader = self.progress.as_ref().map(Progress::reader);
         let drain = thread::Builder::new()
             .name(format!("git {} stderr", self.subcommand))
             .stack_size(HELPER_STACK)
-            .spawn(move || drain(stderr))?;
+            .spawn(move || drain(stderr, reader))?;
         let feed = match (stdin, &self.stdin) {
             (Some(pipe), Some(input)) => {
                 let input = Arc::clone(input);
@@ -545,14 +558,20 @@ impl Helpers {
     }
 }
 
-/// Reads standard error to its end, keeping the tail.
-fn drain(mut stderr: ChildStderr) -> Stderr {
+/// Reads standard error to its end, keeping the tail and reporting progress to `reader`.
+fn drain(mut stderr: ChildStderr, mut reader: Option<ProgressReader>) -> Stderr {
     let mut tail = TailBuffer::default();
     let mut buffer = [0; 4096];
     loop {
         match stderr.read(&mut buffer) {
             Ok(0) => break,
-            Ok(read) => tail.push(buffer.get(..read).unwrap_or_default()),
+            Ok(read) => {
+                let chunk = buffer.get(..read).unwrap_or_default();
+                tail.push(chunk);
+                if let Some(reader) = &mut reader {
+                    reader.feed(chunk);
+                }
+            }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => {
                 tracing::warn!(%error, "reading git's stderr failed");

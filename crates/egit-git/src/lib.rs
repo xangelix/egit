@@ -28,6 +28,7 @@ mod output;
 mod patch;
 mod process;
 mod profile;
+mod progress;
 mod repo;
 mod signatures;
 mod span;
@@ -61,6 +62,7 @@ pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};
 pub use patch::{Direction, LinesError, apply_lines, write_index_content};
 pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
+pub use progress::{Progress, ProgressReport};
 pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,
     trust_directory,

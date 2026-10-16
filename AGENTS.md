@@ -78,7 +78,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     buffer; the consumer may stop it). Reads add `--no-optional-locks`; writes are retried
     (25 ms … 800 ms) while `Stderr::held_lock` finds another git's lock. Every command gets
     `-c color.ui=never -c core.quotePath=false`. Stderr is drained on a helper thread into a
-    64 KiB tail (`output.rs`); stdin is fed from another.
+    64 KiB tail (`output.rs`), and into a `Progress` when the command has one (`progress`);
+    stdin is fed from another.
+  - `progress.rs` — `Progress`: a long command's `--progress` lines read as they come, each
+    replacing the last (git rewrites them with `\r`): the phase, done and total, the transfer
+    (`1.20 MiB | 2.30 MiB/s`), whether the remote is doing it (`remote: `), and the other
+    lines as notes (the latest fifty).
   - `process.rs` — the crate's only `unsafe`: `setsid` in `pre_exec` (no controlling
     terminal; git leads its process group). The leader is waited for with `waitid(WNOWAIT)`
     so a cancel can't signal a reused id; `cancel.rs` holds the running groups under one lock.
