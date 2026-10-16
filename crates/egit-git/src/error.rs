@@ -100,6 +100,14 @@ impl GitError {
         self.failure()
             .is_some_and(|failure| failure.stderr.held_lock().is_some())
     }
+
+    /// An [`Unexpected`](Self::Unexpected) error.
+    pub(crate) fn unexpected(subcommand: &'static str, detail: impl Into<String>) -> Self {
+        Self::Unexpected {
+            subcommand,
+            detail: detail.into(),
+        }
+    }
 }
 
 /// A git command that ran and exited unsuccessfully.

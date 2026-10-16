@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-use crate::{Git, GitOptions};
+use crate::{Completed, Git, GitOptions};
 
 /// The global configuration every sandbox starts with.
 const GLOBAL_CONFIG: &str = "\
@@ -39,6 +39,7 @@ pub type SandboxError = Box<dyn Error + Send + Sync>;
 pub struct Sandbox {
     root: TempDir,
     home: PathBuf,
+    env: Vec<(OsString, OsString)>,
     git: Git,
 }
 
@@ -55,7 +56,7 @@ impl Sandbox {
         let global_config = home.join(".gitconfig");
         fs::write(&global_config, GLOBAL_CONFIG)?;
 
-        let env = [
+        let env: Vec<(OsString, OsString)> = [
             ("HOME", home.clone().into_os_string()),
             ("XDG_CONFIG_HOME", home.join(".config").into_os_string()),
             ("GIT_CONFIG_GLOBAL", global_config.into_os_string()),
@@ -72,11 +73,36 @@ impl Sandbox {
         .into_iter()
         .map(|(key, value)| (OsString::from(key), value))
         .collect();
-        let git = Git::new(GitOptions {
+        let git = Self::git_from(env.clone())?;
+        Ok(Self {
+            root,
+            home,
+            env,
+            git,
+        })
+    }
+
+    fn git_from(env: Vec<(OsString, OsString)>) -> Result<Git, SandboxError> {
+        Ok(Git::new(GitOptions {
             program: std::env::var_os("EGIT_TEST_GIT").map(PathBuf::from),
             env,
-        })?;
-        Ok(Self { root, home, git })
+        })?)
+    }
+
+    /// The sandbox's git with more environment variables, such as git's own test switches
+    /// (`GIT_TEST_ASSUME_DIFFERENT_OWNER`).
+    ///
+    /// # Errors
+    ///
+    /// When git can't be started.
+    pub fn git_with(&self, extra: &[(&str, &str)]) -> Result<Git, SandboxError> {
+        let mut env = self.env.clone();
+        env.extend(
+            extra
+                .iter()
+                .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+        );
+        Self::git_from(env)
     }
 
     /// Git, configured for the sandbox.
@@ -113,6 +139,25 @@ impl Sandbox {
         Ok(repo)
     }
 
+    /// Runs `git <subcommand> <args>` in `dir`, which must succeed.
+    ///
+    /// # Errors
+    ///
+    /// When git fails.
+    pub fn run(
+        &self,
+        dir: &Path,
+        subcommand: &'static str,
+        args: &[&str],
+    ) -> Result<Completed, SandboxError> {
+        Ok(self
+            .git
+            .write(subcommand)
+            .args(args)
+            .current_dir(dir)
+            .output()?)
+    }
+
     /// Writes `contents` to `file` in `repo` and commits it with `message`.
     ///
     /// # Errors
@@ -130,17 +175,8 @@ impl Sandbox {
             fs::create_dir_all(parent)?;
         }
         fs::write(&path, contents)?;
-        self.git
-            .write("add")
-            .arg("--")
-            .arg(file)
-            .current_dir(repo)
-            .output()?;
-        self.git
-            .write("commit")
-            .args(["--quiet", "--message", message])
-            .current_dir(repo)
-            .output()?;
+        self.run(repo, "add", &["--", file])?;
+        self.run(repo, "commit", &["--quiet", "--message", message])?;
         Ok(())
     }
 }

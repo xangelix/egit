@@ -49,6 +49,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   user's own git. Commands that write go through the repository's single write queue.
 - Never SIGKILL git: cancellation is SIGTERM to its process group, which lets git remove its
   lock files.
+- A command about one repository runs in its work tree (`current_dir`); one that must not see
+  any repository (the user's global configuration) runs in `/`, never in egit's own working
+  directory, which may be inside some repository.
 
 ## Repository layout
 
@@ -68,6 +71,13 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     terminal; git leads its process group). The leader is waited for with `waitid(WNOWAIT)`
     so a cancel can't signal a reused id; `cancel.rs` holds the running groups under one lock.
   - `error.rs` — `GitError`, with `Failure` (exit status + stderr tail, `message()`).
+  - `object_id.rs` — `ObjectId` (SHA-1 or SHA-256, by length; never assume 40 digits) and
+    `ObjectFormat`.
+  - `repo.rs` — `Repository::discover` (two `rev-parse`s; `DiscoverError` names not a
+    repository, `safe.directory` refusals (`trust_directory` adds one), bare repositories, and
+    paths inside `.git`), `head` (`symbolic-ref`, then `for-each-ref` on that exact ref for the
+    commit and `%(upstream:track)`, or `log -1` when detached), and `operations` (merge,
+    rebase, am, cherry-pick, revert, bisect from their state files in the git dir).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit` — the application (`egit_app` library, `egit` executable).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
