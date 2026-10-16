@@ -1,6 +1,7 @@
 //! An open repository: what egit knows about it, kept current by background jobs.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use egit_git::{ConfigPlace, ConfigSnapshot, Git, Head, Operation, Repository};
 use egui_async::Bind;
@@ -8,6 +9,7 @@ use egui_async::Bind;
 use crate::jobs;
 use crate::problem::Problem;
 use crate::tables::SnapshotTable;
+use crate::watch::{Changes, Taken, Watcher};
 
 /// Tells open repositories apart for the life of the window.
 pub(crate) type RepoId = u64;
@@ -38,15 +40,25 @@ pub(crate) struct RepoTab {
     pub(crate) config: Bind<Arc<ConfigSnapshot>, Problem>,
     pub(crate) config_table: SnapshotTable,
     pub(crate) panels: egui_tiles::Tree<RepoPanel>,
+    /// Notices what changes the repository outside egit; `None` when it can't be watched.
+    watcher: Option<Watcher>,
 }
 
 impl RepoTab {
-    /// A tab for `repository`, starting to read its state.
-    pub(crate) fn new(id: RepoId, repository: Repository, git: &Git) -> Self {
+    /// A tab for `repository`, starting to read its state and to watch it (waking `ctx` when
+    /// it changes).
+    pub(crate) fn new(id: RepoId, repository: Repository, git: &Git, ctx: &egui::Context) -> Self {
         let title = repository.work_tree().file_name().map_or_else(
             || repository.work_tree().display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
+        let waker = ctx.clone();
+        let watcher =
+            Watcher::repository(&repository, move |delay| waker.request_repaint_after(delay))
+                .inspect_err(|error| {
+                    tracing::warn!(%error, "changes made outside egit won't show until refreshed");
+                })
+                .ok();
         let mut tab = Self {
             id,
             repository: Arc::new(repository),
@@ -58,9 +70,32 @@ impl RepoTab {
                 egui::Id::new(("repo-panels", id)),
                 vec![RepoPanel::Overview, RepoPanel::Configuration],
             ),
+            watcher,
         };
         tab.refresh(git);
         tab
+    }
+
+    /// Reads again what changed outside egit, once the changes have settled; returns how long
+    /// to wait before asking again while they haven't.
+    pub(crate) fn follow_changes(&mut self, git: &Git, now: Instant) -> Option<Duration> {
+        let taken = self
+            .watcher
+            .as_ref()
+            .map_or(Taken::Nothing, |watcher| watcher.take(now));
+        match taken {
+            Taken::Nothing => None,
+            Taken::Wait(delay) => Some(delay),
+            Taken::Changed(changes) => {
+                if changes.intersects(Changes::REFS.union(Changes::STATE)) {
+                    self.refresh_status(git);
+                }
+                if changes.intersects(Changes::CONFIG) {
+                    self.refresh_config(git);
+                }
+                None
+            }
+        }
     }
 
     /// Reads everything again; what is shown stays until the new state arrives.

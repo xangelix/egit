@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use egit_git::{
     ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, Repository, set_config,
@@ -25,6 +26,7 @@ use crate::views::home::HomeView;
 use crate::views::profile::ProfileView;
 use crate::views::prompts::Prompts;
 use crate::views::status_bar;
+use crate::watch::{Taken, Watcher};
 
 /// The application.
 pub(crate) struct EgitApp {
@@ -50,6 +52,8 @@ pub(crate) struct AppState {
     /// The user's home folder, shown as `~`.
     pub(crate) home_dir: Option<PathBuf>,
     opening: Vec<Opening>,
+    /// Watches the files the user's configuration comes from (and which they are).
+    user_watcher: Option<(Vec<PathBuf>, Watcher)>,
     /// Paths to open once git is ready.
     waiting: Vec<PathBuf>,
     pub(crate) actions: Vec<Action>,
@@ -166,6 +170,7 @@ impl EgitApp {
             settings,
             home_dir,
             opening: Vec::new(),
+            user_watcher: None,
             waiting,
             actions: Vec::new(),
             next_repo: 0,
@@ -196,7 +201,7 @@ impl EgitApp {
             Action::DetectGit => state.detect_git(),
             Action::PickFolder => state.home.pick_folder(),
             Action::Open(path) => state.open(path),
-            Action::Opened(repository) => self.show_repository(*repository),
+            Action::Opened(repository) => self.show_repository(ctx, *repository),
             Action::Trust(path) => state.trust(path),
             Action::Forget(path) => state.settings.forget(&path),
             Action::ShowProfile => tabs::show(&mut self.tabs, Pane::Profile),
@@ -217,7 +222,7 @@ impl EgitApp {
     }
 
     /// Shows a repository found by discovery: its tab, which is new unless it is open already.
-    fn show_repository(&mut self, repository: Repository) {
+    fn show_repository(&mut self, ctx: &egui::Context, repository: Repository) {
         let state = &mut self.state;
         state.home.problem = None;
         state.settings.remember(repository.work_tree(), now());
@@ -234,7 +239,7 @@ impl EgitApp {
         };
         let id = state.next_repo;
         state.next_repo = state.next_repo.wrapping_add(1);
-        state.repos.push(RepoTab::new(id, repository, &git));
+        state.repos.push(RepoTab::new(id, repository, &git, ctx));
         tabs::show(&mut self.tabs, Pane::Repo(id));
     }
 }
@@ -252,8 +257,8 @@ impl AppState {
         }));
     }
 
-    /// Advances the jobs: what finished becomes state or actions.
-    fn poll(&mut self) {
+    /// Advances the jobs and the watchers: what finished or changed becomes state or actions.
+    fn poll(&mut self, ctx: &egui::Context) {
         self.prompts.poll();
         if let Some(git) = self.git() {
             if self.user_config.is_idle() {
@@ -261,6 +266,7 @@ impl AppState {
             }
             self.actions
                 .extend(self.waiting.drain(..).map(Action::Open));
+            self.follow_changes(ctx, &git);
         }
 
         let mut finished = Vec::new();
@@ -304,6 +310,50 @@ impl AppState {
                 }
                 Err(problem) => self.profile.problem = Some(problem),
             }
+        }
+    }
+
+    /// Reads again whatever changed outside egit, and keeps watching the files the user's
+    /// configuration comes from.
+    fn follow_changes(&mut self, ctx: &egui::Context, git: &Git) {
+        let now = Instant::now();
+        let mut wait = None;
+        for repo in &mut self.repos {
+            wait = sooner(wait, repo.follow_changes(git, now));
+        }
+
+        if let Some(snapshot) = self.user_config.ok_ref() {
+            let mut files: Vec<PathBuf> = snapshot
+                .entries()
+                .filter_map(egit_git::ConfigEntry::file)
+                .collect();
+            files.sort();
+            files.dedup();
+            let watched = self.user_watcher.as_ref().map(|(watched, _)| watched);
+            if watched != Some(&files) {
+                let waker = ctx.clone();
+                self.user_watcher = Watcher::files(files.clone(), move |delay| waker.request_repaint_after(delay))
+                    .inspect_err(|error| tracing::warn!(%error, "changes to your configuration won't show until egit restarts"))
+                    .ok()
+                    .map(|watcher| (files, watcher));
+            }
+        }
+        let taken = self
+            .user_watcher
+            .as_ref()
+            .map_or(Taken::Nothing, |(_, watcher)| watcher.take(now));
+        match taken {
+            Taken::Nothing => {}
+            Taken::Wait(delay) => wait = sooner(wait, Some(delay)),
+            Taken::Changed(_) => {
+                self.refresh_user_config(git);
+                for repo in &mut self.repos {
+                    repo.refresh_config(git);
+                }
+            }
+        }
+        if let Some(delay) = wait {
+            ctx.request_repaint_after(delay);
         }
     }
 
@@ -369,7 +419,7 @@ impl AppState {
 
 impl eframe::App for EgitApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
-        self.state.poll();
+        self.state.poll(ui.ctx());
         let palette = Palette::of(ui.ctx());
         Panel::bottom("egit-status")
             .frame(
@@ -397,5 +447,13 @@ impl eframe::App for EgitApp {
 
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         visuals.panel_fill.to_normalized_gamma_f32()
+    }
+}
+
+/// The sooner of two optional delays.
+fn sooner(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
     }
 }

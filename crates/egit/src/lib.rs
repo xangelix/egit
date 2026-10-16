@@ -8,6 +8,7 @@
 //! - `tables` — what the tables show, as `egui-table-kit` providers.
 //! - `theme`, `widgets`, `format` — colours and fonts, shared pieces, text for people.
 //! - `settings` — what is remembered between runs.
+//! - `watch` — noticing what changes repositories and configuration behind egit's back.
 
 mod app;
 mod format;
@@ -19,6 +20,7 @@ mod tables;
 mod tabs;
 mod theme;
 mod views;
+mod watch;
 mod widgets;
 
 #[cfg(test)]

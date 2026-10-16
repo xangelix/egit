@@ -368,3 +368,94 @@ fn a_host_question_is_answered_yes_or_no() {
     harness.run_steps(2);
     assert_eq!(helper.join().unwrap().as_deref(), Some("yes"));
 }
+
+#[test]
+fn work_done_outside_egit_shows_up_by_itself() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("project").unwrap();
+    sandbox
+        .commit_file(&repo, "file", "one\n", "First")
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the repository", repository_shown);
+    harness.get_by_label("First");
+
+    // As from a terminal: a commit, then a new branch checked out, then a setting.
+    sandbox
+        .commit_file(&repo, "file", "two\n", "Second, from a terminal")
+        .unwrap();
+    settle(&mut harness, "the new commit", |app| {
+        shown_subject(app).as_deref() == Some("Second, from a terminal")
+    });
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--create", "topic"])
+        .unwrap();
+    settle(&mut harness, "the new branch", |app| {
+        shown_branch(app).as_deref() == Some("topic")
+    });
+    harness.get_by_label_contains("topic");
+    sandbox
+        .run(&repo, "config", &["user.email", "elsewhere@egit.invalid"])
+        .unwrap();
+    settle(&mut harness, "the new setting", |app| {
+        app.state.repos[0]
+            .config
+            .ok_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .profile()
+                    .email()
+                    .map(|email| email.text() == "elsewhere@egit.invalid")
+            })
+            .unwrap_or(false)
+    });
+    harness.get_by_label("elsewhere@egit.invalid");
+}
+
+#[test]
+fn the_profile_follows_edits_to_the_users_configuration() {
+    let sandbox = Sandbox::new().unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "user.name", "Edited Elsewhere"],
+        )
+        .unwrap();
+    settle(&mut harness, "the edit", |app| {
+        app.state
+            .user_config
+            .ok_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .profile()
+                    .name()
+                    .map(|name| name.text() == "Edited Elsewhere")
+            })
+            .unwrap_or(false)
+    });
+    harness.get_by_label("Edited Elsewhere <tests@egit.invalid>");
+}
+
+/// The subject of the commit the first repository's branch is at.
+fn shown_subject(app: &mut EgitApp) -> Option<String> {
+    match &app.state.repos.first_mut()?.status.ok_ref()?.head {
+        egit_git::Head::Branch(branch) => branch
+            .commit
+            .as_ref()
+            .map(|commit| commit.subject.to_string()),
+        egit_git::Head::Detached(commit) => Some(commit.subject.to_string()),
+    }
+}
+
+/// The branch the first repository is on.
+fn shown_branch(app: &mut EgitApp) -> Option<String> {
+    match &app.state.repos.first_mut()?.status.ok_ref()?.head {
+        egit_git::Head::Branch(branch) => Some(branch.name.to_string()),
+        egit_git::Head::Detached(_) => None,
+    }
+}

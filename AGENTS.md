@@ -121,7 +121,15 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     focuses or adds a tab; Home can't be closed; closing a repository's tab pushes `Closed`.
   - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head + operations) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
-    lands), and its own tiles (`RepoPanel::{Overview, Configuration}`).
+    lands), its own tiles (`RepoPanel::{Overview, Configuration}`), and its `Watcher`
+    (`follow_changes`: refs or operation state changed → status read again; config → config).
+  - `watch.rs` — inotify (`notify`) on git directories and configuration files only, never a
+    work tree: a repository's git dir and common dir (non-recursive) and `refs/` (recursive);
+    the user's configuration files through their folders (editors replace files). Paths are
+    sorted into `Changes` (refs, state, config, index; `*.lock`, objects, logs ignored), access
+    and attribute events ignored, and handed over once quiet for `SETTLE` (120 ms), so one git
+    command causes one refresh. The app watches the files its user snapshot names and reads
+    every configuration again when one changes.
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
     credentials, pull and push, and every setting, each with its origin), `repo` (overview

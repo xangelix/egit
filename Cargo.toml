@@ -20,6 +20,7 @@ egui-phosphor = "0.14.0"
 egui-table-kit = "0.7.1"
 egui_kittest = "0.36.2"
 egui_tiles = "0.17.1"
+notify = { version = "8.2.0", default-features = false }
 parking_lot = "0.12.5"
 rfd = { version = "0.17.2", default-features = false }
 rustix = { version = "1.1.5", features = ["event", "net", "process", "rand"] }
