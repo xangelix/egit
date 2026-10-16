@@ -29,6 +29,7 @@ mod patch;
 mod process;
 mod profile;
 mod repo;
+mod signatures;
 mod span;
 mod stage;
 mod status;
@@ -64,6 +65,7 @@ pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,
     trust_directory,
 };
+pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use stage::{stage, unstage};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
 pub use tree::{ignored_paths, tree_folders};
