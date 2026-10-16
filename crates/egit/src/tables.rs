@@ -326,16 +326,14 @@ impl ChangesTable {
             .with_row_height(22.0)
             .with_max_height(Some(height))
             .with_striped(true)
-            .show_with_output(ui, |ui, cell, row, text_color| {
+            .show_with_output(ui, |ui, cell, _, text_color| {
                 if cell.col_nr != FILE_COLUMN {
                     return None;
                 }
-                let lines = lines_of(counts, usize::try_from(cell.row_nr).ok()?);
-                if matches!(lines, Lines::Unknown) {
-                    return None;
-                }
-                let (path, _) = row.cell(FILE_COLUMN)?;
-                Some(file_cell(ui, &path, lines, text_color, palette))
+                let row = usize::try_from(cell.row_nr).ok()?;
+                let change = details.changes.get(row)?;
+                let lines = lines_of(counts, row);
+                Some(file_cell(ui, change, lines, text_color, palette))
             });
         match shown {
             Ok(output) => output
@@ -365,18 +363,21 @@ const CHANGE_HEADERS: [&str; 2] = ["Change", "File"];
 /// The column of [`ChangeRows`] with the file's path, and its lines gained and lost.
 const FILE_COLUMN: usize = 1;
 
-/// A file's cell: its path, cut short to leave room for its lines gained and lost on the right
-/// (labels, not part of the cell's name).
+/// A file's cell: its lines gained and lost on the right, and its path (its new one, for a
+/// rename or copy, the old one on hover) in what is left, losing its start first: the name
+/// matters most. The cell is named by `change_cell`; these are only labels.
 fn file_cell(
     ui: &mut Ui,
-    path: &str,
+    change: &FileChange,
     lines: Lines,
     text_color: Color32,
     palette: Palette,
 ) -> Response {
     let label =
         |text: String, color| Label::new(RichText::new(text).color(color)).selectable(false);
-    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+    // As tall as table-kit's own cells' rows, so the text lines up with theirs.
+    let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    ui.allocate_ui_with_layout(size, Layout::right_to_left(Align::Center), |ui| {
         match lines {
             Lines::Counted(lines) => {
                 ui.add(label(
@@ -394,10 +395,53 @@ fn file_cell(
             Lines::Unknown => {}
         }
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            ui.add(label(path.to_owned(), text_color).truncate());
+            let path = change.path.to_str_lossy();
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            let shown = elided_start(ui, &path, &font, ui.available_width());
+            let elided = matches!(shown, Cow::Owned(_));
+            let shown = ui.add(label(shown.into_owned(), text_color).truncate());
+            if let ChangeKind::Renamed { from, .. } | ChangeKind::Copied { from, .. } = &change.kind
+            {
+                shown.on_hover_text(format!("{path}\nfrom {}", from.to_str_lossy()));
+            } else if elided {
+                shown.on_hover_text(path.as_ref());
+            }
         });
     })
     .response
+}
+
+/// How wide `text` is in `font`, glyph by glyph (no kerning).
+fn width_of(fonts: &mut egui::epaint::FontsView<'_>, text: &str, font: &egui::FontId) -> f32 {
+    text.chars().map(|c| fonts.glyph_width(font, c)).sum()
+}
+
+/// `path` as fits in `width` points of `font`: whole, or its end after "…", from a folder's
+/// boundary where one is in what fits.
+fn elided_start<'p>(ui: &Ui, path: &'p str, font: &egui::FontId, width: f32) -> Cow<'p, str> {
+    ui.fonts_mut(|fonts| {
+        if width_of(fonts, path, font) <= width {
+            return Cow::Borrowed(path);
+        }
+        let budget = width - fonts.glyph_width(font, '…');
+        let mut used = 0.0;
+        let mut start = path.len();
+        for (index, c) in path.char_indices().rev() {
+            used += fonts.glyph_width(font, c);
+            if used > budget {
+                break;
+            }
+            start = index;
+        }
+        let tail = path.get(start..).unwrap_or_default();
+        // "…/d000/f000000.c" rather than "…0/d000/f000000.c".
+        let tail = tail
+            .find('/')
+            .filter(|&slash| slash.saturating_add(1) < tail.len())
+            .and_then(|slash| tail.get(slash..))
+            .unwrap_or(tail);
+        Cow::Owned(format!("…{tail}"))
+    })
 }
 
 /// A changed file's lines, as far as they are known.
@@ -509,5 +553,36 @@ impl TableProvider for ChangeRows<'_> {
             f(&ChangeRow(change))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `elided_start` on a real context's fonts, given room for `chars` digits.
+    fn elided(path: &str, chars: f32) -> String {
+        let ctx = egui::Context::default();
+        let mut shown = String::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            let digit = ui.fonts_mut(|fonts| fonts.glyph_width(&font, '0'));
+            shown = elided_start(ui, path, &font, digit * chars).into_owned();
+        });
+        // No renderer takes the font atlas.
+        output.textures_delta.clear();
+        shown
+    }
+
+    #[test]
+    fn a_path_too_long_loses_its_start_from_a_folder() {
+        assert_eq!(elided("src/lib.rs", 40.0), "src/lib.rs");
+        assert_eq!(elided("src/new/d000/f000000.c", 17.0), "…/d000/f000000.c");
+        // Where not even the name fits, its end.
+        let end = elided("src/new/d000/f000000.c", 6.0);
+        assert!(
+            end.starts_with('…') && end.ends_with("0.c") && !end.contains('/'),
+            "{end}"
+        );
     }
 }
