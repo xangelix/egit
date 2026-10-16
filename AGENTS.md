@@ -169,6 +169,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `tree.rs` — for watching a work tree's folders: `tree_folders` (a commit's folders,
     `ls-tree -r -d`) and `ignored_paths` (`check-ignore -z --stdin`, which exits 1 when none
     is; folders end with `/` so folder-only patterns match them).
+  - `committing.rs` — `create_commit`: `git commit --file=- --cleanup=whitespace` (a line
+    starting with `#` is kept), `NewCommit`'s amend, sign-off, and signing (`-S`,
+    `--no-gpg-sign`, or the configuration's choice); a passphrase is asked through askpass,
+    labelled "Signing the commit"; `Committed::output` is what git and its hooks printed (a
+    refusal's whole standard error is on the failure).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).

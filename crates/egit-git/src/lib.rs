@@ -14,6 +14,7 @@ mod batch;
 mod cancel;
 mod command;
 mod commit;
+mod committing;
 mod config;
 mod diff;
 mod env;
@@ -40,6 +41,7 @@ pub use batch::GitProcess;
 pub use cancel::CancelToken;
 pub use command::{Access, GitCommand, Streamed};
 pub use commit::{Commit, CommitParseError, Signature};
+pub use committing::{Committed, NewCommit, create_commit};
 pub use config::{
     ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, set_config, unset_config,
 };
