@@ -636,6 +636,29 @@ pub(crate) async fn read_work_tree_file(
     .await
 }
 
+/// Reads commit `id`'s message (to amend it).
+pub(crate) async fn read_message(
+    git: Git,
+    repository: Arc<Repository>,
+    objects: Objects,
+    id: ObjectId,
+) -> Result<String, Problem> {
+    jobs::blocking(move || {
+        const UNREADABLE: &str = "The last commit's message couldn't be read";
+        let mut message = None;
+        objects
+            .read(&git, repository.work_tree(), &[id], |_, object| {
+                message = object
+                    .filter(|object| object.kind == ObjectKind::Commit)
+                    .and_then(|object| Commit::parse(object.data).ok())
+                    .map(|commit| commit.message.to_str_lossy().into_owned());
+            })
+            .map_err(|error| Problem::git(UNREADABLE, &error))?;
+        message.ok_or_else(|| Problem::new(UNREADABLE, format!("{id} isn't a commit here.")))
+    })
+    .await
+}
+
 /// Reads commit `id` and lists the files it changed (against its first parent).
 pub(crate) async fn read_details(
     git: Git,

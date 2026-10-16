@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, Repository, set_config,
+    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, NewCommit, Repository, set_config,
     trust_directory, unset_config,
 };
 use egui::{CentralPanel, Frame, Panel, Ui};
@@ -103,6 +103,8 @@ pub(crate) enum Action {
     WriteCommitGraph(RepoId),
     /// Stage or unstage in a repository.
     Stage(RepoId, StageRequest),
+    /// Commit what a repository's index holds.
+    Commit(RepoId, NewCommit),
     /// A repository's tab was closed.
     Closed(RepoId),
     /// Use a theme.
@@ -247,6 +249,13 @@ impl EgitApp {
                     && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
                 {
                     repo.stage(&git, request);
+                }
+            }
+            Action::Commit(id, commit) => {
+                if let Some(git) = state.git()
+                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
+                {
+                    repo.commit(&git, commit);
                 }
             }
             Action::Closed(id) => state.repos.retain(|repo| repo.id != id),

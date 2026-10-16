@@ -319,6 +319,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     their `Feed` says (context both; a hunk header starts both over). Lines over 4 KiB, and
     lines that aren't UTF-8, are left plain. Dark: `base16-ocean.dark`; light:
     `InspiredGitHub`.
+  - `repo.rs`'s `RepoTab::commit` (`Action::Commit`) runs `create_commit` under the
+    `WriteLock`; the watcher brings the history and `HEAD` along after.
   - `staging.rs` — `StageRequest`s as jobs under the repository's `WriteLock`: whole files
     (`stage`, `unstage`), or the lines picked in a file's diff (`LinesRequest`: the index's
     blob read through the shared `cat-file`, `apply_lines`, `write_index_content` against the
@@ -356,7 +358,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     gets a placeholder (its combined diff isn't read) and only "Stage file" (resolved).
     `views/work.rs` — `WorkPanel`: "Not staged" and "Staged", each a table-kit list (indices
     into the status, made once per read) with a button for all and one per file (named
-    "Stage <path>"), a file clicked opened in the `FileView`. A history of 10,000+ commits
+    "Stage <path>"), a file clicked opened in the `FileView`; then the commit form: summary
+    (warned past 72 characters), description (⌘Enter commits), amend (a blank form takes the
+    last commit's message, `read_message`), sign off, sign (`commit.gpgSign` by default),
+    and the last commit's output (its hooks') or problem (git's whole complaint). It clears
+    once the tab's `commits_made` grows. A history of 10,000+ commits
     without a commit-graph is offered one (`Action::WriteCommitGraph`).
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;

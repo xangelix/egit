@@ -13,7 +13,7 @@ use egit_git::testing::Sandbox;
 use egit_git::{ConfigPlace, ConfigSnapshot, Git};
 use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use crate::app::EgitApp;
 use crate::settings::Settings;
@@ -103,6 +103,23 @@ fn wait_for_label(harness: &mut Harness<'_, EgitApp>, label: &str) {
         std::thread::sleep(Duration::from_millis(5));
     }
     panic!("timed out waiting for {label:?}");
+}
+
+/// Steps until the button labelled `label` can be pressed (a job holding it back is done),
+/// then presses it.
+fn click_when_enabled(harness: &mut Harness<'_, EgitApp>, label: &str) {
+    for _ in 0..2_000 {
+        harness.step();
+        if harness
+            .query_by_label(label)
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+        {
+            harness.get_by_label(label).click();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    panic!("timed out waiting for {label:?} to be enabled");
 }
 
 fn profile_loaded(app: &mut EgitApp) -> bool {
@@ -851,11 +868,112 @@ fn the_work_tree_is_staged_by_file_by_line_and_by_hunk() {
     });
 
     // And everything back.
-    harness.get_by_label("Unstage all").click();
+    click_when_enabled(&mut harness, "Unstage all");
     settle(&mut harness, "everything unstaged", |_| {
         staged(&sandbox).is_empty()
     });
     wait_for_label(&mut harness, "Nothing staged yet.");
+}
+
+/// Types `text` into the field of `role` labelled `label`.
+fn type_into(harness: &mut Harness<'_, EgitApp>, role: Role, label: &str, text: &str) {
+    let field = harness.get_by_role_and_label(role, label);
+    field.focus();
+    field.type_text(text);
+    harness.run_steps(2);
+}
+
+#[test]
+fn staged_changes_are_committed_and_amended_from_the_form() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(&repo, "notes", "one\n", "Start")
+        .unwrap();
+    std::fs::write(repo.join("notes"), "two\n").unwrap();
+    std::fs::write(repo.join("todo"), "x\n").unwrap();
+    let last = |sandbox: &Sandbox, format: &str| -> String {
+        let out = sandbox
+            .run(&repo, "log", &["-1", &format!("--format={format}")])
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim_end().to_owned()
+    };
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    wait_for_label(&mut harness, &uncommitted(2));
+    harness.get_by_label(&uncommitted(2)).click();
+    wait_for_label(&mut harness, "Stage all");
+    harness.get_by_label("Stage all").click();
+    wait_for_label(&mut harness, "Commit 2 files");
+
+    type_into(
+        &mut harness,
+        Role::TextInput,
+        "Summary",
+        "Write the notes down",
+    );
+    type_into(
+        &mut harness,
+        Role::MultilineTextInput,
+        "Description",
+        "# Why\nBecause.",
+    );
+    render(&mut harness, "work-tree-commit");
+    harness.get_by_label("Commit 2 files").click();
+    wait_for_label(&mut harness, "2 commits");
+    assert_eq!(
+        last(&sandbox, "%B"),
+        "Write the notes down\n\n# Why\nBecause."
+    );
+    // The form starts over, and nothing is left to commit.
+    wait_for_label(&mut harness, "Nothing staged yet.");
+
+    // Amending starts from the last commit's message.
+    std::fs::write(repo.join("notes"), "three\n").unwrap();
+    // Listed (the button for all is there, disabled, before it is).
+    wait_for_label(&mut harness, "Stage notes");
+    harness.get_by_label("Stage all").click();
+    wait_for_label(&mut harness, "Commit 1 file");
+    harness.get_by_label("Amend").click();
+    wait_for_label(&mut harness, "Amend the last commit");
+    for _ in 0..200 {
+        harness.step();
+        if harness
+            .query_by_role_and_label(Role::TextInput, "Summary")
+            .and_then(|field| field.value())
+            .is_some_and(|value| value == "Write the notes down")
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness.get_by_label("Amend the last commit").click();
+    settle(&mut harness, "the amended commit", |_| {
+        last(&sandbox, "%s") == "Write the notes down"
+            && sandbox
+                .run(&repo, "show", &["HEAD:notes"])
+                .is_ok_and(|out| out.stdout == b"three\n")
+    });
+    let count = sandbox
+        .run(&repo, "rev-list", &["--count", "HEAD"])
+        .unwrap();
+    assert_eq!(count.stdout.trim_ascii(), b"2", "amended, not added");
+
+    // A hook that refuses says why, in full.
+    let hook = repo.join(".git/hooks/commit-msg");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho 'rejected: say why'\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(repo.join("notes"), "four\n").unwrap();
+    wait_for_label(&mut harness, "Stage notes");
+    harness.get_by_label("Stage all").click();
+    wait_for_label(&mut harness, "Commit 1 file");
+    type_into(&mut harness, Role::TextInput, "Summary", "Refused");
+    harness.get_by_label("Commit 1 file").click();
+    wait_for_label(&mut harness, "rejected: say why");
+    assert_eq!(last(&sandbox, "%s"), "Write the notes down");
 }
 
 #[test]

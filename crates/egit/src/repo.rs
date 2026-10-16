@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    CancelToken, ConfigPlace, ConfigSnapshot, Git, Head, ObjectId, Operation, Repository,
-    write_commit_graph,
+    CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, NewCommit, ObjectId, Operation,
+    Repository, create_commit, write_commit_graph,
 };
 use egui_async::Bind;
 
@@ -58,6 +58,12 @@ pub(crate) struct RepoTab {
     pub(crate) staging: Bind<(), Problem>,
     /// Whether a staging is under way, so its end reads the work tree again.
     staging_open: bool,
+    /// The last commit made, while it is made and after (its output or problem stays shown).
+    pub(crate) committing: Bind<Committed, Problem>,
+    /// Whether a commit is under way.
+    committing_open: bool,
+    /// How many commits egit has made here (the form clears when it grows).
+    pub(crate) commits_made: u64,
     pub(crate) panels: egui_tiles::Tree<RepoPanel>,
     /// Commands that write to the repository take it.
     writes: WriteLock,
@@ -90,6 +96,9 @@ impl RepoTab {
             writing_commit_graph: Bind::new(true),
             staging: Bind::new(true),
             staging_open: false,
+            committing: Bind::new(true),
+            committing_open: false,
+            commits_made: 0,
             panels: egui_tiles::Tree::new_tabs(
                 egui::Id::new(("repo-panels", id)),
                 vec![
@@ -117,6 +126,40 @@ impl RepoTab {
             self.staging_open = false;
             self.work_tree.refresh_now();
         }
+        // The history and `HEAD` follow through the repository's watcher.
+        if self.committing_open && !self.committing.is_pending() {
+            self.committing_open = false;
+            if self.committing.is_ok() {
+                self.commits_made = self.commits_made.wrapping_add(1);
+            }
+            self.work_tree.refresh_now();
+        }
+    }
+
+    /// Commits what the index holds (after the repository's other writes).
+    pub(crate) fn commit(&mut self, git: &Git, commit: NewCommit) {
+        let (git, repository, writes) = (
+            git.clone(),
+            Arc::clone(&self.repository),
+            self.writes.clone(),
+        );
+        self.committing.request(jobs::blocking(move || {
+            let _queued = writes.hold();
+            create_commit(&git, &repository, &commit, &CancelToken::new()).map_err(|error| {
+                const TITLE: &str = "The commit wasn't made";
+                // A hook's whole complaint, not only its last line.
+                error.failure().map_or_else(
+                    || Problem::git(TITLE, &error),
+                    |failure| {
+                        Problem::new(
+                            TITLE,
+                            String::from_utf8_lossy(failure.stderr.as_bytes()).trim(),
+                        )
+                    },
+                )
+            })
+        }));
+        self.committing_open = true;
     }
 
     /// Stages or unstages as `request` says (after the repository's other writes).

@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
 use egit_git::{
-    CancelToken, FileChange, Git, Head, ObjectId, RefKind, Reference, Repository, Status,
+    CancelToken, Committed, FileChange, Git, Head, ObjectId, RefKind, Reference, Repository, Status,
 };
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
@@ -25,7 +25,7 @@ use egui_table_kit::layout::{
 };
 
 use super::file::{self, FileView, WorkFile};
-use super::work::{WorkEvent, WorkPanel};
+use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
 use crate::fonts;
 use crate::format::{count, date_time};
@@ -98,6 +98,12 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) work_tree: &'a mut WorkTree,
     /// The last staging or unstaging.
     pub(crate) staging: &'a mut Bind<(), Problem>,
+    /// The last commit made, or being made.
+    pub(crate) committing: &'a mut Bind<Committed, Problem>,
+    /// How many commits egit has made here.
+    pub(crate) commits_made: u64,
+    /// Whether commits are signed unless asked otherwise (`commit.gpgSign`).
+    pub(crate) sign_by_default: bool,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -283,6 +289,20 @@ impl HistoryView {
         }
     }
 
+    /// Closes the file looked at unless it belongs to what is selected: a commit's to that
+    /// commit, the work tree's to the work tree.
+    fn close_unselected_file(&mut self) {
+        let belongs = self.file.as_ref().is_none_or(|file| match file.commit() {
+            Some(commit) => {
+                !self.work_selected && self.selected.map(|selected| selected.id) == Some(commit)
+            }
+            None => self.work_selected,
+        });
+        if !belongs {
+            self.file = None;
+        }
+    }
+
     /// Shows the working tree's changes beside the history.
     fn select_work(&mut self) {
         self.work_selected = true;
@@ -407,6 +427,9 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         partial_clone,
         work_tree,
         staging,
+        committing,
+        commits_made,
+        sign_by_default,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -460,23 +483,22 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         .frame(Frame::new().inner_margin(Margin::same(12)))
         .show(ui, |ui| {
             if view.work_selected {
-                work_details(ui, &shared, view, staging, actions);
+                let commit = CommitSide {
+                    committing,
+                    commits_made,
+                    sign_by_default,
+                    head: shared.head.commit,
+                    git: shared.git,
+                    repository: shared.repository,
+                    objects: &history.objects,
+                };
+                work_details(ui, &shared, view, staging, commit, actions);
             } else {
                 details(ui, &shared, history, view);
             }
         });
 
-    // A file looked at belongs to what is selected: a commit's to that commit, the work
-    // tree's to the work tree.
-    let belongs = view.file.as_ref().is_none_or(|file| match file.commit() {
-        Some(commit) => {
-            !view.work_selected && view.selected.map(|selected| selected.id) == Some(commit)
-        }
-        None => view.work_selected,
-    });
-    if !belongs {
-        view.file = None;
-    }
+    view.close_unselected_file();
     egui::CentralPanel::default()
         .frame(Frame::new())
         .show(ui, |ui| match &mut view.file {
@@ -1034,6 +1056,7 @@ fn work_details(
     shared: &Shared<'_>,
     view: &mut HistoryView,
     staging: &mut Bind<(), Problem>,
+    commit: CommitSide<'_>,
     actions: &mut Vec<Action>,
 ) {
     let Some(status) = shared.work_status else {
@@ -1042,9 +1065,15 @@ fn work_details(
     };
     ui.label(RichText::new("Working tree").size(16.0).strong());
     ui.add_space(8.0);
-    match view.work.show(ui, status, staging) {
+    let shown = egui::ScrollArea::vertical()
+        .id_salt("work-details")
+        .auto_shrink([false, false])
+        .show(ui, |ui| view.work.show(ui, status, staging, commit))
+        .inner;
+    match shown {
         Some(WorkEvent::Open(work)) => view.open_work(shared, work),
         Some(WorkEvent::Stage(request)) => actions.push(Action::Stage(shared.id, request)),
+        Some(WorkEvent::Commit(made)) => actions.push(Action::Commit(shared.id, made)),
         None => {}
     }
 }

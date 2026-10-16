@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bstr::ByteSlice as _;
-use egit_git::{ConfigSnapshot, Git, Head, Operation, Repository, Tracking};
+use egit_git::{Committed, ConfigSnapshot, Git, Head, Operation, Repository, Tracking};
 use egui::{Color32, Grid, RichText, Ui, WidgetText};
 use egui_async::Bind;
 use egui_tiles::{TileId, Tiles, UiResponse};
@@ -47,6 +47,8 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         history_view: &mut repo.history_view,
         work_tree: &mut repo.work_tree,
         staging: &mut repo.staging,
+        committing: &mut repo.committing,
+        commits_made: repo.commits_made,
         writing_commit_graph: &mut repo.writing_commit_graph,
         home: home_dir.as_deref(),
         actions,
@@ -67,6 +69,8 @@ struct Panels<'a> {
     history_view: &'a mut HistoryView,
     work_tree: &'a mut WorkTree,
     staging: &'a mut Bind<(), Problem>,
+    committing: &'a mut Bind<Committed, Problem>,
+    commits_made: u64,
     writing_commit_graph: &'a mut Bind<(), Problem>,
     home: Option<&'a Path>,
     actions: &'a mut Vec<Action>,
@@ -88,6 +92,14 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                     partial_clone: self.config.ok_ref().map(|config| config.is_partial_clone()),
                     work_tree: self.work_tree,
                     staging: self.staging,
+                    committing: self.committing,
+                    commits_made: self.commits_made,
+                    sign_by_default: self
+                        .config
+                        .ok_ref()
+                        .and_then(|config| config.get("commit.gpgSign"))
+                        .and_then(egit_git::ConfigEntry::bool)
+                        .unwrap_or(false),
                     actions: self.actions,
                 },
             ),
