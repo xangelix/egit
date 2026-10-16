@@ -88,6 +88,12 @@ fn an_answer_reaches_the_helper() {
     assert_eq!(prompt.text(), "Password: ");
     assert_eq!(prompt.context(), Some("Fetching origin"));
     assert!(!prompt.is_abandoned());
+    // The window is woken just after the prompt is handed over.
+    let started = Instant::now();
+    while notified.load(Ordering::SeqCst) == 0 {
+        assert!(started.elapsed() < WAIT, "nobody was woken");
+        thread::sleep(Duration::from_millis(1));
+    }
     assert_eq!(notified.load(Ordering::SeqCst), 1);
     prompt.answer(b"hunter2").unwrap();
 
