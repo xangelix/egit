@@ -31,6 +31,8 @@ rustix = { version = "1.1.5", features = ["event", "net", "process", "rand"] }
 serde = { version = "1.0.229", features = ["derive"] }
 # The font parser egui uses: system fonts are checked with it before egui is given them.
 skrifa = { version = "0.44.0", default-features = false, features = ["std"] }
+# Syntax highlighting with Sublime grammars, through fancy-regex (no C regex library).
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "default-themes", "parsing", "regex-fancy"] }
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.53.3", default-features = false }

@@ -21,6 +21,8 @@ pub(crate) enum ThemeChoice {
 /// One theme's colours.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Palette {
+    /// Whether it is the dark theme (syntax colours follow).
+    pub(crate) dark: bool,
     /// Behind everything.
     pub(crate) background: Color32,
     /// Panels and the tab bar.
@@ -60,6 +62,7 @@ pub(crate) struct Palette {
 impl Palette {
     /// The dark theme.
     pub(crate) const DARK: Self = Self {
+        dark: true,
         background: Color32::from_rgb(0x15, 0x18, 0x1C),
         panel: Color32::from_rgb(0x1B, 0x1F, 0x24),
         surface: Color32::from_rgb(0x22, 0x27, 0x2E),
@@ -93,6 +96,7 @@ impl Palette {
 
     /// The light theme.
     pub(crate) const LIGHT: Self = Self {
+        dark: false,
         background: Color32::from_rgb(0xF2, 0xF4, 0xF7),
         panel: Color32::from_rgb(0xF8, 0xF9, 0xFB),
         surface: Color32::from_rgb(0xFF, 0xFF, 0xFF),

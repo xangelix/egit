@@ -12,6 +12,7 @@
 //! - `tables` — what the tables show, as `egui-table-kit` providers.
 //! - `theme`, `widgets`, `format` — colours and fonts, shared pieces, text for people.
 //! - `settings` — what is remembered between runs.
+//! - `syntax` — syntax highlighting: grammars parsed in the background, lines coloured on screen.
 //! - `watch` — noticing what changes repositories and configuration behind egit's back.
 
 mod app;
@@ -24,6 +25,7 @@ mod jobs;
 mod problem;
 mod repo;
 mod settings;
+mod syntax;
 mod tables;
 mod tabs;
 mod theme;

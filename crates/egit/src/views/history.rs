@@ -609,6 +609,7 @@ fn show_file(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut Fil
             Arc::clone(shared.repository),
             objects.clone(),
             entry,
+            file.change.path.clone(),
         ));
     }
     if file.change.new.is_none() {
@@ -632,7 +633,7 @@ fn show_file(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut Fil
         }
         Some(Ok(content)) => match &**content {
             FileContent::Text(text) => {
-                file.file_grid.show(ui, text);
+                file.file_grid.show(ui, &**text);
             }
             FileContent::Binary { size } => placeholder(
                 ui,

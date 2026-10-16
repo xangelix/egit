@@ -33,10 +33,10 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
   it. Do this after touching anything that runs git (CI does it in `ubuntu:24.04`).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
 - Text corpus: `cargo test -p egit --release --lib -- --ignored --nocapture corpus` draws the
-  text grid through the roadmap's worst cases (1M lines of code, a 10 MB line wrapped and not,
-  CJK and emoji, resizing wrapped at line 900k) and prints frame times, laid out and
-  tessellated (it fails past 8 ms at p99); renders `corpus-*.png` where it can. Every case
-  stays under 2 ms.
+  text grid through the roadmap's worst cases (1M lines of code, plain and highlighted, a 10 MB
+  line wrapped and not, CJK and emoji, resizing wrapped at line 900k) and prints frame times,
+  laid out and tessellated (it fails past 8 ms at p99); renders `corpus-*.png` where it can.
+  Every case stays under 2 ms, but highlighted jumps: 3.7 ms (the colouring budget is 3 ms).
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a
@@ -227,7 +227,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     Close); every pane is searched in a job as the query changes (its text shared), at most
     100,000 matches a pane; matches on screen are marked, the current one stronger, and moving
     to one scrolls it a few rows below the top and sideways into view. `Plain` is a text,
-    numbered.
+    numbered, and highlighted when `named`. A source's `colors` give its text colours,
+    `backgrounds` its highlights; `begin_frame` and `needs_repaint` let a source work a little
+    each frame (a repaint 30 ms later while it isn't done).
   - `diff.rs` — `DiffDocument`: a `FileDiff` measured as a `GridSource` (lines on their kind's
     background, hunk headers muted, the gutter numbering both files with a `+`/`-` marker), and
     `read_diff`, its job (cancelled when its view closes). Each block's removed lines pair with
@@ -235,7 +237,18 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     drawn and kept (up to 4,096 pairs), and marked with `Styled` backgrounds. `SplitDiff`:
     the old side beside the new (`split_diff`, a job, the first time it is shown), a block's
     removed lines beside its added ones with fillers making up the difference, both sides'
-    measures matched (`Measure::match_rows`) so wrapped lines take the same rows.
+    measures matched (`Measure::match_rows`) so wrapped lines take the same rows. Both are
+    highlighted in the file's language (see `syntax.rs`).
+  - `syntax.rs` — `Syntax`: syntect's grammars and themes (through `fancy-regex`; its
+    `bincode` advisory is ignored in `deny.toml`: it reads only the dumps compiled in) for the
+    language a path's extension or name, or a first line, names. A walk in the background
+    parses the whole text once, keeping both parsers' states every 128 lines (one equal to the
+    one before is shared: 2.5 MB for 1M lines of C, parsed in 40 s); a line drawn is coloured
+    from the nearest state (or where the last colouring stopped), within 3 ms a frame, and
+    the latest 4,096 lines' colours are kept. A diff's lines feed an old and a new parser as
+    their `Feed` says (context both; a hunk header starts both over). Lines over 4 KiB, and
+    lines that aren't UTF-8, are left plain. Dark: `base16-ocean.dark`; light:
+    `InspiredGitHub`.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the XDG font directories (CJK families, then

@@ -22,6 +22,7 @@ use parking_lot::Mutex;
 use crate::grid::{GridSource, Span};
 use crate::jobs;
 use crate::problem::Problem;
+use crate::syntax::{Feed, Feeds, Syntax};
 use crate::theme::Palette;
 
 /// The most pairs whose changed words are kept; past it, they are compared again.
@@ -47,11 +48,15 @@ pub(crate) struct DiffDocument {
     digits: u32,
     added: u32,
     removed: u32,
+    /// The file's path (its new one), for its language.
+    path: BString,
+    syntax: Option<Syntax>,
 }
 
 impl DiffDocument {
-    /// `diff`, measured (on a job's thread, for a large one).
-    fn new(diff: FileDiff) -> Self {
+    /// `diff` of the file at `path`, measured and highlighted (on a job's thread, for a large
+    /// one).
+    fn new(diff: FileDiff, path: BString) -> Self {
         let FileDiff {
             text,
             lines,
@@ -69,7 +74,18 @@ impl DiffDocument {
             let lines = lines.iter().filter(|line| line.kind == kind).count();
             u32::try_from(lines).unwrap_or(u32::MAX)
         };
+        let feeds: Arc<[Feed]> = lines
+            .iter()
+            .map(|line| match line.kind {
+                DiffLineKind::Hunk => Feed::Reset,
+                DiffLineKind::Context => Feed::Both,
+                DiffLineKind::Added => Feed::New,
+                DiffLineKind::Removed => Feed::Old,
+            })
+            .collect();
         Self {
+            syntax: Syntax::start(&path, &text, Feeds::Each(feeds)),
+            path,
             added: count(DiffLineKind::Added),
             removed: count(DiffLineKind::Removed),
             partners: partners(&lines),
@@ -185,7 +201,19 @@ impl GridSource for DiffDocument {
                 bytes: 0..u32::MAX,
                 color: palette.muted,
             });
+        } else if let Some(syntax) = &self.syntax {
+            syntax.colors(&self.text, line, palette.dark, palette.text, out);
         }
+    }
+
+    fn begin_frame(&self) {
+        if let Some(syntax) = &self.syntax {
+            syntax.begin_frame();
+        }
+    }
+
+    fn needs_repaint(&self) -> bool {
+        self.syntax.as_ref().is_some_and(Syntax::needs_repaint)
     }
 
     fn backgrounds(&self, line: u32, palette: &Palette, out: &mut Vec<Span>) {
@@ -267,6 +295,7 @@ pub(crate) struct Side {
     lines: Vec<SideLine>,
     /// Whether it is the old side (removed lines) rather than the new (added lines).
     old: bool,
+    syntax: Option<Syntax>,
 }
 
 /// A diff split in two: the old file's lines beside the new one's, a block of removed lines
@@ -343,8 +372,8 @@ impl SplitDiff {
                 }
             }
         }
-        let mut old = old.finish(true);
-        let mut new = new.finish(false);
+        let mut old = old.finish(true, &unified.path);
+        let mut new = new.finish(false, &unified.path);
         old.measure.match_rows(&new.measure);
         new.measure.match_rows(&old.measure);
         Self {
@@ -387,10 +416,20 @@ impl SideBuilder {
         });
     }
 
-    fn finish(self, old: bool) -> Side {
+    fn finish(self, old: bool, path: &[u8]) -> Side {
         let text = Text::new(self.text).unwrap_or_default();
         let measure = Measure::all(&text, Options::default());
+        let feeds: Arc<[Feed]> = self
+            .lines
+            .iter()
+            .map(|line| match line.kind {
+                SideKind::Hunk => Feed::Reset,
+                SideKind::Filler => Feed::Skip,
+                SideKind::Context | SideKind::Changed => Feed::New,
+            })
+            .collect();
         Side {
+            syntax: Syntax::start(path, &text, Feeds::Each(feeds)),
             text,
             measure,
             lines: self.lines,
@@ -430,7 +469,19 @@ impl GridSource for SideSource<'_> {
                 bytes: 0..u32::MAX,
                 color: palette.muted,
             });
+        } else if let Some(syntax) = &self.side.syntax {
+            syntax.colors(&self.side.text, line, palette.dark, palette.text, out);
         }
+    }
+
+    fn begin_frame(&self) {
+        if let Some(syntax) = &self.side.syntax {
+            syntax.begin_frame();
+        }
+    }
+
+    fn needs_repaint(&self) -> bool {
+        self.side.syntax.as_ref().is_some_and(Syntax::needs_repaint)
     }
 
     fn backgrounds(&self, line: u32, palette: &Palette, out: &mut Vec<Span>) {
@@ -500,9 +551,10 @@ pub(crate) async fn read_diff(
     cancel: CancelToken,
 ) -> Result<Arc<DiffDocument>, Problem> {
     jobs::blocking(move || {
+        let path = paths.last().cloned().unwrap_or_default();
         let paths: Vec<&bstr::BStr> = paths.iter().map(AsRef::as_ref).collect();
         file_diff(&git, &repository, commit, parent, &paths, &options, &cancel)
-            .map(|diff| Arc::new(DiffDocument::new(diff)))
+            .map(|diff| Arc::new(DiffDocument::new(diff, path)))
             .map_err(|error| Problem::git("The diff couldn't be read", &error))
     })
     .await
@@ -522,17 +574,20 @@ mod tests {
     }
 
     fn document() -> DiffDocument {
-        DiffDocument::new(FileDiff {
-            text: b"@@ -9,2 +9,3 @@\nkeep\nlet a = 1;\nlet a = 2;\nmore\n".to_vec(),
-            lines: vec![
-                line(DiffLineKind::Hunk, 0, 0),
-                line(DiffLineKind::Context, 9, 9),
-                line(DiffLineKind::Removed, 10, 0),
-                line(DiffLineKind::Added, 0, 10),
-                line(DiffLineKind::Added, 0, 11),
-            ],
-            binary: false,
-        })
+        DiffDocument::new(
+            FileDiff {
+                text: b"@@ -9,2 +9,3 @@\nkeep\nlet a = 1;\nlet a = 2;\nmore\n".to_vec(),
+                lines: vec![
+                    line(DiffLineKind::Hunk, 0, 0),
+                    line(DiffLineKind::Context, 9, 9),
+                    line(DiffLineKind::Removed, 10, 0),
+                    line(DiffLineKind::Added, 0, 10),
+                    line(DiffLineKind::Added, 0, 11),
+                ],
+                binary: false,
+            },
+            BString::from("lib.rs"),
+        )
     }
 
     #[test]
@@ -599,18 +654,21 @@ mod tests {
 
     #[test]
     fn a_split_lines_removed_lines_up_beside_added_ones() {
-        let unified = Arc::new(DiffDocument::new(FileDiff {
-            text: b"@@ -1,3 +1,2 @@\nsame\nold one\nold two\nnew one\nend\n".to_vec(),
-            lines: vec![
-                line(DiffLineKind::Hunk, 0, 0),
-                line(DiffLineKind::Context, 1, 1),
-                line(DiffLineKind::Removed, 2, 0),
-                line(DiffLineKind::Removed, 3, 0),
-                line(DiffLineKind::Added, 0, 2),
-                line(DiffLineKind::Context, 4, 3),
-            ],
-            binary: false,
-        }));
+        let unified = Arc::new(DiffDocument::new(
+            FileDiff {
+                text: b"@@ -1,3 +1,2 @@\nsame\nold one\nold two\nnew one\nend\n".to_vec(),
+                lines: vec![
+                    line(DiffLineKind::Hunk, 0, 0),
+                    line(DiffLineKind::Context, 1, 1),
+                    line(DiffLineKind::Removed, 2, 0),
+                    line(DiffLineKind::Removed, 3, 0),
+                    line(DiffLineKind::Added, 0, 2),
+                    line(DiffLineKind::Context, 4, 3),
+                ],
+                binary: false,
+            },
+            BString::from("notes"),
+        ));
         let split = SplitDiff::new(unified);
         let shown = |old: bool| -> Vec<(String, String)> {
             let side = split.side(old);

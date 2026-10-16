@@ -1,6 +1,7 @@
-//! The text grid against its worst cases (the roadmap's corpus): a million lines of code, a
-//! 10 MB line wrapped and not, CJK and emoji, and resizing while wrapped at line 900,000. Each
-//! case reports frame times (laid out and tessellated) jumping across the text and scrolling it.
+//! The text grid against its worst cases (the roadmap's corpus): a million lines of code, plain
+//! and highlighted, a 10 MB line wrapped and not, CJK and emoji, and resizing while wrapped at
+//! line 900,000. Each case reports frame times (laid out and tessellated) jumping across the
+//! text and scrolling it.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
@@ -35,15 +36,20 @@ struct Shown {
     fonts: Fallbacks,
 }
 
-fn shown(bytes: Vec<u8>, wrap: bool) -> Harness<'static, Shown> {
+/// `bytes` on the grid, highlighted as the file `path` would be (if given).
+fn shown_as(bytes: Vec<u8>, path: Option<&str>, wrap: bool) -> Harness<'static, Shown> {
     let mut grid = TextGrid::new("corpus");
     grid.set_wrap(wrap);
+    crate::jobs::install_runtime().unwrap();
     let started = Instant::now();
-    let source = Plain::new(Text::new(bytes).unwrap(), Options::default());
+    let text = Text::new(bytes).unwrap();
+    let source = match path {
+        Some(path) => Plain::named(text, Options::default(), path.as_bytes()),
+        None => Plain::new(text, Options::default()),
+    };
     println!("  measured in {:?}", started.elapsed());
     let builder = Harness::builder().with_size([1400.0, 900.0]);
     let builder = if rendering() { builder.wgpu() } else { builder };
-    crate::jobs::install_runtime().unwrap();
     let harness = builder.build_ui_state(
         |ui, shown: &mut Shown| {
             shown.fonts.poll(ui.ctx());
@@ -59,6 +65,11 @@ fn shown(bytes: Vec<u8>, wrap: bool) -> Harness<'static, Shown> {
         .ctx
         .plugin_or_default::<egui_async::EguiAsyncPlugin>();
     harness
+}
+
+/// `bytes` on the grid, plain.
+fn shown(bytes: Vec<u8>, wrap: bool) -> Harness<'static, Shown> {
+    shown_as(bytes, None, wrap)
 }
 
 /// Steps `frames` frames, calling `before` ahead of each, and returns each frame's time: laid
@@ -93,6 +104,22 @@ fn report(what: &str, mut frames: Vec<Duration>) -> Duration {
         frames.len()
     );
     p99
+}
+
+/// The memory the process holds now, in megabytes.
+fn resident_mb() -> f64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|rest| {
+            rest.trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse::<f64>()
+                .ok()
+        })
+        .map_or(0.0, |kb| kb / 1024.0)
 }
 
 /// Renders the screen as `corpus-name.png`, where screens are rendered.
@@ -154,6 +181,53 @@ fn cjk(lines: usize) -> Vec<u8> {
     text.into_bytes()
 }
 
+/// A million lines of C, highlighted: jumping while it is parsed in the background, the parse,
+/// then jumping and scrolling once it is done. Returns the worst 99th percentile.
+fn highlighted(seed: &mut u64) -> Duration {
+    println!("a million lines of C, highlighted:");
+    let before = resident_mb();
+    let mut harness = shown_as(code(1_000_000), Some("probe.c"), false);
+    let started = Instant::now();
+    let jumps = measure_frames(&mut harness, 400, |harness, _| {
+        let line = u32::try_from(random(seed, 1_000_000)).unwrap();
+        harness.state_mut().grid.scroll_to_line(line);
+    });
+    let mut worst = report("jumping while parsed", jumps);
+    let parsed = |harness: &Harness<'_, Shown>| {
+        harness
+            .state()
+            .source
+            .syntax()
+            .is_some_and(crate::syntax::Syntax::is_parsed)
+    };
+    while !parsed(&harness) && started.elapsed() < Duration::from_secs(600) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    println!(
+        "  parsed in {:?}; {:.0} MB held for the text, its measure, and its states",
+        started.elapsed(),
+        resident_mb() - before
+    );
+    let jumps = measure_frames(&mut harness, 400, |harness, _| {
+        let line = u32::try_from(random(seed, 1_000_000)).unwrap();
+        harness.state_mut().grid.scroll_to_line(line);
+    });
+    worst = worst.max(report("jumping once parsed", jumps));
+    harness.state_mut().grid.scroll_to_line(500_000);
+    harness.hover_at(egui::pos2(700.0, 450.0));
+    let scrolling = measure_frames(&mut harness, 600, |harness, _| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -240.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+    worst = worst.max(report("wheel scrolling", scrolling));
+    snapshot(&mut harness, "code-highlighted");
+    worst
+}
+
 #[test]
 #[ignore = "a release-build measurement: see the module's documentation"]
 fn corpus() {
@@ -181,6 +255,9 @@ fn corpus() {
         });
     });
     worst = worst.max(report("wheel scrolling", scrolling));
+    drop(harness);
+
+    worst = worst.max(highlighted(&mut seed));
 
     println!("resizing while wrapped at line 900,000:");
     let mut long_lines = code(1_000_000);

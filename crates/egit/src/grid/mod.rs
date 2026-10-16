@@ -20,6 +20,7 @@ use egui::{
 };
 
 use crate::fonts;
+use crate::syntax::{Feed, Feeds, Syntax};
 use crate::theme::Palette;
 
 mod find;
@@ -97,18 +98,38 @@ pub(crate) trait GridSource {
     }
 }
 
-/// A text as it is, numbered.
+/// A text as it is, numbered, and highlighted in its language.
 #[derive(Debug)]
 pub(crate) struct Plain {
     text: Text,
     measure: Measure,
+    syntax: Option<Syntax>,
 }
 
 impl Plain {
     /// `text`, measured (on the calling thread: a job's, for a large text).
     pub(crate) fn new(text: Text, options: egit_text::Options) -> Self {
         let measure = Measure::all(&text, options);
-        Self { text, measure }
+        Self {
+            text,
+            measure,
+            syntax: None,
+        }
+    }
+
+    /// `text`, measured and highlighted in the language its path (or first line) names.
+    pub(crate) fn named(text: Text, options: egit_text::Options, path: &[u8]) -> Self {
+        let syntax = Syntax::start(path, &text, Feeds::All(Feed::New));
+        Self {
+            syntax,
+            ..Self::new(text, options)
+        }
+    }
+
+    /// Its highlighting, if its language is known.
+    #[cfg(test)]
+    pub(crate) const fn syntax(&self) -> Option<&Syntax> {
+        self.syntax.as_ref()
     }
 }
 
@@ -119,6 +140,22 @@ impl GridSource for Plain {
 
     fn measure(&self) -> &Measure {
         &self.measure
+    }
+
+    fn colors(&self, line: u32, palette: &Palette, out: &mut Vec<Span>) {
+        if let Some(syntax) = &self.syntax {
+            syntax.colors(&self.text, line, palette.dark, palette.text, out);
+        }
+    }
+
+    fn begin_frame(&self) {
+        if let Some(syntax) = &self.syntax {
+            syntax.begin_frame();
+        }
+    }
+
+    fn needs_repaint(&self) -> bool {
+        self.syntax.as_ref().is_some_and(Syntax::needs_repaint)
     }
 }
 

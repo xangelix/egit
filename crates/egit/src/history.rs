@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
-use bstr::ByteSlice as _;
+use bstr::{BString, ByteSlice as _};
 use egit_git::{
     CancelToken, Commit, FileChange, Git, GitError, Object, ObjectFormat, ObjectId, ObjectKind,
     ObjectReader, RefKind, Reference, Repository, TreeEntry, commit_changes, list_references,
@@ -517,8 +517,8 @@ pub(crate) struct CommitDetails {
 /// A file as a file view shows it.
 #[derive(Debug)]
 pub(crate) enum FileContent {
-    /// Text, measured.
-    Text(Plain),
+    /// Text, measured (boxed: its highlighting's state is large).
+    Text(Box<Plain>),
     /// What git would call binary: a NUL in its first 8,000 bytes.
     Binary {
         /// Its size, in bytes.
@@ -543,7 +543,7 @@ pub(crate) enum FileContent {
 
 impl FileContent {
     /// What `bytes` show as: binary, an LFS pointer, too large, or text.
-    fn of(bytes: &[u8]) -> Self {
+    fn of(bytes: &[u8], path: &[u8]) -> Self {
         let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
         if bytes.len() > MAX_SHOWN {
             return Self::TooLarge { size };
@@ -562,17 +562,22 @@ impl FileContent {
             return Self::Lfs { size };
         }
         Text::new(Arc::<[u8]>::from(bytes)).map_or(Self::TooLarge { size }, |text| {
-            Self::Text(Plain::new(text, egit_text::Options::default()))
+            Self::Text(Box::new(Plain::named(
+                text,
+                egit_text::Options::default(),
+                path,
+            )))
         })
     }
 }
 
-/// Reads what `entry` names (a file's blob) and makes it ready to show.
+/// Reads what `entry` names (the blob of a file at `path`) and makes it ready to show.
 pub(crate) async fn read_file(
     git: Git,
     repository: Arc<Repository>,
     objects: Objects,
     entry: TreeEntry,
+    path: BString,
 ) -> Result<Arc<FileContent>, Problem> {
     if entry.mode == TreeEntry::SUBMODULE {
         return Ok(Arc::new(FileContent::Submodule { commit: entry.id }));
@@ -584,7 +589,7 @@ pub(crate) async fn read_file(
             .read(&git, repository.work_tree(), &[entry.id], |_, object| {
                 content = object
                     .filter(|object| object.kind == ObjectKind::Blob)
-                    .map(|object| FileContent::of(object.data));
+                    .map(|object| FileContent::of(object.data, &path));
             })
             .map_err(|error| Problem::git(UNREADABLE, &error))?;
         content.map(Arc::new).ok_or_else(|| {

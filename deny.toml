@@ -10,7 +10,11 @@ all-features = true
 # Unmaintained or unsound crates fail the build; yanked versions too.
 unmaintained = "all"
 yanked = "deny"
-ignore = []
+ignore = [
+    # bincode 1.3.3 is complete (its authors' words) and only unmaintained: syntect reads its own
+    # grammar and theme dumps with it, compiled into egit, never anything from outside.
+    { id = "RUSTSEC-2025-0141", reason = "syntect's bundled dumps only; complete, not vulnerable" },
+]
 
 [licenses]
 # Workspace crates are unpublished and carry no licence yet.
