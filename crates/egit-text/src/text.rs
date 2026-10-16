@@ -21,8 +21,8 @@ impl std::error::Error for TooLarge {}
 /// Bytes split into lines at `\n`. A final `\n` ends the last line rather than starting an
 /// empty one; the bytes needn't be UTF-8.
 ///
-/// Costs the bytes and 4 bytes a line.
-#[derive(Clone, Debug)]
+/// Costs the bytes and 4 bytes a line. The default is empty.
+#[derive(Clone, Debug, Default)]
 pub struct Text {
     bytes: Arc<[u8]>,
     /// Where each line starts.
