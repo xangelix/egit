@@ -147,6 +147,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     (changed, renamed, copied, unmerged, untracked), path and a rename's old one, `staged` and
     `unstaged` `Change`s, `head` and `index` tree entries (the index's blob is what lines are
     staged against), the work tree's mode, a conflict's sides, a submodule's changes.
+  - `stage.rs` — `stage` (`git add --all`) and `unstage` (`git reset --quiet`, which, unlike
+    `restore --staged`, works before the first commit) of whole files: paths on standard
+    input (`--pathspec-from-file`, NUL-separated) as literal pathspecs; no paths do nothing
+    (`reset` would otherwise unstage everything).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
