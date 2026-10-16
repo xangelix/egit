@@ -18,7 +18,8 @@ eframe = { version = "0.36.2", default-features = false }
 egui = "0.36.2"
 egui-async = "0.7.0"
 egui-phosphor = "0.14.0"
-egui-table-kit = "0.7.1"
+# Ahead of crates.io: rows stay exact past f32 precision (Linux's 1.5M commits).
+egui-table-kit = { git = "https://github.com/xangelix/egui-table-kit", rev = "71f4c3b760c9ed58ce3d2ade309188afc9843b0a" }
 egui_kittest = "0.36.2"
 egui_tiles = "0.17.1"
 notify = { version = "8.2.0", default-features = false }

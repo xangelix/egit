@@ -11,8 +11,8 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
 
 | Phase | Scope | State |
 |---|---|---|
-| 1 | Foundation: shell, running git, askpass, profile, opening repositories | done; awaiting the owner's review |
-| 2 | Commit graph: lanes, the commit table, details and changed files | done; awaiting the owner's review (past ~700k rows it needs egui-table-kit's row-precision fix, pinned once pushed) |
+| 1 | Foundation: shell, running git, askpass, profile, opening repositories | done |
+| 2 | Commit graph: lanes, the commit table, details and changed files | done |
 | 3 | Text grid and read-only diff viewer | not started |
 | 4 | Working tree, staging, signed commits | not started |
 | 5 | Clone, pull, push | not started |
@@ -133,8 +133,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `RowView::segments_in` gives a row's lines crossing a window of lanes, so a graph wider
     than its column costs only what shows.
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
-  (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7, `egui-async` 0.7 (stay on 0.36 until
-  `egui_tiles` and `egui-phosphor` move).
+  (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io: bump
+  `rev` to the owner's pushed commit after each change made there), `egui-async` 0.7 (stay on
+  0.36 until `egui_tiles` and `egui-phosphor` move).
   - `main.rs` — started as `egit-askpass` it is the askpass helper (`run_helper`); otherwise
     `lib.rs`'s `run`: `-h`/`-V`, paths to open, `EGIT_LOG` logging, the runtime, the window.
   - `app.rs` — `EgitApp { tabs, state }`. Views never change `AppState` directly: they push
