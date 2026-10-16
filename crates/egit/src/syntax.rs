@@ -34,6 +34,14 @@ static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_ne
 /// Syntect's themes, loaded the first time one is needed.
 static THEMES: LazyLock<ThemeSet> = LazyLock::new(ThemeSet::load_defaults);
 
+/// The dark and the light theme's highlighters (each sorts its theme's selectors), made once.
+static HIGHLIGHTERS: LazyLock<[Highlighter<'static>; 2]> = LazyLock::new(|| {
+    [
+        Highlighter::new(theme(true)),
+        Highlighter::new(theme(false)),
+    ]
+});
+
 /// Lines between kept states.
 const CHECKPOINT: u32 = 128;
 
@@ -213,6 +221,8 @@ impl Syntax {
     pub(crate) fn start(path: &[u8], text: &Text, feeds: Feeds) -> Option<Self> {
         let first = text.line(0).unwrap_or_default();
         let grammar = language(path, first)?;
+        // Made here, on a job's thread, so that colouring on the interface's never waits.
+        LazyLock::force(&HIGHLIGHTERS);
         let walk = Arc::new(Walk::default());
         let bytes = text.shared();
         let lines = text.lines();
@@ -291,7 +301,12 @@ impl Syntax {
             return;
         };
         let theme = theme(dark);
-        let highlighter = Highlighter::new(theme);
+        let [dark_highlighter, light_highlighter] = &*HIGHLIGHTERS;
+        let highlighter = if dark {
+            dark_highlighter
+        } else {
+            light_highlighter
+        };
         let mut buffer = String::new();
         while at <= line {
             let bytes = text.line(at).unwrap_or_default();
@@ -308,7 +323,7 @@ impl Syntax {
                 if let Some((ops, scopes)) = states.feed(self.grammar, feed, &buffer)
                     && valid
                 {
-                    spans = colored(&highlighter, theme, scopes, &ops, &buffer, default);
+                    spans = colored(highlighter, theme, scopes, &ops, &buffer, default);
                 }
             }
             if kept.lines.len() >= KEPT_LINES {
