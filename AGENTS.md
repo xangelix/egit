@@ -13,7 +13,7 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
 |---|---|---|
 | 1 | Foundation: shell, running git, askpass, profile, opening repositories | done |
 | 2 | Commit graph: lanes, the commit table, details and changed files | done |
-| 3 | Text grid and read-only diff viewer | not started |
+| 3 | Text grid and read-only diff viewer | done; awaiting the owner's review |
 | 4 | Working tree, staging, signed commits | not started |
 | 5 | Clone, pull, push | not started |
 
