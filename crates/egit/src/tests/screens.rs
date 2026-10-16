@@ -37,6 +37,16 @@ fn rendering() -> bool {
 
 /// The whole application around `git`, at a typical window size.
 fn harness_with(git: Git, home: &Path, theme: egui::Theme) -> Harness<'static, EgitApp> {
+    harness_with_settings(git, home, theme, Settings::default())
+}
+
+/// As [`harness_with`], starting from `settings` as if remembered from the last run.
+fn harness_with_settings(
+    git: Git,
+    home: &Path,
+    theme: egui::Theme,
+    settings: Settings,
+) -> Harness<'static, EgitApp> {
     let home = home.to_owned();
     let builder = Harness::builder()
         .with_size([1180.0, 800.0])
@@ -46,7 +56,7 @@ fn harness_with(git: Git, home: &Path, theme: egui::Theme) -> Harness<'static, E
         EgitApp::with_git(
             &creation.egui_ctx,
             git,
-            Settings::default(),
+            settings,
             Some(home),
             Prompts::none(),
         )
@@ -459,4 +469,28 @@ fn shown_branch(app: &mut EgitApp) -> Option<String> {
         egit_git::Head::Branch(branch) => Some(branch.name.to_string()),
         egit_git::Head::Detached(_) => None,
     }
+}
+
+#[test]
+fn the_tabs_open_at_the_last_close_come_back() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("kept").unwrap();
+    let settings = Settings {
+        open: vec![
+            sandbox.path("deleted since").as_path().into(),
+            repo.as_path().into(),
+        ],
+        ..Settings::default()
+    };
+    let mut harness = harness_with_settings(
+        sandbox.git().clone(),
+        sandbox.home(),
+        egui::Theme::Dark,
+        settings,
+    );
+    settle(&mut harness, "the repository", repository_shown);
+    let app = harness.state();
+    assert_eq!(app.state.repos.len(), 1);
+    assert_eq!(app.state.repos[0].repository.work_tree(), repo);
+    assert_eq!(app.state.home.problem, None);
 }

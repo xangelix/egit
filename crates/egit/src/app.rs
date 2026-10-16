@@ -155,8 +155,14 @@ impl EgitApp {
             tracing::error!(%error, "couldn't start egit's worker threads");
         }
 
-        // Repositories open when egit last closed come back, then those asked for now.
-        let mut waiting: Vec<PathBuf> = settings.open.iter().map(StoredPath::to_path).collect();
+        // Repositories open when egit last closed come back (not those since removed), then
+        // those asked for now.
+        let mut waiting: Vec<PathBuf> = settings
+            .open
+            .iter()
+            .map(StoredPath::to_path)
+            .filter(|path| path.is_dir())
+            .collect();
         waiting.extend(paths);
         let mut state = AppState {
             git: Bind::new(true),
