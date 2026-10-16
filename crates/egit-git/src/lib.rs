@@ -29,6 +29,7 @@ mod patch;
 mod process;
 mod profile;
 mod progress;
+mod remote;
 mod repo;
 mod signatures;
 mod span;
@@ -63,6 +64,10 @@ pub use output::{Completed, Stderr};
 pub use patch::{Direction, LinesError, apply_lines, write_index_content};
 pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use progress::{Progress, ProgressReport};
+pub use remote::{
+    CloneOptions, FetchOptions, PullMode, Pulled, PushFlag, PushOptions, Pushed, PushedRef,
+    abort_operation, clone, continue_operation, fetch, pull, push, remotes,
+};
 pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,
     trust_directory,

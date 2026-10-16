@@ -1,0 +1,474 @@
+//! Moving commits between repositories: clone, fetch, pull, and push, each reporting its
+//! progress (`--progress`) and stoppable, with git asking for credentials and host keys through
+//! askpass (labelled by what is being done) unless it mustn't ask at all.
+
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
+
+use bstr::{BString, ByteSlice as _};
+
+use crate::cancel::CancelToken;
+use crate::error::GitError;
+use crate::git::Git;
+use crate::progress::Progress;
+use crate::repo::{Operation, Repository};
+
+/// How a clone is made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CloneOptions {
+    /// Clone the submodules too (`--recurse-submodules`).
+    pub submodules: bool,
+    /// A partial clone: file contents are fetched when first needed (`--filter=blob:none`).
+    pub partial: bool,
+}
+
+/// Clones `url` into `destination` (which must not exist, or be an empty folder).
+///
+/// It runs outside any repository. Cancelled, git removes what it made.
+///
+/// # Errors
+///
+/// When git fails (a wrong address, refused credentials, an existing destination) or is
+/// cancelled.
+pub fn clone(
+    git: &Git,
+    url: &str,
+    destination: &Path,
+    options: CloneOptions,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    let mut command = git
+        .write("clone")
+        .arg("--progress")
+        .prompt_context(format!("Cloning {url}"))
+        .current_dir("/")
+        .progress(progress)
+        .cancel_token(cancel);
+    if options.submodules {
+        command = command.arg("--recurse-submodules");
+    }
+    if options.partial {
+        command = command.arg("--filter=blob:none");
+        if options.submodules {
+            command = command.arg("--also-filter-submodules");
+        }
+    }
+    command
+        .arg("--")
+        .arg(url)
+        .arg(destination)
+        .output()
+        .map(drop)
+}
+
+/// How a fetch is made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FetchOptions {
+    /// Every remote, not only the current branch's (`--all`).
+    pub all: bool,
+    /// Remove remote-tracking branches whose branches are gone (`--prune`).
+    pub prune: bool,
+    /// Nobody is watching: git may not ask anything (a prompt fails at once), and doesn't start
+    /// its housekeeping after.
+    pub background: bool,
+}
+
+/// Fetches from the repository's remotes, as `options` says.
+///
+/// # Errors
+///
+/// When git fails (a remote that can't be reached, refused credentials, a prompt in the
+/// background) or is cancelled.
+pub fn fetch(
+    git: &Git,
+    repository: &Repository,
+    options: FetchOptions,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    let mut command = git
+        .write("fetch")
+        .arg("--progress")
+        .prompt_context("Fetching")
+        .current_dir(repository.work_tree())
+        .progress(progress)
+        .cancel_token(cancel);
+    if options.all {
+        command = command.arg("--all");
+    }
+    if options.prune {
+        command = command.arg("--prune");
+    }
+    if options.background {
+        command = command.arg("--no-auto-maintenance").non_interactive();
+    }
+    command.output().map(drop)
+}
+
+/// How a pull brings in the upstream's commits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PullMode {
+    /// As `pull.rebase` and `pull.ff` say.
+    #[default]
+    AsConfigured,
+    /// Merge them (`--no-rebase`).
+    Merge,
+    /// Put the branch's own commits after them (`--rebase`).
+    Rebase,
+    /// Only move the branch forward to them (`--ff-only`).
+    FastForwardOnly,
+}
+
+/// How a pull ended, when git didn't fail outright.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pulled {
+    /// The branch has the upstream's commits (or had them already).
+    Updated,
+    /// The branch and its upstream each have commits the other hasn't, and nothing says how
+    /// to bring them together (or only fast-forwards are allowed): ask.
+    Diverged,
+    /// The merge or rebase stopped at conflicts: the user resolves them, then continues or
+    /// aborts.
+    Conflicts,
+}
+
+/// Pulls the current branch's upstream, as `mode` says.
+///
+/// # Errors
+///
+/// When git fails otherwise (no upstream, a remote that can't be reached, uncommitted changes
+/// in the way) or is cancelled.
+pub fn pull(
+    git: &Git,
+    repository: &Repository,
+    mode: PullMode,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<Pulled, GitError> {
+    let mut command = git
+        .write("pull")
+        .arg("--progress")
+        .prompt_context("Pulling")
+        .current_dir(repository.work_tree())
+        .progress(progress)
+        .cancel_token(cancel);
+    command = match mode {
+        PullMode::AsConfigured => command,
+        PullMode::Merge => command.arg("--no-rebase"),
+        PullMode::Rebase => command.arg("--rebase"),
+        PullMode::FastForwardOnly => command.arg("--ff-only"),
+    };
+    let Err(error) = command.output() else {
+        return Ok(Pulled::Updated);
+    };
+    let Some(failure) = error.failure() else {
+        return Err(error);
+    };
+    let said = failure.stderr.as_bytes();
+    if said.contains_str("divergent branches") || said.contains_str("Not possible to fast-forward")
+    {
+        return Ok(Pulled::Diverged);
+    }
+    let stopped = repository
+        .operations()
+        .map_err(|source| GitError::Io {
+            subcommand: "pull",
+            source,
+        })?
+        .iter()
+        .any(|operation| matches!(operation, Operation::Merge | Operation::Rebase));
+    if stopped {
+        Ok(Pulled::Conflicts)
+    } else {
+        Err(error)
+    }
+}
+
+/// What happened to a ref a push named.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PushFlag {
+    /// Moved forward.
+    FastForward,
+    /// Replaced (a forced push).
+    Forced,
+    /// Deleted.
+    Deleted,
+    /// Made.
+    New,
+    /// Refused: see the reason.
+    Rejected,
+    /// Already there.
+    UpToDate,
+}
+
+/// A ref a push named, and what happened to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushedRef {
+    /// What happened to it.
+    pub flag: PushFlag,
+    /// The local ref (empty when deleting).
+    pub from: BString,
+    /// The remote's ref.
+    pub to: BString,
+    /// Git's summary (`a1b2c3..d4e5f6`, `[new branch]`, `[rejected]`).
+    pub summary: BString,
+    /// Why it was refused, as git says (`fetch first`, `non-fast-forward`, `stale info`, a
+    /// remote hook's words).
+    pub reason: Option<BString>,
+}
+
+/// What a push did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Pushed {
+    /// Each ref named.
+    pub refs: Vec<PushedRef>,
+    /// What git and the remote printed besides (a link to open a pull request, say).
+    pub notes: Vec<String>,
+}
+
+impl Pushed {
+    /// Whether every ref went through.
+    #[must_use]
+    pub fn succeeded(&self) -> bool {
+        self.refs
+            .iter()
+            .all(|pushed| pushed.flag != PushFlag::Rejected)
+    }
+}
+
+/// How a push is made.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PushOptions {
+    /// Where to: a remote's name.
+    pub remote: BString,
+    /// The local branch (its short name).
+    pub branch: BString,
+    /// The branch it becomes on the remote (its short name).
+    pub remote_branch: BString,
+    /// Make the remote's branch the local one's upstream (`--set-upstream`).
+    pub set_upstream: bool,
+    /// Replace the remote's branch, but only if it is still what was last fetched and that
+    /// was brought into the local branch (`--force-with-lease --force-if-includes`).
+    pub force: bool,
+}
+
+/// Pushes a branch, as `options` says. A refused ref isn't an error: [`Pushed`] says why.
+///
+/// # Errors
+///
+/// When git fails before any ref is pushed (a remote that can't be reached, refused
+/// credentials) or is cancelled.
+pub fn push(
+    git: &Git,
+    repository: &Repository,
+    options: &PushOptions,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<Pushed, GitError> {
+    let mut refspec = b"refs/heads/".to_vec();
+    refspec.extend_from_slice(&options.branch);
+    refspec.extend_from_slice(b":refs/heads/");
+    refspec.extend_from_slice(&options.remote_branch);
+    let mut command = git
+        .write("push")
+        .args(["--porcelain", "--progress"])
+        .prompt_context(format!("Pushing to {}", options.remote))
+        .current_dir(repository.work_tree())
+        .progress(progress)
+        .cancel_token(cancel);
+    if options.set_upstream {
+        command = command.arg("--set-upstream");
+    }
+    if options.force {
+        command = command.args(["--force-with-lease", "--force-if-includes"]);
+    }
+    let done = command
+        .arg("--")
+        .arg(OsStr::from_bytes(&options.remote))
+        .arg(OsStr::from_bytes(&refspec))
+        .output_unchecked()?;
+    let (refs, mut notes) = parse_porcelain(&done.stdout)?;
+    if refs.is_empty() && !done.status.success() {
+        return Err(GitError::failed("push", done.status, done.stderr));
+    }
+    notes.extend(progress.report().notes);
+    Ok(Pushed { refs, notes })
+}
+
+/// Reads `push --porcelain`: `To <url>`, then a line per ref (`<flag>\t<from>:<to>\t<summary>`,
+/// a reason in parentheses after a refusal), then `Done`; other lines (`branch 'x' set up to
+/// track 'origin/x'.`) are notes.
+fn parse_porcelain(output: &[u8]) -> Result<(Vec<PushedRef>, Vec<String>), GitError> {
+    let mut refs = Vec::new();
+    let mut notes = Vec::new();
+    for line in output.lines() {
+        if line.starts_with(b"To ") || line == b"Done" || line.is_empty() {
+            continue;
+        }
+        // A ref's line is its flag, then a tab.
+        if line.get(1) != Some(&b'\t') {
+            notes.push(line.to_str_lossy().into_owned());
+            continue;
+        }
+        let malformed =
+            || GitError::unexpected("push", format!("{} isn't a pushed ref", line.as_bstr()));
+        let mut fields = line.splitn_str(3, b"\t");
+        let (flag, names, summary) = (
+            fields.next().ok_or_else(malformed)?,
+            fields.next().ok_or_else(malformed)?,
+            fields.next().ok_or_else(malformed)?,
+        );
+        let flag = match flag {
+            b" " => PushFlag::FastForward,
+            b"+" => PushFlag::Forced,
+            b"-" => PushFlag::Deleted,
+            b"*" => PushFlag::New,
+            b"!" => PushFlag::Rejected,
+            b"=" => PushFlag::UpToDate,
+            _ => return Err(malformed()),
+        };
+        let (from, to) = names.split_once_str(b":").ok_or_else(malformed)?;
+        let (summary, reason) = match summary.find_byte(b'(') {
+            Some(open) if summary.ends_with(b")") => (
+                summary.get(..open).unwrap_or_default().trim_ascii_end(),
+                summary
+                    .get(open.saturating_add(1)..summary.len().saturating_sub(1))
+                    .map(BString::from),
+            ),
+            _ => (summary, None),
+        };
+        refs.push(PushedRef {
+            flag,
+            from: BString::from(from),
+            to: BString::from(to),
+            summary: BString::from(summary),
+            reason,
+        });
+    }
+    Ok((refs, notes))
+}
+
+/// The repository's remotes, by name.
+///
+/// # Errors
+///
+/// When git fails.
+pub fn remotes(git: &Git, repository: &Repository) -> Result<Vec<BString>, GitError> {
+    let listed = git
+        .read("remote")
+        .current_dir(repository.work_tree())
+        .output()?;
+    Ok(listed
+        .stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(BString::from)
+        .collect())
+}
+
+/// Gives up an operation git stopped in the middle of (a merge, a rebase, …), putting things
+/// back as they were before it.
+///
+/// # Errors
+///
+/// When git fails or is cancelled.
+pub fn abort_operation(
+    git: &Git,
+    repository: &Repository,
+    operation: Operation,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    let (subcommand, argument) = match operation {
+        Operation::Merge => ("merge", "--abort"),
+        Operation::Rebase => ("rebase", "--abort"),
+        Operation::ApplyMailbox => ("am", "--abort"),
+        Operation::CherryPick => ("cherry-pick", "--abort"),
+        Operation::Revert => ("revert", "--abort"),
+        Operation::Bisect => ("bisect", "reset"),
+    };
+    git.write(subcommand)
+        .arg(argument)
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .map(drop)
+}
+
+/// Carries on with an operation git stopped in the middle of, once its conflicts are resolved
+/// and staged (its commits keep their messages). A bisect has nothing to carry on with.
+///
+/// # Errors
+///
+/// When git refuses (conflicts left, say) or is cancelled.
+pub fn continue_operation(
+    git: &Git,
+    repository: &Repository,
+    operation: Operation,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    let subcommand = match operation {
+        Operation::Merge => "merge",
+        Operation::Rebase => "rebase",
+        Operation::ApplyMailbox => "am",
+        Operation::CherryPick => "cherry-pick",
+        Operation::Revert => "revert",
+        Operation::Bisect => {
+            return Err(GitError::unexpected(
+                "bisect",
+                "a bisect has nothing to continue",
+            ));
+        }
+    };
+    git.write(subcommand)
+        .arg("--continue")
+        .prompt_context("Signing the commit")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .map(drop)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_what_a_push_did_to_each_ref() {
+        // A fast-forward's flag is a space (written out: a continued line loses its own).
+        let output = b"To ../origin.git\n\
+            \x20\trefs/heads/main:refs/heads/main\t38e2ea9..0f9147a\n\
+            *\trefs/heads/new:refs/heads/new\t[new branch]\n\
+            !\trefs/heads/old:refs/heads/old\t[rejected] (fetch first)\n\
+            !\trefs/heads/x:refs/heads/x\t[remote rejected] (hook declined: no thanks)\n\
+            +\trefs/heads/f:refs/heads/f\ta..b (forced update)\n\
+            =\trefs/heads/s:refs/heads/s\t[up to date]\n\
+            branch 'new' set up to track 'origin/new'.\n\
+            Done\n";
+        let (refs, notes) = parse_porcelain(output).unwrap();
+        assert_eq!(notes, ["branch 'new' set up to track 'origin/new'."]);
+        let flags: Vec<PushFlag> = refs.iter().map(|pushed| pushed.flag).collect();
+        assert_eq!(
+            flags,
+            [
+                PushFlag::FastForward,
+                PushFlag::New,
+                PushFlag::Rejected,
+                PushFlag::Rejected,
+                PushFlag::Forced,
+                PushFlag::UpToDate
+            ]
+        );
+        assert_eq!(refs[0].summary, "38e2ea9..0f9147a");
+        assert_eq!(refs[0].reason, None);
+        assert_eq!(refs[2].summary, "[rejected]");
+        assert_eq!(refs[2].reason, Some(BString::from("fetch first")));
+        assert_eq!(
+            refs[3].reason,
+            Some(BString::from("hook declined: no thanks"))
+        );
+        assert_eq!(refs[4].summary, "a..b");
+        assert!(parse_porcelain(b"?\ta:b\tc\n").is_err());
+    }
+}

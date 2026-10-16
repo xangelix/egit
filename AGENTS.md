@@ -189,6 +189,18 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     certifying a key gpg made, since gpgsm can't make one without a passphrase; trusted by
     `trustlist.txt`). A test whose tools are missing is skipped, unless
     `EGIT_REQUIRE_SIGNERS` is set (CI installs GnuPG, gpgsm, and OpenSSH and sets it).
+  - `remote.rs` — moving commits, each with `--progress` into a `Progress`, a `CancelToken`,
+    and askpass prompts labelled by what is done: `clone` (from `/`; `CloneOptions`:
+    submodules, partial `--filter=blob:none`, both with `--also-filter-submodules`),
+    `fetch` (`FetchOptions`: `--all`, `--prune`, and in the background `non_interactive` and
+    `--no-auto-maintenance`), `pull` (`PullMode`: as configured, merge, rebase, fast-forward
+    only; `Pulled::Diverged` when git says the branches diverged, `Pulled::Conflicts` when a
+    merge or rebase stopped (from the repository's state)), `push` (`--porcelain`, one branch
+    to a remote branch; `--set-upstream`; `force` is `--force-with-lease
+    --force-if-includes`; each ref's `PushFlag` and git's reason for a refusal, other lines as
+    notes; a refusal isn't an error), `remotes`, and `abort_operation` /
+    `continue_operation` for a merge, rebase, am, cherry-pick, revert (bisect: `reset`).
+    `tests/remote.rs` runs each against a bare repository through `file://`.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
