@@ -930,6 +930,7 @@ dependencies = [
  "parking_lot",
  "rfd",
  "serde",
+ "skrifa",
  "tokio",
  "tracing",
  "tracing-subscriber",

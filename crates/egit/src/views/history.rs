@@ -23,6 +23,7 @@ use egui_table_kit::layout::{
 };
 
 use crate::app::Action;
+use crate::fonts;
 use crate::format::{count, date_time};
 use crate::history::{CommitDetails, History, HistoryState, Objects, Summaries, read_details};
 use crate::problem::Problem;
@@ -660,6 +661,7 @@ impl TableDelegate for CommitRows<'_> {
             2 => (&summary.author, self.shared.palette.text),
             _ => (&summary.date, self.shared.palette.muted),
         };
+        fonts::note_text(ui, &egui::TextStyle::Body.resolve(ui.style()), text);
         ui.add(
             Label::new(RichText::new(&**text).color(color))
                 .selectable(false)

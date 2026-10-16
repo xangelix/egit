@@ -5,6 +5,7 @@
 //! - `views` — what each tab shows, and the status bar.
 //! - `repo` — an open repository and the jobs that keep it current.
 //! - `history` — a repository's history: rows streamed in by a walk, refs, commits' summaries.
+//! - `fonts` — system fonts for characters egui's fonts lack (CJK, most scripts).
 //! - `jobs` — the runtime and the write locks behind every git command.
 //! - `tables` — what the tables show, as `egui-table-kit` providers.
 //! - `theme`, `widgets`, `format` — colours and fonts, shared pieces, text for people.
@@ -12,6 +13,7 @@
 //! - `watch` — noticing what changes repositories and configuration behind egit's back.
 
 mod app;
+mod fonts;
 mod format;
 mod history;
 mod jobs;

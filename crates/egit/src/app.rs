@@ -15,6 +15,7 @@ use egit_git::{
 use egui::{CentralPanel, Frame, Panel, Ui};
 use egui_async::Bind;
 
+use crate::fonts::Fallbacks;
 use crate::format::now;
 use crate::jobs::{self, WriteLock};
 use crate::problem::{OpenProblem, Problem};
@@ -58,6 +59,8 @@ pub(crate) struct AppState {
     waiting: Vec<PathBuf>,
     pub(crate) actions: Vec<Action>,
     next_repo: RepoId,
+    /// System fonts for characters egui's fonts lack.
+    fonts: Fallbacks,
 }
 
 /// A repository being opened.
@@ -186,6 +189,7 @@ impl EgitApp {
             waiting,
             actions: Vec::new(),
             next_repo: 0,
+            fonts: Fallbacks::default(),
         };
         match git {
             Some(git) => state.git.fill(Ok(git)),
@@ -279,6 +283,7 @@ impl AppState {
     /// Advances the jobs and the watchers: what finished or changed becomes state or actions.
     fn poll(&mut self, ctx: &egui::Context) {
         self.prompts.poll();
+        self.fonts.poll(ctx);
         for repo in &mut self.repos {
             repo.poll();
         }

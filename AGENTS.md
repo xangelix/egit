@@ -191,6 +191,13 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     up (inotify's per-user limits, often used up by editors) trying again, backing off from
     1 s to 30 s, and hands over `Changes::ALL` once it works, as it does when inotify's queue
     overflowed (a rescan); meanwhile the status bar says outside changes aren't followed.
+  - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
+    (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
+    looks once per character, in a job, through the XDG font directories (CJK families, then
+    monospace, then regular weights; in a collection the face covering most, monospace and in
+    the user's `LANG` first; outlines required, so no colour bitmaps) and adds what it finds as
+    lowest-priority fallbacks to both families. Kept fonts are leaked once into `'static`
+    slices: egui copies owned font data on every rebuild of its fonts, but borrows static.
   - `views/history.rs` — the commit table on egui-table-kit's layout `Table` (its `TableKit`
     keeps per-row state a graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
