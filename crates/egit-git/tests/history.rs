@@ -310,6 +310,72 @@ fn writes_a_commit_graph() {
     assert_eq!(walk(&sandbox, &repo).len(), 6);
 }
 
+#[test]
+fn with_a_commit_graph_walks_what_all_reaches_from_fewer_tips() {
+    let sandbox = sandbox();
+    let repo = branchy(&sandbox);
+    // Tips another reaches (an old annotated tag, a merged branch), a tag on a tree, a stash,
+    // and a commit only another worktree's HEAD reaches.
+    sandbox
+        .run(
+            &repo,
+            "tag",
+            &["--annotate", "--message", "Old", "old", "main~2"],
+        )
+        .unwrap();
+    sandbox.run(&repo, "tag", &["tree", "main^{tree}"]).unwrap();
+    sandbox.run(&repo, "branch", &["merged", "topic"]).unwrap();
+    let other = sandbox.path("other");
+    sandbox
+        .run(
+            &repo,
+            "worktree",
+            &[
+                "add",
+                "--quiet",
+                "--detach",
+                other.to_str().unwrap(),
+                "main",
+            ],
+        )
+        .unwrap();
+    sandbox
+        .commit_file(&other, "f", "f\n", "Only the other worktree")
+        .unwrap();
+    std::fs::write(repo.join("a"), "changed\n").unwrap();
+    sandbox.run(&repo, "stash", &["--quiet"]).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    write_commit_graph(sandbox.git(), &repository, &CancelToken::new()).unwrap();
+    // One more commit, after the graph was written.
+    sandbox.commit_file(&repo, "g", "g\n", "After").unwrap();
+
+    let commits = walk(&sandbox, &repo);
+    let all = sandbox
+        .run(&repo, "rev-list", &["--exclude=refs/stash", "--all"])
+        .unwrap();
+    let mut expected: Vec<ObjectId> = all
+        .stdout
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| ObjectId::from_hex(line).unwrap())
+        .collect();
+    expected.sort_unstable();
+    let mut walked: Vec<ObjectId> = commits.iter().map(|(id, _)| *id).collect();
+    walked.sort_unstable();
+    assert_eq!(walked, expected);
+    assert_eq!(walked.len(), 8);
+    let position: HashMap<ObjectId, usize> = commits
+        .iter()
+        .enumerate()
+        .map(|(index, (id, _))| (*id, index))
+        .collect();
+    for (id, parents) in &commits {
+        for parent in parents {
+            assert!(position[id] < position[parent], "a parent came first");
+        }
+    }
+}
+
 /// How many trees a repository holds.
 fn trees(sandbox: &Sandbox, repo: &Path) -> usize {
     let listed = sandbox

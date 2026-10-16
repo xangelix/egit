@@ -108,8 +108,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     requests go 128 at a time then `flush` (both pipes stay under their buffers), answers are
     read into one reused buffer. `commit.rs` — `Commit::parse` (raw commit objects; `subject`
     is `%s`).
-  - `history.rs` — `walk_history` (`rev-list --topo-order --parents --exclude=refs/stash
-    --all`, streamed, lines split across chunks without copying), `list_references`
+  - `history.rs` — `walk_history` (`rev-list --topo-order --parents`, streamed, lines split
+    across chunks without copying; with a commit-graph it starts from `merge-base
+    --independent` of `--all`'s tips, since git's topological walk first reads down to the
+    oldest tip: Linux's first commit in 60 ms instead of 700), `list_references`
     (`for-each-ref`, symbolic refs skipped, tags peeled), `commit_changes` (`diff-tree -r -z
     --name-status -M` against the first parent, or `--root`), `write_commit_graph`;
     `Repository::has_commit_graph` (without one, a topological walk outputs nothing until

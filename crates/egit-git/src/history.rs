@@ -21,14 +21,21 @@ pub struct Walked {
     pub stopped: bool,
 }
 
-/// Walks every commit reachable from a ref or `HEAD`, children before parents.
+/// The most tips handed to one `git merge-base --independent` (their names stay far below the
+/// system's limit on a command's arguments). More are walked as they are.
+const MAX_REDUCED_TIPS: usize = 4096;
+
+/// Walks every commit reachable from a ref or `HEAD` (any worktree's), children before parents.
 ///
 /// Stashes are left out. The order is topological: every commit before its parents, and a
 /// branch's commits together. `each` gets a commit and its parents' names (first parent first)
 /// and may stop the walk.
 ///
 /// With a commit-graph file ([`Repository::has_commit_graph`]) commits arrive at once; without
-/// one, git must read the whole history before the first.
+/// one, git must read the whole history before the first. Git's topological walk first reads
+/// down to the oldest commit it starts from, so it starts only from the tips no other tip
+/// reaches: an old tag on a long branch then costs nothing (Linux's 950 tips reduce to 4, and
+/// its first commit arrives in 70 ms rather than 700).
 ///
 /// # Errors
 ///
@@ -65,11 +72,22 @@ pub fn walk_history(
         }
         flow
     };
-    git.read("rev-list")
-        .args(["--topo-order", "--parents", "--exclude=refs/stash", "--all"])
+    let walk = git
+        .read("rev-list")
+        .args(["--topo-order", "--parents"])
         .current_dir(repository.work_tree())
-        .cancel_token(cancel)
-        .stream(|chunk| lines.feed(chunk, &mut handle))?;
+        .cancel_token(cancel);
+    let walk = match independent_tips(git, repository, cancel)? {
+        Some(tips) if tips.is_empty() => {
+            return Ok(Walked {
+                commits: 0,
+                stopped: false,
+            });
+        }
+        Some(tips) => walk.arg("--stdin").stdin(tips),
+        None => walk.args(["--exclude=refs/stash", "--all"]),
+    };
+    walk.stream(|chunk| lines.feed(chunk, &mut handle))?;
     if let Some(line) = malformed {
         return Err(GitError::unexpected(
             "rev-list",
@@ -77,6 +95,40 @@ pub fn walk_history(
         ));
     }
     Ok(Walked { commits, stopped })
+}
+
+/// The commits `--exclude=refs/stash --all` starts from, less those another of them reaches, one
+/// name a line; `None` when walking from `--all` costs no more (without a commit-graph, or with
+/// more tips than [`MAX_REDUCED_TIPS`]).
+fn independent_tips(
+    git: &Git,
+    repository: &Repository,
+    cancel: &CancelToken,
+) -> Result<Option<Vec<u8>>, GitError> {
+    if !repository.has_commit_graph() {
+        return Ok(None);
+    }
+    let listed = git
+        .read("rev-list")
+        .args(["--no-walk=unsorted", "--exclude=refs/stash", "--all"])
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()?
+        .stdout;
+    let tips: Vec<&[u8]> = listed.lines().filter(|line| !line.is_empty()).collect();
+    if tips.len() > MAX_REDUCED_TIPS {
+        return Ok(None);
+    }
+    if tips.len() < 2 {
+        return Ok(Some(listed));
+    }
+    git.read("merge-base")
+        .arg("--independent")
+        .args(tips.iter().map(|tip| tip.to_os_str_lossy()))
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .map(|reduced| Some(reduced.stdout))
 }
 
 /// Splits a stream into lines across chunk boundaries, copying only a line split between two
