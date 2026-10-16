@@ -26,13 +26,13 @@ use egui_table_kit::layout::{
 };
 
 use crate::app::Action;
-use crate::diff::{DiffDocument, SplitDiff, read_diff, split_diff};
+use crate::diff::{DiffDocument, LfsChange, SplitDiff, read_diff, split_diff};
 use crate::fonts;
 use crate::format::{self, count, date_time};
 use crate::grid::TextGrid;
 use crate::history::{
-    ChangeCounts, CommitDetails, FileContent, History, HistoryState, Objects, Summaries,
-    read_change_counts, read_details, read_file,
+    ChangeCounts, CommitDetails, FileContent, History, HistoryState, LfsPointer, Objects,
+    Summaries, read_change_counts, read_details, read_file,
 };
 use crate::problem::Problem;
 use crate::repo::RepoId;
@@ -133,6 +133,8 @@ struct FileView {
     whole: bool,
     /// Whether the diff's sides are shown side by side.
     split: bool,
+    /// Whether a Git LFS pointer's own changes are shown, rather than what it stands for.
+    pointer: bool,
     diff: Bind<Arc<DiffDocument>, Problem>,
     /// The diff split in two, made the first time it is shown so.
     sides: Bind<Arc<SplitDiff>, Problem>,
@@ -295,6 +297,7 @@ impl HistoryView {
             shown,
             whole,
             split,
+            pointer: false,
             diff: Bind::new(true),
             sides: Bind::new(true),
             sides_grid,
@@ -619,6 +622,40 @@ fn placeholder(ui: &mut Ui, text: String) {
 }
 
 /// What the commit changed in the file.
+/// What a Git LFS pointer's change stands for: the file's sizes before and after; returns
+/// whether the pointer's own changes were asked for.
+fn lfs_placeholder(ui: &mut Ui, lfs: LfsChange) -> bool {
+    let size = |pointer: LfsPointer| {
+        pointer
+            .size
+            .map_or_else(|| "size unknown".to_owned(), format::size)
+    };
+    let text = match (lfs.old, lfs.new) {
+        (Some(old), Some(new)) => format!(
+            "A Git LFS file, stored outside the repository: {} before, {} after.",
+            size(old),
+            size(new)
+        ),
+        (None, Some(new)) => format!(
+            "A Git LFS file was added ({}): it is stored outside the repository.",
+            size(new)
+        ),
+        (Some(old), None) => format!(
+            "A Git LFS file was deleted ({}): it was stored outside the repository.",
+            size(old)
+        ),
+        (None, None) => "A Git LFS file, stored outside the repository.".to_owned(),
+    };
+    Frame::new()
+        .inner_margin(Margin::same(16))
+        .show(ui, |ui| {
+            ui.label(muted(ui, text));
+            ui.add_space(8.0);
+            ui.button("Show the pointer's changes").clicked()
+        })
+        .inner
+}
+
 fn show_diff(ui: &mut Ui, file: &mut FileView) {
     match file.diff.read_as_ref() {
         None => {
@@ -631,6 +668,13 @@ fn show_diff(ui: &mut Ui, file: &mut FileView) {
             Frame::new()
                 .inner_margin(Margin::same(16))
                 .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
+        }
+        Some(Ok(diff)) if !file.pointer && diff.lfs().is_some() => {
+            if let Some(lfs) = diff.lfs()
+                && lfs_placeholder(ui, lfs)
+            {
+                file.pointer = true;
+            }
         }
         Some(Ok(diff)) if diff.binary() => {
             placeholder(
@@ -719,7 +763,7 @@ fn show_file(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut Fil
                     format::size(*size)
                 ),
             ),
-            FileContent::Lfs { size } => placeholder(
+            FileContent::Lfs(LfsPointer { size }) => placeholder(
                 ui,
                 size.map_or_else(
                     || "A Git LFS pointer: the file itself is stored elsewhere.".to_owned(),

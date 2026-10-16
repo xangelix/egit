@@ -20,6 +20,7 @@ use egui::Color32;
 use parking_lot::Mutex;
 
 use crate::grid::{GridSource, Span};
+use crate::history::LfsPointer;
 use crate::jobs;
 use crate::problem::Problem;
 use crate::syntax::{Feed, Feeds, Syntax};
@@ -51,6 +52,54 @@ pub(crate) struct DiffDocument {
     /// The file's path (its new one), for its language.
     path: BString,
     syntax: Option<Syntax>,
+    /// The pointers, when the file is a Git LFS pointer.
+    lfs: Option<LfsChange>,
+}
+
+/// A Git LFS pointer's change: the pointer before and after (`None` where the file is absent).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LfsChange {
+    pub(crate) old: Option<LfsPointer>,
+    pub(crate) new: Option<LfsPointer>,
+}
+
+/// The most a diff of a Git LFS pointer can take (pointers are under 1 KiB a side).
+const LFS_DIFF_LIMIT: usize = 4096;
+
+/// What changed, when `lines` (of `text`) are a Git LFS pointer's diff: every side present is
+/// a pointer. A pointer is a few lines, ending with its size, so one hunk from its first line
+/// holds all of it.
+fn lfs_change(text: &Text, lines: &[DiffLine]) -> Option<LfsChange> {
+    let hunks = lines
+        .iter()
+        .filter(|line| line.kind == DiffLineKind::Hunk)
+        .count();
+    if text.bytes().len() > LFS_DIFF_LIMIT || hunks != 1 {
+        return None;
+    }
+    let (mut old, mut new) = (Vec::new(), Vec::new());
+    for (index, line) in (0_u32..).zip(lines) {
+        let bytes = text.line(index)?;
+        let sides: &mut [&mut Vec<u8>] = match line.kind {
+            DiffLineKind::Hunk => &mut [],
+            DiffLineKind::Context => &mut [&mut old, &mut new],
+            DiffLineKind::Removed => &mut [&mut old],
+            DiffLineKind::Added => &mut [&mut new],
+        };
+        for side in sides {
+            side.extend_from_slice(bytes);
+            side.push(b'\n');
+        }
+    }
+    let (old_pointer, new_pointer) = (LfsPointer::parse(&old), LfsPointer::parse(&new));
+    let fits = |side: &[u8], pointer: Option<LfsPointer>| side.is_empty() || pointer.is_some();
+    (fits(&old, old_pointer)
+        && fits(&new, new_pointer)
+        && (old_pointer.is_some() || new_pointer.is_some()))
+    .then_some(LfsChange {
+        old: old_pointer,
+        new: new_pointer,
+    })
 }
 
 impl DiffDocument {
@@ -84,6 +133,7 @@ impl DiffDocument {
             })
             .collect();
         Self {
+            lfs: lfs_change(&text, &lines),
             syntax: Syntax::start(&path, &text, Feeds::Each(feeds)),
             path,
             added: count(DiffLineKind::Added),
@@ -138,6 +188,11 @@ impl DiffDocument {
     /// Whether git found the file binary (there are no lines to show then).
     pub(crate) const fn binary(&self) -> bool {
         self.binary
+    }
+
+    /// The pointers, when the file is a Git LFS pointer.
+    pub(crate) const fn lfs(&self) -> Option<LfsChange> {
+        self.lfs
     }
 
     /// How many lines were added, and removed.
@@ -650,6 +705,62 @@ mod tests {
         spans.clear();
         document.backgrounds(4, &palette, &mut spans);
         assert_eq!(spans, [], "the second added line has no partner");
+    }
+
+    /// A diff of `text`'s lines, as `kinds` says.
+    fn diff_of(text: &str, kinds: &[DiffLineKind]) -> DiffDocument {
+        DiffDocument::new(
+            FileDiff {
+                text: text.as_bytes().to_vec(),
+                lines: kinds.iter().map(|&kind| line(kind, 1, 1)).collect(),
+                binary: false,
+            },
+            BString::from("model.bin"),
+        )
+    }
+
+    #[test]
+    fn a_git_lfs_pointers_diff_says_so() {
+        use DiffLineKind::{Added, Context, Hunk, Removed};
+        let version = "version https://git-lfs.github.com/spec/v1";
+        let oid = |digit: char| format!("oid sha256:{}", digit.to_string().repeat(64));
+        let pointer = |size: u64| Some(LfsPointer { size: Some(size) });
+        let changed = diff_of(
+            &format!(
+                "@@ -1,3 +1,3 @@\n{version}\n{}\nsize 1200\n{}\nsize 1500\n",
+                oid('a'),
+                oid('b')
+            ),
+            &[Hunk, Context, Removed, Removed, Added, Added],
+        );
+        assert_eq!(
+            changed.lfs(),
+            Some(LfsChange {
+                old: pointer(1200),
+                new: pointer(1500)
+            })
+        );
+        let added = diff_of(
+            &format!("@@ -0,0 +1,3 @@\n{version}\n{}\nsize 7\n", oid('a')),
+            &[Hunk, Added, Added, Added],
+        );
+        assert_eq!(
+            added.lfs(),
+            Some(LfsChange {
+                old: None,
+                new: pointer(7)
+            })
+        );
+        // A file that became a pointer, and any other file, are diffs like the rest.
+        let converted = diff_of(
+            &format!(
+                "@@ -1 +1,3 @@\nraw bytes\n{version}\n{}\nsize 9\n",
+                oid('a')
+            ),
+            &[Hunk, Removed, Added, Added, Added],
+        );
+        assert_eq!(converted.lfs(), None);
+        assert_eq!(document().lfs(), None);
     }
 
     #[test]

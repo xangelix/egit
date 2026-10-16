@@ -627,6 +627,62 @@ fn parser_change(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
 }
 
 #[test]
+fn a_git_lfs_pointers_diff_shows_what_it_stands_for() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    let pointer = |digit: &str, size: u64| {
+        format!(
+            "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize {size}\n",
+            digit.repeat(64)
+        )
+    };
+    sandbox
+        .commit_file(
+            &repo,
+            "model.bin",
+            &pointer("a", 1_200_000),
+            "Train the model",
+        )
+        .unwrap();
+    sandbox
+        .commit_file(
+            &repo,
+            "model.bin",
+            &pointer("b", 1_500_000),
+            "Retrain the model",
+        )
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness
+        .get_by_role_and_label(Role::Button, "Retrain the model")
+        .click();
+    settle(&mut harness, "the commit's details", |app| {
+        app.state.repos[0].history_view.details_shown()
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "model.bin")
+        .click();
+    settle(&mut harness, "the diff", |app| {
+        app.state.repos[0].history_view.file_shown() == Some(("model.bin".to_owned(), true))
+    });
+    let stands_for = "A Git LFS file, stored outside the repository: 1.2 MB before, 1.5 MB after.";
+    harness.get_by_label(stands_for);
+    render(&mut harness, "history-diff-lfs");
+
+    harness
+        .get_by_role_and_label(Role::Button, "Show the pointer's changes")
+        .click();
+    harness.run_steps(2);
+    assert!(
+        harness.query_by_label(stands_for).is_none(),
+        "the pointer's own diff takes the placeholder's place"
+    );
+}
+
+#[test]
 fn a_changed_file_opens_in_place_of_the_history() {
     let sandbox = Sandbox::new().unwrap();
     let mut harness = parser_change(&sandbox);

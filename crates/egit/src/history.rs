@@ -525,10 +525,7 @@ pub(crate) enum FileContent {
         size: u64,
     },
     /// A Git LFS pointer: the file itself is stored elsewhere.
-    Lfs {
-        /// The file's size, as the pointer gives it.
-        size: Option<u64>,
-    },
+    Lfs(LfsPointer),
     /// A submodule: a commit of another repository.
     Submodule {
         /// The commit.
@@ -552,14 +549,8 @@ impl FileContent {
         if memchr::memchr(0, probe).is_some() {
             return Self::Binary { size };
         }
-        if bytes.len() < 1024
-            && let Some(rest) = bytes.strip_prefix(LFS_POINTER)
-        {
-            let size = rest
-                .lines()
-                .find_map(|line| line.strip_prefix(b"size "))
-                .and_then(|size| size.to_str().ok()?.trim().parse().ok());
-            return Self::Lfs { size };
+        if let Some(pointer) = LfsPointer::parse(bytes) {
+            return Self::Lfs(pointer);
         }
         Text::new(Arc::<[u8]>::from(bytes)).map_or(Self::TooLarge { size }, |text| {
             Self::Text(Box::new(Plain::named(
@@ -568,6 +559,28 @@ impl FileContent {
                 path,
             )))
         })
+    }
+}
+
+/// A Git LFS pointer: what the repository holds in place of a file stored elsewhere.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LfsPointer {
+    /// The file's size, as the pointer gives it.
+    pub(crate) size: Option<u64>,
+}
+
+impl LfsPointer {
+    /// The pointer `bytes` are, if they are one: under 1 KiB, git-lfs's version line first.
+    pub(crate) fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() >= 1024 {
+            return None;
+        }
+        let rest = bytes.strip_prefix(LFS_POINTER)?;
+        let size = rest
+            .lines()
+            .find_map(|line| line.strip_prefix(b"size "))
+            .and_then(|size| size.to_str().ok()?.trim().parse().ok());
+        Some(Self { size })
     }
 }
 

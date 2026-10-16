@@ -246,7 +246,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     the old side beside the new (`split_diff`, a job, the first time it is shown), a block's
     removed lines beside its added ones with fillers making up the difference, both sides'
     measures matched (`Measure::match_rows`) so wrapped lines take the same rows. Both are
-    highlighted in the file's language (see `syntax.rs`).
+    highlighted in the file's language (see `syntax.rs`). A Git LFS pointer's diff is noticed
+    from the diff itself (`lfs_change`: one hunk, every side present a pointer, which
+    `history::LfsPointer::parse` reads) and shown as the file's sizes before and after, its
+    own changes a button away.
   - `syntax.rs` — `Syntax`: syntect's grammars and themes (through `fancy-regex`; its
     `bincode` advisory is ignored in `deny.toml`: it reads only the dumps compiled in) for the
     language a path's extension or name, or a first line, names. A walk in the background
@@ -280,8 +283,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     table's place (Escape or "History" goes back): its diff against the first parent (unified
     or side by side, with "Whole file" for all of its context), or the file as the commit left
     it (as it was, if deleted; read the first time it is asked for, `read_file`), or a
-    placeholder for binary files, LFS pointers, submodules, and files over 256 MiB. A history of 10,000+ commits without a
-    commit-graph is offered one (`Action::WriteCommitGraph`).
+    placeholder for binary files, LFS pointers, submodules, and files over 256 MiB. A
+    history of 10,000+ commits without a commit-graph is offered one
+    (`Action::WriteCommitGraph`).
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
     credentials, pull and push, and every setting, each with its origin), `repo` (overview
