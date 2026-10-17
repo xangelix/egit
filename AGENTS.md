@@ -19,7 +19,8 @@ it.
 | 5 | Clone, pull, push | done; checks against GitHub left to the owner |
 | 6 | The merge editor | done |
 | 7 | The graph's actions: branches, commits brought in, tags, stashes | done |
-| 8 | Interactive rebase | done; awaiting the owner's review |
+| 8 | Interactive rebase | done |
+| 9 | Blame and file history | in progress |
 
 ## Toolchain & commands
 
