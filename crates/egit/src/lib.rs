@@ -18,6 +18,7 @@
 
 mod app;
 mod blame;
+mod commands;
 mod desktop;
 mod diff;
 mod fonts;
@@ -27,6 +28,7 @@ mod grid;
 mod history;
 mod jobs;
 mod merge;
+mod preferences;
 mod problem;
 mod repo;
 mod search;

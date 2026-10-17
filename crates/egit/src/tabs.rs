@@ -16,6 +16,8 @@ pub(crate) enum Pane {
     Home,
     /// The git profile.
     Profile,
+    /// egit's own preferences, and the keyboard shortcuts.
+    Preferences,
     /// An open repository.
     Repo(RepoId),
 }
@@ -45,6 +47,43 @@ pub(crate) fn show(tree: &mut Tree<Pane>, pane: Pane) {
         if let Some(Tile::Container(Container::Tabs(tabs))) = tree.tiles.get_mut(root) {
             tabs.set_active(added);
         }
+    }
+}
+
+/// The pane in front: of those showing, the first repository's, else the first.
+pub(crate) fn front(tree: &Tree<Pane>) -> Option<Pane> {
+    let shown: Vec<Pane> = tree
+        .active_tiles()
+        .into_iter()
+        .filter_map(|id| tree.tiles.get_pane(&id).copied())
+        .collect();
+    shown
+        .iter()
+        .find(|pane| matches!(pane, Pane::Repo(_)))
+        .or_else(|| shown.first())
+        .copied()
+}
+
+/// Closes the tab in front (never Home's); returns the pane closed.
+pub(crate) fn close_front(tree: &mut Tree<Pane>) -> Option<Pane> {
+    let pane = front(tree).filter(|pane| *pane != Pane::Home)?;
+    let id = tree.tiles.find_pane(&pane)?;
+    tree.remove_recursively(id);
+    Some(pane)
+}
+
+/// Brings the `n`th tab (from 1) of the main set of tabs to the front, if there is one.
+pub(crate) fn show_nth(tree: &mut Tree<Pane>, n: usize) {
+    let Some(tabs) = tabs_container(tree) else {
+        return;
+    };
+    if let Some(Tile::Container(Container::Tabs(tabs))) = tree.tiles.get_mut(tabs)
+        && let Some(child) = n
+            .checked_sub(1)
+            .and_then(|at| tabs.children.get(at))
+            .copied()
+    {
+        tabs.set_active(child);
     }
 }
 
@@ -81,6 +120,7 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
         match *pane {
             Pane::Home => views::home::show(ui, self.state),
             Pane::Profile => views::profile::show(ui, self.state),
+            Pane::Preferences => views::preferences::show(ui, self.state),
             Pane::Repo(id) => views::repo::show(ui, self.state, id),
         }
         UiResponse::None
@@ -90,6 +130,7 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
         match pane {
             Pane::Home => format!("{}  Home", icon::HOUSE).into(),
             Pane::Profile => format!("{}  Profile", icon::USER_CIRCLE).into(),
+            Pane::Preferences => format!("{}  Preferences", icon::GEAR_SIX).into(),
             Pane::Repo(id) => {
                 let title = self
                     .state

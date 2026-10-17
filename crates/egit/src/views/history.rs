@@ -41,6 +41,7 @@ use super::sidebar::{self, Lists, Sidebar, SidebarEvent};
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
+use crate::commands::RepoCommand;
 use crate::desktop::FileQuestion;
 use crate::fonts;
 use crate::forge::{Badge, RepoForge, request_noun, request_number};
@@ -49,6 +50,7 @@ use crate::history::{
     ChangeCounts, CommitDetails, History, HistoryState, Objects, Refs, Scope, Signatures,
     Summaries, read_change_counts, read_details,
 };
+use crate::preferences::Preferences;
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::tables::ChangesTable;
@@ -186,6 +188,8 @@ pub(crate) struct HistoryView {
     /// A commit the details show in place of the selected one's, which the history may not
     /// have: a stash's, or a ref's hidden from the graph, picked in the sidebar.
     peek: Option<ObjectId>,
+    /// Commands asked from the keyboard or the palette, carried out next frame.
+    queued: Vec<RepoCommand>,
 }
 
 /// What can take the commit table's place, besides a changed file.
@@ -287,7 +291,13 @@ impl HistoryView {
             search: HistorySearch::default(),
             sidebar: Sidebar::default(),
             peek: None,
+            queued: Vec::new(),
         }
+    }
+
+    /// Asks it to carry `command` out (next frame, with everything its own buttons have).
+    pub(crate) fn queue(&mut self, command: RepoCommand) {
+        self.queued.push(command);
     }
 
     /// The commit the details show in place of the selected one's: the reflog's selected
@@ -312,6 +322,12 @@ impl HistoryView {
             (None, Some(Tool::Blame(blame))) => blame.spot(line, cell),
             _ => None,
         }
+    }
+
+    /// Whether the file open shows its diff side by side.
+    #[cfg(test)]
+    pub(crate) fn file_split(&self) -> Option<bool> {
+        self.file.as_ref().map(FileView::is_split)
     }
 
     /// The title in the pull request dialog, while it is open.
@@ -494,6 +510,11 @@ impl HistoryView {
         self.tool = Some(Tool::Reflog(Box::new(ReflogView::new(reference))));
     }
 
+    /// Shows the sidebar or hides it.
+    pub(crate) const fn show_sidebar(&mut self, open: bool) {
+        self.sidebar.open = open;
+    }
+
     /// Opens the search bar, over the commit table.
     fn open_search(&mut self) {
         self.file = None;
@@ -660,6 +681,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         work_status: work_status.as_ref(),
         operation: operations.first().copied(),
         bisect,
+        preferences: Preferences::of(ui.ctx()),
         config,
         busy: tasks.is_busy(),
         committing: committing.is_pending(),
@@ -687,6 +709,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         tasks: &mut *tasks,
         actions: &mut *actions,
     };
+    queued_commands(&shared, view, &mut pane);
     bar_panel(
         ui,
         &shared,
@@ -728,6 +751,51 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
 struct Sides<'a> {
     work: WorkSide<'a>,
     lists: &'a Lists<'a>,
+}
+
+/// Carries out the commands asked from the keyboard or the palette, as the buttons and menus
+/// doing the same would (the palette checked they can run).
+fn queued_commands(shared: &Shared<'_>, view: &mut HistoryView, pane: &mut TaskPane<'_>) {
+    for command in std::mem::take(&mut view.queued) {
+        match command {
+            RepoCommand::Fetch => pane.start(crate::tasks::Task::Fetch),
+            RepoCommand::Pull => {
+                pane.start(crate::tasks::Task::Pull(egit_git::PullMode::AsConfigured));
+            }
+            RepoCommand::Push => tasks::push_branch(&mut view.tasks, pane),
+            RepoCommand::Search => view.open_search(),
+            RepoCommand::FilterSidebar => {
+                view.sidebar.open = true;
+                view.sidebar.focus_filter();
+            }
+            RepoCommand::ToggleSidebar => view.sidebar.open = !view.sidebar.open,
+            RepoCommand::Reflog => view.show_reflog("HEAD".into()),
+            RepoCommand::WorkTree => view.select_work(),
+            RepoCommand::PullRequests => view.show_pull_request(None),
+            RepoCommand::Stash => {
+                view.tasks.dialog = Some(super::dialogs::Dialog::Stash {
+                    message: String::new(),
+                    untracked: true,
+                });
+            }
+            RepoCommand::ApplyPatches => carry_out(Ask::ApplyFiles, shared, view, pane.actions),
+            RepoCommand::PastePatch => view.show_patch(PatchSource::Pasted),
+            RepoCommand::CreateBranch => {
+                if let Some(head) = shared.head_commit() {
+                    view.tasks.dialog = Some(super::dialogs::Dialog::CreateBranch {
+                        at: head,
+                        name: String::new(),
+                        switch: true,
+                    });
+                }
+            }
+            RepoCommand::Switch(branch) => pane.start(crate::tasks::Task::Switch(
+                egit_git::SwitchTo::Branch(branch),
+            )),
+            // The application's own.
+            RepoCommand::Undo | RepoCommand::Redo | RepoCommand::Refresh => {}
+        }
+    }
 }
 
 /// The panel over the commit table: the top bar, the last task's outcome, and an operation's
@@ -946,6 +1014,8 @@ pub(super) struct Shared<'a> {
     pub(super) operation: Option<Operation>,
     /// Where a bisection under way stands.
     pub(super) bisect: Option<&'a Bisection>,
+    /// How the user likes egit.
+    pub(super) preferences: Preferences,
     /// The repository's configuration, once read (its remotes, for the menus).
     pub(super) config: Option<&'a ConfigSnapshot>,
     /// Whether a task is running.
@@ -1121,7 +1191,10 @@ fn search_button(ui: &mut Ui, view: &mut HistoryView) {
     let label = RichText::new(format!("{}  Search", icon::MAGNIFYING_GLASS));
     if ui
         .add(egui::Button::selectable(open, label))
-        .on_hover_text("Search the history (⌘F)")
+        .on_hover_text(format!(
+            "Search the history ({})",
+            crate::commands::keys_text("⌘F")
+        ))
         .clicked()
     {
         if open {
@@ -1168,7 +1241,13 @@ fn undo_buttons(ui: &mut Ui, shared: &Shared<'_>, view: &HistoryView, actions: &
                     "Nothing egit did here to take back".to_owned()
                 }
             },
-            |next| format!("{name} {} ({keys})", next.what),
+            |next| {
+                format!(
+                    "{name} {} ({})",
+                    next.what,
+                    crate::commands::keys_text(keys)
+                )
+            },
         );
         let button = if enabled {
             button.on_hover_text(hover)
@@ -1419,6 +1498,7 @@ fn commit_table(
         view,
         clicked: None,
         asked: None,
+        now: crate::format::now(),
     };
     table.show(ui, &mut rows);
     let asked = rows.asked.take();
@@ -1666,6 +1746,8 @@ struct CommitRows<'a> {
     clicked: Option<u64>,
     /// What a menu (or a double-clicked branch) asked for this frame.
     asked: Option<Ask>,
+    /// Now (seconds since the Unix epoch), for dates as how long ago.
+    now: u64,
 }
 
 impl TableDelegate for CommitRows<'_> {
@@ -1824,14 +1906,20 @@ impl TableDelegate for CommitRows<'_> {
         if cell.col_nr == 1 && summary.signed {
             seal(ui, self.signatures.get(&id), self.shared.palette);
         }
-        let (text, color) = match cell.col_nr {
+        let ago;
+        let (text, color): (&str, Color32) = match cell.col_nr {
             1 => (&summary.subject, self.shared.palette.text),
             2 => (&summary.author, self.shared.palette.text),
+            _ if self.shared.preferences.dates == crate::preferences::Dates::Ago => {
+                ago = u64::try_from(summary.time)
+                    .map_or_else(|_| String::new(), |time| crate::format::ago(time, self.now));
+                (&ago, self.shared.palette.muted)
+            }
             _ => (&summary.date, self.shared.palette.muted),
         };
         fonts::note_text(ui, &egui::TextStyle::Body.resolve(ui.style()), text);
         ui.add(
-            Label::new(RichText::new(&**text).color(color))
+            Label::new(RichText::new(text).color(color))
                 .selectable(false)
                 .truncate(),
         );

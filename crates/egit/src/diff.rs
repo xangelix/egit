@@ -15,7 +15,7 @@ use egit_git::{
     CancelToken, DiffLine, DiffLineKind, DiffOptions, FileDiff, Git, ObjectId, Repository,
     Uncommitted, file_diff, uncommitted_diff,
 };
-use egit_text::{ChangedWords, Measure, Options, Text, changed_words};
+use egit_text::{ChangedWords, Measure, Text, changed_words};
 use egui::Color32;
 use parking_lot::Mutex;
 
@@ -113,7 +113,7 @@ impl DiffDocument {
         } = diff;
         // A patch past 4 GiB shows as nothing.
         let text = Text::new(text).unwrap_or_default();
-        let measure = Measure::all(&text, Options::default());
+        let measure = Measure::all(&text, crate::preferences::text_options());
         let largest = lines
             .iter()
             .map(|line| line.old.max(line.new))
@@ -522,7 +522,7 @@ impl SideBuilder {
 
     fn finish(self, old: bool, path: &[u8]) -> Side {
         let text = Text::new(self.text).unwrap_or_default();
-        let measure = Measure::all(&text, Options::default());
+        let measure = Measure::all(&text, crate::preferences::text_options());
         let feeds: Arc<[Feed]> = self
             .lines
             .iter()

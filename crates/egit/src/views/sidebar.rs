@@ -184,20 +184,28 @@ pub(super) enum SidebarEvent {
     Open(PathBuf),
 }
 
+/// The filter: what is typed, and what it asks next frame.
+#[derive(Debug, Default)]
+struct Filter {
+    text: String,
+    /// Whether to scroll back to the top (what is typed changed).
+    to_top: bool,
+    /// Whether the field should take the focus (asked from the palette).
+    focus: bool,
+}
+
 /// The sidebar's state.
 #[derive(Debug)]
 pub(crate) struct Sidebar {
     /// Whether it is shown.
     pub(super) open: bool,
-    filter: String,
+    filter: Filter,
     /// The folded sections (an empty key), folders, and remotes.
     folded: HashSet<(Section, BString)>,
     rows: Vec<Row>,
     made: Option<Made>,
     /// Whether a fold or the filter changed since the rows were made.
     stale: bool,
-    /// Whether to scroll back to the top (the filter changed).
-    to_top: bool,
     /// The refs as listed, once sorted (the rows show these refs, until another sort lands).
     sorted: Arc<Sorted>,
     /// The sort under way, or done.
@@ -213,13 +221,12 @@ impl Default for Sidebar {
     fn default() -> Self {
         Self {
             open: true,
-            filter: String::new(),
+            filter: Filter::default(),
             // Tags are often many: folded at first.
             folded: HashSet::from([(Section::Tags, BString::default())]),
             rows: Vec::new(),
             made: None,
             stale: true,
-            to_top: false,
             sorted: Arc::default(),
             sorting: Bind::new(true),
             sorting_for: None,
@@ -438,6 +445,11 @@ fn same<T: ?Sized>(kept: Option<&Arc<T>>, now: Option<&Arc<T>>) -> bool {
 }
 
 impl Sidebar {
+    /// Gives the filter the focus (next frame).
+    pub(super) const fn focus_filter(&mut self) {
+        self.filter.focus = true;
+    }
+
     /// Sorts the refs again (in a job) when they were read again or the remotes changed; takes
     /// in a sort that landed.
     fn sort_refs(&mut self, refs: &Refs, lists: &Lists<'_>) {
@@ -532,7 +544,7 @@ impl Sidebar {
     fn make(&mut self, lists: &Lists<'_>, forge: &RepoForge) {
         let sorted = Arc::clone(&self.sorted);
         let refs = &sorted.refs;
-        let query = self.filter.trim();
+        let query = self.filter.text.trim();
         let needle =
             (!query.is_empty()).then(|| Needle::new(query.as_bytes(), !matches_case(query)));
         let matches = |text: &[u8]| {
@@ -816,7 +828,7 @@ pub(super) fn show(
     let mut scroll = egui::ScrollArea::vertical()
         .id_salt(("sidebar-rows", shared.id))
         .auto_shrink([false, false]);
-    if std::mem::take(&mut view.to_top) {
+    if std::mem::take(&mut view.filter.to_top) {
         scroll = scroll.vertical_scroll_offset(0.0);
     }
     scroll.show_rows(ui, ROW_HEIGHT, count, |ui, visible| {
@@ -844,31 +856,37 @@ fn header(ui: &mut Ui, view: &mut Sidebar) {
         let label = ui.label(muted(ui, "Filter"));
         let field = ui
             .add(
-                TextEdit::singleline(&mut view.filter)
+                TextEdit::singleline(&mut view.filter.text)
                     .hint_text("branches, tags, …")
                     .desired_width(f32::INFINITY),
             )
             .labelled_by(label.id)
-            .on_hover_text("Narrow what the sidebar lists (⌘ Alt F)");
-        if ui.input_mut(|input| {
-            input.consume_shortcut(&KeyboardShortcut::new(
-                Modifiers::COMMAND | Modifiers::ALT,
-                Key::F,
-            ))
-        }) {
+            .on_hover_text(format!(
+                "Narrow what the sidebar lists ({})",
+                crate::commands::keys_text("⌥⌘F")
+            ));
+        let asked = std::mem::take(&mut view.filter.focus);
+        if asked
+            || ui.input_mut(|input| {
+                input.consume_shortcut(&KeyboardShortcut::new(
+                    Modifiers::COMMAND | Modifiers::ALT,
+                    Key::F,
+                ))
+            })
+        {
             field.request_focus();
         }
         // The field lets the focus go on Escape, in the frame it is pressed.
         let escaped = (field.has_focus() || field.lost_focus())
             && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
-        if escaped && !view.filter.is_empty() {
-            view.filter.clear();
+        if escaped && !view.filter.text.is_empty() {
+            view.filter.text.clear();
             view.stale = true;
-            view.to_top = true;
+            view.filter.to_top = true;
         }
         if field.changed() {
             view.stale = true;
-            view.to_top = true;
+            view.filter.to_top = true;
         }
     });
     ui.add_space(4.0);

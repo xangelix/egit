@@ -55,3 +55,4 @@ zeroize.workspace = true
 egit-forge = { workspace = true, features = ["testing"] }
 egit-git = { workspace = true, features = ["testing"] }
 egui_kittest = { workspace = true, features = ["eframe", "snapshot", "wgpu"] }
+serde_json.workspace = true

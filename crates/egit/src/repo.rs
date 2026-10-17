@@ -10,9 +10,11 @@ use egit_git::{
 };
 use egui_async::Bind;
 
+use crate::commands::RepoCommand;
 use crate::forge::RepoForge;
 use crate::history::{HistoryState, Scope};
 use crate::jobs::{self, WriteLock};
+use crate::preferences::Preferences;
 use crate::problem::Problem;
 use crate::staging::{self, StageRequest};
 use crate::tables::SnapshotTable;
@@ -283,6 +285,73 @@ impl RepoTab {
             self.journal.inbox(),
             task,
         );
+    }
+
+    /// Puts the user's preferences in effect for this tab: how often it fetches in the
+    /// background, and whether its sidebar shows (as it opens).
+    pub(crate) fn prefer(&mut self, preferences: Preferences, now: Instant) {
+        self.tasks.fetch_every(preferences.fetch.interval(), now);
+        self.history_view.show_sidebar(preferences.sidebar);
+    }
+
+    /// Whether `command` can run here now, and why not (for the palette).
+    pub(crate) fn allows(&mut self, command: &RepoCommand) -> Result<(), &'static str> {
+        let busy = self.tasks.is_busy();
+        let has_remotes = self
+            .config
+            .ok_ref()
+            .is_some_and(|config| crate::tasks::has_remotes(config));
+        let (on_branch, has_upstream, has_commit, operation) =
+            self.status
+                .ok_ref()
+                .map_or((false, false, false, false), |status| {
+                    let (on_branch, upstream, commit) = match &status.head {
+                        Head::Branch(branch) => {
+                            (true, branch.upstream.is_some(), branch.commit.is_some())
+                        }
+                        Head::Detached(_) => (false, false, true),
+                    };
+                    (on_branch, upstream, commit, !status.operations.is_empty())
+                });
+        let has_changes = self
+            .work_tree
+            .status()
+            .and_then(Result::ok)
+            .is_some_and(|status| !status.is_empty());
+        let idle = if busy {
+            Err("A task is running")
+        } else {
+            Ok(())
+        };
+        match command {
+            RepoCommand::Fetch if !has_remotes => Err("The repository has no remote"),
+            RepoCommand::Pull if !has_upstream => Err("The branch has no upstream"),
+            RepoCommand::Push if !on_branch || !has_remotes => {
+                Err("Push from a branch, to a remote")
+            }
+            RepoCommand::Undo if self.journal.next_undo().is_none() => Err("Nothing to undo"),
+            RepoCommand::Redo if self.journal.next_redo().is_none() => Err("Nothing to redo"),
+            RepoCommand::Stash if !has_changes => Err("There are no changes to stash"),
+            RepoCommand::CreateBranch if !has_commit => Err("There is no commit yet"),
+            RepoCommand::Switch(_) if operation => Err("An operation is in progress"),
+            RepoCommand::Fetch
+            | RepoCommand::Pull
+            | RepoCommand::Push
+            | RepoCommand::Undo
+            | RepoCommand::Redo
+            | RepoCommand::Stash
+            | RepoCommand::ApplyPatches
+            | RepoCommand::PastePatch
+            | RepoCommand::CreateBranch
+            | RepoCommand::Switch(_) => idle,
+            RepoCommand::Search
+            | RepoCommand::FilterSidebar
+            | RepoCommand::ToggleSidebar
+            | RepoCommand::Reflog
+            | RepoCommand::WorkTree
+            | RepoCommand::PullRequests
+            | RepoCommand::Refresh => Ok(()),
+        }
     }
 
     /// Takes the last action back (`redo`: does the last one taken back again).

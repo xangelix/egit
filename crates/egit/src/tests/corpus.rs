@@ -42,7 +42,7 @@ use egit_git::testing::Sandbox;
 use egit_text::{Options, Text};
 use egui::accesskit::Role;
 use egui_kittest::Harness;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use super::scale::{peak_memory_mb, reset_peak_memory, step_until};
 use super::screens::{rendering, screens};
@@ -1176,6 +1176,41 @@ fn many_refs(sandbox: &Sandbox) -> std::path::PathBuf {
     repo
 }
 
+/// The command palette over the corpus's branches: every one offered to switch to, gathered
+/// as it opens, then narrowed a letter at a time; the slower 99th percentile.
+fn palette_on_many_branches(harness: &mut Harness<'_, EgitApp>) -> Duration {
+    let opening = measure_frames(harness, 1, |harness, _| {
+        harness.event(egui::Event::Key {
+            key: egui::Key::K,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        });
+    });
+    let opened = report("the palette opened", opening);
+    harness.run_steps(2);
+    let typed = "switch feature-4999";
+    let narrowing = measure_frames(harness, typed.len(), |harness, at| {
+        let letter = typed.get(at..=at).unwrap_or_default();
+        harness.event(egui::Event::Text(letter.to_owned()));
+    });
+    let typing = report("typing in the palette", narrowing);
+    harness.run_steps(2);
+    // Only the palette's rows say so: the sidebar's are the branches' names.
+    assert!(
+        harness
+            .query_all_by_label_contains("/feature-4999")
+            .any(|row| {
+                row.accesskit_node()
+                    .label()
+                    .is_some_and(|label| label.starts_with("Switch to"))
+            })
+    );
+    snapshot(harness, "palette");
+    opened.max(typing)
+}
+
 #[test]
 #[ignore = "a release-build measurement: see the module's documentation"]
 fn corpus_sidebar() {
@@ -1279,6 +1314,8 @@ fn corpus_sidebar() {
             .is_some()
     );
     snapshot(&mut harness, "sidebar-filtered");
+
+    worst = worst.max(palette_on_many_branches(&mut harness));
     println!("  peak memory {:.0} MB", peak_memory_mb());
     if !cfg!(debug_assertions) {
         assert!(

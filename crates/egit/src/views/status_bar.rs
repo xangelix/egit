@@ -1,8 +1,10 @@
-//! The bar along the window's bottom: which git egit runs, what isn't working, and the theme.
+//! The bar along the window's bottom: which git egit runs, what isn't working, the theme, the
+//! preferences, and the command palette.
 
 use egui::Ui;
 
 use crate::app::{Action, AppState};
+use crate::commands::keys_text;
 use crate::format::display_path;
 use crate::theme::{ThemeChoice, icon};
 use crate::widgets::muted;
@@ -48,6 +50,26 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .button(
+                    muted(
+                        ui,
+                        format!("{}  Commands  {}", icon::COMMAND, keys_text("⌘K")),
+                    )
+                    .small(),
+                )
+                .on_hover_text("Every command, by name")
+                .clicked()
+            {
+                state.actions.push(Action::ShowPalette);
+            }
+            if ui
+                .button(muted(ui, format!("{}  Preferences", icon::GEAR_SIX)).small())
+                .on_hover_text(format!("How egit looks and behaves ({})", keys_text("⌘,")))
+                .clicked()
+            {
+                state.actions.push(Action::ShowPreferences);
+            }
             let current = state.settings.theme;
             let label = match current {
                 ThemeChoice::System => format!("{}  System theme", icon::MONITOR),

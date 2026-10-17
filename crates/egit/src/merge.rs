@@ -14,7 +14,7 @@ use egit_git::{
     CancelToken, ConflictLines, ConflictSides, Git, IncomingCommit, Merge, MergedText, Operation,
     Pick, Piece, Repository, conflict_sides, incoming_commit, merge_sides,
 };
-use egit_text::{Measure, Options, Text};
+use egit_text::{Measure, Text};
 use egui::Color32;
 
 use crate::grid::{GridSource, Span};
@@ -308,7 +308,7 @@ impl MergeDocument {
         } = builder;
         // A file past 4 GiB shows as nothing.
         let text = Text::new(bytes).unwrap_or_default();
-        let measure = Measure::all(&text, Options::default());
+        let measure = Measure::all(&text, crate::preferences::text_options());
         Self {
             syntax: Syntax::start(path, &text, Feeds::Each(feeds.into())),
             text,

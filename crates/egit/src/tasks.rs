@@ -43,8 +43,11 @@ use crate::undo::{self, Landed, Undo};
 /// How long after a repository opens its first background fetch starts.
 const FIRST_BACKGROUND_FETCH: Duration = Duration::from_secs(10);
 
-/// How often the background fetch runs.
+/// How often the background fetch runs, unless the preferences say otherwise.
 const BACKGROUND_FETCH: Duration = Duration::from_secs(300);
+
+/// How long the window may sleep when no background fetch is due.
+const NO_FETCH_DUE: Duration = Duration::from_secs(3600);
 
 /// A task the user asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -415,6 +418,8 @@ pub(crate) struct Tasks {
     background: Bind<(), Problem>,
     background_cancel: CancelToken,
     next_background: Instant,
+    /// How often the background fetch runs (`None`: never).
+    background_every: Option<Duration>,
     /// Why the last background fetch failed, if it did.
     pub(crate) background_problem: Option<Problem>,
     /// How many background fetches ended (what follows the remotes reads again when it grows).
@@ -434,9 +439,31 @@ impl Tasks {
             background: Bind::new(true),
             background_cancel: CancelToken::new(),
             next_background: now.checked_add(FIRST_BACKGROUND_FETCH).unwrap_or(now),
+            background_every: Some(BACKGROUND_FETCH),
             background_problem: None,
             background_fetches: 0,
         }
+    }
+
+    /// Runs the background fetch every `every` from now on (`None`: never); a shorter wait
+    /// than the one under way takes over at once.
+    pub(crate) fn fetch_every(&mut self, every: Option<Duration>, now: Instant) {
+        if every == self.background_every {
+            return;
+        }
+        if let Some(every) = every {
+            let soon = now.checked_add(every).unwrap_or(now);
+            if self.background_every.is_none() || soon < self.next_background {
+                self.next_background = soon;
+            }
+        }
+        self.background_every = every;
+    }
+
+    /// How often the background fetch runs (`None`: never).
+    #[cfg(test)]
+    pub(crate) const fn fetches_every(&self) -> Option<Duration> {
+        self.background_every
     }
 
     /// Holds the background fetch off for an hour (tests that aren't about it: it would read
@@ -537,9 +564,10 @@ impl Tasks {
             self.background = Bind::new(true);
             self.background_fetches = self.background_fetches.wrapping_add(1);
         }
-        let due = now >= self.next_background;
+        let due = self.background_every.is_some() && now >= self.next_background;
         if due && has_remotes && !self.result.is_pending() && !self.background.is_pending() {
-            self.next_background = now.checked_add(BACKGROUND_FETCH).unwrap_or(now);
+            let every = self.background_every.unwrap_or(BACKGROUND_FETCH);
+            self.next_background = now.checked_add(every).unwrap_or(now);
             self.background_cancel = CancelToken::new();
             let (git, repository) = (git.clone(), Arc::clone(repository));
             let (progress, cancel) = (Progress::new(), self.background_cancel.clone());
@@ -553,10 +581,12 @@ impl Tasks {
                     .map_err(|error| Problem::git("Fetching in the background failed", &error))
             }));
         }
-        (
-            finished,
-            self.next_background.saturating_duration_since(now),
-        )
+        let wait = if self.background_every.is_some() {
+            self.next_background.saturating_duration_since(now)
+        } else {
+            NO_FETCH_DUE
+        };
+        (finished, wait)
     }
 }
 

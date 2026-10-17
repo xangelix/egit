@@ -132,7 +132,7 @@ impl PatchView {
             let text = Text::new(Arc::clone(&bytes)).map_err(|error| {
                 Problem::new("The patch is too large to show", error.to_string())
             })?;
-            let text = Plain::named(text, egit_text::Options::default(), b"patch.patch");
+            let text = Plain::named(text, crate::preferences::text_options(), b"patch.patch");
             Ok(Arc::new(ReadPatch {
                 bytes,
                 summary,

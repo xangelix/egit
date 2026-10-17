@@ -165,6 +165,12 @@ impl FileView {
         Self::with_source(shared, source, previous)
     }
 
+    /// Whether its diff shows side by side.
+    #[cfg(test)]
+    pub(super) const fn is_split(&self) -> bool {
+        self.split
+    }
+
     /// `work`'s uncommitted changes, shown as `previous` was.
     pub(super) fn open_work(shared: &Shared<'_>, work: WorkFile, previous: Option<&Self>) -> Self {
         let mut file = Self::with_source(shared, Source::WorkTree(work), previous);
@@ -173,10 +179,12 @@ impl FileView {
     }
 
     fn with_source(shared: &Shared<'_>, source: Source, previous: Option<&Self>) -> Self {
-        let wrap = previous.is_some_and(|open| open.diff_grid.wraps());
+        // As the view open before it, or as preferred.
+        let preferred = shared.preferences;
+        let wrap = previous.map_or(preferred.files.wrap, |open| open.diff_grid.wraps());
         let shown = previous.map_or(Shown::Diff, |open| open.shown);
         let whole = previous.is_some_and(|open| open.whole);
-        let split = previous.is_some_and(|open| open.split);
+        let split = previous.map_or(preferred.files.split_diffs, |open| open.split);
         let mut diff_grid = TextGrid::new(("diff", shared.id));
         let mut sides_grid = TextGrid::new(("sides", shared.id));
         let mut file_grid = TextGrid::new(("file", shared.id));

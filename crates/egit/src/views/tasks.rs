@@ -119,6 +119,30 @@ pub(crate) fn bar(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     own_ids(ui, "bar", pane.id, right, |ui| controls(ui, view, pane));
 }
 
+/// Pushes the current branch to its upstream, or asks where it goes first (its first push).
+pub(super) fn push_branch(view: &mut TasksView, pane: &mut TaskPane<'_>) {
+    match (pane.push_target(), pane.branch()) {
+        (Some(target), _) => pane.start(Task::Push(target)),
+        (None, Some(branch)) => {
+            let remotes = pane.remotes();
+            let remote = remotes
+                .iter()
+                .find(|remote| *remote == "origin")
+                .or_else(|| remotes.first())
+                .cloned()
+                .unwrap_or_default();
+            view.dialog = Some(Dialog::FirstPush(PushOptions {
+                remote: remote.into(),
+                branch: branch.clone().into(),
+                remote_branch: branch.into(),
+                set_upstream: true,
+                force: false,
+            }));
+        }
+        (None, None) => {}
+    }
+}
+
 /// Draws `add` in a `Ui` with an id of its own, so its controls' ids are counted from it, not
 /// from whatever the row or panel drew before (which comes and goes): a click pressed on one
 /// id and released on another is lost.
@@ -154,26 +178,7 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         &format!("{}  Push", icon::ARROW_UP),
     );
     if push.clicked() {
-        match (pane.push_target(), pane.branch()) {
-            (Some(target), _) => pane.start(Task::Push(target)),
-            (None, Some(branch)) => {
-                let remotes = pane.remotes();
-                let remote = remotes
-                    .iter()
-                    .find(|remote| *remote == "origin")
-                    .or_else(|| remotes.first())
-                    .cloned()
-                    .unwrap_or_default();
-                view.dialog = Some(Dialog::FirstPush(PushOptions {
-                    remote: remote.into(),
-                    branch: branch.clone().into(),
-                    remote_branch: branch.into(),
-                    set_upstream: true,
-                    force: false,
-                }));
-            }
-            (None, None) => {}
-        }
+        push_branch(view, pane);
     }
     let has_upstream = matches!(pane.head, Some(Head::Branch(branch)) if branch.upstream.is_some());
     if widgets::secondary(ui, has_upstream, &format!("{}  Pull", icon::ARROW_DOWN))

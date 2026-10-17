@@ -703,6 +703,8 @@ pub(crate) struct Summary {
     pub(crate) email: Box<str>,
     /// When it was written, in the author's time zone.
     pub(crate) date: Box<str>,
+    /// When it was written (seconds since the Unix epoch), for "5 minutes ago".
+    pub(crate) time: i64,
     /// Whether it carries a signature (whether it holds is checked apart).
     pub(crate) signed: bool,
 }
@@ -715,6 +717,7 @@ impl Summary {
             author: text(&commit.author.name),
             email: text(&commit.author.email),
             date: date_time(commit.author.time, commit.author.offset_minutes).into_boxed_str(),
+            time: commit.author.time,
             signed: commit.signed,
         }
     }
@@ -726,6 +729,7 @@ impl Summary {
             author: Box::default(),
             email: Box::default(),
             date: Box::default(),
+            time: 0,
             signed: false,
         }
     }
@@ -1015,7 +1019,7 @@ impl FileContent {
         Text::new(Arc::<[u8]>::from(bytes)).map_or(Self::TooLarge { size }, |text| {
             Self::Text(Box::new(Plain::named(
                 text,
-                egit_text::Options::default(),
+                crate::preferences::text_options(),
                 path,
             )))
         })

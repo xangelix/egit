@@ -15,11 +15,13 @@ use egit_git::{
 use egui::{CentralPanel, Frame, Panel, Ui};
 use egui_async::Bind;
 
+use crate::commands::{self, Command, RepoCommand};
 use crate::desktop::{FileDialogs, FileQuestion, Opener};
 use crate::fonts::Fallbacks;
 use crate::format::now;
 use crate::history::Scope;
 use crate::jobs::{self, WriteLock};
+use crate::preferences::Preferences;
 use crate::problem::{OpenProblem, Problem};
 use crate::repo::{RepoId, RepoTab};
 use crate::settings::{Settings, StoredPath};
@@ -29,6 +31,7 @@ use crate::tasks::Task;
 use crate::theme::{self, Palette, ThemeChoice};
 use crate::views::clone::CloneRequest;
 use crate::views::home::HomeView;
+use crate::views::palette::{self, Offer, Offers, PaletteView};
 use crate::views::profile::ProfileView;
 use crate::views::prompts::Prompts;
 use crate::views::status_bar;
@@ -72,6 +75,8 @@ pub(crate) struct AppState {
     pub(crate) opener: Opener,
     /// The desktop's file dialogs.
     pub(crate) files: FileDialogs,
+    /// The command palette (⌘K).
+    pub(crate) palette: PaletteView,
 }
 
 /// A repository being opened.
@@ -130,6 +135,12 @@ pub(crate) enum Action {
     Task(RepoId, Task),
     /// Stop a repository's running task.
     CancelTask(RepoId),
+    /// Put these preferences in effect, and keep them.
+    SetPreferences(Preferences),
+    /// Show the preferences' tab.
+    ShowPreferences,
+    /// Open the command palette.
+    ShowPalette,
     /// Take a repository's last action back (`true`: do the last one taken back again).
     Undo(RepoId, bool),
     /// A repository's tab was closed.
@@ -212,6 +223,7 @@ impl EgitApp {
     ) -> Self {
         theme::install_fonts(ctx);
         theme::apply(ctx, settings.theme);
+        settings.preferences.apply(ctx);
         ctx.plugin_or_default::<egui_async::EguiAsyncPlugin>();
         if let Err(error) = jobs::install_runtime() {
             tracing::error!(%error, "couldn't start egit's worker threads");
@@ -248,6 +260,7 @@ impl EgitApp {
             focused: true,
             opener: Opener::default(),
             files: FileDialogs::default(),
+            palette: PaletteView::default(),
             fonts: Fallbacks::default(),
         };
         match git {
@@ -261,6 +274,50 @@ impl EgitApp {
     }
 
     /// Carries out the actions the frame produced.
+    /// Runs a command from the keyboard or the palette: the application's own at once; one
+    /// about a repository on the repository in front.
+    fn run(&mut self, command: Command) {
+        let state = &mut self.state;
+        match command {
+            Command::Palette => {
+                if state.palette.is_open() {
+                    state.palette = PaletteView::default();
+                } else {
+                    let front = tabs::front(&self.tabs);
+                    let offers = offers(state, front);
+                    state.palette.open(offers);
+                }
+            }
+            Command::Preferences => tabs::show(&mut self.tabs, Pane::Preferences),
+            Command::OpenRepository => state.actions.push(Action::PickFolder),
+            Command::CloneRepository | Command::Home => tabs::show(&mut self.tabs, Pane::Home),
+            Command::Profile => tabs::show(&mut self.tabs, Pane::Profile),
+            Command::CloseTab => {
+                if let Some(Pane::Repo(id)) = tabs::close_front(&mut self.tabs) {
+                    state.actions.push(Action::Closed(id));
+                }
+            }
+            Command::Tab(n) => tabs::show_nth(&mut self.tabs, n),
+            Command::Theme(choice) => state.actions.push(Action::SetTheme(choice)),
+            Command::OpenRecent(path) => state.actions.push(Action::Open(path)),
+            Command::Repo(command) => {
+                let Some(Pane::Repo(id)) = tabs::front(&self.tabs) else {
+                    return;
+                };
+                match command {
+                    RepoCommand::Undo => state.actions.push(Action::Undo(id, false)),
+                    RepoCommand::Redo => state.actions.push(Action::Undo(id, true)),
+                    RepoCommand::Refresh => state.actions.push(Action::Refresh(id)),
+                    command => {
+                        if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
+                            repo.history_view.queue(command);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     fn apply_actions(&mut self, ctx: &egui::Context) {
         while !self.state.actions.is_empty() {
             let actions = std::mem::take(&mut self.state.actions);
@@ -276,11 +333,7 @@ impl EgitApp {
             Action::DetectGit => state.detect_git(),
             Action::PickFolder => state.home.pick_folder(),
             Action::PickCloneFolder => state.home.clone.pick_folder(),
-            Action::Clone(request) => {
-                if let Some(git) = state.git() {
-                    state.home.clone.start(&git, request);
-                }
-            }
+            Action::Clone(request) => state.start_clone(request),
             Action::CancelClone => state.home.clone.cancel(),
             Action::Open(path) => state.open(path),
             Action::Opened(repository) => self.show_repository(ctx, *repository),
@@ -340,6 +393,9 @@ impl EgitApp {
                 state.settings.theme = choice;
                 theme::apply(ctx, choice);
             }
+            Action::SetPreferences(preferences) => state.prefer(ctx, preferences),
+            Action::ShowPreferences => tabs::show(&mut self.tabs, Pane::Preferences),
+            Action::ShowPalette => self.run(Command::Palette),
             Action::SignIn(id, host) => {
                 if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
                     repo.forge.sign_in(&host);
@@ -389,12 +445,31 @@ impl EgitApp {
         };
         let id = state.next_repo;
         state.next_repo = state.next_repo.wrapping_add(1);
-        state.repos.push(RepoTab::new(id, repository, &git, ctx));
+        let mut tab = RepoTab::new(id, repository, &git, ctx);
+        tab.prefer(state.settings.preferences, Instant::now());
+        state.repos.push(tab);
         tabs::show(&mut self.tabs, Pane::Repo(id));
     }
 }
 
 impl AppState {
+    /// Starts cloning as `request` says (once git is found).
+    fn start_clone(&mut self, request: CloneRequest) {
+        if let Some(git) = self.git() {
+            self.home.clone.start(&git, request);
+        }
+    }
+
+    /// Puts `preferences` in effect (every repository's background fetch too), and keeps them.
+    fn prefer(&mut self, ctx: &egui::Context, preferences: Preferences) {
+        self.settings.preferences = preferences;
+        preferences.apply(ctx);
+        let now = Instant::now();
+        for repo in &mut self.repos {
+            repo.tasks.fetch_every(preferences.fetch.interval(), now);
+        }
+    }
+
     /// Git, once found.
     pub(crate) fn git(&mut self) -> Option<Git> {
         self.git.ok_ref().cloned()
@@ -654,6 +729,12 @@ impl AppState {
 impl eframe::App for EgitApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.state.poll(ui.ctx());
+        // ⌘+ and ⌘− change the text's size: kept as preferred.
+        let zoom = Preferences::zoom_of(ui.ctx());
+        if zoom != self.state.settings.preferences.zoom {
+            self.state.settings.preferences.zoom = zoom;
+            self.state.settings.preferences.apply(ui.ctx());
+        }
         let palette = Palette::of(ui.ctx());
         Panel::bottom("egit-status")
             .frame(
@@ -662,9 +743,16 @@ impl eframe::App for EgitApp {
                     .inner_margin(egui::Margin::symmetric(10, 4)),
             )
             .show(ui, |ui| status_bar::show(ui, &mut self.state));
+        if let Some(command) = commands::pressed(ui.ctx()) {
+            self.run(command);
+        }
+        palette::take_keys(ui.ctx(), &mut self.state.palette);
         CentralPanel::default()
             .frame(Frame::new().fill(palette.background))
             .show(ui, |ui| tabs::draw(&mut self.tabs, &mut self.state, ui));
+        if let Some(command) = palette::show(ui.ctx(), &mut self.state.palette) {
+            self.run(command);
+        }
         self.state.prompts.show(ui.ctx());
         self.apply_actions(ui.ctx());
     }
@@ -682,6 +770,76 @@ impl eframe::App for EgitApp {
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         visuals.panel_fill.to_normalized_gamma_f32()
     }
+}
+
+/// What the palette offers: the repository in front's commands (each saying why it can't run
+/// now, if it can't), the application's commands, the recent repositories not open, and the
+/// repository's branches to switch to.
+fn offers(state: &mut AppState, front: Option<Pane>) -> Offers {
+    let offer = |command: Command, allowed: Result<(), &'static str>, nouns: &str| Offer {
+        label: command.label(nouns),
+        keys: command.keys().map(crate::commands::keys_text),
+        command,
+        allowed,
+    };
+    let mut offers = Offers::default();
+    let repo = match front {
+        Some(Pane::Repo(id)) => state.repos.iter_mut().find(|repo| repo.id == id),
+        _ => None,
+    };
+    if let Some(repo) = repo {
+        let nouns = repo.forge.nouns();
+        let has_forge = !repo.forge.repositories.is_empty();
+        for command in Command::listed() {
+            let Command::Repo(asked) = &command else {
+                continue;
+            };
+            if *asked == RepoCommand::PullRequests && !has_forge {
+                continue;
+            }
+            let allowed = repo.allows(asked);
+            offers.commands.push(offer(command, allowed, nouns));
+        }
+        let current = repo.status.ok_ref().and_then(|status| match &status.head {
+            egit_git::Head::Branch(branch) => Some(branch.name.clone()),
+            egit_git::Head::Detached(_) => None,
+        });
+        offers.switching = repo.allows(&RepoCommand::Switch(bstr::BString::default()));
+        offers.refs = repo.history.shown.refs().shared();
+        offers.branches = offers
+            .refs
+            .iter()
+            .zip(0_u32..)
+            .filter(|(reference, _)| {
+                reference.kind == egit_git::RefKind::Branch
+                    && current
+                        .as_ref()
+                        .is_none_or(|current| current.as_slice() != &**reference.short_name())
+            })
+            .map(|(_, place)| place)
+            .collect();
+    }
+    for command in Command::listed() {
+        if !command.needs_repo() {
+            offers
+                .commands
+                .push(offer(command, Ok(()), "pull requests"));
+        }
+    }
+    let open: Vec<PathBuf> = state
+        .repos
+        .iter()
+        .map(|repo| repo.repository.work_tree().to_path_buf())
+        .collect();
+    for recent in &state.settings.recent {
+        let path = recent.path.to_path();
+        if !open.contains(&path) {
+            offers
+                .commands
+                .push(offer(Command::OpenRecent(path), Ok(()), "pull requests"));
+        }
+    }
+    offers
 }
 
 /// Watches the user's configuration `files`, waking `ctx` when one changes.

@@ -1,5 +1,5 @@
-//! What egit remembers between runs: the theme, recent repositories, the open tabs, and where
-//! the last clone went.
+//! What egit remembers between runs: the theme and the other preferences, recent repositories,
+//! the open tabs, and where the last clone went.
 //!
 //! Stored by eframe (`~/.local/share/egit/app.ron`). Paths are kept as text when they are
 //! UTF-8 and as bytes otherwise, so every path the system allows survives.
@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::preferences::Preferences;
 use crate::theme::ThemeChoice;
 
 /// The storage key.
@@ -30,6 +31,8 @@ pub(crate) struct Settings {
     pub(crate) open: Vec<StoredPath>,
     /// The folder the last clone went into (the next goes there too).
     pub(crate) clone_folder: Option<StoredPath>,
+    /// How the user likes egit.
+    pub(crate) preferences: Preferences,
 }
 
 /// A repository opened before.
