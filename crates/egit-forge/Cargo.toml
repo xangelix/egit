@@ -1,0 +1,29 @@
+[package]
+name = "egit-forge"
+description = "egit's interface to forges' web APIs (GitHub): which repository a remote is, signing in with git's credentials, and pull requests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# A fake GitHub API for tests, on the loopback address.
+testing = []
+
+[dependencies]
+egit-git.workspace = true
+parking_lot.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+ureq.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+egit-forge = { workspace = true, features = ["testing"] }
+egit-git = { workspace = true, features = ["testing"] }

@@ -289,6 +289,35 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     A `Credential` is wiped when dropped. `tests/credential.rs` fills, rejects, and approves
     through a sandbox's `store` helper.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
+- `crates/egit-forge` — forges' web APIs (GitHub: github.com and Enterprise Server); no egui.
+  egit's only network connections of its own (git makes every other).
+  - `host.rs` — `GitHubHost`: github.com (its APIs on `api.github.com`) or an Enterprise host
+    (`/api/graphql`, `/api/v3`); `parse` reads a listed entry (`host[:port]`, `https://`;
+    `http://` only for the loopback address). `GitHubHosts`: github.com and the listed;
+    `for_web` by `host[:port]` (no default port), `for_ssh` by host name (`ssh.github.com` is
+    github.com).
+  - `repository.rs` — `GitHubRepository` (host, owner, name; web pages of it, a pull request,
+    a commit). `github_repository`: a remote URL of any form (https, ssh, scp-like, `git://`)
+    to its repository; an ssh host alias through `resolve_ssh_alias` (`ssh -G -- <alias>`'s
+    `hostname`, 2 s at most; never an option).
+  - `http.rs` — `Http`, a ureq agent per host: rustls on aws-lc-rs (`deny.toml` bans `ring`
+    and `webpki-roots`), certificates checked by the platform verifier (the system's trust
+    store), the environment's proxy (none for the loopback address), no redirects, 10 s to
+    connect and 60 s in all, answers of 32 MiB at most; the token a sensitive header, built in
+    a zeroizing string, and refused without HTTPS (but to the loopback address).
+  - `account.rs` — `Account`: a host's sign-in under a repository's configuration: the
+    credential filled without asking on first use; `sign_in` asks (labelled) and checks it
+    (`viewer`); a 401 rejects and forgets it (`Refused`), the first success approves it.
+  - `github.rs` — GraphQL: `pull_requests` (open, most recently updated first, 100 a page, each
+    handed over as it lands, up to a limit), `pull_request_details` (description, counts,
+    mergeable, checks one by one, latest reviews, labels), `repository_info` (default branch,
+    the repository it was forked from); REST: `create_pull_request` (`owner:branch` from a
+    fork). Rate limits (by headers or `RATE_LIMITED`) say when they reset; `NOT_FOUND`,
+    refusals, and GitHub's validation messages become `ForgeError`s (`error.rs`).
+  - `testing.rs` (feature `testing`) — `FakeGitHub`: the API on the loopback address (pages,
+    details, repository, viewer, opening; the bearer token checked; a rate limit to switch on;
+    requests recorded). `tests/github.rs` runs each call against it, signed in through a
+    sandbox's `store` helper.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
   - `layout.rs` — `GraphBuilder::push` lays out each commit as `walk_history` yields it, in

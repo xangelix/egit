@@ -29,6 +29,9 @@ exceptions = [
     { crate = "epaint_default_fonts", allow = ["OFL-1.1", "Ubuntu-font-1.0"] },
     { crate = "foldhash", allow = ["Zlib"] },
     { crate = "notify", allow = ["CC0-1.0"] },
+    # rustls's constant-time comparisons, and parts of AWS-LC, its cryptography (BSD-3-Clause).
+    { crate = "subtle", allow = ["BSD-3-Clause"] },
+    { crate = "aws-lc-sys", allow = ["BSD-3-Clause"] },
 ]
 
 [bans]
@@ -41,10 +44,16 @@ deny = [
     # second implementation of git inside the process would disagree with the one the user runs.
     { crate = "git2", reason = "egit drives the git binary; no in-process git (docs/ROADMAP.md)" },
     { crate = "libgit2-sys", reason = "egit drives the git binary; no in-process git (docs/ROADMAP.md)" },
-    # egit never speaks to the network itself (git does), so no TLS stack belongs in its graph.
-    { crate = "openssl", reason = "egit makes no network connections of its own" },
-    { crate = "openssl-sys", reason = "egit makes no network connections of its own" },
-    { crate = "native-tls", reason = "egit makes no network connections of its own" },
+    # Git makes every repository connection; egit's own are only to forges' web APIs, over
+    # rustls (crates/egit-forge). No second TLS stack, and none that needs OpenSSL at run time.
+    { crate = "openssl", reason = "egit's one TLS stack is rustls (forge APIs only)" },
+    { crate = "openssl-sys", reason = "egit's one TLS stack is rustls (forge APIs only)" },
+    { crate = "native-tls", reason = "egit's one TLS stack is rustls (forge APIs only)" },
+    # The system's trust store verifies certificates (rustls-platform-verifier), so a bundled
+    # copy of Mozilla's roots would only be one that can go stale.
+    { crate = "webpki-roots", reason = "certificates are checked against the system's store" },
+    # rustls's cryptography is aws-lc-rs everywhere: ring is not allowed in the graph.
+    { crate = "ring", reason = "cryptography comes from aws-lc-rs, never ring" },
 ]
 
 [sources]
