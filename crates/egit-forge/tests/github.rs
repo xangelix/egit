@@ -245,3 +245,32 @@ fn a_cancelled_read_stops() {
         Err(ForgeError::Cancelled)
     ));
 }
+
+#[test]
+fn signing_in_asks_the_user_and_has_the_helper_keep_what_worked() {
+    let (fake, sandbox, _, _) = setup(0, TOKEN);
+    std::fs::write(sandbox.path("credentials"), "").unwrap();
+    // The user, as git's askpass program asks them: a username, then a token as the password.
+    let askpass = sandbox.path("askpass.sh");
+    std::fs::write(
+        &askpass,
+        "#!/bin/sh\ncase \"$1\" in Username*) echo ada ;; *) echo t0ken ;; esac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        &askpass,
+        std::os::unix::fs::PermissionsExt::from_mode(0o700),
+    )
+    .unwrap();
+    let git = sandbox
+        .git_with([("GIT_ASKPASS", askpass.as_os_str())])
+        .unwrap();
+    let host = GitHubHost::parse(&fake.host_entry()).unwrap();
+    let account = Account::new(git, None, host);
+    assert_eq!(
+        account.sign_in("Signing in", &CancelToken::new()).unwrap(),
+        "ada"
+    );
+    let kept = std::fs::read_to_string(sandbox.path("credentials")).unwrap();
+    assert!(kept.contains("ada:t0ken@127.0.0.1"), "{kept}");
+}
