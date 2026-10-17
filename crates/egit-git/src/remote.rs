@@ -108,6 +108,37 @@ pub fn fetch(
     command.output().map(drop)
 }
 
+/// Fetches from `remote` alone (`fetch <remote>`), removing its remote-tracking branches whose
+/// branches are gone with `prune`.
+///
+/// # Errors
+///
+/// When git fails (the remote can't be reached, refused credentials) or is cancelled.
+pub fn fetch_remote(
+    git: &Git,
+    repository: &Repository,
+    remote: &BStr,
+    prune: bool,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    let mut command = git
+        .write("fetch")
+        .arg("--progress")
+        .prompt_context(format!("Fetching from {}", remote.to_str_lossy()))
+        .current_dir(repository.work_tree())
+        .progress(progress)
+        .cancel_token(cancel);
+    if prune {
+        command = command.arg("--prune");
+    }
+    command
+        .arg("--")
+        .arg(OsStr::from_bytes(remote))
+        .output()
+        .map(drop)
+}
+
 /// Fetches what `refspecs` name from `remote`, and nothing else (no tags).
 ///
 /// A branch into its remote-tracking branch, say, or a forge's pull request

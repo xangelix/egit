@@ -70,6 +70,46 @@ pub fn walk_history(
     walk_from(git, repository, start, cancel, each)
 }
 
+/// The commits a walk of every ref but `hidden` (full names) starts from.
+///
+/// What `git rev-list --no-walk=unsorted --exclude=refs/stash --all` lists with each of them
+/// excluded too (`HEAD` stays), for [`walk_history_from`].
+///
+/// # Errors
+///
+/// When git fails, is cancelled, or prints what isn't a commit's name.
+pub fn history_tips(
+    git: &Git,
+    repository: &Repository,
+    hidden: &[BString],
+    cancel: &CancelToken,
+) -> Result<Vec<ObjectId>, GitError> {
+    // On standard input, however many there are (git 2.43, the floor, takes these options
+    // there): each excludes its ref alone, as a ref's name has no glob characters (`*`, `?`,
+    // `[`), nor a line break.
+    let mut input = Vec::new();
+    for name in std::iter::once(BStr::new("refs/stash")).chain(hidden.iter().map(AsRef::as_ref)) {
+        input.extend_from_slice(b"--exclude=");
+        input.extend_from_slice(name);
+        input.push(b'\n');
+    }
+    input.extend_from_slice(b"--all\n");
+    git.read("rev-list")
+        .args(["--no-walk=unsorted", "--stdin"])
+        .stdin(input)
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()?
+        .stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            ObjectId::from_hex(line)
+                .ok_or_else(|| GitError::unexpected("rev-list", "a commit's name"))
+        })
+        .collect()
+}
+
 /// [`walk_history`] from `tips`, the commits `git rev-list --no-walk=unsorted
 /// --exclude=refs/stash --all` lists (in its order), already known: they are reduced as
 /// `walk_history` reduces its own.

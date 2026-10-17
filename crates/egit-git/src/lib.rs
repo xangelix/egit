@@ -40,6 +40,7 @@ mod progress;
 mod rebase;
 mod reflog;
 mod remote;
+mod remote_setup;
 mod repo;
 mod search;
 mod signatures;
@@ -47,6 +48,7 @@ mod span;
 mod stage;
 mod stash;
 mod status;
+mod submodule;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod tree;
@@ -89,8 +91,8 @@ pub use forward::{ForwardFrom, Forwarded, fast_forward_branch, fast_forward_curr
 pub use git::{Git, GitOptions};
 pub use history::{
     ChangeKind, CountedFile, FileChange, LineCounts, RefKind, Reference, TreeEntry, Walked,
-    commit_changes, commits_between, line_counts, list_references, walk_history, walk_history_from,
-    write_commit_graph,
+    commit_changes, commits_between, history_tips, line_counts, list_references, walk_history,
+    walk_history_from, write_commit_graph,
 };
 pub use integrate::{Integrated, ResetMode, cherry_pick, merge, rebase, reset, revert};
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
@@ -106,9 +108,10 @@ pub use rebase::{
 pub use reflog::{ReflogEntry, create_ref, delete_ref, ref_target, reflog};
 pub use remote::{
     CloneOptions, FetchOptions, PullMode, Pulled, PushFlag, PushOptions, Pushed, PushedRef,
-    abort_operation, clone, continue_operation, delete_remote_branch, fetch, fetch_refspecs, pull,
-    push, push_tag, remote_urls, remotes, skip_operation,
+    abort_operation, clone, continue_operation, delete_remote_branch, fetch, fetch_refspecs,
+    fetch_remote, pull, push, push_tag, remote_urls, remotes, skip_operation,
 };
+pub use remote_setup::{add_remote, remove_remote, rename_remote, set_remote_url};
 pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, HeadRef, Operation, Repository, Tracking,
     Upstream, trust_directory,
@@ -118,6 +121,10 @@ pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use stage::{stage, unstage};
 pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stash_store, stashes};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
+pub use submodule::{Submodule, submodules, update_submodules};
 pub use tree::{ignored_paths, tree_entry, tree_folders};
 pub use version::{GitVersion, VersionParseError};
-pub use worktree::{WorktreeFrom, add_worktree};
+pub use worktree::{
+    RemoveWorktreeError, Worktree, WorktreeFrom, add_worktree, lock_worktree, prune_worktrees,
+    remove_worktree, unlock_worktree, worktrees,
+};
