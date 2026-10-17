@@ -1779,6 +1779,18 @@ fn history_is_rewritten_in_the_rebase_editor() {
     harness.get_by_label("Drop").click();
     wait_for_label(&mut harness, &format!("Dropped {four}."));
     assert_eq!(subjects(), "Two and three\nOne\n");
+    settle(&mut harness, "the history without it", history_of(2));
+
+    // The last squashed into its parent, the root: one commit, their messages joined.
+    let last = short("HEAD");
+    harness
+        .get_by_role_and_label(Role::Button, "Two and three")
+        .click_secondary();
+    wait_for_label(&mut harness, "Squash into its parent");
+    harness.get_by_label("Squash into its parent").click();
+    wait_for_label(&mut harness, &format!("Squashed {last} into its parent."));
+    let message = sandbox.run(&repo, "log", &["--format=%B"]).unwrap();
+    assert_eq!(message.stdout.trim_ascii(), b"One\n\nTwo and three");
 }
 
 #[test]
