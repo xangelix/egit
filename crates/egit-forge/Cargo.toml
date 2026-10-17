@@ -1,6 +1,6 @@
 [package]
 name = "egit-forge"
-description = "egit's interface to forges' web APIs (GitHub): which repository a remote is, signing in with git's credentials, and pull requests."
+description = "egit's interface to forges' web APIs (GitHub, GitLab): which repository a remote is, signing in with git's credentials, and pull and merge requests."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
