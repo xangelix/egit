@@ -23,6 +23,8 @@ mod credential;
 mod diff;
 mod env;
 mod error;
+mod format_patch;
+mod forward;
 mod git;
 mod history;
 mod integrate;
@@ -47,12 +49,13 @@ mod status;
 pub mod testing;
 mod tree;
 mod version;
+mod worktree;
 
 pub use batch::GitProcess;
 pub use blame::{BlameCommit, BlameRun, FileCommit, Moves, blame, file_log};
 pub use branch::{
     BadRefName, DeleteBranchError, SwitchError, SwitchTo, check_ref_name, create_branch,
-    create_tag, delete_branch, delete_tag, rename_branch, switch,
+    create_tag, delete_branch, delete_tag, rename_branch, set_upstream, switch,
 };
 pub use cancel::CancelToken;
 pub use command::{Access, GitCommand, SecretOutput, Streamed};
@@ -74,6 +77,8 @@ pub use diff::{
     uncommitted_diff,
 };
 pub use error::{Failure, GitError};
+pub use format_patch::{format_patch, patch_file_name};
+pub use forward::{ForwardFrom, Forwarded, fast_forward_branch, fast_forward_current};
 pub use git::{Git, GitOptions};
 pub use history::{
     ChangeKind, CountedFile, FileChange, LineCounts, RefKind, Reference, TreeEntry, Walked,
@@ -107,3 +112,4 @@ pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stashes}
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
 pub use tree::{ignored_paths, tree_entry, tree_folders};
 pub use version::{GitVersion, VersionParseError};
+pub use worktree::{WorktreeFrom, add_worktree};

@@ -232,6 +232,38 @@ pub fn rename_branch(
         .map(drop)
 }
 
+/// Sets `branch`'s upstream, where it pulls from and pushes to by default.
+///
+/// `upstream` is a remote-tracking branch's short name, such as `origin/main` (`git branch
+/// --set-upstream-to`); `None` forgets it (`--unset-upstream`).
+///
+/// # Errors
+///
+/// When git fails (`upstream` isn't a branch it has, say) or is cancelled.
+pub fn set_upstream(
+    git: &Git,
+    repository: &Repository,
+    branch: &BStr,
+    upstream: Option<&BStr>,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    let mut command = git.write("branch").arg("--quiet");
+    command = match upstream {
+        Some(upstream) => {
+            let mut option = b"--set-upstream-to=".to_vec();
+            option.extend_from_slice(upstream);
+            command.arg(OsStr::from_bytes(&option))
+        }
+        None => command.arg("--unset-upstream"),
+    };
+    command
+        .arg(OsStr::from_bytes(branch))
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .map(drop)
+}
+
 /// Why deleting a branch failed.
 #[derive(Debug, thiserror::Error)]
 pub enum DeleteBranchError {
