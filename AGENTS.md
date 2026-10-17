@@ -21,7 +21,7 @@ it.
 | 7 | The graph's actions: branches, commits brought in, tags, stashes | done |
 | 8 | Interactive rebase | done |
 | 9 | Blame and file history | done |
-| 10 | Pull requests on GitHub | in progress |
+| 10 | Pull requests on GitHub | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
