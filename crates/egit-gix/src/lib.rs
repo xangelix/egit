@@ -167,33 +167,65 @@ impl GixRepository {
         ids: &[ObjectId],
         mut each: impl FnMut(ObjectId, Option<Object<'_>>),
     ) -> Result<usize, GixError> {
-        use gix::prelude::Find as _;
-        let repository = self.repository.to_thread_local();
-        let mut buffer = Vec::new();
+        let mut reader = self.reader();
         for (handed, &id) in ids.iter().enumerate() {
-            let wanted = gix::ObjectId::try_from(id.as_bytes()).map_err(GixError::of)?;
-            let found = repository
-                .objects
-                .try_find(&wanted, &mut buffer)
-                .map_err(GixError::of)?;
-            match found {
-                Some(data) => each(
-                    id,
-                    Some(Object {
-                        kind: match data.kind {
-                            gix::object::Kind::Commit => ObjectKind::Commit,
-                            gix::object::Kind::Tree => ObjectKind::Tree,
-                            gix::object::Kind::Blob => ObjectKind::Blob,
-                            gix::object::Kind::Tag => ObjectKind::Tag,
-                        },
-                        data: data.data,
-                    }),
-                ),
+            match reader.read(&id)? {
+                Some(object) => each(id, Some(object)),
                 None if self.partial => return Ok(handed),
                 None => each(id, None),
             }
         }
         Ok(ids.len())
+    }
+
+    /// A reader for one thread: a handle of its own, and a buffer it reuses.
+    #[must_use]
+    pub fn reader(&self) -> GixReader {
+        GixReader {
+            repository: self.repository.to_thread_local(),
+            buffer: Vec::new(),
+        }
+    }
+}
+
+/// Reads objects on one thread (each thread makes its own: [`GixRepository::reader`]).
+pub struct GixReader {
+    repository: gix::Repository,
+    buffer: Vec<u8>,
+}
+
+impl std::fmt::Debug for GixReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GixReader")
+            .field("git_dir", &self.repository.git_dir())
+            .finish_non_exhaustive()
+    }
+}
+
+impl GixReader {
+    /// Object `id`, borrowed until the next read; `None` when it isn't there (in a partial
+    /// clone, perhaps only not fetched).
+    ///
+    /// # Errors
+    ///
+    /// When gix can't read an object that is there (a damaged pack, say).
+    pub fn read(&mut self, id: &ObjectId) -> Result<Option<Object<'_>>, GixError> {
+        use gix::prelude::Find as _;
+        let wanted = gix::ObjectId::try_from(id.as_bytes()).map_err(GixError::of)?;
+        let found = self
+            .repository
+            .objects
+            .try_find(&wanted, &mut self.buffer)
+            .map_err(GixError::of)?;
+        Ok(found.map(|data| Object {
+            kind: match data.kind {
+                gix::object::Kind::Commit => ObjectKind::Commit,
+                gix::object::Kind::Tree => ObjectKind::Tree,
+                gix::object::Kind::Blob => ObjectKind::Blob,
+                gix::object::Kind::Tag => ObjectKind::Tag,
+            },
+            data: data.data,
+        }))
     }
 }
 
