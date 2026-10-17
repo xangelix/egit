@@ -22,7 +22,7 @@ it.
 | 8 | Interactive rebase | done |
 | 9 | Blame and file history | done |
 | 10 | Pull requests on GitHub | done |
-| 11 | Merge requests on GitLab | in progress |
+| 11 | Merge requests on GitLab | done; awaiting the owner's review |
 | 12 | gitoxide as a read accelerator | planned |
 
 ## Toolchain & commands
