@@ -675,9 +675,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     egui's memory).
   - `tables.rs` — egui-table-kit providers (`ConfigRows`, `RecentRows`, `ChangeRows`) with
     O(1) `cell_at`; `fitted` draws a table with `interact_size.y` a cell's height (the row less
-    the item spacing), so table-kit's text, laid out in a row that tall from the cell's top
-    until its own fix (7f8c72a, centering in the cell), and the custom cells here sit in the
-    middle; `SnapshotTable` and `ChangesTable`, whose state starts over only when
+    the item spacing), so table-kit's text (laid out as `ui.horizontal` does, in a row that tall
+    from a shorter cell's top, unless asked otherwise: `with_cell_align`, in table-kit's
+    dd65f69, not yet pinned here) and the custom cells here sit in the middle; `SnapshotTable` and `ChangesTable`, whose state starts over only when
     their snapshot or commit is replaced. A file's cell is named by its path ("old → new" for
     a rename); `file_cell` draws its counts at its right, so the narrow details panel needs no
     third column, and its (new) path in what is left, losing its start first, from a folder's
