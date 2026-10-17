@@ -23,7 +23,7 @@ it.
 | 9 | Blame and file history | done |
 | 10 | Pull requests on GitHub | done |
 | 11 | Merge requests on GitLab | done; awaiting the owner's review |
-| 12 | gitoxide as a read accelerator | planned |
+| 12 | gitoxide as a read accelerator | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -59,9 +59,16 @@ it.
   through (each one's details read) at 0.40 ms (each forge alike).
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
-  frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a
-  frame). Linux (1.49M commits): first rows 135 ms, all 1.45–1.6 s, slowest frame 2.1 ms,
-  peak 69 MB (with rendering: 190 MB, and `scale-*.png` screens).
+  frame times jumping and wheel-scrolling through it, and peak memory, then how much of what
+  it holds is allocated and how much is files mapped (it fails past 8 ms a frame). Linux
+  (1.49M commits): first rows 85–100 ms, all 1.2–1.55 s, slowest frame 2.9 ms, peak 220 MB:
+  78 MB allocated, the rest mostly packs gix read, mapped (page cache, which git's `cat-file`
+  held in its own process: 91 MB with `EGIT_GIX=0`, first rows in 112–119 ms); with
+  rendering 368 MB (124 MB allocated; 227 MB with `EGIT_GIX=0`), and `scale-*.png` screens.
+- gitoxide's reads: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit-gix --release
+  --test measure -- --ignored --nocapture` times each against git's (the walk both ways,
+  commits read fresh and warm, the walk's tips, references); `EGIT_GIX=0` leaves the
+  application's every read to git, to compare.
 
 ## Supported platforms
 
@@ -70,9 +77,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
 
 ## Rules for running git
 
-- Every repository operation runs the system `git`; never read or write files under `.git`
-  directly, except to watch them and to read the few state files git documents (`MERGE_HEAD`,
-  `rebase-merge/`, …). No in-process git (`deny.toml` bans libgit2).
+- Every repository operation runs the system `git`, but for the reads `egit-gix` makes in
+  process through gitoxide (references, the walk's tips, objects), each only where it gives
+  git's answers (checked against git's in its tests) and was measured faster; gix never
+  writes, and a repository it wouldn't read as git does is left to git. Never read or write
+  files under `.git` directly, except to watch them and to read the few state files git
+  documents (`MERGE_HEAD`, `rebase-merge/`, …). No libgit2 (`deny.toml` bans it).
 - Machine-readable output only: `-z`, `--porcelain`, explicit `--format`s, and `-c` overrides
   for any setting that changes a format the parser reads.
 - Reads pass `--no-optional-locks`, so a background refresh never takes `index.lock` from the
@@ -149,8 +159,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `history.rs` — `walk_history` (`rev-list --topo-order --parents`, streamed, lines split
     across chunks without copying; with a commit-graph it starts from `merge-base
     --independent` of `--all`'s tips, since git's topological walk first reads down to the
-    oldest tip: Linux's first commit in 60 ms instead of 700), `list_references`
-    (`for-each-ref`, symbolic refs skipped, tags peeled), `commit_changes` (`diff-tree -r -z
+    oldest tip: Linux's first commit in 60 ms instead of 700; `walk_history_from` starts from
+    those tips listed already), `list_references` (`for-each-ref`, symbolic refs skipped, tags
+    peeled through every tag: git 2.43 peels a tag of a tag one level, so those are peeled by
+    one `rev-parse <name>^{}`), `commit_changes` (`diff-tree -r -z
     --raw --no-abbrev -M` against the first parent, or `--root`: each side's mode and object),
     `line_counts` (the same with `--numstat`, in the same order: every file diffed, so it
     follows the list; `GIT_NO_LAZY_FETCH` where git honours it, never prompting),
@@ -347,6 +359,21 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     (pages, details, repository, who is signed in, opening; the bearer token checked; a rate
     limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each
     call against it, signed in through a sandbox's `store` helper (and an askpass script).
+- `crates/egit-gix` — egit's reads through gitoxide (`gix` 0.89 without default features:
+  local reads only, no network or TLS; its dynamic pack cache, as the static one needs
+  MPL-2.0 `uluru`), each giving what egit's git commands give, and measured faster (phase 12);
+  no egui.
+  - `lib.rs` — `GixRepository::open`: `None` (git reads it) for references in a reftable or
+    replaced objects (`refs/replace/`, which `cat-file` reads in their place); shared behind an
+    `Arc`, each read taking a thread's own handle. `references`: `list_references`'s list
+    (peeled through every tag: a packed ref's peeled line, else objects' headers, only tags
+    decoded). `tips`: what `rev-list --no-walk=unsorted --exclude=refs/stash --all` lists, in
+    its order (refs by name, `HEAD`, other worktrees' `HEAD`s; commits only, each once).
+    `read`: objects as `ObjectReader::read` hands them over, saying how many: in a partial
+    clone it stops at the first object it hasn't, for git to fetch. `tests/parity.rs` checks
+    each against git's (every kind of ref, packed and loose, another worktree; 50 random
+    histories; a blobless clone read by both; replaced objects and reftable left to git);
+    `tests/measure.rs` measures them against a large repository (`EGIT_SCALE_REPO`).
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
   - `layout.rs` — `GraphBuilder::push` lays out each commit as `walk_history` yields it, in
@@ -413,7 +440,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     its commits' names packed (20 bytes each), then the end. `id(row)`, `row_of(id, near)` (a
     scan from `near`; no id→row index is kept), `Refs::at(id)` (sorted, binary search).
     `Refs::has_branch` (a local branch by name, for switching to a remote's).
-    `Objects`: one shared `cat-file` per repository, restarted after a failure.
+    `Objects`: gitoxide's reader where `egit-gix` opens the repository (opened again at each
+    walk), else one shared `cat-file` per repository (restarted after a failure), which also
+    reads what gix didn't: a partial clone's objects it hasn't (git fetches them), and all
+    once gix failed; `EGIT_GIX=0` leaves every read to git. The walk takes its refs and tips
+    from gix too, and has git walk from them (`walk_history_from`).
     `Summaries`: subject, author, preformatted date, read as rows come into view (at most 512
     a read, one read at a time), about 4,096 kept, least recently drawn forgotten first; each
     says whether its commit is signed. `Signatures`: the signed commits on screen (and the one
