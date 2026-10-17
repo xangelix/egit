@@ -5,7 +5,8 @@
 **egit** — a native git client in egui, built to stay fast on the largest repositories
 (GitKraken's ground, without Electron). The system's `git` binary does every repository
 operation; egit runs it, reads what it prints, and draws only what is on screen.
-`docs/ROADMAP.md` is the plan (five MVP phases) and the decisions behind it.
+`docs/ROADMAP.md` is the plan (five MVP phases, then one at a time) and the decisions behind
+it.
 
 ## Status
 
@@ -15,7 +16,8 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
 | 2 | Commit graph: lanes, the commit table, details and changed files | done |
 | 3 | Text grid and read-only diff viewer | done |
 | 4 | Working tree, staging, signed commits | done |
-| 5 | Clone, pull, push | done; awaiting the owner's review and checks against GitHub |
+| 5 | Clone, pull, push | done; checks against GitHub left to the owner |
+| 6 | The merge editor | in progress |
 
 ## Toolchain & commands
 
