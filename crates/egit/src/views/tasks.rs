@@ -8,8 +8,9 @@ use std::path::Path;
 
 use bstr::{BString, ByteSlice as _};
 use egit_git::{
-    ApplyAs, Changes, ConfigSnapshot, Forwarded, Head, Integrated, MailboxProgress, Operation,
-    PullMode, Pulled, PushFlag, PushOptions, Pushed, Stash, SwitchTo, Tracking,
+    ApplyAs, BisectLeft, BisectMark, BisectTerms, Bisection, Changes, ConfigSnapshot, Forwarded,
+    Head, Integrated, MailboxProgress, ObjectId, Operation, PullMode, Pulled, PushFlag,
+    PushOptions, Pushed, Stash, SwitchTo, Tracking,
 };
 use egui::{Align, Id, Layout, RichText, TextStyle, Ui, UiBuilder};
 
@@ -47,6 +48,8 @@ pub(crate) struct TaskPane<'a> {
     pub(crate) operations: &'a [Operation],
     /// How far a `git am` stopped part-way got.
     pub(crate) applying: Option<&'a MailboxProgress>,
+    /// Where a bisection under way stands.
+    pub(crate) bisect: Option<&'a Bisection>,
     pub(crate) config: Option<&'a ConfigSnapshot>,
     /// The stashes, the latest first.
     pub(crate) stashes: &'a [Stash],
@@ -58,9 +61,11 @@ pub(crate) struct TaskPane<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TaskEvent {
     /// Show the working tree (its conflicts).
-    ShowWorkTree,
+    WorkTree,
     /// Show the patch a stopped `git am` is at.
-    ShowPatch,
+    Patch,
+    /// Show this commit (a bisection's first bad one).
+    Commit(ObjectId),
 }
 
 impl TaskPane<'_> {
@@ -572,6 +577,15 @@ fn done_text(task: &Task) -> String {
             format!("Deleted {} here and on {}.", short(name), short(remote))
         }
         Task::FetchRemote { remote, .. } => format!("Fetched from {}.", short(remote)),
+        Task::Bisect { mark, commit } => format!(
+            "Marked {} {}.",
+            commit.abbreviated(ID_DIGITS),
+            match mark {
+                BisectMark::Bad => "bad",
+                BisectMark::Good => "good",
+                BisectMark::Skip => "skipped",
+            }
+        ),
         Task::AddRemote {
             name, fetch: true, ..
         } => format!("Added {name}, and fetched from it."),
@@ -755,12 +769,7 @@ fn operation_banner(
             fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
             ui.add(egui::Label::new(RichText::new(headline).color(palette.warn).strong()).wrap());
             if operation == Operation::Bisect {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Mark commits good or bad in a terminal, or stop.");
-                    if widgets::secondary(ui, !busy, "Stop bisecting").clicked() {
-                        pane.start(Task::Abort(operation));
-                    }
-                });
+                event = bisect_banner(ui, pane);
                 return;
             }
             ui.add(
@@ -778,10 +787,10 @@ fn operation_banner(
                 if operation == Operation::ApplyMailbox
                     && widgets::secondary(ui, true, "Show the patch").clicked()
                 {
-                    event = Some(TaskEvent::ShowPatch);
+                    event = Some(TaskEvent::Patch);
                 }
                 if widgets::secondary(ui, true, "Show the conflicts").clicked() {
-                    event = Some(TaskEvent::ShowWorkTree);
+                    event = Some(TaskEvent::WorkTree);
                 }
                 if widgets::primary(ui, !busy, "Continue").clicked() {
                     pane.start(Task::Continue(operation));
@@ -799,6 +808,93 @@ fn operation_banner(
             });
         });
     event
+}
+
+/// A bisection's part of its banner: where it stands, and marking the commit checked out (or
+/// showing the first bad commit, once found), or stopping.
+fn bisect_banner(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent> {
+    let busy = pane.tasks.is_busy();
+    let mut event = None;
+    let Some(bisection) = pane.bisect else {
+        ui.horizontal_wrapped(|ui| {
+            ui.label(muted(ui, "Reading where it stands…"));
+            if widgets::secondary(ui, !busy, "Stop bisecting").clicked() {
+                pane.start(Task::Abort(Operation::Bisect));
+            }
+        });
+        return None;
+    };
+    let BisectTerms { bad, good } = &bisection.terms;
+    let head = match pane.head {
+        Some(Head::Branch(branch)) => branch.commit.as_ref().map(|commit| commit.id),
+        Some(Head::Detached(commit)) => Some(commit.id),
+        None => None,
+    };
+    let said = match &bisection.left {
+        BisectLeft::NeedsBad => {
+            format!("Mark a commit {bad} (with the change you're after) from its menu (Bisect).")
+        }
+        BisectLeft::NeedsGood => format!(
+            "Mark a commit {good} (without the change) from its menu (Bisect): git then \
+             checks out one between them to test."
+        ),
+        BisectLeft::Testing { candidates } => format!(
+            "About {} more to test: {} commits could be the first {bad} one. Test the commit \
+             checked out, then mark it.",
+            bisection.left.steps().max(1),
+            crate::format::count(*candidates)
+        ),
+        BisectLeft::Found(commit) => format!(
+            "{} is the first {bad} commit.",
+            commit.abbreviated(ID_DIGITS)
+        ),
+        BisectLeft::Among(commits) => format!(
+            "The first {bad} commit is one of {}: those near it were skipped.",
+            commits.len()
+        ),
+    };
+    ui.add(egui::Label::new(said).wrap());
+    ui.horizontal_wrapped(|ui| {
+        let found = match &bisection.left {
+            BisectLeft::Found(commit) => Some(*commit),
+            _ => None,
+        };
+        if let Some(found) = found {
+            if widgets::primary(ui, true, "Show the commit").clicked() {
+                event = Some(TaskEvent::Commit(found));
+            }
+        } else if let (BisectLeft::Testing { .. }, Some(head)) = (&bisection.left, head) {
+            for (mark, label) in [
+                (BisectMark::Good, capitalized(good)),
+                (BisectMark::Bad, capitalized(bad)),
+                (BisectMark::Skip, "Skip".to_owned()),
+            ] {
+                let button = widgets::secondary(ui, !busy, &label).on_hover_text(format!(
+                    "Mark {} {}",
+                    head.abbreviated(ID_DIGITS),
+                    label.to_lowercase()
+                ));
+                if button.clicked() {
+                    pane.start(Task::Bisect { mark, commit: head });
+                }
+            }
+        }
+        if widgets::secondary(ui, !busy, "Stop bisecting")
+            .on_hover_text("Back to where it started")
+            .clicked()
+        {
+            pane.start(Task::Abort(Operation::Bisect));
+        }
+    });
+    event
+}
+
+/// `word` with its first letter in capitals.
+fn capitalized(word: &str) -> String {
+    let mut letters = word.chars();
+    letters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(letters).collect()
+    })
 }
 
 /// An operation, as a sentence starts with it.

@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, MailboxProgress, NewCommit,
-    ObjectId, Operation, Repository, Stash, Submodule, Worktree, create_commit, stashes,
-    submodules, worktrees, write_commit_graph,
+    Bisection, CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, MailboxProgress,
+    NewCommit, ObjectId, Operation, Repository, Stash, Submodule, Worktree, bisection,
+    create_commit, stashes, submodules, worktrees, write_commit_graph,
 };
 use egui_async::Bind;
 
@@ -32,6 +32,8 @@ pub(crate) struct Status {
     pub(crate) operations: Vec<Operation>,
     /// How far a `git am` stopped part-way got.
     pub(crate) applying: Option<MailboxProgress>,
+    /// Where a bisection under way stands.
+    pub(crate) bisect: Option<Bisection>,
 }
 
 /// The parts of a repository's tab.
@@ -421,10 +423,17 @@ impl RepoTab {
             };
             let operations = repository.operations().map_err(unreadable)?;
             let applying = repository.mailbox_progress().map_err(unreadable)?;
+            let bisect = if operations.contains(&Operation::Bisect) {
+                bisection(&git, &repository)
+                    .map_err(|error| Problem::git("The bisection couldn't be read", &error))?
+            } else {
+                None
+            };
             Ok(Status {
                 head,
                 operations,
                 applying,
+                bisect,
             })
         }));
     }

@@ -12,8 +12,8 @@ use std::path::Path;
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_forge::ForgeRepository;
 use egit_git::{
-    Changes, ConfigSnapshot, ObjectId, PullMode, PushOptions, RefKind, Reference, ResetMode, Stash,
-    SwitchTo, patch_file_name,
+    BisectMark, BisectTerms, Bisection, Changes, ConfigSnapshot, ObjectId, PullMode, PushOptions,
+    RefKind, Reference, ResetMode, Stash, SwitchTo, patch_file_name,
 };
 use egui::{Response, Ui};
 
@@ -81,6 +81,8 @@ pub(super) struct Menus<'a> {
     pub(super) busy: bool,
     /// Whether an operation is in progress (the current branch can't change meanwhile).
     pub(super) operation: bool,
+    /// Where the bisection under way stands, if one is.
+    pub(super) bisect: Option<&'a Bisection>,
     /// Its remotes on GitHub and GitLab, and their requests.
     pub(super) forge: &'a RepoForge,
     /// What of the history is shown, as asked: the branches soloed, the one pinned.
@@ -259,8 +261,20 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             shown: shown.clone(),
         }));
     }
-    if item(ui, &format!("Rebase {current} onto this commit"), other) {
-        ask(Ask::Task(Task::Rebase { onto: what, shown }));
+    for (label, keep_merges) in [
+        (format!("Rebase {current} onto this commit"), false),
+        (
+            format!("Rebase {current} onto this commit, keeping merges"),
+            true,
+        ),
+    ] {
+        if item(ui, &label, other) {
+            ask(Ask::Task(Task::Rebase {
+                onto: what.clone(),
+                shown: shown.clone(),
+                keep_merges,
+            }));
+        }
     }
     if item(ui, &format!("Cherry-pick onto {current}"), other) {
         ask(Ask::Task(Task::CherryPick(id)));
@@ -269,6 +283,7 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
         ask(Ask::Task(Task::Revert(id)));
     }
     rewrite_items(ui, menus, id, &mut ask);
+    bisect_menu(ui, menus, id, &mut ask);
     ui.menu_button(format!("Reset {current} to this commit"), |ui| {
         if item(ui, "Soft: keep the changes staged", other) {
             ask(Ask::Task(Task::Reset(id, ResetMode::Soft)));
@@ -322,6 +337,40 @@ fn rewrite_items(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, ask: &mut impl Fn
     ui.separator();
 }
 
+/// Bisecting from a commit: marking it bad or good (the bisection's own words for them, when
+/// it has some), which starts one when none is under way; or skipping it.
+fn bisect_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, ask: &mut impl FnMut(Ask)) {
+    ui.menu_button("Bisect", |ui| {
+        let (terms, allowed) = menus.bisect.map_or_else(
+            || (BisectTerms::default(), menus.can_change()),
+            |bisection| (bisection.terms.clone(), menus.idle()),
+        );
+        let marks = [
+            (BisectMark::Bad, format!("Mark as {}", terms.bad)),
+            (BisectMark::Good, format!("Mark as {}", terms.good)),
+            (BisectMark::Skip, "Skip it (it can't be tested)".to_owned()),
+        ];
+        if menus.bisect.is_none() {
+            ui.label(muted(
+                ui,
+                "Mark a commit with the change you're after, and one without it: git then \
+                 checks out commits between them for you to test.",
+            ));
+        }
+        for (mark, label) in marks {
+            let allowed = if mark == BisectMark::Skip && menus.bisect.is_none() {
+                Err("Skipping is for a bisection under way")
+            } else {
+                allowed
+            };
+            if item(ui, &label, allowed) {
+                ask(Ask::Task(Task::Bisect { mark, commit: id }));
+            }
+        }
+    });
+    ui.separator();
+}
+
 /// A ref badge's context menu.
 pub(super) fn ref_menu(
     ui: &mut Ui,
@@ -360,11 +409,20 @@ pub(super) fn ref_menu(
                     shown: name.clone().into_owned(),
                 }));
             }
-            if item(ui, &format!("Rebase {current} onto {name}"), other) {
-                ask(Ask::Task(Task::Rebase {
-                    onto: reference.name.clone(),
-                    shown: name.clone().into_owned(),
-                }));
+            for (label, keep_merges) in [
+                (format!("Rebase {current} onto {name}"), false),
+                (
+                    format!("Rebase {current} onto {name}, keeping merges"),
+                    true,
+                ),
+            ] {
+                if item(ui, &label, other) {
+                    ask(Ask::Task(Task::Rebase {
+                        onto: reference.name.clone(),
+                        shown: name.clone().into_owned(),
+                        keep_merges,
+                    }));
+                }
             }
             forward_items(ui, menus, reference, is_current, &mut ask);
             if reference.kind == RefKind::Branch {

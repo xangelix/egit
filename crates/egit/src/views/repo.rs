@@ -124,6 +124,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                             .unwrap_or(false),
                         operations: status.map_or(&[], |status| status.operations.as_slice()),
                         applying: status.and_then(|status| status.applying.as_ref()),
+                        bisect: status.and_then(|status| status.bisect.as_ref()),
                         config,
                         tasks: self.tasks,
                         stashes: stashes

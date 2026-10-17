@@ -7,6 +7,9 @@
 //! Keys, while no text field has the focus: ↑ and ↓ select, Alt+↑ and Alt+↓ move the selected
 //! commit, and P, R, S, F, D pick, reword, squash, fix up, or drop it. The list draws only the
 //! rows on screen (one height each), so a long plan costs what shows.
+//!
+//! A range holding merges is rebased keeping them, in git's own order: its rows don't move,
+//! nothing is melded, and a merge is kept or reworded, never dropped.
 
 use std::sync::Arc;
 
@@ -18,7 +21,7 @@ use egui_async::Bind;
 use super::history::{ID_DIGITS, Shared};
 use crate::jobs;
 use crate::problem::Problem;
-use crate::tasks::{Task, range_problem, unflattened};
+use crate::tasks::{Task, range_problem};
 use crate::theme::icon;
 use crate::widgets::{self, muted};
 
@@ -69,6 +72,16 @@ impl Kind {
     /// Whether it melds its commit into the one below.
     const fn melds(self) -> bool {
         matches!(self, Self::Squash | Self::Fixup)
+    }
+
+    /// Whether a commit may be given it: a merge (`merge`) or not, in a range holding merges
+    /// (`keeping`, rebased in git's order) or not.
+    const fn allowed(self, merge: bool, keeping: bool) -> bool {
+        match self {
+            Self::Pick | Self::Reword => true,
+            Self::Drop => !merge,
+            Self::Squash | Self::Fixup => !keeping,
+        }
     }
 }
 
@@ -130,9 +143,8 @@ impl RebaseView {
             );
             view.range.request(jobs::blocking(move || {
                 rebase_range(&git, &repository, from, &cancel)
-                    .map_err(|error| range_problem(&error))
-                    .and_then(unflattened)
                     .map(Arc::new)
+                    .map_err(|error| range_problem(&error))
             }));
         }
         view
@@ -163,11 +175,19 @@ impl RebaseView {
         }
     }
 
-    /// Sets the selected commit's step (a reword starts from its message).
+    /// Sets the selected commit's step (a reword starts from its message), when it is one
+    /// that commit may have.
     fn set_kind(&mut self, range: &RebaseRange, kind: Kind) {
         let Some(row) = self.rows.get_mut(self.selected) else {
             return;
         };
+        let merge = range
+            .commits
+            .get(row.commit)
+            .is_some_and(|commit| commit.merge);
+        if !kind.allowed(merge, range.merges() > 0) {
+            return;
+        }
         row.kind = kind;
         if kind == Kind::Reword && row.message.is_none() {
             row.message = range
@@ -177,8 +197,12 @@ impl RebaseView {
         }
     }
 
-    /// Moves the selected commit up (toward `HEAD`) or down.
-    fn shift(&mut self, up: bool) {
+    /// Moves the selected commit up (toward `HEAD`) or down (never in a range holding merges:
+    /// the order is git's).
+    fn shift(&mut self, range: &RebaseRange, up: bool) {
+        if range.merges() > 0 {
+            return;
+        }
         let other = if up {
             self.selected.checked_sub(1)
         } else {
@@ -303,9 +327,9 @@ fn keys(ui: &Ui, view: &mut RebaseView, range: &RebaseRange) {
     }
     let pressed = |key, modifiers| ui.input_mut(|input| input.consume_key(modifiers, key));
     if pressed(Key::ArrowUp, Modifiers::ALT) {
-        view.shift(true);
+        view.shift(range, true);
     } else if pressed(Key::ArrowDown, Modifiers::ALT) {
-        view.shift(false);
+        view.shift(range, false);
     } else if pressed(Key::ArrowUp, Modifiers::NONE) {
         view.selected = view.selected.saturating_sub(1);
         view.reveal = true;
@@ -366,11 +390,15 @@ fn bar(
                     event = Some(RebaseEvent::Start(Task::InteractiveRebase {
                         base: range.base,
                         plan: plan.clone(),
+                        keep_merges: range.merges() > 0,
                     }));
                 }
                 match &plan {
                     Err(why) => {
                         ui.label(muted(ui, format!("{why}.")));
+                    }
+                    Ok(_) if range.merges() > 0 => {
+                        ui.label(muted(ui, "Keys: P R D."));
                     }
                     Ok(_) => {
                         // The arrows are icons: the text font has none.
@@ -385,6 +413,21 @@ fn bar(
                     }
                 }
             });
+            if range.merges() > 0 {
+                ui.label(muted(
+                    ui,
+                    format!(
+                        "{} {} kept, in git's order: commits are reworded or dropped, merges \
+                         reworded; nothing moves or melds.",
+                        crate::format::count(u64::try_from(range.merges()).unwrap_or(u64::MAX)),
+                        if range.merges() == 1 {
+                            "merge is"
+                        } else {
+                            "merges are"
+                        }
+                    ),
+                ));
+            }
         });
     event
 }
@@ -467,29 +510,17 @@ fn row(
             .id_salt(("rebase-row-ui", commit.id)),
     );
     let ui = &mut inner;
-    let last = at.saturating_add(1) == view.rows.len();
-    for (glyph, name, enabled, up) in [
-        (icon::ARROW_UP, "Move up", at > 0, true),
-        (icon::ARROW_DOWN, "Move down", !last, false),
-    ] {
-        let button = ui.add_enabled(enabled, egui::Button::new(glyph).small());
-        // Named in words, for those who don't see the arrow.
-        button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
-        if button
-            .on_hover_text(format!("{name} (Alt+{glyph})"))
-            .clicked()
-        {
-            view.selected = at;
-            view.shift(up);
-        }
-    }
+    move_buttons(ui, view, range, at);
+    let keeping = range.merges() > 0;
     let mut kind = planned.kind;
     egui::ComboBox::from_id_salt(("rebase-step", commit.id))
         .width(84.0)
         .selected_text(kind.name())
         .show_ui(ui, |ui| {
             for choice in Kind::ALL {
-                ui.selectable_value(&mut kind, choice, choice.name());
+                if choice.allowed(commit.merge, keeping) {
+                    ui.selectable_value(&mut kind, choice, choice.name());
+                }
             }
         });
     if kind != planned.kind {
@@ -505,6 +536,12 @@ fn row(
         )
         .selectable(false),
     );
+    if commit.merge {
+        ui.add(
+            egui::Label::new(RichText::new(icon::GIT_MERGE).color(palette.muted)).selectable(false),
+        )
+        .on_hover_text("A merge: kept, in git's order");
+    }
     let mut text = RichText::new(subject);
     text = match kind {
         Kind::Drop => text.strikethrough().color(palette.muted),
@@ -525,6 +562,29 @@ fn row(
     ui.add(egui::Label::new(text).truncate().selectable(false));
     if kind.melds() {
         ui.add(egui::Label::new(muted(ui, "into the commit below")).selectable(false));
+    }
+}
+
+/// A row's Move up and Move down (disabled in a range holding merges: its order is git's).
+fn move_buttons(ui: &mut Ui, view: &mut RebaseView, range: &RebaseRange, at: usize) {
+    let last = at.saturating_add(1) == view.rows.len();
+    let keeping = range.merges() > 0;
+    for (glyph, name, enabled, up) in [
+        (icon::ARROW_UP, "Move up", at > 0 && !keeping, true),
+        (icon::ARROW_DOWN, "Move down", !last && !keeping, false),
+    ] {
+        let button = ui.add_enabled(enabled, egui::Button::new(glyph).small());
+        // Named in words, for those who don't see the arrow.
+        button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+        let button = if keeping {
+            button.on_disabled_hover_text("The range holds merges: its order is git's")
+        } else {
+            button.on_hover_text(format!("{name} (Alt+{glyph})"))
+        };
+        if button.clicked() {
+            view.selected = at;
+            view.shift(range, up);
+        }
     }
 }
 
@@ -612,7 +672,7 @@ mod tests {
         let mut view = view(&range);
         assert_eq!(view.plan(&range), Err("Nothing changes yet"));
         // The newest moved below the middle one, which is squashed into the oldest.
-        view.shift(false);
+        view.shift(&range, false);
         view.selected = 0;
         view.set_kind(&range, Kind::Squash);
         let plan = view.plan(&range).unwrap();

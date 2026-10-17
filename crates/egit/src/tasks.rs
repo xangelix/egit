@@ -18,18 +18,19 @@ use egit_forge::{
     Account, ForgeKind, ForgeRepository, NewPullRequest, Opened, create_pull_request,
 };
 use egit_git::{
-    ApplyAs, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError,
-    FetchOptions, ForwardFrom, Forwarded, Git, GitError, Integrated, MAX_PLANNED, ObjectId,
-    Operation, Planned, Progress, PullMode, Pulled, PushOptions, Pushed, RangeError, RebaseError,
-    RebaseRange, RemoveWorktreeError, Repository, ResetMode, Stash, StashError, Step, SwitchError,
-    SwitchTo, WorktreeFrom, abort_operation, add_remote, add_worktree, apply_patch, changes_patch,
-    cherry_pick, continue_operation, create_branch, create_tag, delete_branch,
-    delete_remote_branch, delete_tag, fast_forward_branch, fast_forward_current, fetch,
-    fetch_refspecs, fetch_remote, format_patch, format_patches, lock_worktree, merge,
-    prune_worktrees, pull, push, push_tag, rebase, rebase_interactive, rebase_range, remove_remote,
-    remove_worktree, rename_branch, rename_remote, reset, revert, set_config, set_remote_url,
-    set_upstream, skip_operation, stash_apply, stash_drop, stash_push, switch, unlock_worktree,
-    unset_config, update_submodules,
+    ApplyAs, BisectMark, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget,
+    DeleteBranchError, FetchOptions, ForwardFrom, Forwarded, Git, GitError, Integrated,
+    MAX_PLANNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled, PushOptions, Pushed,
+    RangeError, RebaseError, RebaseRange, RemoveWorktreeError, Repository, ResetMode, Stash,
+    StashError, Step, SwitchError, SwitchTo, WorktreeFrom, abort_operation, add_remote,
+    add_worktree, apply_patch, bisect_mark, changes_patch, cherry_pick, continue_operation,
+    create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
+    fast_forward_branch, fast_forward_current, fetch, fetch_refspecs, fetch_remote, format_patch,
+    format_patches, lock_worktree, merge, prune_worktrees, pull, push, push_tag, rebase,
+    rebase_interactive, rebase_keeping_merges, rebase_range, remove_remote, remove_worktree,
+    rename_branch, rename_remote, reset, revert, set_config, set_remote_url, set_upstream,
+    skip_operation, stash_apply, stash_drop, stash_push, switch, unlock_worktree, unset_config,
+    update_submodules,
 };
 use egui_async::Bind;
 use parking_lot::Mutex;
@@ -86,18 +87,27 @@ pub(crate) enum Task {
         what: BString,
         shown: String,
     },
-    /// Rebase the current branch onto a ref or commit.
+    /// Rebase the current branch onto a ref or commit; `keep_merges`: its merges too
+    /// (otherwise flattened).
     Rebase {
         onto: BString,
         shown: String,
+        keep_merges: bool,
     },
     CherryPick(ObjectId),
     Revert(ObjectId),
     /// Rebase the current branch interactively: onto `base` (`None`: from the root), its
-    /// commits as `plan` says (oldest first).
+    /// commits as `plan` says (oldest first); `keep_merges`: the range holds merges, kept in
+    /// git's own order.
     InteractiveRebase {
         base: Option<ObjectId>,
         plan: Vec<Planned>,
+        keep_merges: bool,
+    },
+    /// Mark a commit good, bad, or skipped, starting a bisection when none is under way.
+    Bisect {
+        mark: BisectMark,
+        commit: ObjectId,
     },
     /// Drop a commit from the current branch (what follows it rebased).
     DropCommit(ObjectId),
@@ -311,6 +321,7 @@ impl Task {
             Self::Merge { .. } => "Merging",
             Self::Rebase { .. } | Self::InteractiveRebase { .. } => "Rebasing",
             Self::DropCommit(_) => "Dropping the commit",
+            Self::Bisect { .. } => "Bisecting",
             Self::SquashIntoParent(_) => "Squashing",
             Self::CherryPick(_) => "Cherry-picking",
             Self::Revert(_) => "Reverting",
@@ -588,7 +599,8 @@ fn run(
         | Task::Reset(..)
         | Task::FastForward { .. }
         | Task::ApplyPatch { .. }
-        | Task::Skip(_) => history(git, repository, task, cancel),
+        | Task::Skip(_)
+        | Task::Bisect { .. } => history(git, repository, task, cancel),
         Task::InteractiveRebase { .. } | Task::DropCommit(_) | Task::SquashIntoParent(_) => {
             rewrite(git, repository, task, cancel)
         }
@@ -817,9 +829,14 @@ fn history(
         Task::Merge { what, .. } => merge(git, repository, what.as_ref(), cancel)
             .map(Outcome::Integrated)
             .or_else(failed("Merging failed")),
-        Task::Rebase { onto, .. } => rebase(git, repository, onto.as_ref(), false, cancel)
+        Task::Rebase {
+            onto, keep_merges, ..
+        } => rebase(git, repository, onto.as_ref(), *keep_merges, cancel)
             .map(Outcome::Integrated)
             .or_else(failed("Rebasing failed")),
+        Task::Bisect { mark, commit } => bisect_mark(git, repository, *mark, *commit, cancel)
+            .map(|()| Outcome::Done)
+            .or_else(failed("The commit wasn't marked")),
         Task::CherryPick(commit) => cherry_pick(git, repository, *commit, cancel)
             .map(Outcome::Integrated)
             .or_else(failed("Cherry-picking failed")),
@@ -851,18 +868,20 @@ fn rewrite(
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
     const TITLE: &str = "Rebasing failed";
-    let range = |from| {
-        rebase_range(git, repository, from, cancel)
-            .map_err(|error| range_problem(&error))
-            .and_then(unflattened)
-    };
-    let (base, plan) = match task {
-        Task::InteractiveRebase { base, plan } => (*base, plan.clone()),
+    let range =
+        |from| rebase_range(git, repository, from, cancel).map_err(|error| range_problem(&error));
+    let (base, plan, keep_merges) = match task {
+        Task::InteractiveRebase {
+            base,
+            plan,
+            keep_merges,
+        } => (*base, plan.clone(), *keep_merges),
         Task::DropCommit(commit) => {
             let range = range(*commit)?;
             (
                 range.base,
                 planned(&range, |id| (id == *commit).then_some(Step::Drop)),
+                range.merges() > 0,
             )
         }
         Task::SquashIntoParent(commit) => {
@@ -876,12 +895,18 @@ fn rewrite(
             (
                 range.base,
                 planned(&range, |id| (id == *commit).then_some(Step::Squash)),
+                range.merges() > 0,
             )
         }
         // `run` sends the others elsewhere.
         _ => return Ok(Outcome::Done),
     };
-    match rebase_interactive(git, repository, base, &plan, cancel) {
+    let rebased = if keep_merges {
+        rebase_keeping_merges(git, repository, base, &plan, cancel)
+    } else {
+        rebase_interactive(git, repository, base, &plan, cancel)
+    };
+    match rebased {
         Ok(integrated) => Ok(Outcome::Integrated(integrated)),
         Err(RebaseError::Git(error)) => failed(TITLE)(error),
         Err(error) => Err(Problem::new(TITLE, format!("The plan won't do: {error}."))),
@@ -898,20 +923,6 @@ fn planned(range: &RebaseRange, step: impl Fn(ObjectId) -> Option<Step>) -> Vec<
             step: step(commit.id).unwrap_or(Step::Pick),
         })
         .collect()
-}
-
-/// `range`, unless it holds merges: an interactive rebase would flatten them.
-pub(crate) fn unflattened(range: RebaseRange) -> Result<RebaseRange, Problem> {
-    match range.merges() {
-        0 => Ok(range),
-        count => Err(Problem::new(
-            "This can't be rewritten here",
-            format!(
-                "Between the commit and HEAD are {count} merge(s): an interactive rebase would \
-                 flatten them. Start after the last merge."
-            ),
-        )),
-    }
 }
 
 /// Why a range can't be rewritten, for people.

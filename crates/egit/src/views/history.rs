@@ -12,9 +12,9 @@ use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
 use egit_git::{
-    CancelToken, Changes, Committed, ConfigSnapshot, FileChange, Git, Head, MailboxProgress,
-    ObjectId, Operation, RefKind, Reference, Repository, SignatureCheck, Stash, Status, Verdict,
-    looks_like_patch,
+    Bisection, CancelToken, Changes, Committed, ConfigSnapshot, FileChange, Git, Head,
+    MailboxProgress, ObjectId, Operation, RefKind, Reference, Repository, SignatureCheck, Stash,
+    Status, Verdict, looks_like_patch,
 };
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
@@ -126,6 +126,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) operations: &'a [Operation],
     /// How far a `git am` stopped part-way got.
     pub(crate) applying: Option<&'a MailboxProgress>,
+    /// Where a bisection under way stands.
+    pub(crate) bisect: Option<&'a Bisection>,
     /// The repository's configuration, once read.
     pub(crate) config: Option<&'a ConfigSnapshot>,
     /// What the user asked of the repository: fetching, switching, stashing, ….
@@ -634,6 +636,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         sign_by_default,
         operations,
         applying,
+        bisect,
         config,
         tasks,
         stashes,
@@ -656,6 +659,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         partial_clone,
         work_status: work_status.as_ref(),
         operation: operations.first().copied(),
+        bisect,
         config,
         busy: tasks.is_busy(),
         committing: committing.is_pending(),
@@ -677,6 +681,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         head,
         operations,
         applying,
+        bisect,
         config,
         stashes,
         tasks: &mut *tasks,
@@ -742,8 +747,13 @@ fn bar_panel(
             top_bar(ui, shared, history, work_tree, view, writing, pane);
             tasks::outcome(ui, &mut view.tasks, pane);
             match tasks::banner(ui, &mut view.tasks, pane) {
-                Some(TaskEvent::ShowWorkTree) => view.select_work(),
-                Some(TaskEvent::ShowPatch) => view.show_patch(PatchSource::Stopped),
+                Some(TaskEvent::WorkTree) => view.select_work(),
+                Some(TaskEvent::Patch) => view.show_patch(PatchSource::Stopped),
+                Some(TaskEvent::Commit(commit)) => {
+                    view.file = None;
+                    view.tool = None;
+                    view.show_commit(&history.shown, commit);
+                }
                 None => {}
             }
         });
@@ -934,6 +944,8 @@ pub(super) struct Shared<'a> {
     pub(super) work_status: Option<&'a Arc<Status>>,
     /// The operation git stopped in the middle of, if any (it names a conflict's sides).
     pub(super) operation: Option<Operation>,
+    /// Where a bisection under way stands.
+    pub(super) bisect: Option<&'a Bisection>,
     /// The repository's configuration, once read (its remotes, for the menus).
     pub(super) config: Option<&'a ConfigSnapshot>,
     /// Whether a task is running.
@@ -960,6 +972,7 @@ impl Shared<'_> {
             refs,
             busy: self.busy,
             operation: self.operation.is_some(),
+            bisect: self.bisect,
             forge: self.forge,
             scope: &self.scope,
             work_tree: self.repository.work_tree(),
@@ -1981,7 +1994,9 @@ fn badges(
         let checked_out = menus.branch.is_some()
             && reference.kind == RefKind::Branch
             && menus.branch == Some(reference.short_name());
+        let bisected = bisect_badge(reference, menus.bisect, palette);
         let (glyph, color) = match reference.kind {
+            _ if let Some((glyph, color, _)) = bisected => (glyph, color),
             RefKind::Branch => (icon::GIT_BRANCH, palette.accent),
             RefKind::RemoteBranch => (icon::CLOUD, palette.muted),
             RefKind::Tag => (icon::TAG, palette.warn),
@@ -1992,7 +2007,11 @@ fn badges(
         } else {
             (color.gamma_multiply(0.16), palette.text)
         };
-        let label = format!("{glyph} {}", reference.short_name().to_str_lossy());
+        let name = bisected.map_or_else(
+            || reference.short_name().to_str_lossy().into_owned(),
+            |(_, _, word)| word,
+        );
+        let label = format!("{glyph} {name}");
         let badge = Frame::new()
             .fill(fill)
             .stroke(Stroke::new(1.0, color.gamma_multiply(0.7)))
@@ -2024,6 +2043,28 @@ fn badges(
         ui.add(Label::new(muted(ui, format!("+{more}"))).selectable(false));
     }
     clicked
+}
+
+/// A bisection's ref (`refs/bisect/bad`, `good-…`, `skip-…`) as its badge shows it: its icon,
+/// colour, and word (the bisection's own terms); `None` for any other ref.
+fn bisect_badge(
+    reference: &Reference,
+    bisection: Option<&Bisection>,
+    palette: Palette,
+) -> Option<(&'static str, Color32, String)> {
+    let mark = reference.name.strip_prefix(b"refs/bisect/")?;
+    let terms = bisection
+        .map(|bisection| bisection.terms.clone())
+        .unwrap_or_default();
+    if mark == terms.bad.as_bytes() {
+        Some((icon::X_CIRCLE, palette.danger, terms.bad))
+    } else if mark.starts_with(format!("{}-", terms.good).as_bytes()) {
+        Some((icon::CHECK_CIRCLE, palette.ok, terms.good))
+    } else if mark.starts_with(b"skip-") {
+        Some((icon::MINUS_CIRCLE, palette.muted, "skipped".to_owned()))
+    } else {
+        None
+    }
 }
 
 /// The pull requests whose head is a commit, as badges (their number, coloured by their
