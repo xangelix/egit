@@ -318,6 +318,15 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
             }
             dismiss = true;
         }
+        Some(Ok(Outcome::WorktreeChanges)) => {
+            if let Some(Task::RemoveWorktree { path, .. }) = &pane.tasks.task {
+                view.dialog = Some(Dialog::RemoveWorktree {
+                    path: path.clone(),
+                    changes: true,
+                });
+            }
+            dismiss = true;
+        }
         Some(Ok(Outcome::Pushed(pushed))) if !pushed.succeeded() => {
             refused(ui, view, pane, &pushed, &mut dismiss);
         }
@@ -441,6 +450,24 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
         (Task::AddWorktree { path, .. }, _) => {
             format!("Made a worktree at {}.", format::display_path(path, home))
         }
+        (Task::RemoveWorktree { path, .. }, _) => {
+            format!(
+                "Removed the worktree at {}.",
+                format::display_path(path, home)
+            )
+        }
+        (Task::LockWorktree { path, .. }, _) => {
+            format!(
+                "Locked the worktree at {}.",
+                format::display_path(path, home)
+            )
+        }
+        (Task::UnlockWorktree(path), _) => {
+            format!(
+                "Unlocked the worktree at {}.",
+                format::display_path(path, home)
+            )
+        }
         (Task::SavePatch { commit, path }, _) => format!(
             "Saved {}'s patch to {}.",
             commit.abbreviated(ID_DIGITS),
@@ -544,6 +571,19 @@ fn done_text(task: &Task) -> String {
         Task::DeleteBranchEverywhere { name, remote, .. } => {
             format!("Deleted {} here and on {}.", short(name), short(remote))
         }
+        Task::FetchRemote { remote, .. } => format!("Fetched from {}.", short(remote)),
+        Task::AddRemote {
+            name, fetch: true, ..
+        } => format!("Added {name}, and fetched from it."),
+        Task::AddRemote { name, .. } => format!("Added {name}."),
+        Task::RenameRemote { old, new } => format!("Renamed {} to {new}.", short(old)),
+        Task::RemoveRemote(name) => format!("Removed {}.", short(name)),
+        Task::SetRemoteUrls { remote, .. } => format!("Changed {}'s address.", short(remote)),
+        Task::UpdateSubmodules(paths) => match paths.as_slice() {
+            [path] => format!("Updated {}.", short(path)),
+            _ => "Updated the submodules.".to_owned(),
+        },
+        Task::PruneWorktrees => "Forgot the worktrees whose folders are gone.".to_owned(),
         Task::Undo(undo) => format!("Undid {}.", undo.what),
         Task::Redo(undo) => format!("Redid {}.", undo.what),
         _ => "Done.".to_owned(),

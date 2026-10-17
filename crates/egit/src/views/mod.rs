@@ -18,6 +18,7 @@ mod rebase;
 mod reflog;
 pub(crate) mod repo;
 mod search;
+mod sidebar;
 pub(crate) mod status_bar;
 mod tasks;
 mod work;

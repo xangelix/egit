@@ -91,6 +91,26 @@ pub(crate) enum Dialog {
     Stash { message: String, untracked: bool },
     /// Whether to drop a stash.
     DropStash(Stash),
+    /// A remote to add: its name and address, and whether to fetch from it at once.
+    AddRemote {
+        name: String,
+        url: String,
+        fetch: bool,
+    },
+    /// A remote's addresses: where it fetches from, and where it pushes to (empty: the same).
+    EditRemote {
+        remote: BString,
+        url: String,
+        push: String,
+    },
+    /// A remote's new name.
+    RenameRemote { old: BString, name: String },
+    /// Whether to remove a remote, with its branches.
+    RemoveRemote(BString),
+    /// Whether to remove a worktree; `changes`: it has some, which would go with it.
+    RemoveWorktree { path: PathBuf, changes: bool },
+    /// Why a worktree is locked (optional).
+    LockWorktree { path: PathBuf, reason: String },
 }
 
 /// What a new worktree checks out, as a menu asked.
@@ -204,6 +224,24 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
             "Drop",
             || Task::DropStash(stash.clone()),
         ),
+        Dialog::AddRemote { name, url, fetch } => add_remote(ui, pane, name, url, fetch),
+        Dialog::EditRemote { remote, url, push } => edit_remote(ui, remote, url, push),
+        Dialog::RenameRemote { old, name } => rename_remote(ui, pane, old, name),
+        Dialog::RemoveRemote(name) => {
+            let name_shown = name.to_str_lossy();
+            confirm(
+                ui,
+                &format!("Remove the remote {name_shown}?"),
+                &format!(
+                    "Its remote-tracking branches go too ({name_shown}/…), and branches \
+                     following them follow nothing after. The remote itself is untouched."
+                ),
+                "Remove",
+                || Task::RemoveRemote(name.clone()),
+            )
+        }
+        Dialog::RemoveWorktree { path, changes } => remove_worktree(ui, pane, path, *changes),
+        Dialog::LockWorktree { path, reason } => lock_worktree(ui, pane, path, reason),
     }
 }
 
@@ -759,4 +797,175 @@ fn stash(ui: &mut Ui, message: &mut String, untracked: &mut bool) -> Option<Answ
         return Some(Answer::Run(go()));
     }
     buttons(ui, "Stash", true, go)
+}
+
+/// Whether `name` could be a new remote's: one git takes, not one already here.
+fn remote_problem(ui: &mut Ui, pane: &TaskPane<'_>, name: &str) -> bool {
+    let name = name.trim();
+    let taken = pane.config.is_some_and(|config| {
+        crate::tasks::remote_names(config)
+            .iter()
+            .any(|known| known == name)
+    });
+    if taken {
+        let palette = Palette::of(ui.ctx());
+        ui.label(
+            RichText::new(format!("There is a remote called {name} already.")).color(palette.warn),
+        );
+        return false;
+    }
+    name_problem(ui, name)
+}
+
+/// Whether `url` could be an address: something, on one line.
+fn url_ready(url: &str) -> bool {
+    let url = url.trim();
+    !url.is_empty() && !url.contains(['\n', '\r'])
+}
+
+/// A labelled one-line field that doesn't take the focus.
+fn field(ui: &mut Ui, label: &str, text: &mut String) -> bool {
+    let label = ui.label(muted(ui, label));
+    let field = ui
+        .add(TextEdit::singleline(text).desired_width(f32::INFINITY))
+        .labelled_by(label.id);
+    field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter))
+}
+
+/// A remote to add.
+fn add_remote(
+    ui: &mut Ui,
+    pane: &TaskPane<'_>,
+    name: &mut String,
+    url: &mut String,
+    fetch: &mut bool,
+) -> Option<Answer> {
+    title(ui, "Add a remote");
+    says(
+        ui,
+        "Another repository this one fetches from and pushes to: a colleague's, or the one \
+         yours was forked from.",
+    );
+    ui.add_space(8.0);
+    let named = name_field(ui, "Name", name);
+    let name_ready = remote_problem(ui, pane, name);
+    ui.add_space(4.0);
+    let addressed = field(ui, "Address (URL)", url);
+    ui.add_space(4.0);
+    ui.checkbox(fetch, "Fetch from it now");
+    ui.add_space(12.0);
+    let ready = name_ready && url_ready(url);
+    let go = || Task::AddRemote {
+        name: name.trim().to_owned(),
+        url: url.trim().to_owned(),
+        fetch: *fetch,
+    };
+    if (named || addressed) && ready {
+        return Some(Answer::Run(go()));
+    }
+    buttons(ui, "Add remote", ready, go)
+}
+
+/// A remote's addresses.
+fn edit_remote(
+    ui: &mut Ui,
+    remote: &BString,
+    url: &mut String,
+    push: &mut String,
+) -> Option<Answer> {
+    title(ui, &format!("Change {}'s address", remote.to_str_lossy()));
+    let entered = name_field(ui, "Fetches from", url);
+    ui.add_space(4.0);
+    let pushed = field(ui, "Pushes to (empty: where it fetches from)", push);
+    ui.add_space(12.0);
+    let push_ready = push.trim().is_empty() || url_ready(push);
+    let ready = url_ready(url) && push_ready;
+    let go = || Task::SetRemoteUrls {
+        remote: remote.clone(),
+        url: url.trim().to_owned(),
+        push: Some(push.trim().to_owned()).filter(|push| !push.is_empty()),
+    };
+    if (entered || pushed) && ready {
+        return Some(Answer::Run(go()));
+    }
+    buttons(ui, "Save", ready, go)
+}
+
+/// A remote's new name.
+fn rename_remote(
+    ui: &mut Ui,
+    pane: &TaskPane<'_>,
+    old: &BString,
+    name: &mut String,
+) -> Option<Answer> {
+    title(ui, &format!("Rename the remote {}", old.to_str_lossy()));
+    says(
+        ui,
+        "Its remote-tracking branches, and the branches following them, are renamed with it.",
+    );
+    ui.add_space(8.0);
+    let entered = name_field(ui, "New name", name);
+    let ready = remote_problem(ui, pane, name) && name.trim().as_bytes() != old.as_slice();
+    ui.add_space(12.0);
+    let go = || Task::RenameRemote {
+        old: old.clone(),
+        new: name.trim().to_owned(),
+    };
+    if entered && ready {
+        return Some(Answer::Run(go()));
+    }
+    buttons(ui, "Rename", ready, go)
+}
+
+/// Whether to remove a worktree (again, saying what goes with it, when it has changes).
+fn remove_worktree(ui: &mut Ui, pane: &TaskPane<'_>, path: &Path, changes: bool) -> Option<Answer> {
+    let shown = crate::format::display_path(path, pane.home);
+    let (said, yes) = if changes {
+        (
+            "It has changes not committed, or files git doesn't track: removing it deletes them.",
+            "Remove anyway",
+        )
+    } else {
+        (
+            "Its folder is deleted; its branch, and the commits on it, stay.",
+            "Remove",
+        )
+    };
+    confirm(
+        ui,
+        &format!("Remove the worktree at {shown}?"),
+        said,
+        yes,
+        || Task::RemoveWorktree {
+            path: path.to_path_buf(),
+            force: changes,
+        },
+    )
+}
+
+/// Why a worktree is locked.
+fn lock_worktree(
+    ui: &mut Ui,
+    pane: &TaskPane<'_>,
+    path: &Path,
+    reason: &mut String,
+) -> Option<Answer> {
+    let shown = crate::format::display_path(path, pane.home);
+    title(ui, &format!("Lock the worktree at {shown}"));
+    says(
+        ui,
+        "A locked worktree isn't pruned when its folder is missing (on a drive not always \
+         there, say), nor moved or removed.",
+    );
+    ui.add_space(8.0);
+    let entered = name_field(ui, "Why (optional)", reason);
+    ui.add_space(12.0);
+    let go = || Task::LockWorktree {
+        path: path.to_path_buf(),
+        reason: reason.trim().to_owned(),
+    };
+    if entered {
+        return Some(Answer::Run(go()));
+    }
+    buttons(ui, "Lock", true, go)
 }

@@ -145,7 +145,7 @@ impl Menus<'_> {
 
     /// Where a new worktree named for `suffix` goes by default: beside the work tree, its
     /// folder's name and `suffix`.
-    fn worktree_path(&self, suffix: &str) -> String {
+    pub(super) fn worktree_path(&self, suffix: &str) -> String {
         let folder = self.work_tree.file_name().map_or_else(
             || "worktree".to_owned(),
             |name| name.to_string_lossy().into_owned(),
@@ -201,7 +201,7 @@ fn split_remote<'n>(remotes: &[String], name: &'n BStr) -> Option<(&'n BStr, &'n
 }
 
 /// An item that may be disabled (with why on hover).
-fn item(ui: &mut Ui, label: &str, allowed: Result<(), &str>) -> bool {
+pub(super) fn item(ui: &mut Ui, label: &str, allowed: Result<(), &str>) -> bool {
     let response = ui.add_enabled(allowed.is_ok(), egui::Button::new(label));
     let response = match allowed {
         Err(why) => response.on_disabled_hover_text(why),
@@ -792,6 +792,16 @@ fn graph_items(ui: &mut Ui, menus: &Menus<'_>, reference: &Reference, ask: &mut 
         });
     }
     if scope.only.is_empty() {
+        let checked_out =
+            reference.kind == RefKind::Branch && menus.branch == Some(reference.short_name());
+        let hiding = if checked_out {
+            Err("The branch checked out always shows")
+        } else {
+            Ok(())
+        };
+        if item(ui, &format!("Hide {name} from the graph"), hiding) {
+            asked(scope.with_hidden(full.as_bstr(), true));
+        }
         if item(ui, &format!("Show only {name}"), Ok(())) {
             asked(Scope {
                 only: vec![full.clone()],

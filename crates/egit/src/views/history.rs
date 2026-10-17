@@ -37,6 +37,7 @@ use super::pulls::{self, PullRequestEvent, PullRequestView};
 use super::rebase::{self, RebaseEvent, RebaseView};
 use super::reflog::{self, ReflogEvent, ReflogView};
 use super::search::{self, HistorySearch};
+use super::sidebar::{self, Lists, Sidebar, SidebarEvent};
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
@@ -137,6 +138,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) home: Option<&'a Path>,
     /// What egit did here, to take back, and what it took back, to do again.
     pub(crate) journal: &'a Journal,
+    /// The stashes, worktrees, submodules, and configuration, for the sidebar.
+    pub(crate) lists: Lists<'a>,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -176,6 +179,11 @@ pub(crate) struct HistoryView {
     pull_form: Option<PullRequestForm>,
     /// The search bar over the commit table, and what it found.
     search: HistorySearch,
+    /// The sidebar beside the commit table.
+    sidebar: Sidebar,
+    /// A commit the details show in place of the selected one's, which the history may not
+    /// have: a stash's, or a ref's hidden from the graph, picked in the sidebar.
+    peek: Option<ObjectId>,
 }
 
 /// What can take the commit table's place, besides a changed file.
@@ -275,15 +283,17 @@ impl HistoryView {
             tool: None,
             pull_form: None,
             search: HistorySearch::default(),
+            sidebar: Sidebar::default(),
+            peek: None,
         }
     }
 
     /// The commit the details show in place of the selected one's: the reflog's selected
-    /// move's, while it is open (in no history, maybe).
+    /// move's, while it is open, or the one picked in the sidebar (in no history, maybe).
     fn peeked(&self) -> Option<ObjectId> {
         match &self.tool {
             Some(Tool::Reflog(reflog)) => reflog.selected_commit(),
-            _ => None,
+            _ => self.peek,
         }
     }
 
@@ -415,6 +425,18 @@ impl HistoryView {
             self.selected = Some(Selected { id, row });
             self.scroll_to = Some((row, align));
             self.work_selected = false;
+            self.peek = None;
+        }
+    }
+
+    /// Shows `commit`: selected in the history when it is there, else in the details alone.
+    fn show_commit(&mut self, history: &History, commit: ObjectId) {
+        let near = self.selected.map_or(0, |selected| selected.row);
+        if let Some(row) = history.row_of(&commit, near) {
+            self.select(history, row, Some(Align::Center));
+        } else {
+            self.peek = Some(commit);
+            self.work_selected = false;
         }
     }
 
@@ -423,7 +445,9 @@ impl HistoryView {
     fn close_unselected_file(&mut self) {
         let belongs = self.file.as_ref().is_none_or(|file| match file.commit() {
             Some(commit) => {
-                !self.work_selected && self.selected.map(|selected| selected.id) == Some(commit)
+                !self.work_selected
+                    && (self.selected.map(|selected| selected.id) == Some(commit)
+                        || self.peek == Some(commit))
             }
             None => self.work_selected,
         });
@@ -477,6 +501,7 @@ impl HistoryView {
 
     fn select_work(&mut self) {
         self.work_selected = true;
+        self.peek = None;
         if self.file.as_ref().is_some_and(|file| file.work().is_none()) {
             self.file = None;
         }
@@ -615,6 +640,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         forge,
         home,
         journal,
+        lists,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -656,25 +682,15 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         tasks: &mut *tasks,
         actions: &mut *actions,
     };
-    egui::Panel::top(Id::new(("history-bar", id)))
-        .frame(Frame::new().inner_margin(Margin::symmetric(12, 8)))
-        .show(ui, |ui| {
-            top_bar(
-                ui,
-                &shared,
-                history,
-                work_tree,
-                view,
-                writing_commit_graph,
-                &mut pane,
-            );
-            tasks::outcome(ui, &mut view.tasks, &mut pane);
-            match tasks::banner(ui, &mut view.tasks, &mut pane) {
-                Some(TaskEvent::ShowWorkTree) => view.select_work(),
-                Some(TaskEvent::ShowPatch) => view.show_patch(PatchSource::Stopped),
-                None => {}
-            }
-        });
+    bar_panel(
+        ui,
+        &shared,
+        history,
+        work_tree,
+        view,
+        writing_commit_graph,
+        &mut pane,
+    );
     dialogs(ui.ctx(), &shared, &history.objects, view, &mut pane);
 
     let no_commits = history.shown.rows() == 0;
@@ -695,7 +711,42 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         commits_made,
         sign_by_default,
     };
-    panels(ui, &shared, history, view, work, actions, no_commits);
+    let sides = Sides {
+        work,
+        lists: &lists,
+    };
+    panels(ui, &shared, history, view, sides, actions, no_commits);
+}
+
+/// What the panels beside the commit table show: the working tree's side, and the sidebar's
+/// lists.
+struct Sides<'a> {
+    work: WorkSide<'a>,
+    lists: &'a Lists<'a>,
+}
+
+/// The panel over the commit table: the top bar, the last task's outcome, and an operation's
+/// banner.
+fn bar_panel(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    work_tree: &mut WorkTree,
+    view: &mut HistoryView,
+    writing: &mut Bind<(), Problem>,
+    pane: &mut TaskPane<'_>,
+) {
+    egui::Panel::top(Id::new(("history-bar", shared.id)))
+        .frame(Frame::new().inner_margin(Margin::symmetric(12, 8)))
+        .show(ui, |ui| {
+            top_bar(ui, shared, history, work_tree, view, writing, pane);
+            tasks::outcome(ui, &mut view.tasks, pane);
+            match tasks::banner(ui, &mut view.tasks, pane) {
+                Some(TaskEvent::ShowWorkTree) => view.select_work(),
+                Some(TaskEvent::ShowPatch) => view.show_patch(PatchSource::Stopped),
+                None => {}
+            }
+        });
 }
 
 /// Patch files dropped on the window, shown to apply (others are left alone); a hint while
@@ -767,16 +818,18 @@ fn panels(
     shared: &Shared<'_>,
     history: &mut HistoryState,
     view: &mut HistoryView,
-    work: WorkSide<'_>,
+    sides: Sides<'_>,
     actions: &mut Vec<Action>,
     no_commits: bool,
 ) {
+    let Sides { work, lists } = sides;
     let WorkSide {
         staging,
         committing,
         commits_made,
         sign_by_default,
     } = work;
+    side_panel(ui, shared, history, view, lists, actions);
     egui::Panel::right(Id::new(("history-details", shared.id)))
         .resizable(true)
         .default_size(380.0)
@@ -829,6 +882,46 @@ fn panels(
         });
 }
 
+/// The sidebar at the left (or the strip showing it again), and what it asks.
+fn side_panel(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    view: &mut HistoryView,
+    lists: &Lists<'_>,
+    actions: &mut Vec<Action>,
+) {
+    let id = Id::new(("history-sidebar", shared.id, view.sidebar.open));
+    let event = if view.sidebar.open {
+        egui::Panel::left(id)
+            .resizable(true)
+            .default_size(260.0)
+            .size_range(180.0..=520.0)
+            .frame(Frame::new().inner_margin(Margin::symmetric(6, 0)))
+            .show(ui, |ui| {
+                sidebar::show(ui, shared, history.shown.refs(), lists, &mut view.sidebar)
+            })
+            .inner
+    } else {
+        egui::Panel::left(id)
+            .resizable(false)
+            .exact_size(28.0)
+            .frame(Frame::new().inner_margin(Margin::symmetric(4, 0)))
+            .show(ui, |ui| sidebar::hidden(ui, &mut view.sidebar));
+        None
+    };
+    match event {
+        Some(SidebarEvent::Ask(asked)) => carry_out(asked, shared, view, actions),
+        Some(SidebarEvent::Show(commit)) => {
+            view.file = None;
+            view.tool = None;
+            view.show_commit(&history.shown, commit);
+        }
+        Some(SidebarEvent::Open(path)) => actions.push(Action::Open(path)),
+        None => {}
+    }
+}
+
 /// What the pane's parts share.
 pub(super) struct Shared<'a> {
     pub(super) id: RepoId,
@@ -850,7 +943,7 @@ pub(super) struct Shared<'a> {
     /// Its remotes on GitHub and GitLab, and their requests.
     pub(super) forge: &'a RepoForge,
     /// What of the history is shown, as asked.
-    scope: Scope,
+    pub(super) scope: Scope,
     /// The user's home folder, shown as `~`.
     pub(super) home: Option<&'a Path>,
     /// What egit did here, to take back, and what it took back, to do again.
@@ -1128,6 +1221,22 @@ fn scope_line(ui: &mut Ui, shared: &Shared<'_>, applied: &Scope, actions: &mut V
                 if widgets::secondary(ui, true, "Show every branch").clicked() {
                     let scope = Scope {
                         only: Vec::new(),
+                        ..shared.scope.clone()
+                    };
+                    actions.push(Action::Scope(shared.id, scope));
+                }
+            }
+            if !applied.hidden.is_empty() {
+                let hidden = applied.hidden.len();
+                let text = if hidden == 1 {
+                    format!("{}  1 branch hidden", icon::EYE_SLASH)
+                } else {
+                    format!("{}  {hidden} branches hidden", icon::EYE_SLASH)
+                };
+                ui.label(RichText::new(text).color(palette.muted));
+                if widgets::secondary(ui, true, "Show them").clicked() {
+                    let scope = Scope {
+                        hidden: Vec::new(),
                         ..shared.scope.clone()
                     };
                     actions.push(Action::Scope(shared.id, scope));
@@ -1666,7 +1775,15 @@ impl TableDelegate for CommitRows<'_> {
         if cell.col_nr == 1 {
             let menus = self.shared.menus(self.history.refs());
             let refs = self.history.refs().at(&id);
-            if badges(ui, refs, &menus, self.shared.palette, &mut self.asked) {
+            // A branch hidden from the graph loses its badge too.
+            let scope = Some(&self.shared.scope);
+            if badges(
+                ui,
+                (refs, scope),
+                &menus,
+                self.shared.palette,
+                &mut self.asked,
+            ) {
                 self.clicked = Some(cell.row_nr);
             }
             pull_badges(
@@ -1850,13 +1967,17 @@ fn curve(from: Pos2, to: Pos2, stroke: Stroke) -> CubicBezierShape {
 /// badge was clicked (which selects its row).
 fn badges(
     ui: &mut Ui,
-    refs: &[Reference],
+    (refs, scope): (&[Reference], Option<&Scope>),
     menus: &Menus<'_>,
     palette: Palette,
     asked: &mut Option<Ask>,
 ) -> bool {
     let mut clicked = false;
-    for reference in refs.iter().take(MAX_BADGES) {
+    let shown = || {
+        refs.iter()
+            .filter(|reference| scope.is_none_or(|scope| !scope.hides(reference.name.as_bstr())))
+    };
+    for reference in shown().take(MAX_BADGES) {
         let checked_out = menus.branch.is_some()
             && reference.kind == RefKind::Branch
             && menus.branch == Some(reference.short_name());
@@ -1895,7 +2016,11 @@ fn badges(
         }
         badge.context_menu(|ui| actions::ref_menu(ui, menus, reference, asked));
     }
-    if let Some(more) = refs.len().checked_sub(MAX_BADGES).filter(|more| *more > 0) {
+    if let Some(more) = shown()
+        .count()
+        .checked_sub(MAX_BADGES)
+        .filter(|more| *more > 0)
+    {
         ui.add(Label::new(muted(ui, format!("+{more}"))).selectable(false));
     }
     clicked
@@ -2197,7 +2322,7 @@ fn commit_info(
             if !refs.is_empty() {
                 ui.label(muted(ui, "Refs"));
                 let menus = shared.menus(all);
-                ui.horizontal_wrapped(|ui| badges(ui, refs, &menus, shared.palette, asked));
+                ui.horizontal_wrapped(|ui| badges(ui, (refs, None), &menus, shared.palette, asked));
                 ui.end_row();
             }
         });

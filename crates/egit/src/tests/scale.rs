@@ -209,6 +209,7 @@ fn scoped(harness: &mut Harness<'_, EgitApp>, repo: &std::path::Path) {
             Scope {
                 only: vec![branch.clone()],
                 pinned: Some(branch),
+                ..Scope::default()
             },
         ),
         ("every branch again", Scope::default()),

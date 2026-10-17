@@ -21,12 +21,15 @@ use egit_git::{
     ApplyAs, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError,
     FetchOptions, ForwardFrom, Forwarded, Git, GitError, Integrated, MAX_PLANNED, ObjectId,
     Operation, Planned, Progress, PullMode, Pulled, PushOptions, Pushed, RangeError, RebaseError,
-    RebaseRange, Repository, ResetMode, Stash, StashError, Step, SwitchError, SwitchTo,
-    WorktreeFrom, abort_operation, add_worktree, apply_patch, changes_patch, cherry_pick,
-    continue_operation, create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
-    fast_forward_branch, fast_forward_current, fetch, fetch_refspecs, format_patch, format_patches,
-    merge, pull, push, push_tag, rebase, rebase_interactive, rebase_range, rename_branch, reset,
-    revert, set_config, set_upstream, skip_operation, stash_apply, stash_drop, stash_push, switch,
+    RebaseRange, RemoveWorktreeError, Repository, ResetMode, Stash, StashError, Step, SwitchError,
+    SwitchTo, WorktreeFrom, abort_operation, add_remote, add_worktree, apply_patch, changes_patch,
+    cherry_pick, continue_operation, create_branch, create_tag, delete_branch,
+    delete_remote_branch, delete_tag, fast_forward_branch, fast_forward_current, fetch,
+    fetch_refspecs, fetch_remote, format_patch, format_patches, lock_worktree, merge,
+    prune_worktrees, pull, push, push_tag, rebase, rebase_interactive, rebase_range, remove_remote,
+    remove_worktree, rename_branch, rename_remote, reset, revert, set_config, set_remote_url,
+    set_upstream, skip_operation, stash_apply, stash_drop, stash_push, switch, unlock_worktree,
+    unset_config, update_submodules,
 };
 use egui_async::Bind;
 use parking_lot::Mutex;
@@ -191,6 +194,48 @@ pub(crate) enum Task {
         changes: Changes,
         path: PathBuf,
     },
+    /// Add the remote `name` at `url`; `fetch`: fetch from it once added.
+    AddRemote {
+        name: String,
+        url: String,
+        fetch: bool,
+    },
+    /// Fetch from `remote` alone; `prune`: its branches gone there go here too.
+    FetchRemote {
+        remote: BString,
+        prune: bool,
+    },
+    /// Rename the remote `old` to `new` (its branches, and the branches following it, along).
+    RenameRemote {
+        old: BString,
+        new: String,
+    },
+    /// Remove a remote, with its branches.
+    RemoveRemote(BString),
+    /// Point `remote` at `url` to fetch from, and `push` to push to (`None`: where it fetches
+    /// from).
+    SetRemoteUrls {
+        remote: BString,
+        url: String,
+        push: Option<String>,
+    },
+    /// Remove the worktree at `path`; `force`: its changes with it.
+    RemoveWorktree {
+        path: PathBuf,
+        force: bool,
+    },
+    /// Lock the worktree at `path`, saying why (or not).
+    LockWorktree {
+        path: PathBuf,
+        reason: String,
+    },
+    /// Unlock the worktree at `path`.
+    UnlockWorktree(PathBuf),
+    /// Forget the worktrees whose folders are gone.
+    PruneWorktrees,
+    /// Bring the submodules at these paths (all, when none) to their recorded commits, setting
+    /// up and cloning those not here yet.
+    UpdateSubmodules(Vec<BString>),
     /// Take an action back.
     Undo(Box<Undo>),
     /// Do an action taken back again.
@@ -243,7 +288,7 @@ impl Task {
     /// What it is doing, for people ("Pulling…").
     pub(crate) fn doing(&self) -> &'static str {
         match self {
-            Self::Fetch => "Fetching",
+            Self::Fetch | Self::FetchRemote { .. } => "Fetching",
             Self::FastForward { .. }
             | Self::FastForwardBranch {
                 from: ForwardSource::Here(_),
@@ -293,6 +338,15 @@ impl Task {
             Self::Skip(_) => "Skipping",
             Self::CopyPatch(_) | Self::CopyChanges(_) => "Making the patch",
             Self::SavePatches { .. } => "Saving the patches",
+            Self::AddRemote { .. } => "Adding the remote",
+            Self::RenameRemote { .. } => "Renaming the remote",
+            Self::RemoveRemote(_) => "Removing the remote",
+            Self::SetRemoteUrls { .. } => "Changing the remote's address",
+            Self::RemoveWorktree { .. } => "Removing the worktree",
+            Self::LockWorktree { .. } => "Locking the worktree",
+            Self::UnlockWorktree(_) => "Unlocking the worktree",
+            Self::PruneWorktrees => "Pruning the worktrees",
+            Self::UpdateSubmodules(_) => "Updating the submodules",
             Self::Undo(_) => "Undoing",
             Self::Redo(_) => "Redoing",
         }
@@ -330,6 +384,8 @@ pub(crate) enum Outcome {
     Copied(String),
     /// Patches saved: how many.
     SavedPatches(usize),
+    /// A worktree not removed: it has changes, which removing it would lose.
+    WorktreeChanges,
 }
 
 /// A repository's exchanges with its remotes.
@@ -553,6 +609,16 @@ fn run(
         Task::Stash { .. } | Task::ApplyStash { .. } | Task::DropStash(_) => {
             stashing(git, repository, task, cancel)
         }
+        Task::AddRemote { .. }
+        | Task::FetchRemote { .. }
+        | Task::RenameRemote { .. }
+        | Task::RemoveRemote(_)
+        | Task::SetRemoteUrls { .. } => remotes(git, repository, task, progress, cancel),
+        Task::RemoveWorktree { .. }
+        | Task::LockWorktree { .. }
+        | Task::UnlockWorktree(_)
+        | Task::PruneWorktrees
+        | Task::UpdateSubmodules(_) => trees(git, repository, task, progress, cancel),
     }
 }
 
@@ -982,6 +1048,113 @@ fn places(
             format_patches(git, repository, *from, folder, cancel)
                 .map(|written| Outcome::SavedPatches(written.len()))
                 .or_else(failed("The patches couldn't be saved"))
+        }
+        // `run` sends the others elsewhere.
+        _ => Ok(Outcome::Done),
+    }
+}
+
+/// Remotes added, fetched alone, renamed, removed, or pointed elsewhere.
+fn remotes(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
+    let done =
+        |result: Result<(), GitError>, title| result.map(|()| Outcome::Done).or_else(failed(title));
+    match task {
+        Task::AddRemote { name, url, fetch } => {
+            if let Err(error) = add_remote(git, repository, name, url, cancel) {
+                return failed("The remote wasn't added")(error);
+            }
+            if !*fetch {
+                return Ok(Outcome::Done);
+            }
+            done(
+                fetch_remote(git, repository, BStr::new(name), false, progress, cancel),
+                "The remote was added, but couldn't be fetched from",
+            )
+        }
+        Task::FetchRemote { remote, prune } => done(
+            fetch_remote(git, repository, remote.as_ref(), *prune, progress, cancel),
+            "The fetch failed",
+        ),
+        Task::RenameRemote { old, new } => done(
+            rename_remote(git, repository, old.as_ref(), new, cancel),
+            "The remote wasn't renamed",
+        ),
+        Task::RemoveRemote(name) => done(
+            remove_remote(git, repository, name.as_ref(), cancel),
+            "The remote wasn't removed",
+        ),
+        Task::SetRemoteUrls { remote, url, push } => {
+            let title = "The remote's address wasn't changed";
+            if let Err(error) = set_remote_url(git, repository, remote.as_ref(), url, false, cancel)
+            {
+                return failed(title)(error);
+            }
+            // Pushing goes where fetching comes from, unless told otherwise.
+            let pushed = push.as_ref().map_or_else(
+                || {
+                    unset_config(
+                        git,
+                        ConfigTarget::Repository(repository.work_tree()),
+                        &format!("remote.{}.pushurl", remote.to_str_lossy()),
+                    )
+                },
+                |push| set_remote_url(git, repository, remote.as_ref(), push, true, cancel),
+            );
+            done(pushed, title)
+        }
+        // `run` sends the others elsewhere.
+        _ => Ok(Outcome::Done),
+    }
+}
+
+/// Worktrees removed, locked, unlocked, or pruned; submodules updated.
+fn trees(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
+    let done =
+        |result: Result<(), GitError>, title| result.map(|()| Outcome::Done).or_else(failed(title));
+    match task {
+        Task::RemoveWorktree { path, force } => {
+            match remove_worktree(git, repository, path, *force, cancel) {
+                Ok(()) => Ok(Outcome::Done),
+                Err(RemoveWorktreeError::Changes) => Ok(Outcome::WorktreeChanges),
+                Err(RemoveWorktreeError::Locked) => Err(Problem::new(
+                    "The worktree wasn't removed",
+                    "It is locked: unlock it first.",
+                )),
+                Err(RemoveWorktreeError::Git(error)) => {
+                    failed("The worktree wasn't removed")(error)
+                }
+            }
+        }
+        Task::LockWorktree { path, reason } => done(
+            lock_worktree(git, repository, path, reason, cancel),
+            "The worktree wasn't locked",
+        ),
+        Task::UnlockWorktree(path) => done(
+            unlock_worktree(git, repository, path, cancel),
+            "The worktree wasn't unlocked",
+        ),
+        Task::PruneWorktrees => done(
+            prune_worktrees(git, repository, cancel),
+            "The worktrees weren't pruned",
+        ),
+        Task::UpdateSubmodules(paths) => {
+            let paths: Vec<&BStr> = paths.iter().map(AsRef::as_ref).collect();
+            done(
+                update_submodules(git, repository, &paths, progress, cancel),
+                "The submodules weren't updated",
+            )
         }
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),

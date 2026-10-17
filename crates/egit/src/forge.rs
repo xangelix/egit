@@ -317,6 +317,11 @@ impl RepoForge {
         self.shown.lock()
     }
 
+    /// Which pull requests are shown: another read's, or more of one, is another pair.
+    pub(crate) fn listed(&self) -> (u64, usize) {
+        (self.generation, self.shown.lock().pulls.len())
+    }
+
     /// Whether a read is under way.
     pub(crate) fn is_reading(&self) -> bool {
         self.reading.is_some() || !self.shown.lock().done

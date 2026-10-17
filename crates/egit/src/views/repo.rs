@@ -5,7 +5,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bstr::ByteSlice as _;
-use egit_git::{Committed, ConfigSnapshot, Git, Head, Operation, Repository, Stash, Tracking};
+use egit_git::{
+    Committed, ConfigSnapshot, Git, Head, Operation, Repository, Stash, Submodule, Tracking,
+    Worktree,
+};
 use egui::{Color32, Grid, RichText, Ui, WidgetText};
 use egui_async::Bind;
 use egui_tiles::{TileId, Tiles, UiResponse};
@@ -21,6 +24,7 @@ use crate::tasks::Tasks;
 use crate::theme::{Palette, icon};
 use crate::undo::Journal;
 use crate::views::history::{HistoryPane, HistoryView};
+use crate::views::sidebar::Lists;
 use crate::widgets::{self, muted};
 use crate::worktree::WorkTree;
 
@@ -54,6 +58,8 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         commits_made: repo.commits_made,
         tasks: &mut repo.tasks,
         stashes: &mut repo.stashes,
+        worktrees: &mut repo.worktrees,
+        submodules: &mut repo.submodules,
         writing_commit_graph: &mut repo.writing_commit_graph,
         forge: &repo.forge,
         home: home_dir.as_deref(),
@@ -80,6 +86,8 @@ struct Panels<'a> {
     commits_made: u64,
     tasks: &'a mut Tasks,
     stashes: &'a mut Bind<Arc<[Stash]>, Problem>,
+    worktrees: &'a mut Bind<Arc<[Worktree]>, Problem>,
+    submodules: &'a mut Bind<Arc<[Submodule]>, Problem>,
     writing_commit_graph: &'a mut Bind<(), Problem>,
     forge: &'a RepoForge,
     home: Option<&'a Path>,
@@ -92,7 +100,9 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
         match panel {
             RepoPanel::History => {
                 let status = self.status.ok_ref();
-                let config = self.config.ok_ref().map(|config| &**config);
+                let config_read = self.config.ok_ref();
+                let config = config_read.map(|config| &**config);
+                let stashes = self.stashes.read_as_ref();
                 super::history::show(
                     ui,
                     HistoryPane {
@@ -116,10 +126,18 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                         applying: status.and_then(|status| status.applying.as_ref()),
                         config,
                         tasks: self.tasks,
-                        stashes: self.stashes.ok_ref().map_or(&[], |stashes| &**stashes),
+                        stashes: stashes
+                            .and_then(Result::ok)
+                            .map_or(&[], |stashes| &**stashes),
                         forge: self.forge,
                         home: self.home,
                         journal: self.journal,
+                        lists: Lists {
+                            stashes,
+                            worktrees: self.worktrees.read_as_ref(),
+                            submodules: self.submodules.read_as_ref(),
+                            config: config_read,
+                        },
                         actions: self.actions,
                     },
                 );

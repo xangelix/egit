@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 
 use egit_git::{
     CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, MailboxProgress, NewCommit,
-    ObjectId, Operation, Repository, Stash, create_commit, stashes, write_commit_graph,
+    ObjectId, Operation, Repository, Stash, Submodule, Worktree, create_commit, stashes,
+    submodules, worktrees, write_commit_graph,
 };
 use egui_async::Bind;
 
@@ -54,6 +55,10 @@ pub(crate) struct RepoTab {
     pub(crate) config: Bind<Arc<ConfigSnapshot>, Problem>,
     /// The stashes, the latest first.
     pub(crate) stashes: Bind<Arc<[Stash]>, Problem>,
+    /// The worktrees, the main one first.
+    pub(crate) worktrees: Bind<Arc<[Worktree]>, Problem>,
+    /// The submodules, by path.
+    pub(crate) submodules: Bind<Arc<[Submodule]>, Problem>,
     pub(crate) config_table: SnapshotTable,
     pub(crate) history: HistoryState,
     pub(crate) history_view: HistoryView,
@@ -110,6 +115,8 @@ impl RepoTab {
             status: Bind::new(true),
             config: Bind::new(true),
             stashes: Bind::new(true),
+            worktrees: Bind::new(true),
+            submodules: Bind::new(true),
             config_table: SnapshotTable::new(format!("repo-config-{id}")),
             writing_commit_graph: Bind::new(true),
             staging: Bind::new(true),
@@ -136,7 +143,7 @@ impl RepoTab {
         };
         tab.refresh_status(git);
         tab.refresh_config(git);
-        tab.refresh_stashes(git);
+        tab.refresh_lists(git);
         tab
     }
 
@@ -223,8 +230,9 @@ impl RepoTab {
                 }
                 if changes.intersects(Changes::REFS) {
                     self.history.reload(git, &self.repository, &self.waker);
-                    // `refs/stash` is a ref.
-                    self.refresh_stashes(git);
+                    // `refs/stash` is a ref; a worktree's branch, or a submodule's commit
+                    // (with a commit), may have moved.
+                    self.refresh_lists(git);
                 }
                 if changes.intersects(Changes::CONFIG) {
                     self.refresh_config(git);
@@ -253,7 +261,7 @@ impl RepoTab {
             // first push or a new upstream, which menus read at once.
             self.refresh_status(git);
             self.refresh_config(git);
-            self.refresh_stashes(git);
+            self.refresh_lists(git);
             self.work_tree.refresh_now();
         }
         self.follow_forge(git, finished);
@@ -320,6 +328,8 @@ impl RepoTab {
                         | Task::DeleteRemoteBranch { .. }
                         | Task::CheckOutPullRequest { .. }
                         | Task::CreatePullRequest(_)
+                        | Task::FetchRemote { .. }
+                        | Task::AddRemote { fetch: true, .. }
                 )
             );
         let fetched = self.tasks.background_fetches != self.forge_fetches;
@@ -350,7 +360,7 @@ impl RepoTab {
     pub(crate) fn refresh(&mut self, git: &Git) {
         self.refresh_status(git);
         self.refresh_config(git);
-        self.refresh_stashes(git);
+        self.refresh_lists(git);
         self.work_tree.refresh_now();
         self.history.reload(git, &self.repository, &self.waker);
     }
@@ -375,17 +385,31 @@ impl RepoTab {
         }));
     }
 
-    /// Reads where `HEAD` points and what is in progress.
-    /// Reads the stash list again (what is shown stays until it lands).
-    pub(crate) fn refresh_stashes(&mut self, git: &Git) {
-        let (git, repository) = (git.clone(), Arc::clone(&self.repository));
+    /// Reads the stash list, the worktrees, and the submodules again (what is shown stays until
+    /// each lands).
+    pub(crate) fn refresh_lists(&mut self, git: &Git) {
+        let read = |repository: &Arc<Repository>| (git.clone(), Arc::clone(repository));
+        let (git_, repository) = read(&self.repository);
         self.stashes.request(jobs::blocking(move || {
-            stashes(&git, &repository, &CancelToken::new())
+            stashes(&git_, &repository, &CancelToken::new())
                 .map(Into::into)
                 .map_err(|error| Problem::git("The stashes couldn't be read", &error))
         }));
+        let (git_, repository) = read(&self.repository);
+        self.worktrees.request(jobs::blocking(move || {
+            worktrees(&git_, &repository)
+                .map(Into::into)
+                .map_err(|error| Problem::git("The worktrees couldn't be read", &error))
+        }));
+        let (git_, repository) = read(&self.repository);
+        self.submodules.request(jobs::blocking(move || {
+            submodules(&git_, &repository)
+                .map(Into::into)
+                .map_err(|error| Problem::git("The submodules couldn't be read", &error))
+        }));
     }
 
+    /// Reads where `HEAD` points and what is in progress.
     pub(crate) fn refresh_status(&mut self, git: &Git) {
         let (git, repository) = (git.clone(), Arc::clone(&self.repository));
         self.status.request(jobs::blocking(move || {

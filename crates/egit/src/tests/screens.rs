@@ -2483,7 +2483,9 @@ fn pull_requests_without_credentials_offer_to_sign_in() {
                 )
         })
     });
-    harness.get_by_label_contains("Pull requests").click();
+    harness
+        .get_by_label(&format!("{}  Pull requests", icon::GIT_PULL_REQUEST))
+        .click();
     let host = fake.address();
     wait_for_label(
         &mut harness,

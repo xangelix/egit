@@ -11,7 +11,10 @@
 //! jumping while git still blames and once it is done, and scrolling. And 1,000 open pull
 //! requests from a fake GitHub (then merge requests from a fake GitLab), each the head of one
 //! of 10,000 commits: how soon the first page shows and all of them, and frames scrolling and
-//! stepping through the list, and the commit table under their badges.
+//! stepping through the list, and the commit table under their badges. And the sidebar on
+//! 100,000 refs (50,000 branches in 100 folders, 30,000 of a remote's, 20,000 tags): how soon
+//! they are listed (and the longest frame meanwhile, as they are sorted), and frames scrolling
+//! through them, unfolding the tags, and typing in the filter.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
@@ -1096,6 +1099,187 @@ fn requests_on(kind: ForgeKind) {
         "  peak memory {:.0} MB (the repository made beforehand not counted)",
         peak_memory_mb()
     );
+    if !cfg!(debug_assertions) {
+        assert!(
+            worst < Duration::from_millis(8),
+            "the 99th percentile frame took {worst:?}"
+        );
+    }
+}
+
+/// The refs of the sidebar's measurement: branches in folders, a remote's branches, and tags.
+const SIDEBAR_BRANCHES: usize = 50_000;
+const SIDEBAR_REMOTE_BRANCHES: usize = 30_000;
+const SIDEBAR_TAGS: usize = 20_000;
+const SIDEBAR_COMMITS: usize = 1_000;
+
+/// A history of `SIDEBAR_COMMITS` commits, and 100,000 refs scattered over them (packed, as a
+/// repository with that many has them): branches in 100 folders, `origin`'s branches, tags.
+fn many_refs(sandbox: &Sandbox) -> std::path::PathBuf {
+    let repo = sandbox.init("refs").unwrap();
+    let mut stream = Vec::new();
+    for index in 0..SIDEBAR_COMMITS {
+        let message = format!("Commit {index}\n");
+        let _ = write!(
+            stream,
+            "commit refs/heads/main\nmark :{}\ncommitter T <t@egit.invalid> {} +0000\ndata {}\n\
+             {message}\n",
+            index + 1,
+            1_700_000_000 + index,
+            message.len(),
+        );
+    }
+    let mut seed = 7_u64;
+    let commits = u64::try_from(SIDEBAR_COMMITS).unwrap();
+    let mut at = || random(&mut seed, commits) + 1;
+    for index in 0..SIDEBAR_BRANCHES {
+        let _ = write!(
+            stream,
+            "reset refs/heads/team{}/feature-{index}\nfrom :{}\n\n",
+            index % 100,
+            at()
+        );
+    }
+    for index in 0..SIDEBAR_REMOTE_BRANCHES {
+        let _ = write!(
+            stream,
+            "reset refs/remotes/origin/topic-{index}\nfrom :{}\n\n",
+            at()
+        );
+    }
+    for index in 0..SIDEBAR_TAGS {
+        let _ = write!(
+            stream,
+            "reset refs/tags/v{}.{}.{}\nfrom :{}\n\n",
+            index / 1000,
+            (index / 10) % 100,
+            index % 10,
+            at()
+        );
+    }
+    sandbox
+        .git()
+        .write("fast-import")
+        .arg("--quiet")
+        .current_dir(&repo)
+        .stdin(stream)
+        .output()
+        .unwrap();
+    for args in [
+        &["symbolic-ref", "HEAD", "refs/heads/main"][..],
+        &["reset", "--quiet", "--hard"],
+        &["remote", "add", "origin", "file:///nowhere"],
+        &["pack-refs", "--all"],
+    ] {
+        sandbox.run(&repo, args[0], &args[1..]).unwrap();
+    }
+    repo
+}
+
+#[test]
+#[ignore = "a release-build measurement: see the module's documentation"]
+fn corpus_sidebar() {
+    let total = SIDEBAR_BRANCHES + SIDEBAR_REMOTE_BRANCHES + SIDEBAR_TAGS;
+    println!("the sidebar on {total} refs over {SIDEBAR_COMMITS} commits:");
+    let sandbox = Sandbox::new().unwrap();
+    let repo = many_refs(&sandbox);
+    let git = sandbox.git().clone();
+    let builder = Harness::builder().with_size([1400.0, 900.0]);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    let mut harness = builder.build_eframe(move |creation| {
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            None,
+            Prompts::none(),
+        )
+    });
+    harness.run_steps(2);
+    reset_peak_memory();
+    let started = Instant::now();
+    harness.state_mut().state.actions.push(Action::Open(repo));
+    // `main` too.
+    let branches = format!("Branches: {}", SIDEBAR_BRANCHES + 1);
+    let mut longest = Duration::ZERO;
+    while harness.query_by_label(&branches).is_none() {
+        assert!(started.elapsed() < Duration::from_secs(60), "no sidebar");
+        let frame = Instant::now();
+        harness.step();
+        longest = longest.max(frame.elapsed());
+    }
+    println!(
+        "  listed {:?} after opening (its longest frame {longest:?}: the refs sorted)",
+        started.elapsed()
+    );
+    step_until(&mut harness, Duration::from_secs(60), |app| {
+        app.state
+            .repos
+            .first()
+            .is_some_and(|repo| !repo.history.is_loading())
+    });
+
+    // Scrolled through the branches, folded into 100 folders of 500.
+    harness.hover_at(egui::pos2(130.0, 500.0));
+    let wheel = |harness: &mut Harness<'_, EgitApp>, _| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -600.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    };
+    let mut worst = report(
+        "wheel scrolling the branches",
+        measure_frames(&mut harness, 600, wheel),
+    );
+
+    // Back to the top, the branches and the remote folded, and 20,000 tags unfolded, then
+    // scrolled through.
+    harness.event(egui::Event::MouseWheel {
+        unit: egui::MouseWheelUnit::Point,
+        delta: egui::vec2(0.0, 1.0e9),
+        phase: egui::TouchPhase::Move,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.run_steps(3);
+    for header in [branches, "Remotes: 1".to_owned()] {
+        harness.get_by_role_and_label(Role::Button, &header).click();
+        harness.run_steps(2);
+    }
+    let tags = format!("Tags: {SIDEBAR_TAGS}");
+    harness.get_by_role_and_label(Role::Button, &tags).click();
+    let started = Instant::now();
+    harness.step();
+    println!("  tags unfolded in a frame of {:?}", started.elapsed());
+    worst = worst.max(report(
+        "wheel scrolling to and through the tags",
+        measure_frames(&mut harness, 600, wheel),
+    ));
+    snapshot(&mut harness, "sidebar");
+
+    // The filter typed a letter at a time: each keystroke narrows every list again.
+    harness
+        .get_by_role_and_label(Role::TextInput, "Filter")
+        .focus();
+    harness.run_steps(2);
+    let typed = "feature-499";
+    let typing = measure_frames(&mut harness, typed.len(), |harness, at| {
+        let letter = typed.get(at..=at).unwrap_or_default();
+        harness.event(egui::Event::Text(letter.to_owned()));
+    });
+    worst = worst.max(report("typing in the filter", typing));
+    harness.run_steps(2);
+    let matching = (0..SIDEBAR_BRANCHES)
+        .filter(|index| format!("feature-{index}").contains(typed))
+        .count();
+    assert!(
+        harness
+            .query_by_label(&format!("Branches: {matching}"))
+            .is_some()
+    );
+    snapshot(&mut harness, "sidebar-filtered");
+    println!("  peak memory {:.0} MB", peak_memory_mb());
     if !cfg!(debug_assertions) {
         assert!(
             worst < Duration::from_millis(8),

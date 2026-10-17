@@ -11,14 +11,15 @@ use std::ops::ControlFlow;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
     CancelToken, Commit, CountedFile, FileChange, Git, GitError, LineCounts, Object, ObjectFormat,
     ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, SignatureCheck, TreeEntry,
-    Verdict, check_signatures, commit_changes, line_counts, list_references, walk_history,
-    walk_history_from,
+    Verdict, check_signatures, commit_changes, history_tips, line_counts, list_references,
+    walk_history, walk_history_from,
 };
 use egit_gix::GixRepository;
 use egit_graph::{CHUNK_ROWS, Chunk, GraphBuilder};
@@ -358,11 +359,15 @@ fn locate(row: u64) -> Option<(usize, usize)> {
 }
 
 /// Which of a history is shown, and how: every ref's history, or some refs' alone (a branch
-/// soloed); and a branch kept in the leftmost lane (pinned).
+/// soloed), or every ref's but some (branches hidden); and a branch kept in the leftmost lane
+/// (pinned).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Scope {
     /// The refs (by full name) whose history alone is shown; none: every ref's.
     pub(crate) only: Vec<BString>,
+    /// The refs (by full name, sorted) whose history isn't shown, unless another ref's holds it
+    /// (when `only` names none).
+    pub(crate) hidden: Vec<BString>,
     /// The branch (by full name) kept in the leftmost lane.
     pub(crate) pinned: Option<BString>,
 }
@@ -370,7 +375,32 @@ pub(crate) struct Scope {
 impl Scope {
     /// Whether it shows every ref's history, nothing pinned.
     pub(crate) const fn is_everything(&self) -> bool {
-        self.only.is_empty() && self.pinned.is_none()
+        self.only.is_empty() && self.hidden.is_empty() && self.pinned.is_none()
+    }
+
+    /// Whether the ref `name` (a full name) is hidden.
+    pub(crate) fn hides(&self, name: &BStr) -> bool {
+        self.hidden
+            .binary_search_by(|hidden| hidden.as_bstr().cmp(name))
+            .is_ok()
+    }
+
+    /// The same, with `name` hidden or shown again.
+    pub(crate) fn with_hidden(&self, name: &BStr, hidden: bool) -> Self {
+        let mut scope = self.clone();
+        match (
+            scope
+                .hidden
+                .binary_search_by(|known| known.as_bstr().cmp(name)),
+            hidden,
+        ) {
+            (Err(at), true) => scope.hidden.insert(at, name.to_owned()),
+            (Ok(at), false) => {
+                scope.hidden.remove(at);
+            }
+            _ => {}
+        }
+        scope
     }
 }
 
@@ -430,8 +460,20 @@ fn walk(
         .pinned
         .as_ref()
         .and_then(|name| Some((name.clone(), target(name)?)));
+    // Only those found; and none while some refs alone are shown.
+    let hidden: Vec<BString> = if only.is_empty() {
+        scope
+            .hidden
+            .iter()
+            .filter(|name| target(name).is_some())
+            .cloned()
+            .collect()
+    } else {
+        Vec::new()
+    };
     let applied = Scope {
         only: only.iter().map(|(name, _)| name.clone()).collect(),
+        hidden: hidden.clone(),
         pinned: pinned.as_ref().map(|(name, _)| name.clone()),
     };
     let start = Piece::Start {
@@ -461,7 +503,12 @@ fn walk(
         ids.extend_from_slice(id.as_bytes());
         ControlFlow::Continue(())
     };
-    let tips = if only.is_empty() {
+    let tips = if !hidden.is_empty() {
+        Some(
+            history_tips(git, repository, &hidden, walking.cancel)
+                .map_err(|error| Problem::git("The history couldn't be read", &error))?,
+        )
+    } else if only.is_empty() {
         gix.as_ref().and_then(|gix| gix.tips().ok())
     } else {
         let mut tips: Vec<ObjectId> = Vec::with_capacity(only.len());
@@ -487,7 +534,10 @@ fn walk(
 
 /// The refs pointing into a history, found by the commit they point at.
 #[derive(Debug, Default)]
-pub(crate) struct Refs(Vec<Reference>);
+pub(crate) struct Refs(Arc<[Reference]>, u64);
+
+/// The refs read so far, counted: each read's refs know which they are.
+static REFS_READ: AtomicU64 = AtomicU64::new(0);
 
 impl Refs {
     /// Sorts `references` by target, then branches before remote branches before tags, then by
@@ -499,7 +549,18 @@ impl Refs {
                 .then_with(|| rank(a.kind).cmp(&rank(b.kind)))
                 .then_with(|| a.name.cmp(&b.name))
         });
-        Self(references)
+        let read = REFS_READ.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        Self(Arc::from(references), read)
+    }
+
+    /// Every ref, by target, shared (for a job).
+    pub(crate) fn shared(&self) -> Arc<[Reference]> {
+        Arc::clone(&self.0)
+    }
+
+    /// Which read of the refs these are (0 before any): another read is another number.
+    pub(crate) const fn read(&self) -> u64 {
+        self.1
     }
 
     /// Whether there is a local branch called `name` (its short name).
