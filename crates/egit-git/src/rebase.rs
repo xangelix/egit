@@ -2,12 +2,18 @@
 //! picked, reworded, squashed or fixed up into the one before it, or dropped, in the order a
 //! plan gives.
 //!
-//! [`rebase_range`] reads the commits (oldest first, with their messages), refusing a range
-//! holding a merge: an interactive rebase would flatten it. [`rebase_interactive`] runs a plan
-//! through `git rebase --interactive`, whose todo egit writes itself (git's sequence editor
-//! copies it in). A reworded commit is picked, then amended by an `exec` line carrying its new
-//! message, after any squashed or fixed-up into it: the todo holds everything, so a rebase
-//! stopped at a conflict and continued later still rewords.
+//! [`rebase_range`] reads the commits (oldest first, with their messages, merges marked).
+//! [`rebase_interactive`] runs a plan through `git rebase --interactive`, whose todo egit
+//! writes itself (git's sequence editor copies it in). A reworded commit is picked, then
+//! amended by an `exec` line carrying its new message, after any squashed or fixed-up into it:
+//! the todo holds everything, so a rebase stopped at a conflict and continued later still
+//! rewords.
+//!
+//! A range holding merges is rebased keeping them ([`rebase_keeping_merges`]): git's own todo
+//! for `--rebase-merges` (its labels, resets, and merges) is read first, by a sequence editor
+//! that copies it out and fails, which leaves everything as it was; the plan's drops and
+//! rewords are written into it, and the rebase run with it. Commits keep their order there,
+//! and nothing is melded: the todo's structure is git's.
 
 use std::fmt::Write as _;
 use std::io::Write as _;
@@ -33,6 +39,8 @@ pub struct RangeCommit {
     pub author: String,
     /// Its message, whole (`%B`).
     pub message: String,
+    /// Whether it is a merge (more than one parent).
+    pub merge: bool,
 }
 
 impl RangeCommit {
@@ -52,15 +60,20 @@ pub struct RebaseRange {
     pub commits: Vec<RangeCommit>,
 }
 
+impl RebaseRange {
+    /// How many of its commits are merges: a range with any is rebased keeping them.
+    #[must_use]
+    pub fn merges(&self) -> usize {
+        self.commits.iter().filter(|commit| commit.merge).count()
+    }
+}
+
 /// Why a range can't be rebased interactively.
 #[derive(Debug, thiserror::Error)]
 pub enum RangeError {
     /// The commit isn't in the current branch (`HEAD` doesn't reach it).
     #[error("the commit isn't in the current branch")]
     NotInBranch,
-    /// The range holds merges, which an interactive rebase would flatten.
-    #[error("the range holds {0} merge(s)")]
-    Merges(usize),
     /// It holds more commits than a plan does.
     #[error("the range holds more than {MAX_PLANNED} commits")]
     TooMany,
@@ -73,7 +86,7 @@ pub enum RangeError {
 ///
 /// # Errors
 ///
-/// [`RangeError::NotInBranch`], [`RangeError::Merges`], or [`RangeError::TooMany`] when the
+/// [`RangeError::NotInBranch`] or [`RangeError::TooMany`] when the
 /// range can't be rebased so, and [`RangeError::Git`] when git fails.
 pub fn rebase_range(
     git: &Git,
@@ -103,10 +116,7 @@ pub fn rebase_range(
         .cancel_token(cancel)
         .output()?;
     let parents = parents.stdout.trim_ascii().split_str(b" ").skip(1).count();
-    if parents > 1 {
-        return Err(RangeError::Merges(1));
-    }
-    let range = if parents == 1 {
+    let range = if parents >= 1 {
         format!("{from}^..HEAD")
     } else {
         "HEAD".to_owned()
@@ -135,7 +145,6 @@ fn parse_range(listed: &[u8], from: ObjectId) -> Result<RebaseRange, RangeError>
     let unexpected = || GitError::unexpected("log", "a commit");
     let mut base = None;
     let mut commits = Vec::new();
-    let mut merges = 0_usize;
     let mut started = false;
     for record in listed.split_str(b"\0").filter(|record| !record.is_empty()) {
         let record = record.strip_prefix(b"\n").unwrap_or(record);
@@ -158,9 +167,6 @@ fn parse_range(listed: &[u8], from: ObjectId) -> Result<RebaseRange, RangeError>
             started = true;
             base = parents.first().copied();
         }
-        if parents.len() > 1 {
-            merges = merges.saturating_add(1);
-        }
         let author = fields
             .next()
             .ok_or_else(unexpected)?
@@ -176,10 +182,8 @@ fn parse_range(listed: &[u8], from: ObjectId) -> Result<RebaseRange, RangeError>
             id,
             author,
             message,
+            merge: parents.len() > 1,
         });
-    }
-    if merges > 0 {
-        return Err(RangeError::Merges(merges));
     }
     if commits.len() > MAX_PLANNED {
         return Err(RangeError::TooMany);
@@ -226,6 +230,16 @@ pub enum RebaseError {
     /// The plan has no commits, or more than [`MAX_PLANNED`].
     #[error("the plan holds no commits, or too many")]
     Size,
+    /// A commit is squashed or fixed up in a range holding merges: there, git's todo keeps its
+    /// structure, and nothing is melded.
+    #[error("commits aren't melded in a range holding merges")]
+    MeldWithMerges,
+    /// A merge is dropped: the branch it brought in would be replayed and left behind.
+    #[error("a merge can't be dropped: the branch it brings in would be left behind")]
+    DropMerge,
+    /// A planned commit isn't in git's own todo for the range.
+    #[error("the plan doesn't match the commits git would replay")]
+    Mismatch,
     /// The todo couldn't be written for git.
     #[error("the plan couldn't be written for git: {0}")]
     Todo(#[source] std::io::Error),
@@ -277,6 +291,137 @@ pub fn rebase_interactive(
     };
     let done = command.output().map(drop);
     Ok(stopped(git, repository, done, cancel)?)
+}
+
+/// Rebases the current branch onto `base` (`None`: from the root), keeping its merges.
+///
+/// With `--rebase-merges`: every commit in git's order, those `plan` drops dropped, those it
+/// rewords reworded (merges too), the rest picked.
+///
+/// # Errors
+///
+/// [`RebaseError::MeldWithMerges`] for a squash or fixup, [`RebaseError::DropMerge`] for a
+/// merge dropped, [`RebaseError::Mismatch`] when git wouldn't replay a planned commit (nothing
+/// changes then), and [`RebaseError::Git`] when git fails (local changes in the way, say) or
+/// is cancelled.
+pub fn rebase_keeping_merges(
+    git: &Git,
+    repository: &Repository,
+    base: Option<ObjectId>,
+    plan: &[Planned],
+    cancel: &CancelToken,
+) -> Result<Integrated, RebaseError> {
+    if plan.is_empty() || plan.len() > MAX_PLANNED {
+        return Err(RebaseError::Size);
+    }
+    for planned in plan {
+        match &planned.step {
+            Step::Squash | Step::Fixup => return Err(RebaseError::MeldWithMerges),
+            Step::Reword(message) if message.trim().is_empty() => {
+                return Err(RebaseError::EmptyMessage);
+            }
+            _ => {}
+        }
+    }
+    let scratch = tempfile::Builder::new()
+        .prefix("egit-rebase-")
+        .tempdir()
+        .map_err(RebaseError::Todo)?;
+    let theirs = scratch.path().join("theirs");
+    // Git's todo, copied out by a sequence editor that then fails: git gives up before
+    // anything moves.
+    let copy = format!(
+        "cp -- \"$1\" {}; exit 1 #",
+        quote(&theirs.to_string_lossy())
+    );
+    let tried = merging_rebase(git, repository, base, copy, cancel).output_unchecked()?;
+    let generated = std::fs::read_to_string(&theirs).unwrap_or_default();
+    if generated.trim().is_empty() {
+        return Err(GitError::failed("rebase", tried.status, tried.stderr).into());
+    }
+    let todo = with_plan(&generated, plan)?;
+    let ours = scratch.path().join("ours");
+    std::fs::write(&ours, todo).map_err(RebaseError::Todo)?;
+    let editor = format!("cp -- {}", quote(&ours.to_string_lossy()));
+    let done = merging_rebase(git, repository, base, editor, cancel)
+        .output()
+        .map(drop);
+    Ok(stopped(git, repository, done, cancel)?)
+}
+
+/// `git rebase --interactive --rebase-merges` onto `base`, its todo given to `editor`; commands
+/// unabbreviated and commits named in full, whatever the configuration says.
+fn merging_rebase(
+    git: &Git,
+    repository: &Repository,
+    base: Option<ObjectId>,
+    editor: String,
+    cancel: &CancelToken,
+) -> crate::command::GitCommand {
+    let full = repository.object_format().hex_len().to_string();
+    let command = git
+        .write("rebase")
+        .config("rebase.abbreviateCommands", "false")
+        .config("core.abbrev", &full)
+        .args([
+            "--interactive",
+            "--quiet",
+            "--rebase-merges",
+            "--no-autosquash",
+            "--no-update-refs",
+        ])
+        .env("GIT_SEQUENCE_EDITOR", editor)
+        .prompt_context("Rebasing")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel);
+    match base {
+        Some(base) => command.arg(base.to_string()),
+        None => command.arg("--root"),
+    }
+}
+
+/// Git's todo `generated` with `plan` written in: its drops (`drop`), and its rewords (an
+/// `exec` amending the commit just picked or merged).
+fn with_plan(generated: &str, plan: &[Planned]) -> Result<String, RebaseError> {
+    let step_of = |id: &str| {
+        plan.iter()
+            .find(|planned| planned.id.to_string() == id)
+            .map(|planned| &planned.step)
+    };
+    let mut todo = String::with_capacity(generated.len());
+    let mut found = 0_usize;
+    for line in generated.lines() {
+        let mut words = line.split_whitespace();
+        let (command, first, second) = (words.next(), words.next(), words.next());
+        let (id, merge) = match (command, first, second) {
+            (Some("pick"), Some(id), _) => (Some(id), false),
+            (Some("merge"), Some("-C" | "-c"), Some(id)) => (Some(id), true),
+            _ => (None, false),
+        };
+        let step = id.and_then(step_of);
+        if step.is_some() {
+            found = found.saturating_add(1);
+        }
+        match (step, id) {
+            (Some(Step::Drop), _) if merge => return Err(RebaseError::DropMerge),
+            (Some(Step::Drop), Some(id)) => {
+                let _ = writeln!(todo, "drop {id}");
+            }
+            (Some(Step::Reword(message)), _) => {
+                todo.push_str(line);
+                todo.push('\n');
+                reword(&mut todo, message);
+            }
+            _ => {
+                todo.push_str(line);
+                todo.push('\n');
+            }
+        }
+    }
+    if found != plan.len() {
+        return Err(RebaseError::Mismatch);
+    }
+    Ok(todo)
 }
 
 /// The todo git runs for `plan`.
@@ -422,9 +567,59 @@ mod tests {
             ),
         ]
         .concat();
+        let range = parse_range(merged.as_bytes(), id('b')).unwrap();
+        assert_eq!(range.merges(), 1);
+        assert!(range.commits[1].merge && !range.commits[0].merge);
+    }
+
+    #[test]
+    fn a_plan_is_written_into_git_s_own_todo() {
+        let generated = format!(
+            "label onto\n\n# Branch side\nreset onto\npick {a} s1\npick {b} s2\nlabel side\n\n\
+             reset onto\npick {c} two\nmerge -C {d} side # Merge side\npick {e} four\n\n# Help\n",
+            a = id('a'),
+            b = id('b'),
+            c = id('c'),
+            d = id('d'),
+            e = id('e')
+        );
+        let plan = [
+            planned('a', Step::Pick),
+            planned('b', Step::Drop),
+            planned('c', Step::Reword("Two, again".to_owned())),
+            planned('d', Step::Reword("Merged".to_owned())),
+            planned('e', Step::Pick),
+        ];
+        let todo = with_plan(&generated, &plan).unwrap();
+        let lines: Vec<&str> = todo.lines().filter(|line| !line.is_empty()).collect();
+        let amend = "| git commit --amend --quiet --allow-empty --cleanup=whitespace --file=-";
+        assert_eq!(
+            lines,
+            [
+                "label onto".to_owned(),
+                "# Branch side".to_owned(),
+                "reset onto".to_owned(),
+                format!("pick {} s1", id('a')),
+                format!("drop {}", id('b')),
+                "label side".to_owned(),
+                "reset onto".to_owned(),
+                format!("pick {} two", id('c')),
+                format!("exec printf '%s\\n' 'Two, again' {amend}"),
+                format!("merge -C {} side # Merge side", id('d')),
+                format!("exec printf '%s\\n' 'Merged' {amend}"),
+                format!("pick {} four", id('e')),
+                "# Help".to_owned(),
+            ]
+        );
+        let dropped_merge = [planned('d', Step::Drop)];
         assert!(matches!(
-            parse_range(merged.as_bytes(), id('b')),
-            Err(RangeError::Merges(1))
+            with_plan(&generated, &dropped_merge),
+            Err(RebaseError::DropMerge)
+        ));
+        let unknown = [planned('f', Step::Pick)];
+        assert!(matches!(
+            with_plan(&generated, &unknown),
+            Err(RebaseError::Mismatch)
         ));
     }
 }

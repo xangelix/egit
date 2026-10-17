@@ -817,7 +817,7 @@ fn history(
         Task::Merge { what, .. } => merge(git, repository, what.as_ref(), cancel)
             .map(Outcome::Integrated)
             .or_else(failed("Merging failed")),
-        Task::Rebase { onto, .. } => rebase(git, repository, onto.as_ref(), cancel)
+        Task::Rebase { onto, .. } => rebase(git, repository, onto.as_ref(), false, cancel)
             .map(Outcome::Integrated)
             .or_else(failed("Rebasing failed")),
         Task::CherryPick(commit) => cherry_pick(git, repository, *commit, cancel)
@@ -851,8 +851,11 @@ fn rewrite(
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
     const TITLE: &str = "Rebasing failed";
-    let range =
-        |from| rebase_range(git, repository, from, cancel).map_err(|error| range_problem(&error));
+    let range = |from| {
+        rebase_range(git, repository, from, cancel)
+            .map_err(|error| range_problem(&error))
+            .and_then(unflattened)
+    };
     let (base, plan) = match task {
         Task::InteractiveRebase { base, plan } => (*base, plan.clone()),
         Task::DropCommit(commit) => {
@@ -897,6 +900,20 @@ fn planned(range: &RebaseRange, step: impl Fn(ObjectId) -> Option<Step>) -> Vec<
         .collect()
 }
 
+/// `range`, unless it holds merges: an interactive rebase would flatten them.
+pub(crate) fn unflattened(range: RebaseRange) -> Result<RebaseRange, Problem> {
+    match range.merges() {
+        0 => Ok(range),
+        count => Err(Problem::new(
+            "This can't be rewritten here",
+            format!(
+                "Between the commit and HEAD are {count} merge(s): an interactive rebase would \
+                 flatten them. Start after the last merge."
+            ),
+        )),
+    }
+}
+
 /// Why a range can't be rewritten, for people.
 pub(crate) fn range_problem(error: &RangeError) -> Problem {
     const TITLE: &str = "This can't be rewritten here";
@@ -904,13 +921,6 @@ pub(crate) fn range_problem(error: &RangeError) -> Problem {
         RangeError::NotInBranch => Problem::new(
             TITLE,
             "The commit isn't in the current branch: only its own commits can be rewritten.",
-        ),
-        RangeError::Merges(count) => Problem::new(
-            TITLE,
-            format!(
-                "Between the commit and HEAD are {count} merge(s): an interactive rebase would \
-                 flatten them. Start after the last merge."
-            ),
         ),
         RangeError::TooMany => Problem::new(
             TITLE,

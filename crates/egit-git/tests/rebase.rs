@@ -1,6 +1,8 @@
-//! Interactive rebase against sandboxed repositories: ranges read and refused, and plans that
-//! reorder, reword, squash, fix up, and drop commits, from a commit or the root, stopping at
-//! conflicts and carrying on after them.
+//! Interactive rebase against sandboxed repositories: ranges read (merges marked) and refused,
+//! and plans that reorder, reword, squash, fix up, and drop commits, from a commit or the root,
+//! stopping at conflicts and carrying on after them; a range with a merge rebased keeping it
+//! (drops and rewords, melds and a dropped merge refused); and a rebase onto a branch keeping
+//! merges.
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
 #![allow(
@@ -16,7 +18,7 @@ use std::path::{Path, PathBuf};
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, Integrated, ObjectId, Operation, Planned, RangeError, RebaseError, Repository,
-    Step, rebase_interactive, rebase_range,
+    Step, rebase_interactive, rebase_keeping_merges, rebase_range,
 };
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -112,8 +114,11 @@ fn a_range_is_read_from_a_commit_up_to_head() {
     sandbox
         .run(&path, "merge", &["--quiet", "--no-edit", "side"])
         .unwrap();
-    let merged = rebase_range(git, &repository, root, &CancelToken::new());
-    assert!(matches!(merged, Err(RangeError::Merges(1))), "{merged:?}");
+    // A merge is marked, its branch's commit in the range too.
+    let merged = rebase_range(git, &repository, root, &CancelToken::new()).unwrap();
+    assert_eq!(merged.merges(), 1);
+    assert!(merged.commits.iter().any(|commit| commit.id == side));
+    assert!(merged.commits.last().unwrap().merge);
 }
 
 #[test]
@@ -282,4 +287,144 @@ fn the_root_is_reworded_and_a_dirty_work_tree_refused() {
         Some("The first")
     );
     assert_eq!(log(&sandbox, &path, "%s").len(), 5);
+}
+
+/// `One`, then `side` (`Side one`, `Side two`) and `main` (`Two`) from it, `side` merged into
+/// `main` (`Merge side`), then `Three`: a history with a merge.
+fn merged(sandbox: &Sandbox) -> PathBuf {
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "f", "one\n", "One").unwrap();
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--create", "side"])
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "s1", "s1\n", "Side one")
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "s2", "s2\n", "Side two")
+        .unwrap();
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    sandbox.commit_file(&repo, "f", "two\n", "Two").unwrap();
+    sandbox
+        .run(
+            &repo,
+            "merge",
+            &["--quiet", "--no-ff", "--message", "Merge side", "side"],
+        )
+        .unwrap();
+    sandbox.commit_file(&repo, "f", "three\n", "Three").unwrap();
+    repo
+}
+
+#[test]
+fn a_range_with_a_merge_keeps_it_as_its_plan_drops_and_rewords() {
+    let sandbox = Sandbox::new().unwrap();
+    let path = merged(&sandbox);
+    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let git = sandbox.git();
+    let cancel = CancelToken::new();
+    let from = rev(&sandbox, &path, "main~2");
+    let range = rebase_range(git, &repository, from, &cancel).unwrap();
+    assert_eq!(range.merges(), 1);
+    let id_of = |subject: &str| {
+        range
+            .commits
+            .iter()
+            .find(|commit| commit.subject() == subject)
+            .unwrap()
+            .id
+    };
+    let plan = |steps: &[(&str, Step)]| -> Vec<Planned> {
+        range
+            .commits
+            .iter()
+            .map(|commit| Planned {
+                id: commit.id,
+                step: steps
+                    .iter()
+                    .find(|(subject, _)| *subject == commit.subject())
+                    .map_or(Step::Pick, |(_, step)| step.clone()),
+            })
+            .collect()
+    };
+
+    // Nothing melded, and no merge dropped: refused, nothing changed.
+    let head = rev(&sandbox, &path, "HEAD");
+    for (steps, why) in [
+        (vec![("Side two", Step::Squash)], "melded"),
+        (vec![("Merge side", Step::Drop)], "a merge dropped"),
+    ] {
+        let refused = rebase_keeping_merges(git, &repository, range.base, &plan(&steps), &cancel);
+        assert!(refused.is_err(), "{why}");
+        assert_eq!(rev(&sandbox, &path, "HEAD"), head, "{why}");
+    }
+    assert_eq!(repository.operations().unwrap(), Vec::new());
+
+    // A side commit dropped, a commit and the merge reworded: the merge stays one.
+    let steps = [
+        ("Side one", Step::Drop),
+        ("Two", Step::Reword("Two, again".to_owned())),
+        ("Merge side", Step::Reword("Merge side, again".to_owned())),
+    ];
+    let done = rebase_keeping_merges(git, &repository, range.base, &plan(&steps), &cancel).unwrap();
+    assert_eq!(done, Integrated::Done);
+    let _ = id_of("Side one");
+    let subjects = |args: &[&str]| -> Vec<String> {
+        let out = sandbox.run(&path, "log", args).unwrap();
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect()
+    };
+    assert_eq!(
+        subjects(&["--format=%s", "--first-parent", "main"]),
+        ["Three", "Merge side, again", "Two, again", "One"]
+    );
+    assert_eq!(
+        subjects(&["--format=%s", "main~1^2"]),
+        ["Side two", "One"],
+        "the merge's branch, less its dropped commit"
+    );
+    let merges = sandbox
+        .run(&path, "rev-list", &["--merges", "--count", "HEAD"])
+        .unwrap();
+    assert_eq!(merges.stdout.trim_ascii(), b"1");
+    assert!(!path.join("s1").exists(), "its commit dropped");
+    assert!(path.join("s2").exists());
+}
+
+#[test]
+fn a_rebase_onto_a_branch_keeps_merges_when_asked() {
+    let sandbox = Sandbox::new().unwrap();
+    let path = merged(&sandbox);
+    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let cancel = CancelToken::new();
+    // `upstream` moved on from `One`.
+    sandbox
+        .run(&path, "branch", &["upstream", "main~2^1"])
+        .unwrap();
+    sandbox
+        .run(&path, "switch", &["--quiet", "upstream"])
+        .unwrap();
+    sandbox.commit_file(&path, "u", "u\n", "Upstream").unwrap();
+    sandbox.run(&path, "switch", &["--quiet", "main"]).unwrap();
+    let merges = |sandbox: &Sandbox, branch: &str| {
+        let range = format!("upstream..{branch}");
+        let out = sandbox
+            .run(&path, "rev-list", &["--merges", "--count", &range])
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    // A copy of `main`, rebased after it without being asked to keep merges.
+    sandbox.run(&path, "branch", &["copy", "main"]).unwrap();
+    let upstream = bstr::BStr::new("upstream");
+    let done = egit_git::rebase(sandbox.git(), &repository, upstream, true, &cancel).unwrap();
+    assert_eq!(done, Integrated::Done);
+    assert_eq!(merges(&sandbox, "main"), "1", "kept");
+    assert!(path.join("u").exists());
+    sandbox.run(&path, "switch", &["--quiet", "copy"]).unwrap();
+    let done = egit_git::rebase(sandbox.git(), &repository, upstream, false, &cancel).unwrap();
+    assert_eq!(done, Integrated::Done);
+    assert_eq!(merges(&sandbox, "copy"), "0", "flattened");
 }

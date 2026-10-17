@@ -56,6 +56,9 @@ pub fn merge(
 /// Rebases the current branch onto `onto` (`git rebase`): its commits not in `onto`,
 /// replayed on it.
 ///
+/// With `keep_merges`, its merges too (`--rebase-merges`), which a rebase otherwise flattens
+/// (unless the configuration's `rebase.rebaseMerges` says otherwise).
+///
 /// # Errors
 ///
 /// When git refuses (local changes in the way, say) or is cancelled.
@@ -63,11 +66,15 @@ pub fn rebase(
     git: &Git,
     repository: &Repository,
     onto: &BStr,
+    keep_merges: bool,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
-    let done = git
-        .write("rebase")
-        .arg("--quiet")
+    let mut command = git.write("rebase").arg("--quiet");
+    if keep_merges {
+        command = command.arg("--rebase-merges");
+    }
+    let done = command
+        .arg("--end-of-options")
         .arg(OsStr::from_bytes(onto))
         .prompt_context("Rebasing")
         .current_dir(repository.work_tree())

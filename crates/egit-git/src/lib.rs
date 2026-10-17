@@ -12,6 +12,7 @@
 mod applying;
 pub mod askpass;
 mod batch;
+mod bisect;
 mod blame;
 mod branch;
 mod cancel;
@@ -61,6 +62,7 @@ pub use applying::{
     summarize_patch,
 };
 pub use batch::GitProcess;
+pub use bisect::{BisectLeft, BisectMark, BisectTerms, Bisection, bisect_mark, bisection};
 pub use blame::{BlameCommit, BlameRun, FileCommit, Moves, blame, file_log};
 pub use branch::{
     BadRefName, DeleteBranchError, SwitchError, SwitchTo, check_ref_name, create_branch,
@@ -103,7 +105,7 @@ pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use progress::{Progress, ProgressReport};
 pub use rebase::{
     MAX_PLANNED, Planned, RangeCommit, RangeError, RebaseError, RebaseRange, Step,
-    rebase_interactive, rebase_range,
+    rebase_interactive, rebase_keeping_merges, rebase_range,
 };
 pub use reflog::{ReflogEntry, create_ref, delete_ref, ref_target, reflog};
 pub use remote::{

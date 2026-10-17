@@ -18,7 +18,7 @@ use egui_async::Bind;
 use super::history::{ID_DIGITS, Shared};
 use crate::jobs;
 use crate::problem::Problem;
-use crate::tasks::{Task, range_problem};
+use crate::tasks::{Task, range_problem, unflattened};
 use crate::theme::icon;
 use crate::widgets::{self, muted};
 
@@ -130,8 +130,9 @@ impl RebaseView {
             );
             view.range.request(jobs::blocking(move || {
                 rebase_range(&git, &repository, from, &cancel)
-                    .map(Arc::new)
                     .map_err(|error| range_problem(&error))
+                    .and_then(unflattened)
+                    .map(Arc::new)
             }));
         }
         view
@@ -586,6 +587,7 @@ mod tests {
                     id: ObjectId::from_hex(format!("{index:040x}").as_bytes()).unwrap(),
                     author: "Ada".to_owned(),
                     message: format!("Commit {index}"),
+                    merge: false,
                 })
                 .collect(),
         }

@@ -305,7 +305,7 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
     assert_eq!(operations(), [Operation::Merge]);
     sandbox.run(&path, "merge", &["--abort"]).unwrap();
     assert_eq!(
-        rebase(git, &repository, BStr::new("other"), &cancel()).unwrap(),
+        rebase(git, &repository, BStr::new("other"), false, &cancel()).unwrap(),
         Integrated::Conflicts
     );
     assert_eq!(operations(), [Operation::Rebase]);
@@ -322,7 +322,7 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
         .unwrap();
     sandbox.commit_file(&path, "h", "later\n", "Later").unwrap();
     assert_eq!(
-        rebase(git, &repository, BStr::new("other"), &cancel()).unwrap(),
+        rebase(git, &repository, BStr::new("other"), false, &cancel()).unwrap(),
         Integrated::Done
     );
     assert_eq!(subject(&sandbox, &path, "HEAD~1"), "Other");
