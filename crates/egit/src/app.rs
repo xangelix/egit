@@ -25,6 +25,7 @@ use crate::staging::StageRequest;
 use crate::sync::SyncTask;
 use crate::tabs::{self, Pane};
 use crate::theme::{self, Palette, ThemeChoice};
+use crate::views::clone::CloneRequest;
 use crate::views::home::HomeView;
 use crate::views::profile::ProfileView;
 use crate::views::prompts::Prompts;
@@ -86,6 +87,12 @@ pub(crate) enum Action {
     DetectGit,
     /// Ask for a folder to open.
     PickFolder,
+    /// Ask for the folder clones go into.
+    PickCloneFolder,
+    /// Clone a repository (then open it).
+    Clone(CloneRequest),
+    /// Stop the clone running.
+    CancelClone,
     /// Open the repository around a path.
     Open(PathBuf),
     /// A repository was found: show it.
@@ -191,7 +198,10 @@ impl EgitApp {
             user_config: Bind::new(true),
             user_writes: WriteLock::default(),
             repos: Vec::new(),
-            home: HomeView::default(),
+            home: HomeView::new(
+                settings.clone_folder.as_ref().map(StoredPath::to_path),
+                home_dir.as_deref(),
+            ),
             profile: ProfileView::default(),
             prompts,
             settings,
@@ -229,6 +239,13 @@ impl EgitApp {
         match action {
             Action::DetectGit => state.detect_git(),
             Action::PickFolder => state.home.pick_folder(),
+            Action::PickCloneFolder => state.home.clone.pick_folder(),
+            Action::Clone(request) => {
+                if let Some(git) = state.git() {
+                    state.home.clone.start(&git, request);
+                }
+            }
+            Action::CancelClone => state.home.clone.cancel(),
             Action::Open(path) => state.open(path),
             Action::Opened(repository) => self.show_repository(ctx, *repository),
             Action::Trust(path) => state.trust(path),
@@ -363,6 +380,7 @@ impl AppState {
                 Err(problem) => self.home.problem = Some(OpenProblem::from_problem(problem)),
             }
         }
+        self.take_clone();
         if let Some(trusted) = self.home.trusting.take() {
             match trusted {
                 Ok(path) => self.actions.push(Action::Open(path)),
@@ -382,6 +400,27 @@ impl AppState {
                 }
                 Err(problem) => self.profile.problem = Some(problem),
             }
+        }
+    }
+
+    /// Takes in the clone folder picked, and a clone finished: it opens, and the next clone goes
+    /// into the same folder.
+    fn take_clone(&mut self) {
+        let clone = &mut self.home.clone;
+        match clone.picking.take() {
+            Some(Ok(Some(folder))) => clone.picked(folder, self.home_dir.as_deref()),
+            Some(Ok(None)) | None => {}
+            Some(Err(problem)) => clone.problem = Some(problem),
+        }
+        match clone.cloning.take() {
+            Some(Ok(Some(destination))) => {
+                clone.done();
+                self.settings.clone_folder = destination.parent().map(StoredPath::from);
+                self.actions.push(Action::Open(destination));
+            }
+            Some(Ok(None)) => clone.cancelled = true,
+            Some(Err(problem)) => clone.problem = Some(problem),
+            None => {}
         }
     }
 

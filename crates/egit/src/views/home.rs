@@ -1,4 +1,5 @@
-//! The Home tab: open a repository, reopen a recent one, and see who you are to git.
+//! The Home tab: open a repository, clone one, reopen a recent one, and see who you are to
+//! git.
 
 use std::path::{Path, PathBuf};
 
@@ -9,6 +10,7 @@ use egui_table_kit::layout::Column;
 use egui_table_kit::state::TableState;
 use egui_table_kit::table::TableKit;
 
+use super::clone::{self, CloneView};
 use crate::app::{Action, AppState};
 use crate::format::now;
 use crate::problem::{OpenProblem, Problem};
@@ -30,19 +32,9 @@ pub(crate) struct HomeView {
     pub(crate) picking: Bind<Option<PathBuf>, Problem>,
     /// Trusting a folder another user owns, before opening it.
     pub(crate) trusting: Bind<PathBuf, Problem>,
+    /// Cloning a repository.
+    pub(crate) clone: CloneView,
     recent: RecentTable,
-}
-
-impl Default for HomeView {
-    fn default() -> Self {
-        Self {
-            path: String::new(),
-            problem: None,
-            picking: Bind::new(true),
-            trusting: Bind::new(true),
-            recent: RecentTable::default(),
-        }
-    }
 }
 
 /// The recent repositories' table; its state starts over when the list changes.
@@ -61,6 +53,18 @@ impl Default for RecentTable {
 }
 
 impl HomeView {
+    /// The Home tab, its clones going into `clone_folder` (or the home folder).
+    pub(crate) fn new(clone_folder: Option<PathBuf>, home: Option<&Path>) -> Self {
+        Self {
+            path: String::new(),
+            problem: None,
+            picking: Bind::new(true),
+            trusting: Bind::new(true),
+            clone: CloneView::new(clone_folder, home),
+            recent: RecentTable::default(),
+        }
+    }
+
     /// Opens the desktop's folder dialog.
     pub(crate) fn pick_folder(&mut self) {
         if self.picking.is_pending() {
@@ -84,6 +88,15 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         ui.add_space(16.0);
         git_problem(ui, state);
         open_card(ui, state);
+        ui.add_space(12.0);
+        let ready = state.git.is_ok();
+        clone::card(
+            ui,
+            &mut state.home.clone,
+            ready,
+            state.home_dir.as_deref(),
+            &mut state.actions,
+        );
         ui.add_space(12.0);
         recent_card(ui, state);
         ui.add_space(12.0);
@@ -311,7 +324,7 @@ fn profile_card(ui: &mut Ui, state: &mut AppState) {
 }
 
 /// A typed path with a leading `~` meaning the home folder.
-fn expand_home(typed: &str, home: Option<&Path>) -> PathBuf {
+pub(super) fn expand_home(typed: &str, home: Option<&Path>) -> PathBuf {
     match (typed.strip_prefix('~'), home) {
         (Some(""), Some(home)) => home.to_owned(),
         (Some(rest), Some(home)) if rest.starts_with('/') => {

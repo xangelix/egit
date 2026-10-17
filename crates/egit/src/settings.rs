@@ -1,4 +1,5 @@
-//! What egit remembers between runs: the theme, recent repositories, and the open tabs.
+//! What egit remembers between runs: the theme, recent repositories, the open tabs, and where
+//! the last clone went.
 //!
 //! Stored by eframe (`~/.local/share/egit/app.ron`). Paths are kept as text when they are
 //! UTF-8 and as bytes otherwise, so every path the system allows survives.
@@ -27,6 +28,8 @@ pub(crate) struct Settings {
     pub(crate) recent: Vec<Recent>,
     /// The repositories open when egit last closed, in tab order.
     pub(crate) open: Vec<StoredPath>,
+    /// The folder the last clone went into (the next goes there too).
+    pub(crate) clone_folder: Option<StoredPath>,
 }
 
 /// A repository opened before.

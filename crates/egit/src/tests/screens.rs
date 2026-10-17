@@ -16,7 +16,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use crate::app::EgitApp;
-use crate::settings::Settings;
+use crate::settings::{Settings, StoredPath};
 use crate::theme::icon;
 use crate::views::prompts::Prompts;
 
@@ -177,7 +177,7 @@ fn show_panel(harness: &mut Harness<'_, EgitApp>, panel: &str) {
 
 /// Types `path` into Home's path field and opens it.
 fn open_path(harness: &mut Harness<'_, EgitApp>, path: &Path) {
-    let field = harness.get_by_role(Role::TextInput);
+    let field = harness.get_by_role_and_label(Role::TextInput, "Open a repository");
     field.focus();
     field.type_text(&path.display().to_string());
     harness.run_steps(2);
@@ -1238,6 +1238,68 @@ fn a_pull_stopped_at_conflicts_is_shown_and_aborted() {
     }
     let head = sandbox.run(&mine, "log", &["-1", "--format=%s"]).unwrap();
     assert_eq!(head.stdout.trim_ascii(), b"Mine");
+}
+
+#[test]
+fn a_repository_is_cloned_from_home_and_opened() {
+    let sandbox = Sandbox::new().unwrap();
+    shared_remote(&sandbox);
+    let bare = sandbox.path("origin.git");
+    // First from a remote that answers only after a long pause (git's `ext::` transport runs
+    // a command as the remote): cancelled, nothing is left.
+    sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "protocol.ext.allow", "always"],
+        )
+        .unwrap();
+    let slow = format!(
+        "ext::sh -c sleep% 60;% exec% {}% upload-pack% {}",
+        sandbox.git().program().display(),
+        bare.display()
+    );
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    type_into(&mut harness, Role::TextInput, "Address", &slow);
+    click_when_enabled(&mut harness, &format!("{}  Clone", icon::DOWNLOAD_SIMPLE));
+    wait_for_label(&mut harness, "Cancel");
+    render(&mut harness, "home-cloning");
+    harness.get_by_label("Cancel").click();
+    wait_for_label(&mut harness, "Cancelled: git removed what it had made.");
+    assert!(!sandbox.home().join("origin").exists());
+
+    let url = format!("file://{}", bare.display());
+    harness
+        .get_by_role_and_label(Role::TextInput, "Address")
+        .focus();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.run_steps(1);
+    type_into(&mut harness, Role::TextInput, "Address", &url);
+    // The folder made is named as git names it; it goes into the home folder at first.
+    let named = harness.get_by_role_and_label(Role::TextInput, "Named");
+    assert_eq!(named.accesskit_node().value().as_deref(), Some("origin"));
+    wait_for_label(&mut harness, "Into ~/origin");
+    render(&mut harness, "home-clone");
+
+    click_when_enabled(&mut harness, &format!("{}  Clone", icon::DOWNLOAD_SIMPLE));
+    settle(&mut harness, "the clone opened", history_of(1));
+    let cloned = sandbox.home().join("origin");
+    assert_eq!(
+        std::fs::read_to_string(cloned.join("shared")).unwrap(),
+        "base\n"
+    );
+    let app = harness.state_mut();
+    assert_eq!(app.state.repos[0].repository.work_tree(), cloned.as_path());
+    // The next clone goes into the same folder.
+    assert_eq!(
+        app.state
+            .settings
+            .clone_folder
+            .as_ref()
+            .map(StoredPath::to_path),
+        Some(sandbox.home().to_owned())
+    );
 }
 
 #[test]

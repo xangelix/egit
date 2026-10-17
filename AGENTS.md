@@ -411,6 +411,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `pull.rebase`), a force push's confirmation (`--force-with-lease --force-if-includes`),
     a branch's first push (remote and name; `--set-upstream`), and an abort's. Its parts draw
     in `Ui`s with ids of their own (`own_ids`): what the row drew before them comes and goes.
+    `views/clone.rs` — Home's clone card (`CloneView`): the address, the folder it goes into
+    (typed, `~` the home folder and a relative path inside it, or picked: `PickCloneFolder`;
+    `Settings::clone_folder`, the last clone's, at first), the folder's name (`name_from_url`,
+    as git names it, until edited), submodules, partial; `Action::Clone` runs `clone` as a
+    job (one at a time; `format::progress` and Cancel while it runs, `CancelClone`), then
+    opens the repository; cancelled, it says git removed what it had made.
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
     credentials, pull and push, and every setting, each with its origin), `repo` (overview
@@ -430,7 +436,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     and a rename's old one on hover.
   - `theme.rs` (palettes, WCAG AA checked by a test; Phosphor icons), `widgets.rs` (cards,
     buttons, origin labels, problem boxes), `format.rs` (`~` paths, "5 minutes ago",
-    dates), `settings.rs` (theme, recent repositories, open tabs; non-UTF-8 paths kept as
+    dates, a long command's progress), `settings.rs` (theme, recent repositories, open tabs,
+    the clone folder; non-UTF-8 paths kept as
     bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
   - `tests/askpass_helper.rs` — the real `egit` executable (`CARGO_BIN_EXE_egit`) started by
     git as its helper through the server's link: credentials, and an SSH signing key's
