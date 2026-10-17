@@ -28,6 +28,7 @@ it.
 | 14 | The menus' remaining actions | done; awaiting the owner's review |
 | 15 | Patches | done; awaiting the owner's review |
 | 16 | Undo, and the reflog | done; awaiting the owner's review |
+| 17 | The sidebar, and the repository's plumbing | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -60,7 +61,11 @@ it.
   `corpus_pull_requests`: 1,000 open pull requests from a fake GitHub, then merge requests
   from a fake GitLab, on 10,000 commits: the first page shown 28 ms after opening, all in
   34 ms; the badged commit table scrolled at 0.54 ms p99, the list at 0.28 ms, stepped
-  through (each one's details read) at 0.40 ms (each forge alike).
+  through (each one's details read) at 0.40 ms (each forge alike). `corpus_sidebar`: 100,000
+  refs (50,000 branches in 100 folders, 30,000 of a remote's, 20,000 tags) on 1,000 commits:
+  listed 280 ms after opening (its longest frame meanwhile 5.6 ms: they are sorted in a job),
+  scrolled at 0.7–1.1 ms p99, the tags unfolded in a frame of 1.2 ms, each letter typed in the
+  filter 5.6 ms at most; peak 191 MB.
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory, then how much of what
@@ -172,7 +177,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     across chunks without copying; with a commit-graph it starts from `merge-base
     --independent` of `--all`'s tips, since git's topological walk first reads down to the
     oldest tip: Linux's first commit in 60 ms instead of 700; `walk_history_from` starts from
-    those tips listed already), `list_references` (`for-each-ref`, symbolic refs skipped, tags
+    those tips listed already; `history_tips` lists them with some refs hidden: `--exclude=`
+    each and `--all` on standard input, however many), `list_references` (`for-each-ref`, symbolic refs skipped, tags
     peeled through every tag: git 2.43 peels a tag of a tag one level, so those are peeled by
     one `rev-parse <name>^{}`), `commit_changes` (`diff-tree -r -z
     --raw --no-abbrev -M` against the first parent, or `--root`: each side's mode and object),
@@ -246,7 +252,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     --force-if-includes`; each ref's `PushFlag` and git's reason for a refusal, other lines as
     notes; a refusal isn't an error), `remotes`, `remote_urls` (each remote's URL as git
     reaches it, `insteadOf` applied: `ls-remote --get-url`), `fetch_refspecs` (just those
-    refspecs, no tags: a pull request's `refs/pull/<n>/head`, a lone branch), and
+    refspecs, no tags: a pull request's `refs/pull/<n>/head`, a lone branch), `fetch_remote`
+    (one remote alone, pruned or not), and
     `abort_operation` /
     `continue_operation` for a merge, rebase, am, cherry-pick, revert (bisect: `reset`);
     `skip_operation` (`--skip` of a rebase, am, cherry-pick, revert: `Integrated` as it then
@@ -292,6 +299,21 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `.`): `<flag> <old> <new> <ref>` lines, `!` refused, nothing for a ref already there.
   - `worktree.rs` — `add_worktree`: `git worktree add` of a `WorktreeFrom` (a branch, a new
     branch at a ref or commit, `--track` for a remote's, or a commit `--detach`) into a folder.
+    `worktrees`: `worktree list --porcelain -z`, each `Worktree` (path, `HEAD` (none for an
+    unborn branch's zeros), branch, main, bare, why locked, why prunable); `remove_worktree`
+    (`RemoveWorktreeError::Changes` unless forced, `Locked`), `lock_worktree` (a reason),
+    `unlock_worktree`, `prune_worktrees`.
+  - `remote_setup.rs` — remotes set up by `git remote`: `add_remote`, `rename_remote` (its
+    branches and their followers along), `remove_remote`, `set_remote_url` (fetching, or
+    `--push`).
+  - `submodule.rs` — `submodules`: those `.gitmodules` names (`config --file .gitmodules
+    --get-regexp`) that the index records (`ls-files -s` of their literal paths: mode 160000),
+    each `Submodule` (name, path, address, the commit recorded, `initialized`: its
+    `submodule.<name>.url` in the repository's configuration); `update_submodules` (`submodule
+    update --init --recursive --progress`, these paths or all). `tests/plumbing.rs` lists,
+    locks, removes (refused with changes or locked), and prunes worktrees; adds, renames,
+    re-points, fetches alone (pruned), and removes remotes; lists submodules (in a clone, not
+    set up) and sets them up; and starts a walk with branches hidden.
   - `format_patch.rs` — `format_patch` (`format-patch -1 --stdout --default-prefix`: `a/` and
     `b/` whatever `diff.noprefix` says), `patch_file_name` (as git names one: `0001-` and the
     subject's letters, 64 bytes at most); `format_patches` (the commits from one, in `HEAD`'s
@@ -435,7 +457,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `Arc`, each read taking a thread's own handle. `references`: `list_references`'s list
     (peeled through every tag: a packed ref's peeled line, else objects' headers, only tags
     decoded). `tips`: what `rev-list --no-walk=unsorted --exclude=refs/stash --all` lists, in
-    its order (refs by name, `HEAD`, other worktrees' `HEAD`s; commits only, each once).
+    its order (refs by name, `HEAD`, other worktrees' `HEAD`s; commits only, each once, a set
+    saying which were met: 100,000 refs at distinct commits listed in 135 ms, not 5.8 s).
     `read`: objects as `ObjectReader::read` hands them over, saying how many: in a partial
     clone it stops at the first object it hasn't, for git to fetch; `reader`, a `GixReader`
     of a thread's own (its handle and buffer), for reading on several. `tests/parity.rs` checks
@@ -501,7 +524,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head, operations, and a stopped
     `git am`'s progress) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
-    lands) and its stash list (read at once, when refs change, and after each task), its
+    lands) and its stash list, worktrees, and submodules (`refresh_lists`: read at once, when
+    refs change, and after each task), its
     `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph), its
     `Journal` (what to undo and redo; `undo` runs the next as a task, and a commit made notes
     how to take it back),
@@ -523,11 +547,15 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     once gix failed; `EGIT_GIX=0` leaves every read to git. The walk takes its refs and tips
     from gix too, and has git walk from them (`walk_history_from`). `Names`: the rows'
     commits' names, a chunk (`Arc<[u8]>`) at a time, shared with jobs as the history goes on.
-    `Scope`: only some refs' history (soloed), a branch pinned to the left; `HistoryState`
+    `Scope`: only some refs' history (soloed), or every one's but some (`hidden`, sorted:
+    the walk starts from `history_tips`, the table shows no badge for them), a branch pinned
+    to the left; `HistoryState`
     keeps the one asked for (`set_scope` reads again), the walk resolves its names against the
     refs it read (walking from those found, `GraphBuilder::pinned`) and says what applied, which
     a line under the top bar shows ("Showing only …", "Show every branch"; "… pinned to the
-    left", "Unpin").
+    left", "Unpin"; "2 branches hidden", "Show them"). `Refs` are shared (`shared`, an
+    `Arc<[Reference]>`) and numbered by read (`read`), so the sidebar sorts them in a job and
+    knows when they changed.
     `Summaries`: subject, author, preformatted date, read as rows come into view (at most 512
     a read, one read at a time), about 4,096 kept, least recently drawn forgotten first; each
     says whether its commit is signed. `Signatures`: the signed commits on screen (and the one
@@ -670,6 +698,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `SaveChanges`. A forge's tasks run with the tab's accounts:
     `CheckOutPullRequest` (`fetch_refspecs` of its refspec, then a switch; changes in the way
     lead to stash-and-switch, as a switch's do) and `CreatePullRequest` (`Outcome::Opened`).
+    The repository's plumbing: `AddRemote` (fetched at once if asked), `FetchRemote`,
+    `RenameRemote`, `RemoveRemote`, `SetRemoteUrls` (the push address unset when none);
+    `RemoveWorktree` (`Outcome::WorktreeChanges` when it has changes: asked again, forced),
+    `LockWorktree`, `UnlockWorktree`, `PruneWorktrees`; `UpdateSubmodules`.
     Every task but these reads what its undo needs first (`undo::before`) and notes how to take
     it back once it went through (`undo::noted`, into the tab's journal); `Undo` and `Redo`
     run `undo::take_back` and `do_again` instead (one stopped before changing anything goes
@@ -786,7 +818,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     files too. A branch's upstream: typed, the remote branches holding what is typed offered
     as buttons, refused until it is one; "Forget <upstream>". A worktree: its folder (`~` the
     home folder; relative beside the repository), a new branch's name where one is made (none
-    for a commit: detached), "Open it once made" (a tab, once, as the task ends).
+    for a commit: detached), "Open it once made" (a tab, once, as the task ends). A remote to
+    add (a name git takes and none here has, "origin" offered for the first; its address;
+    "Fetch from it now"), its addresses (fetching, and pushing: empty is the same), its new
+    name, its removal; a worktree's removal (again, "Remove anyway", when it has changes) and
+    lock (why).
     `views/actions.rs` — what the commit table offers (`Menus`, from `Shared::menus`: the
     branch, `HEAD`, the configuration (its remotes read only when a menu needs them), the refs, whether a task runs or an operation is in progress,
     which disable what would change the branch, saying why): a commit's context menu (switch
@@ -835,6 +871,25 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     The Patches menu (`actions::patches_menu`, beside the stash menu): apply from files,
     paste, and the staged or every change copied or saved as a patch; a commit's row menu:
     Save as a patch, Copy as a patch, Save this and later commits as patches.
+    `views/sidebar.rs` — `Sidebar`, the panel left of the commit table (resizable; "Hide the
+    sidebar" leaves a strip to show it again): a filter (⌘ Alt F; smart case; Escape clears
+    it; it unfolds what it matches and scrolls back to the top), then sections, each a header
+    with its count (named "Branches: 5"; a click folds it; its menu; a "+" adding a remote, a
+    stash, or a worktree): branches, folded into folders by their `/`s; remotes, each with its
+    branches (its menu: fetch, pruned or not, change its address, rename, remove, copy the
+    address, open on its forge); pull or merge requests (on a forge; a click shows one); tags
+    (folded at first); stashes (a click shows its commit in the details: `HistoryView::peek`,
+    which the details show in place of the selection while the history doesn't have it; Apply,
+    Pop, Drop); worktrees (here, locked, missing marked; a double click or "Open in a tab";
+    Lock, Unlock, Remove); submodules (when there are any: path and recorded commit, or "not
+    set up"; Update or Set up, Open in a tab). A branch's or remote branch's checkbox (drawn in
+    the gutter, its own size) hides it from the graph or shows it (`Scope::hidden`; the branch
+    checked out always shows); a ref's row selects its commit (or peeks at it), a branch's
+    double click switches, its menu is its badge's. The refs are sorted (by kind, then their
+    `/`-parts naturally: `v2.9` before `v2.10`, either case alike) in a job, once a read of the
+    refs or when the remotes change; the rows are made again only when what they show changed
+    (the sorted refs, a list read again, the forge's requests, the filter, a fold) and drawn
+    with `show_rows`, their text painted.
     `views/reflog.rs` — `ReflogView`, a ref's reflog in the commit table's place (the top
     bar's Reflog: `HEAD`'s; a branch badge's "Show <name>'s reflog"): read in a job (10,000
     moves at most), read again when the history is (`follow`) or `HEAD` moves, the selection
@@ -936,7 +991,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     cursors, focus rings, and 24-point targets. `src/tests/menus.rs` drives the menus' newer
     actions: pulling, pushing, fast-forwarding branches, upstreams set and forgotten, a name
     copied, a branch deleted here and on its remote, a patch saved, a worktree opened in a
-    tab, the graph narrowed and pinned. `src/tests/patches.rs` drives patches: a series looked
+    tab, the graph narrowed and pinned. `src/tests/sidebar.rs` drives the sidebar: what it lists
+    and counts, folders and sections folded, the filter (Escape clears it), a branch's row
+    selecting its commit and a stash's showing its changes, a branch hidden and shown again;
+    a remote added (its name offered) and fetched, renamed, re-pointed for pushing, fetched
+    alone, removed; a worktree locked, unlocked, opened in a tab, removed (asked again with
+    changes); a submodule set up. `src/tests/patches.rs` drives patches: a series looked
     at and applied signed off, a conflicting one stopped (its progress, its patch, Skip,
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
     series saved. `src/tests/search.rs` drives the search bar
