@@ -26,7 +26,7 @@ use egui_table_kit::layout::{
 };
 
 use super::file::{self, FileView, WorkFile};
-use super::sync::{self, SyncEvent, SyncPane, SyncView};
+use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
 use crate::fonts;
@@ -37,8 +37,8 @@ use crate::history::{
 };
 use crate::problem::Problem;
 use crate::repo::RepoId;
-use crate::sync::Syncing;
 use crate::tables::ChangesTable;
+use crate::tasks::Tasks;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 use crate::worktree::WorkTree;
@@ -112,7 +112,7 @@ pub(crate) struct HistoryPane<'a> {
     /// The repository's configuration, once read.
     pub(crate) config: Option<&'a ConfigSnapshot>,
     /// Fetching, pulling, and pushing.
-    pub(crate) syncing: &'a mut Syncing,
+    pub(crate) tasks: &'a mut Tasks,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -140,7 +140,7 @@ pub(crate) struct HistoryView {
     /// commit's.
     work_selected: bool,
     work: WorkPanel,
-    sync: SyncView,
+    tasks: TasksView,
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -223,7 +223,7 @@ impl HistoryView {
             file: None,
             work_selected: false,
             work: WorkPanel::new(repo),
-            sync: SyncView::default(),
+            tasks: TasksView::default(),
         }
     }
 
@@ -443,7 +443,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         sign_by_default,
         operations,
         config,
-        syncing,
+        tasks,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -468,12 +468,12 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
     egui::Panel::top(Id::new(("history-bar", id)))
         .frame(Frame::new().inner_margin(Margin::symmetric(12, 8)))
         .show(ui, |ui| {
-            let mut pane = SyncPane {
+            let mut pane = TaskPane {
                 id,
                 head,
                 operations,
                 config,
-                syncing: &mut *syncing,
+                tasks: &mut *tasks,
                 actions: &mut *actions,
             };
             top_bar(
@@ -485,20 +485,20 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
                 writing_commit_graph,
                 &mut pane,
             );
-            sync::outcome(ui, &mut view.sync, &mut pane);
-            if sync::banner(ui, &mut view.sync, &mut pane) == Some(SyncEvent::ShowWorkTree) {
+            tasks::outcome(ui, &mut view.tasks, &mut pane);
+            if tasks::banner(ui, &mut view.tasks, &mut pane) == Some(TaskEvent::ShowWorkTree) {
                 view.select_work();
             }
         });
-    sync::dialogs(
+    tasks::dialogs(
         ui.ctx(),
-        &mut view.sync,
-        &mut SyncPane {
+        &mut view.tasks,
+        &mut TaskPane {
             id,
             head,
             operations,
             config,
-            syncing: &mut *syncing,
+            tasks: &mut *tasks,
             actions: &mut *actions,
         },
     );
@@ -652,7 +652,7 @@ fn top_bar(
     work_tree: &mut WorkTree,
     view: &mut HistoryView,
     writing: &mut Bind<(), Problem>,
-    sync_pane: &mut SyncPane<'_>,
+    task_pane: &mut TaskPane<'_>,
 ) {
     let palette = shared.palette;
     ui.horizontal(|ui| {
@@ -670,9 +670,9 @@ fn top_bar(
             ui.spinner();
             ui.label(muted(ui, "Reading the history…"));
         }
-        sync::bar(ui, &mut view.sync, sync_pane);
+        tasks::bar(ui, &mut view.tasks, task_pane);
     });
-    let actions = &mut *sync_pane.actions;
+    let actions = &mut *task_pane.actions;
     for problem in [history.shown.problem(), history.summaries.problem.as_ref()]
         .into_iter()
         .flatten()

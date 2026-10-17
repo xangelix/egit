@@ -1,8 +1,8 @@
-//! Exchanging with the remotes, as the history shows it: the branch, its upstream and how they
-//! compare, Fetch, Pull, and Push (what the running one is doing, with Cancel); how the last one
-//! ended, in words a person can act on; the dialogs it may lead to (diverged branches, forcing a
-//! push, a branch's first push, giving up an operation); and the banner of an operation git
-//! stopped in the middle of.
+//! A repository's tasks, as the history shows them: the branch, its upstream and how they
+//! compare, Fetch, Pull, and Push (what the running task is doing, with Cancel); how the last
+//! one ended, in words a person can act on; the dialogs it may lead to (diverged branches,
+//! forcing a push, a branch's first push, giving up an operation); and the banner of an
+//! operation git stopped in the middle of.
 
 use std::fmt::Write as _;
 
@@ -15,14 +15,14 @@ use egui::{Align, Id, Layout, Modal, RichText, TextStyle, Ui, UiBuilder};
 use crate::app::Action;
 use crate::problem::Problem;
 use crate::repo::RepoId;
-use crate::sync::{SyncOutcome, SyncTask, Syncing, has_remotes, remote_names, upstream_of};
+use crate::tasks::{Outcome, Task, Tasks, has_remotes, remote_names, upstream_of};
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 use crate::{fonts, format};
 
-/// What the sync parts remember between frames.
+/// What the task parts remember between frames.
 #[derive(Debug, Default)]
-pub(crate) struct SyncView {
+pub(crate) struct TasksView {
     dialog: Option<Dialog>,
     /// The task whose outcome was taken in (dismissed, or turned into a dialog).
     seen: u64,
@@ -30,7 +30,7 @@ pub(crate) struct SyncView {
     remember: bool,
 }
 
-/// A question the sync parts are asking.
+/// A question the task parts are asking.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Dialog {
     /// How to bring diverged branches together.
@@ -43,24 +43,24 @@ enum Dialog {
     Abort(Operation),
 }
 
-/// What the sync parts work with while they are drawn.
-pub(crate) struct SyncPane<'a> {
+/// What the task parts work with while they are drawn.
+pub(crate) struct TaskPane<'a> {
     pub(crate) id: RepoId,
     pub(crate) head: Option<&'a Head>,
     pub(crate) operations: &'a [Operation],
     pub(crate) config: Option<&'a ConfigSnapshot>,
-    pub(crate) syncing: &'a mut Syncing,
+    pub(crate) tasks: &'a mut Tasks,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
 /// What the user asked for that the history view does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SyncEvent {
+pub(crate) enum TaskEvent {
     /// Show the working tree (its conflicts).
     ShowWorkTree,
 }
 
-impl SyncPane<'_> {
+impl TaskPane<'_> {
     /// The current branch's name, when on one.
     fn branch(&self) -> Option<String> {
         match self.head? {
@@ -86,14 +86,14 @@ impl SyncPane<'_> {
         self.config.map(remote_names).unwrap_or_default()
     }
 
-    fn start(&mut self, task: SyncTask) {
-        self.actions.push(Action::Sync(self.id, task));
+    fn start(&mut self, task: Task) {
+        self.actions.push(Action::Task(self.id, task));
     }
 }
 
 /// The branch, how it compares with its upstream, and Fetch, Pull, Push (or, while one runs,
 /// what it is doing and Cancel), from the right.
-pub(crate) fn bar(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
+pub(crate) fn bar(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     let right = UiBuilder::new().layout(Layout::right_to_left(Align::Center));
     own_ids(ui, "bar", pane.id, right, |ui| controls(ui, view, pane));
 }
@@ -108,20 +108,20 @@ fn own_ids<R>(
     builder: UiBuilder,
     add: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    ui.scope_builder(builder.id(Id::new(("sync", part, id))), add)
+    ui.scope_builder(builder.id(Id::new(("tasks", part, id))), add)
         .inner
 }
 
-fn controls(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
+fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     let palette = Palette::of(ui.ctx());
-    if pane.syncing.is_busy() {
+    if pane.tasks.is_busy() {
         // The progress moves on its own, without input.
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
         if widgets::secondary(ui, true, "Cancel").clicked() {
-            pane.actions.push(Action::CancelSync(pane.id));
+            pane.actions.push(Action::CancelTask(pane.id));
         }
-        ui.label(muted(ui, progress_text(pane.syncing)));
+        ui.label(muted(ui, progress_text(pane.tasks)));
         ui.spinner();
         return;
     }
@@ -134,7 +134,7 @@ fn controls(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
     );
     if push.clicked() {
         match (pane.push_target(), pane.branch()) {
-            (Some(target), _) => pane.start(SyncTask::Push(target)),
+            (Some(target), _) => pane.start(Task::Push(target)),
             (None, Some(branch)) => {
                 let remotes = pane.remotes();
                 let remote = remotes
@@ -159,7 +159,7 @@ fn controls(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
         .on_disabled_hover_text("The branch has no upstream to pull from")
         .clicked()
     {
-        pane.start(SyncTask::Pull(PullMode::AsConfigured));
+        pane.start(Task::Pull(PullMode::AsConfigured));
     }
     if widgets::secondary(
         ui,
@@ -169,9 +169,9 @@ fn controls(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
     .on_disabled_hover_text("The repository has no remote")
     .clicked()
     {
-        pane.start(SyncTask::Fetch);
+        pane.start(Task::Fetch);
     }
-    if let Some(problem) = &pane.syncing.background_problem {
+    if let Some(problem) = &pane.tasks.background_problem {
         ui.label(RichText::new(icon::WARNING).color(palette.warn))
             .on_hover_text(format!("Fetching in the background failed: {problem}"));
     }
@@ -226,27 +226,27 @@ fn compared(tracking: Tracking) -> String {
 }
 
 /// What the running task is doing.
-fn progress_text(syncing: &Syncing) -> String {
-    let doing = syncing.task.as_ref().map_or("Working", SyncTask::doing);
-    format::progress(doing, &syncing.progress.report())
+fn progress_text(tasks: &Tasks) -> String {
+    let doing = tasks.task.as_ref().map_or("Working", Task::doing);
+    format::progress(doing, &tasks.progress.report())
 }
 
 /// How the last task ended (until dismissed or another starts): a line, a problem, or the
 /// dialog it leads to.
-pub(crate) fn outcome(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
+pub(crate) fn outcome(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     own_ids(ui, "outcome", pane.id, UiBuilder::new(), |ui| {
         outcome_lines(ui, view, pane);
     });
 }
 
-fn outcome_lines(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
-    if pane.syncing.is_busy() || view.seen == pane.syncing.started {
+fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
+    if pane.tasks.is_busy() || view.seen == pane.tasks.started {
         return;
     }
     let palette = Palette::of(ui.ctx());
-    let started = pane.syncing.started;
+    let started = pane.tasks.started;
     let result = pane
-        .syncing
+        .tasks
         .result
         .read_as_ref()
         .map(|result| result.cloned().map_err(Clone::clone));
@@ -261,30 +261,30 @@ fn outcome_lines(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
                 }
             });
         }
-        Some(Ok(SyncOutcome::Pulled(Pulled::Diverged))) => {
+        Some(Ok(Outcome::Pulled(Pulled::Diverged))) => {
             view.dialog = Some(Dialog::Diverged);
             view.remember = false;
             dismiss = true;
         }
-        Some(Ok(SyncOutcome::Pushed(pushed))) if !pushed.succeeded() => {
+        Some(Ok(Outcome::Pushed(pushed))) if !pushed.succeeded() => {
             refused(ui, view, pane, &pushed, &mut dismiss);
         }
         Some(Ok(outcome)) => {
             let (text, color) = match &outcome {
-                SyncOutcome::Cancelled => ("Cancelled.".to_owned(), palette.muted),
-                SyncOutcome::Fetched => ("Fetched.".to_owned(), palette.ok),
-                SyncOutcome::Pulled(Pulled::Updated) => ("Pulled.".to_owned(), palette.ok),
-                SyncOutcome::Pulled(_) => (
+                Outcome::Cancelled => ("Cancelled.".to_owned(), palette.muted),
+                Outcome::Fetched => ("Fetched.".to_owned(), palette.ok),
+                Outcome::Pulled(Pulled::Updated) => ("Pulled.".to_owned(), palette.ok),
+                Outcome::Pulled(_) => (
                     "The pull stopped at conflicts: resolve them, stage them, then Continue."
                         .to_owned(),
                     palette.ok,
                 ),
-                SyncOutcome::Pushed(pushed) => (pushed_text(pushed), palette.ok),
-                SyncOutcome::Aborted => (
+                Outcome::Pushed(pushed) => (pushed_text(pushed), palette.ok),
+                Outcome::Aborted => (
                     "Aborted: everything is as it was before.".to_owned(),
                     palette.ok,
                 ),
-                SyncOutcome::Continued => ("Carried on.".to_owned(), palette.ok),
+                Outcome::Continued => ("Carried on.".to_owned(), palette.ok),
             };
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(text).color(color));
@@ -292,7 +292,7 @@ fn outcome_lines(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
                     dismiss = true;
                 }
             });
-            if let SyncOutcome::Pushed(pushed) = &outcome {
+            if let Outcome::Pushed(pushed) = &outcome {
                 notes(ui, pushed);
             }
         }
@@ -338,8 +338,8 @@ fn notes(ui: &mut Ui, pushed: &Pushed) {
 /// A refused push: why, in words, and what can be done.
 fn refused(
     ui: &mut Ui,
-    view: &mut SyncView,
-    pane: &mut SyncPane<'_>,
+    view: &mut TasksView,
+    pane: &mut TaskPane<'_>,
     pushed: &Pushed,
     dismiss: &mut bool,
 ) {
@@ -373,8 +373,8 @@ fn refused(
     };
     let problem = Problem::new("The push was refused", explanation);
     let target = pane.push_target().or_else(|| {
-        pane.syncing.task.as_ref().and_then(|task| match task {
-            SyncTask::Push(options) => Some(options.clone()),
+        pane.tasks.task.as_ref().and_then(|task| match task {
+            Task::Push(options) => Some(options.clone()),
             _ => None,
         })
     });
@@ -390,7 +390,7 @@ fn refused(
                 *dismiss = true;
             }
             if widgets::primary(ui, true, "Pull").clicked() {
-                pane.start(SyncTask::Pull(PullMode::AsConfigured));
+                pane.start(Task::Pull(PullMode::AsConfigured));
                 *dismiss = true;
             }
         }
@@ -404,9 +404,9 @@ fn refused(
 /// bisect, Stop).
 pub(crate) fn banner(
     ui: &mut Ui,
-    view: &mut SyncView,
-    pane: &mut SyncPane<'_>,
-) -> Option<SyncEvent> {
+    view: &mut TasksView,
+    pane: &mut TaskPane<'_>,
+) -> Option<TaskEvent> {
     own_ids(ui, "banner", pane.id, UiBuilder::new(), |ui| {
         operation_banner(ui, view, pane)
     })
@@ -414,12 +414,12 @@ pub(crate) fn banner(
 
 fn operation_banner(
     ui: &mut Ui,
-    view: &mut SyncView,
-    pane: &mut SyncPane<'_>,
-) -> Option<SyncEvent> {
+    view: &mut TasksView,
+    pane: &mut TaskPane<'_>,
+) -> Option<TaskEvent> {
     let &operation = pane.operations.first()?;
     let palette = Palette::of(ui.ctx());
-    let busy = pane.syncing.is_busy();
+    let busy = pane.tasks.is_busy();
     let what = operation_name(operation);
     let mut event = None;
     egui::Frame::new()
@@ -438,7 +438,7 @@ fn operation_banner(
                 if operation == Operation::Bisect {
                     ui.label("Mark commits good or bad in a terminal, or stop.");
                     if widgets::secondary(ui, !busy, "Stop bisecting").clicked() {
-                        pane.start(SyncTask::Abort(operation));
+                        pane.start(Task::Abort(operation));
                     }
                     return;
                 }
@@ -447,10 +447,10 @@ fn operation_banner(
                      Continue; or Abort to go back to how things were.",
                 );
                 if widgets::secondary(ui, true, "Show the conflicts").clicked() {
-                    event = Some(SyncEvent::ShowWorkTree);
+                    event = Some(TaskEvent::ShowWorkTree);
                 }
                 if widgets::primary(ui, !busy, "Continue").clicked() {
-                    pane.start(SyncTask::Continue(operation));
+                    pane.start(Task::Continue(operation));
                 }
                 if widgets::secondary(ui, !busy, "Abort…").clicked() {
                     view.dialog = Some(Dialog::Abort(operation));
@@ -473,7 +473,7 @@ const fn operation_name(operation: Operation) -> &'static str {
 }
 
 /// The dialog asked, if any.
-pub(crate) fn dialogs(ctx: &egui::Context, view: &mut SyncView, pane: &mut SyncPane<'_>) {
+pub(crate) fn dialogs(ctx: &egui::Context, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     let Some(dialog) = view.dialog.clone() else {
         return;
     };
@@ -484,7 +484,7 @@ pub(crate) fn dialogs(ctx: &egui::Context, view: &mut SyncView, pane: &mut SyncP
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::same(20));
     let mut close = false;
-    let shown = Modal::new(Id::new(("sync-dialog", pane.id)))
+    let shown = Modal::new(Id::new(("task-dialog", pane.id)))
         .frame(frame)
         .show(ctx, |ui| {
             ui.set_width(480.0);
@@ -507,7 +507,7 @@ fn title(ui: &mut Ui, text: &str) {
 }
 
 /// How to bring diverged branches together.
-fn diverged(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>, close: &mut bool) {
+fn diverged(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>, close: &mut bool) {
     let upstream = match pane.head {
         Some(Head::Branch(branch)) => branch
             .upstream
@@ -533,18 +533,18 @@ fn diverged(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>, close: &m
     widgets::buttons_row(ui, |ui| {
         if widgets::primary(ui, true, "Rebase").clicked() {
             let task = if view.remember {
-                SyncTask::PullAndRemember { rebase: true }
+                Task::PullAndRemember { rebase: true }
             } else {
-                SyncTask::Pull(PullMode::Rebase)
+                Task::Pull(PullMode::Rebase)
             };
             pane.start(task);
             *close = true;
         }
         if widgets::secondary(ui, true, "Merge").clicked() {
             let task = if view.remember {
-                SyncTask::PullAndRemember { rebase: false }
+                Task::PullAndRemember { rebase: false }
             } else {
-                SyncTask::Pull(PullMode::Merge)
+                Task::Pull(PullMode::Merge)
             };
             pane.start(task);
             *close = true;
@@ -556,7 +556,7 @@ fn diverged(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>, close: &m
 }
 
 /// Whether to replace the remote's branch.
-fn force_push(ui: &mut Ui, pane: &mut SyncPane<'_>, options: &PushOptions, close: &mut bool) {
+fn force_push(ui: &mut Ui, pane: &mut TaskPane<'_>, options: &PushOptions, close: &mut bool) {
     title(
         ui,
         &format!(
@@ -576,7 +576,7 @@ fn force_push(ui: &mut Ui, pane: &mut SyncPane<'_>, options: &PushOptions, close
     ui.add_space(12.0);
     widgets::buttons_row(ui, |ui| {
         if widgets::primary(ui, true, "Force push").clicked() {
-            pane.start(SyncTask::Push(options.clone()));
+            pane.start(Task::Push(options.clone()));
             *close = true;
         }
         if widgets::secondary(ui, true, "Cancel").clicked() {
@@ -588,8 +588,8 @@ fn force_push(ui: &mut Ui, pane: &mut SyncPane<'_>, options: &PushOptions, close
 /// Where a branch without an upstream goes: which remote, under what name.
 fn first_push(
     ui: &mut Ui,
-    view: &mut SyncView,
-    pane: &mut SyncPane<'_>,
+    view: &mut TasksView,
+    pane: &mut TaskPane<'_>,
     mut options: PushOptions,
     close: &mut bool,
 ) {
@@ -631,7 +631,7 @@ fn first_push(
     let ready = !options.remote.is_empty() && !options.remote_branch.is_empty();
     widgets::buttons_row(ui, |ui| {
         if widgets::primary(ui, ready, "Push").clicked() {
-            pane.start(SyncTask::Push(options.clone()));
+            pane.start(Task::Push(options.clone()));
             *close = true;
         }
         if widgets::secondary(ui, true, "Cancel").clicked() {
@@ -644,7 +644,7 @@ fn first_push(
 }
 
 /// Whether to give up an operation.
-fn abort(ui: &mut Ui, pane: &mut SyncPane<'_>, operation: Operation, close: &mut bool) {
+fn abort(ui: &mut Ui, pane: &mut TaskPane<'_>, operation: Operation, close: &mut bool) {
     title(
         ui,
         &format!("Abort {}?", operation_name(operation).to_lowercase()),
@@ -659,7 +659,7 @@ fn abort(ui: &mut Ui, pane: &mut SyncPane<'_>, operation: Operation, close: &mut
     ui.add_space(12.0);
     widgets::buttons_row(ui, |ui| {
         if widgets::primary(ui, true, "Abort").clicked() {
-            pane.start(SyncTask::Abort(operation));
+            pane.start(Task::Abort(operation));
             *close = true;
         }
         if widgets::secondary(ui, true, "Keep going").clicked() {

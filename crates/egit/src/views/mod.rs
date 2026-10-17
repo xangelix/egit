@@ -9,7 +9,7 @@ pub(crate) mod profile;
 pub(crate) mod prompts;
 pub(crate) mod repo;
 pub(crate) mod status_bar;
-mod sync;
+mod tasks;
 mod work;
 
 use egui::{ScrollArea, Ui};

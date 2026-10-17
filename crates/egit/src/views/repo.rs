@@ -15,8 +15,8 @@ use crate::format::display_path;
 use crate::history::HistoryState;
 use crate::problem::Problem;
 use crate::repo::{RepoId, RepoPanel, Status};
-use crate::sync::Syncing;
 use crate::tables::SnapshotTable;
+use crate::tasks::Tasks;
 use crate::theme::{Palette, icon};
 use crate::views::history::{HistoryPane, HistoryView};
 use crate::widgets::{self, muted};
@@ -50,7 +50,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         staging: &mut repo.staging,
         committing: &mut repo.committing,
         commits_made: repo.commits_made,
-        syncing: &mut repo.syncing,
+        tasks: &mut repo.tasks,
         writing_commit_graph: &mut repo.writing_commit_graph,
         home: home_dir.as_deref(),
         actions,
@@ -73,7 +73,7 @@ struct Panels<'a> {
     staging: &'a mut Bind<(), Problem>,
     committing: &'a mut Bind<Committed, Problem>,
     commits_made: u64,
-    syncing: &'a mut Syncing,
+    tasks: &'a mut Tasks,
     writing_commit_graph: &'a mut Bind<(), Problem>,
     home: Option<&'a Path>,
     actions: &'a mut Vec<Action>,
@@ -106,7 +106,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                             .unwrap_or(false),
                         operations: status.map_or(&[], |status| status.operations.as_slice()),
                         config,
-                        syncing: self.syncing,
+                        tasks: self.tasks,
                         actions: self.actions,
                     },
                 );

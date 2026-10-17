@@ -1,9 +1,9 @@
-//! A repository's exchanges with its remotes, as jobs: fetching (also in the background, every
-//! few minutes), pulling, pushing, and giving up or carrying on an operation git stopped in the
-//! middle of.
+//! What the user asks of a repository, as jobs: exchanges with its remotes (fetching, also in
+//! the background every few minutes; pulling; pushing), and giving up or carrying on an
+//! operation git stopped in the middle of.
 //!
 //! One task the user asked for runs at a time, under the repository's `WriteLock`, its progress
-//! in [`Syncing::progress`], stoppable with [`Syncing::cancel`]. The background fetch can't prompt,
+//! in [`Tasks::progress`], stoppable with [`Tasks::cancel`]. The background fetch can't prompt,
 //! doesn't take the lock (a fetch never touches the index), and is stopped when the user starts
 //! a task; its failures are kept apart and said quietly.
 
@@ -29,7 +29,7 @@ const BACKGROUND_FETCH: Duration = Duration::from_secs(300);
 
 /// A task the user asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SyncTask {
+pub(crate) enum Task {
     Fetch,
     Pull(PullMode),
     Push(PushOptions),
@@ -41,7 +41,7 @@ pub(crate) enum SyncTask {
     },
 }
 
-impl SyncTask {
+impl Task {
     /// What it is doing, for people ("Pulling…").
     pub(crate) const fn doing(&self) -> &'static str {
         match self {
@@ -56,7 +56,7 @@ impl SyncTask {
 
 /// How a task ended, when git didn't fail outright.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum SyncOutcome {
+pub(crate) enum Outcome {
     /// The user stopped it (git cleaned up after itself).
     Cancelled,
     Fetched,
@@ -68,12 +68,12 @@ pub(crate) enum SyncOutcome {
 
 /// A repository's exchanges with its remotes.
 #[derive(Debug)]
-pub(crate) struct Syncing {
+pub(crate) struct Tasks {
     /// The last task the user asked for, while it runs and after.
-    pub(crate) task: Option<SyncTask>,
+    pub(crate) task: Option<Task>,
     /// How many tasks were started (a view notices a new one's outcome by it).
     pub(crate) started: u64,
-    pub(crate) result: Bind<SyncOutcome, Problem>,
+    pub(crate) result: Bind<Outcome, Problem>,
     /// How far the running task (or background fetch) has got.
     pub(crate) progress: Progress,
     cancel: CancelToken,
@@ -86,7 +86,7 @@ pub(crate) struct Syncing {
     pub(crate) background_problem: Option<Problem>,
 }
 
-impl Syncing {
+impl Tasks {
     /// A repository's exchanges, opened at `now`.
     pub(crate) fn new(now: Instant) -> Self {
         Self {
@@ -114,7 +114,7 @@ impl Syncing {
         git: &Git,
         repository: &Arc<Repository>,
         writes: &WriteLock,
-        task: SyncTask,
+        task: Task,
     ) {
         self.background_cancel.cancel();
         self.cancel.cancel();
@@ -178,7 +178,7 @@ impl Syncing {
     }
 }
 
-impl Drop for Syncing {
+impl Drop for Tasks {
     fn drop(&mut self) {
         self.cancel.cancel();
         self.background_cancel.cancel();
@@ -189,32 +189,32 @@ impl Drop for Syncing {
 fn run(
     git: &Git,
     repository: &Repository,
-    task: &SyncTask,
+    task: &Task,
     progress: &Progress,
     cancel: &CancelToken,
-) -> Result<SyncOutcome, Problem> {
+) -> Result<Outcome, Problem> {
     // A cancelled task isn't a failure: the user asked for it.
     let failed = |title: &'static str| {
         move |error: GitError| match error {
-            GitError::Cancelled { .. } => Ok(SyncOutcome::Cancelled),
+            GitError::Cancelled { .. } => Ok(Outcome::Cancelled),
             error => Err(Problem::git(title, &error)),
         }
     };
     match task {
-        SyncTask::Fetch => {
+        Task::Fetch => {
             let options = FetchOptions {
                 all: true,
                 prune: true,
                 background: false,
             };
             fetch(git, repository, options, progress, cancel)
-                .map(|()| SyncOutcome::Fetched)
+                .map(|()| Outcome::Fetched)
                 .or_else(failed("Fetching failed"))
         }
-        SyncTask::Pull(mode) => pull(git, repository, *mode, progress, cancel)
-            .map(SyncOutcome::Pulled)
+        Task::Pull(mode) => pull(git, repository, *mode, progress, cancel)
+            .map(Outcome::Pulled)
             .or_else(failed("Pulling failed")),
-        SyncTask::PullAndRemember { rebase } => {
+        Task::PullAndRemember { rebase } => {
             let value = if *rebase { "true" } else { "false" };
             set_config(
                 git,
@@ -229,17 +229,17 @@ fn run(
                 PullMode::Merge
             };
             pull(git, repository, mode, progress, cancel)
-                .map(SyncOutcome::Pulled)
+                .map(Outcome::Pulled)
                 .or_else(failed("Pulling failed"))
         }
-        SyncTask::Push(options) => push(git, repository, options, progress, cancel)
-            .map(SyncOutcome::Pushed)
+        Task::Push(options) => push(git, repository, options, progress, cancel)
+            .map(Outcome::Pushed)
             .or_else(failed("Pushing failed")),
-        SyncTask::Abort(operation) => abort_operation(git, repository, *operation, cancel)
-            .map(|()| SyncOutcome::Aborted)
+        Task::Abort(operation) => abort_operation(git, repository, *operation, cancel)
+            .map(|()| Outcome::Aborted)
             .or_else(failed("It couldn't be aborted")),
-        SyncTask::Continue(operation) => continue_operation(git, repository, *operation, cancel)
-            .map(|()| SyncOutcome::Continued)
+        Task::Continue(operation) => continue_operation(git, repository, *operation, cancel)
+            .map(|()| Outcome::Continued)
             .or_else(failed("It couldn't carry on")),
     }
 }

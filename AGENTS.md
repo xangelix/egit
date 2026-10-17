@@ -285,7 +285,7 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     its own tiles (`RepoPanel::{History, Overview, Configuration}`), and its `Watcher`
     (`follow_changes`: refs or operation state changed → status read again, refs → history
     read again; config → config; the index, refs, state, or a file → the `WorkTree`'s
-    status; a sync task ended → status and work tree read again, its refs left to the
+    status; a task ended → status and work tree read again, its refs left to the
     watcher, so a history is walked once). `poll` (each frame, every tab) takes in its jobs'
     results.
   - `history.rs` — `History`: a walk (`jobs::detached`) streams `Piece`s through a channel:
@@ -389,11 +389,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     numbered as the resolved file will be, `<`/`|`/`>` in the gutter, the current side's lines
     through the old parser and the incoming side's through the new; `start` and `conflict_at`
     map conflicts and lines. `Shown` draws it with its selected conflict's headers stronger.
-  - `sync.rs` — `Syncing`, a repository's exchanges with its remotes: one `SyncTask` the user
+  - `tasks.rs` — `Tasks`, what the user asks of a repository: one `Task` the user
     asked for at a time (fetch `--all --prune`, pull as configured or by merge or rebase,
     push, abort or continue an operation, or remember `pull.rebase` then pull;
-    `Action::Sync`), under the `WriteLock`, its `Progress` shown and `CancelToken` stopped
-    by `Action::CancelSync` (`SyncOutcome::Cancelled`, not a failure); and a background fetch every 5 minutes (the first 10 s after
+    `Action::Task`), under the `WriteLock`, its `Progress` shown and `CancelToken` stopped
+    by `Action::CancelTask` (`Outcome::Cancelled`, not a failure); and a background fetch every 5 minutes (the first 10 s after
     opening; only with a remote): non-interactive, without the lock, stopped when the user
     starts a task, its failure kept apart (`background_problem`). `remote_names`,
     `has_remotes` (a scan, nothing allocated), and `upstream_of` read the configuration.
@@ -406,7 +406,7 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     slices: egui copies owned font data on every rebuild of its fonts, but borrows static.
   - `views/history.rs` — the top bar (the commit count, how many files have uncommitted
     changes: a button showing the working tree beside the history in place of a commit's
-    details, as it always is before the first commit; and `views/sync.rs`'s bar), and the
+    details, as it always is before the first commit; and `views/tasks.rs`'s bar), and the
     commit table on egui-table-kit's layout `Table` (its `TableKit` keeps per-row state a
     graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
@@ -447,7 +447,7 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     and the last commit's output (its hooks') or problem (git's whole complaint). It clears
     once the tab's `commits_made` grows. A history of 10,000+ commits
     without a commit-graph is offered one (`Action::WriteCommitGraph`).
-    `views/sync.rs` — the sync bar at the top bar's right: Push, Pull, Fetch, and the branch
+    `views/tasks.rs` — the task bar at the top bar's right: Push, Pull, Fetch, and the branch
     beside its upstream with ↑ ahead ↓ behind (or "(not pushed yet)", "(gone)"); while a task
     runs, its progress and Cancel. Under it the last task's outcome until dismissed (a line,
     the remote's notes, or a problem box), a refused push explained by its reason (behind:
