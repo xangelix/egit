@@ -25,6 +25,7 @@ it.
 | 11 | Merge requests on GitLab | done; awaiting the owner's review |
 | 12 | gitoxide as a read accelerator | done; awaiting the owner's review |
 | 13 | Searching the history | done; awaiting the owner's review |
+| 14 | The menus' remaining actions | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -69,7 +70,8 @@ it.
   Then it searches the history (each kind) and prints how soon the first commit was found,
   how long all took, and the memory held: Linux's messages or authors in 0.6 s (the first in
   4 ms), peaking at 1 GB while the packs are read (mapped: released as it ends); a name at
-  once (17 ms, the index built).
+  once (17 ms, the index built). Last, the history narrowed to the current branch and pinned,
+  then whole again: each read again and shown once whole (Linux: 1.4–1.5 s).
 - gitoxide's reads: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit-gix --release
   --test measure -- --ignored --nocapture` times each against git's (the walk both ways,
   commits read fresh and warm, the walk's tips, references); `EGIT_GIX=0` leaves the
@@ -274,7 +276,18 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     (local or untracked, from git's message). `create_branch`, `rename_branch` (`--move`),
     `delete_branch` (`DeleteBranchError::NotMerged` unless forced), `create_tag` (annotated
     from a message on standard input, `--cleanup=whitespace`; lightweight `--no-sign`, as
-    `tag.gpgSign` would ask for a message), `delete_tag`.
+    `tag.gpgSign` would ask for a message), `delete_tag`, `set_upstream` (`branch
+    --set-upstream-to`, or `--unset-upstream`).
+  - `forward.rs` — fast-forwards, never a merge: `fast_forward_current` (`merge --ff-only`:
+    "Already up to date", "Not possible to fast-forward" read as `Forwarded`), and
+    `fast_forward_branch` for a branch not checked out (`fetch --porcelain --no-prune` with a
+    refspec without `+`, from a remote's branch, a pull without a merge, or from a ref here,
+    `.`): `<flag> <old> <new> <ref>` lines, `!` refused, nothing for a ref already there.
+  - `worktree.rs` — `add_worktree`: `git worktree add` of a `WorktreeFrom` (a branch, a new
+    branch at a ref or commit, `--track` for a remote's, or a commit `--detach`) into a folder.
+  - `format_patch.rs` — `format_patch` (`format-patch -1 --stdout --default-prefix`: `a/` and
+    `b/` whatever `diff.noprefix` says), `patch_file_name` (as git names one: `0001-` and the
+    subject's letters, 64 bytes at most).
   - `integrate.rs` — commits brought into the current branch: `merge` (`--no-edit`),
     `rebase`, `cherry_pick`, `revert` (`--no-edit`; a merge's against its first parent, by
     `rev-list --parents`), each `Integrated::Done`, `Conflicts` (failed with the operation in
@@ -324,7 +337,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     (literal pathspecs, `GIT_NO_LAZY_FETCH`; git's default simplification: `--full-history`
     lists twenty times as many commits for a file of git's own, nearly all merges, five times
     as slowly). `resolve_commit`: `rev-parse --verify --quiet <name>^{commit}` (a name
-    starting with `-` names nothing). `tests/search.rs` runs each against a sandbox.
+    starting with `-` names nothing). `tests/search.rs` runs each against a sandbox;
+    `tests/branches.rs` fast-forwards (moved, there already, refused when diverged or checked
+    out), upstreams, worktrees (each way, a branch in use refused), and a patch `git am`
+    applies elsewhere (the first commit's too).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-forge` — forges' web APIs: GitHub's (github.com, Enterprise Server) and GitLab's
   (gitlab.com, self-managed); no egui. egit's only network connections of its own (git makes
@@ -339,9 +355,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `altssh.gitlab.com` are their forges').
   - `repository.rs` — `ForgeRepository` (a host and a path: GitHub's `owner/name`, GitLab's
     `group/…/project`; `owner`, `name`, `is`, web pages of it, a request (`/pull/12`,
-    `/-/merge_requests/12`), a commit). `forge_repository`: a remote URL of any form (https,
-    ssh, scp-like, `git://`) to its repository; an ssh host alias through `resolve_ssh_alias`
-    (`ssh -G -- <alias>`'s `hostname`, 2 s at most; never an option).
+    `/-/merge_requests/12`), a commit, a branch, its name escaped). `forge_repository`: a
+    remote URL of any form (https, ssh, scp-like, `git://`) to its repository; an ssh host
+    alias through `resolve_ssh_alias` (`ssh -G -- <alias>`'s `hostname`, 2 s at most; never an
+    option).
   - `http.rs` — `Http`, a ureq agent per host: rustls on aws-lc-rs (`deny.toml` bans `ring`
     and `webpki-roots`), certificates checked by the platform verifier (the system's trust
     store), the environment's proxy (none for the loopback address), no redirects, 10 s to
@@ -396,6 +413,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     leading to a commit are chained from a hash table, free slots found in a bitmap). Rows
     (12 bytes) and their edges are kept in `Chunk`s of 1024 rows, each with the lanes open at
     its start. Linux: 1.49M rows in 21 MB, laid out as fast as git walks them.
+    `GraphBuilder::pinned`: the first lane kept for a branch's tip's first-parent line
+    (pinned to the left), empty until the tip comes, which starts its lane there (its
+    children's lanes join it); a node taking the leftmost lane leading to it, the line keeps
+    the lane, and nothing else takes it.
   - `draw.rs` — `for_each_row` draws any range by replaying at most one chunk;
     `RowView::segments_in` gives a row's lines crossing a window of lanes, so a graph wider
     than its column costs only what shows.
@@ -448,7 +469,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     its own tiles (`RepoPanel::{History, Overview, Configuration}`), and its `Watcher`
     (`follow_changes`: refs or operation state changed → status read again, refs → history
     read again; config → config; the index, refs, state, or a file → the `WorkTree`'s
-    status; a task ended → status and work tree read again, its refs left to the
+    status; a task ended → status, configuration (an upstream set, say), and work tree read
+    again, its refs left to the
     watcher, so a history is walked once). `poll` (each frame, every tab) takes in its jobs'
     results.
   - `history.rs` — `History`: a walk (`jobs::detached`) streams `Piece`s through a channel:
@@ -462,6 +484,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     once gix failed; `EGIT_GIX=0` leaves every read to git. The walk takes its refs and tips
     from gix too, and has git walk from them (`walk_history_from`). `Names`: the rows'
     commits' names, a chunk (`Arc<[u8]>`) at a time, shared with jobs as the history goes on.
+    `Scope`: only some refs' history (soloed), a branch pinned to the left; `HistoryState`
+    keeps the one asked for (`set_scope` reads again), the walk resolves its names against the
+    refs it read (walking from those found, `GraphBuilder::pinned`) and says what applied, which
+    a line under the top bar shows ("Showing only …", "Show every branch"; "… pinned to the
+    left", "Unpin").
     `Summaries`: subject, author, preformatted date, read as rows come into view (at most 512
     a read, one read at a time), about 4,096 kept, least recently drawn forgotten first; each
     says whether its commit is signed. `Signatures`: the signed commits on screen (and the one
@@ -594,7 +621,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     after opening; only with a remote): non-interactive, without the lock, stopped when the
     user starts a task, its failure kept apart (`background_problem`; `background_fetches`
     counts them, for the forge). `remote_names`, `has_remotes` (a scan, nothing allocated),
-    and `upstream_of` read the configuration. A forge's tasks run with the tab's accounts:
+    and `upstream_of` read the configuration. Fast-forwards (`FastForward` the current branch,
+    `FastForwardBranch` another from a remote or a ref here: `Outcome::Forwarded`),
+    `SetUpstream`, `DeleteBranchEverywhere` (here, then on the remote; refused here as not
+    merged: `NotMerged`, nothing deleted), `AddWorktree`, `SavePatch` (`format_patch`, the
+    file written in the job). A forge's tasks run with the tab's accounts:
     `CheckOutPullRequest` (`fetch_refspecs` of its refspec, then a switch; changes in the way
     lead to stash-and-switch, as a switch's do) and `CreatePullRequest` (`Outcome::Opened`).
   - `forge.rs` — `RepoForge`, a tab's forge side: `configured` (whenever new configuration
@@ -615,7 +646,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `fork_head` (`refs/pull/12/head` into `pr/12`, `refs/merge-requests/12/head` into
     `mr/12`).
   - `desktop.rs` — `Opener`, and `is_web_page` (HTTPS, or HTTP to the loopback address;
-    nothing that could pass for an option): `xdg-open`, else `gio open`, in a job.
+    nothing that could pass for an option): `xdg-open`, else `gio open`, in a job. `Saver`:
+    where a file goes, asked in the desktop's save dialog (`rfd`, one at a time), or for
+    tests a folder (`into_folder`); `Action::SavePatch` asks, and `AppState::poll` turns the
+    answer into the task.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the XDG font directories (CJK families, then
@@ -685,16 +719,27 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     name, a tag's name and message (annotated with one), each checked by `check_ref_name` as
     it is typed (Enter confirms); and what is lost before deleting a branch (again, saying
     so, when it isn't merged), a remote's branch, a tag, or a stash, before a hard reset, and
-    before stashing the changes in a switch's way. The stash dialog: a message, and
-    untracked files too.
+    before stashing the changes in a switch's way, and deleting a branch here and on its
+    remote at once (again, when it isn't merged). The stash dialog: a message, and untracked
+    files too. A branch's upstream: typed, the remote branches holding what is typed offered
+    as buttons, refused until it is one; "Forget <upstream>". A worktree: its folder (`~` the
+    home folder; relative beside the repository), a new branch's name where one is made (none
+    for a commit: detached), "Open it once made" (a tab, once, as the task ends).
     `views/actions.rs` — what the commit table offers (`Menus`, from `Shared::menus`: the
     branch, `HEAD`, the configuration (its remotes read only when a menu needs them), the refs, whether a task runs or an operation is in progress,
     which disable what would change the branch, saying why): a commit's context menu (switch
     there detached, create a branch or tag there, merge it in, rebase onto it, cherry-pick,
-    revert, reset soft or mixed, hard after a dialog), a ref badge's (switch to a branch, a
-    remote's through its local one tracking it, unless one of that name exists; merge it in,
-    rebase onto it; rename or delete a branch, delete a remote's on its remote; push or delete
-    a tag), a branch badge double-clicked (switch), and the stash menu beside the commit count
+    revert, reset soft or mixed, hard after a dialog, a worktree there, copy a link to it on
+    its forge; and in the row's menu, its name, subject, or "Save as a patch…"), a ref badge's
+    (switch to a branch, a remote's through its local one tracking it, unless one of that
+    name exists; merge it in, rebase onto it, fast-forward the current branch to it, and a
+    remote's local branch following it; a local branch's Pull (the current one as configured,
+    another fast-forward only), Push (to its upstream, or the first-push dialog), and Set
+    upstream; a worktree from it; rename or delete a branch, delete a remote's on its remote,
+    or both at once; copy its name, or a link to it on its forge; pin it to the left or unpin
+    it, show only it, it too, or hide it (`Scope`, `Action::Scope`), or every branch again;
+    push or delete a tag), a branch badge double-clicked (switch), and the stash menu beside
+    the commit count
     ("Stash the changes…", and each stash with Apply, Pop, Drop…). Each asks a task or a
     dialog (`Ask`), or opens the rebase editor, carried out by the history view
     (`carry_out`). The commit menu's "Rewrite" group (on a branch, nothing running): "Rebase
@@ -802,7 +847,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `double_click` puts both clicks in one frame (the harness's frames are a quarter second
     apart). After an action, wait for the history's rows to settle before aiming a click at
     one: a re-read moves them. Not yet audited, as eshine does: hover response,
-    cursors, focus rings, and 24-point targets. `src/tests/search.rs` drives the search bar
+    cursors, focus rings, and 24-point targets. `src/tests/menus.rs` drives the menus' newer
+    actions: pulling, pushing, fast-forwarding branches, upstreams set and forgotten, a name
+    copied, a branch deleted here and on its remote, a patch saved, a worktree opened in a
+    tab, the graph narrowed and pinned. `src/tests/search.rs` drives the search bar
     (by message, author, path, and name; both themes) and holds egit's own reading of messages
     and authors to what `find_commits` finds on 300 assorted commits. `src/tests/scale.rs`
     and `src/tests/corpus.rs` are the opt-in measurements (see Scale and Text corpus above).
