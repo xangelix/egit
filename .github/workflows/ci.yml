@@ -109,6 +109,46 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+  platforms:
+    # macOS and Windows, linted and tested on each (Linux's jobs are above). Neither renders
+    # screens (no GPU on these runners), nor requires every signer.
+    name: Tests (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS
+            os: macos-latest
+          - name: Windows
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - name: Check files out as they are (no line endings converted)
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain
+        run: rustup toolchain install
+
+      - name: Install NASM (aws-lc's assembly on Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install nasm --no-progress
+          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Git version
+        run: git --version
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --locked
+
   supply-chain:
     name: Supply chain
     runs-on: ubuntu-24.04
