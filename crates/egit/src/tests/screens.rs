@@ -157,6 +157,18 @@ fn history_shown(app: &mut EgitApp) -> bool {
     })
 }
 
+/// Whether the first repository's history shows `rows` commits, their summaries read.
+fn history_of(rows: u64) -> impl Fn(&mut EgitApp) -> bool {
+    move |app| {
+        history_shown(app)
+            && app
+                .state
+                .repos
+                .first()
+                .is_some_and(|repo| repo.history.shown.rows() == rows)
+    }
+}
+
 /// Clicks a repository's panel tab.
 fn show_panel(harness: &mut Harness<'_, EgitApp>, panel: &str) {
     harness.get_by_label_contains(panel).click();
@@ -1053,6 +1065,179 @@ fn signed_commits_show_whether_their_signatures_hold() {
     );
     harness.get_by_label("by tests@egit.invalid");
     render(&mut harness, "history-signed");
+}
+
+/// A bare repository with a commit on `main`, a colleague's clone of it, and mine (the one
+/// egit opens), both by plain git.
+fn shared_remote(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
+    let bare = sandbox.path("origin.git");
+    sandbox
+        .run(
+            sandbox.home(),
+            "init",
+            &["--quiet", "--bare", bare.to_str().unwrap()],
+        )
+        .unwrap();
+    let url = format!("file://{}", bare.display());
+    let seed = sandbox.init("seed").unwrap();
+    sandbox
+        .commit_file(&seed, "shared", "base\n", "Start")
+        .unwrap();
+    sandbox
+        .run(&seed, "push", &["--quiet", &url, "HEAD:refs/heads/main"])
+        .unwrap();
+    let clone = |name: &str| {
+        let path = sandbox.path(name);
+        sandbox
+            .run(
+                sandbox.home(),
+                "clone",
+                &["--quiet", &url, path.to_str().unwrap()],
+            )
+            .unwrap();
+        path
+    };
+    (clone("colleague"), clone("mine"))
+}
+
+/// The colleague commits `file` and pushes it.
+fn colleague_pushes(sandbox: &Sandbox, colleague: &Path, file: &str, contents: &str) {
+    sandbox
+        .run(colleague, "pull", &["--quiet", "--rebase"])
+        .unwrap();
+    sandbox
+        .commit_file(colleague, file, contents, &format!("Colleague's {file}"))
+        .unwrap();
+    sandbox.run(colleague, "push", &["--quiet"]).unwrap();
+}
+
+#[test]
+fn fetches_pulls_and_pushes_from_the_history() {
+    let sandbox = Sandbox::new().unwrap();
+    let (colleague, mine) = shared_remote(&sandbox);
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &mine);
+    settle(&mut harness, "the history", history_shown);
+    let branch = |compared: &str| {
+        format!(
+            "{}  main {} origin/main{compared}",
+            icon::GIT_BRANCH,
+            icon::ARROW_RIGHT
+        )
+    };
+    wait_for_label(&mut harness, &branch(""));
+
+    // Fetched, the branch is behind; pulled, it isn't.
+    colleague_pushes(&sandbox, &colleague, "theirs", "x\n");
+    click_when_enabled(&mut harness, &format!("{}  Fetch", icon::ARROWS_CLOCKWISE));
+    wait_for_label(&mut harness, &branch(&format!(" {}1", icon::ARROW_DOWN)));
+    click_when_enabled(&mut harness, &format!("{}  Pull", icon::ARROW_DOWN));
+    wait_for_label(&mut harness, "Pulled.");
+    wait_for_label(&mut harness, &branch(""));
+    settle(&mut harness, "the pulled history", history_of(2));
+
+    // Behind again when pushing: refused, the pull it suggests asks how to bring the
+    // diverged branches together.
+    colleague_pushes(&sandbox, &colleague, "theirs", "y\n");
+    sandbox.commit_file(&mine, "mine", "m\n", "Mine").unwrap();
+    click_when_enabled(&mut harness, &format!("{}  Push", icon::ARROW_UP));
+    wait_for_label(&mut harness, "Force push…");
+    settle(&mut harness, "the commit made", history_of(3));
+    render(&mut harness, "sync-refused");
+    harness.get_by_label("Pull").click();
+    wait_for_label(&mut harness, "The branches have diverged");
+    settle(&mut harness, "the fetched history", history_of(4));
+    render(&mut harness, "sync-diverged");
+    harness.get_by_label("Rebase").click();
+    wait_for_label(&mut harness, "Pulled.");
+    click_when_enabled(&mut harness, &format!("{}  Push", icon::ARROW_UP));
+    wait_for_label(&mut harness, "Pushed to main.");
+    let pushed = sandbox
+        .run(&colleague, "fetch", &["--quiet"])
+        .and_then(|_| sandbox.run(&colleague, "log", &["-1", "--format=%s", "origin/main"]));
+    assert_eq!(pushed.unwrap().stdout.trim_ascii(), b"Mine");
+
+    // Amended after pushing: refused, then forced with a lease.
+    sandbox
+        .run(
+            &mine,
+            "commit",
+            &["--quiet", "--amend", "--message", "Mine, amended"],
+        )
+        .unwrap();
+    click_when_enabled(&mut harness, &format!("{}  Push", icon::ARROW_UP));
+    wait_for_label(&mut harness, "Force push…");
+    harness.get_by_label("Force push…").click();
+    wait_for_label(&mut harness, "Force push to origin/main?");
+    harness.get_by_label("Force push").click();
+    wait_for_label(&mut harness, "Force pushed: main replaced.");
+
+    // A new branch's first push says where it goes.
+    sandbox
+        .run(&mine, "switch", &["--quiet", "--create", "topic"])
+        .unwrap();
+    wait_for_label(
+        &mut harness,
+        &format!("{}  topic (not pushed yet)", icon::GIT_BRANCH),
+    );
+    click_when_enabled(&mut harness, &format!("{}  Push", icon::ARROW_UP));
+    wait_for_label(&mut harness, "Push topic for the first time");
+    // The history shows the new branch.
+    wait_for_label(&mut harness, &format!("{} topic", icon::GIT_BRANCH));
+    render(&mut harness, "sync-first-push");
+    harness.get_by_label("Push").click();
+    wait_for_label(&mut harness, "Pushed: topic is new on the remote.");
+    wait_for_label(
+        &mut harness,
+        &format!(
+            "{}  topic {} origin/topic",
+            icon::GIT_BRANCH,
+            icon::ARROW_RIGHT
+        ),
+    );
+}
+
+#[test]
+fn a_pull_stopped_at_conflicts_is_shown_and_aborted() {
+    let sandbox = Sandbox::new().unwrap();
+    let (colleague, mine) = shared_remote(&sandbox);
+    sandbox
+        .run(&mine, "config", &["pull.rebase", "false"])
+        .unwrap();
+    colleague_pushes(&sandbox, &colleague, "shared", "theirs\n");
+    sandbox
+        .commit_file(&mine, "shared", "mine\n", "Mine")
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &mine);
+    settle(&mut harness, "the history", history_shown);
+    click_when_enabled(&mut harness, &format!("{}  Pull", icon::ARROW_DOWN));
+    wait_for_label(
+        &mut harness,
+        &format!("{}  A merge is in progress.", icon::WARNING),
+    );
+    harness.get_by_label("Show the conflicts").click();
+    wait_for_label(&mut harness, "Conflict");
+    render(&mut harness, "sync-conflicts");
+
+    harness.get_by_label("Abort…").click();
+    wait_for_label(&mut harness, "Abort a merge?");
+    harness.get_by_label("Abort").click();
+    wait_for_label(&mut harness, "Aborted: everything is as it was before.");
+    for _ in 0..2_000 {
+        harness.step();
+        if harness
+            .query_by_label(&format!("{}  A merge is in progress.", icon::WARNING))
+            .is_none()
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let head = sandbox.run(&mine, "log", &["-1", "--format=%s"]).unwrap();
+    assert_eq!(head.stdout.trim_ascii(), b"Mine");
 }
 
 #[test]

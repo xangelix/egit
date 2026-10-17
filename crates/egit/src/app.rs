@@ -22,6 +22,7 @@ use crate::problem::{OpenProblem, Problem};
 use crate::repo::{RepoId, RepoTab};
 use crate::settings::{Settings, StoredPath};
 use crate::staging::StageRequest;
+use crate::sync::SyncTask;
 use crate::tabs::{self, Pane};
 use crate::theme::{self, Palette, ThemeChoice};
 use crate::views::home::HomeView;
@@ -105,6 +106,10 @@ pub(crate) enum Action {
     Stage(RepoId, StageRequest),
     /// Commit what a repository's index holds.
     Commit(RepoId, NewCommit),
+    /// Fetch, pull, push, or give up or carry on an operation, in a repository.
+    Sync(RepoId, SyncTask),
+    /// Stop a repository's running sync task.
+    CancelSync(RepoId),
     /// A repository's tab was closed.
     Closed(RepoId),
     /// Use a theme.
@@ -256,6 +261,18 @@ impl EgitApp {
                     && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
                 {
                     repo.commit(&git, commit);
+                }
+            }
+            Action::Sync(id, task) => {
+                if let Some(git) = state.git()
+                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
+                {
+                    repo.sync(&git, task);
+                }
+            }
+            Action::CancelSync(id) => {
+                if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
+                    repo.syncing.cancel();
                 }
             }
             Action::Closed(id) => state.repos.retain(|repo| repo.id != id),

@@ -13,6 +13,7 @@ use crate::history::HistoryState;
 use crate::jobs::{self, WriteLock};
 use crate::problem::Problem;
 use crate::staging::{self, StageRequest};
+use crate::sync::{SyncTask, Syncing, has_remotes};
 use crate::tables::SnapshotTable;
 use crate::views::history::HistoryView;
 use crate::watch::{Changes, Taken, Watcher, Watching};
@@ -64,6 +65,8 @@ pub(crate) struct RepoTab {
     committing_open: bool,
     /// How many commits egit has made here (the form clears when it grows).
     pub(crate) commits_made: u64,
+    /// Fetching, pulling, and pushing.
+    pub(crate) syncing: Syncing,
     pub(crate) panels: egui_tiles::Tree<RepoPanel>,
     /// Commands that write to the repository take it.
     writes: WriteLock,
@@ -99,6 +102,7 @@ impl RepoTab {
             committing: Bind::new(true),
             committing_open: false,
             commits_made: 0,
+            syncing: Syncing::new(Instant::now()),
             panels: egui_tiles::Tree::new_tabs(
                 egui::Id::new(("repo-panels", id)),
                 vec![
@@ -205,10 +209,27 @@ impl RepoTab {
         };
         let head = self.head_commit();
         let tree_wait = self.work_tree.poll(git, head, now);
-        match (wait, tree_wait) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
+        let has_remotes = self
+            .config
+            .ok_ref()
+            .is_some_and(|config| has_remotes(config));
+        let (synced, fetch_wait) = self.syncing.poll(git, &self.repository, has_remotes, now);
+        if synced {
+            // Refs and operations follow through the watcher too; the work tree may have
+            // changed under a pull, an abort, or a continue.
+            self.refresh_status(git);
+            self.work_tree.refresh_now();
         }
+        [wait, tree_wait, Some(fetch_wait)]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
+    /// Starts `task` with the remotes (or on an operation in progress).
+    pub(crate) fn sync(&mut self, git: &Git, task: SyncTask) {
+        self.syncing
+            .start(git, &self.repository, &self.writes, task);
     }
 
     /// The commit `HEAD` points at, once read (`None` before the first commit too).

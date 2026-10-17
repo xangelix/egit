@@ -15,6 +15,7 @@ use crate::format::display_path;
 use crate::history::HistoryState;
 use crate::problem::Problem;
 use crate::repo::{RepoId, RepoPanel, Status};
+use crate::sync::Syncing;
 use crate::tables::SnapshotTable;
 use crate::theme::{Palette, icon};
 use crate::views::history::{HistoryPane, HistoryView};
@@ -49,6 +50,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         staging: &mut repo.staging,
         committing: &mut repo.committing,
         commits_made: repo.commits_made,
+        syncing: &mut repo.syncing,
         writing_commit_graph: &mut repo.writing_commit_graph,
         home: home_dir.as_deref(),
         actions,
@@ -71,6 +73,7 @@ struct Panels<'a> {
     staging: &'a mut Bind<(), Problem>,
     committing: &'a mut Bind<Committed, Problem>,
     commits_made: u64,
+    syncing: &'a mut Syncing,
     writing_commit_graph: &'a mut Bind<(), Problem>,
     home: Option<&'a Path>,
     actions: &'a mut Vec<Action>,
@@ -79,30 +82,35 @@ struct Panels<'a> {
 impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
     fn pane_ui(&mut self, ui: &mut Ui, _tile_id: TileId, panel: &mut RepoPanel) -> UiResponse {
         match panel {
-            RepoPanel::History => super::history::show(
-                ui,
-                HistoryPane {
-                    id: self.id,
-                    git: self.git,
-                    repository: self.repository,
-                    history: self.history,
-                    view: self.history_view,
-                    head: self.status.ok_ref().map(|status| &status.head),
-                    writing_commit_graph: self.writing_commit_graph,
-                    partial_clone: self.config.ok_ref().map(|config| config.is_partial_clone()),
-                    work_tree: self.work_tree,
-                    staging: self.staging,
-                    committing: self.committing,
-                    commits_made: self.commits_made,
-                    sign_by_default: self
-                        .config
-                        .ok_ref()
-                        .and_then(|config| config.get("commit.gpgSign"))
-                        .and_then(egit_git::ConfigEntry::bool)
-                        .unwrap_or(false),
-                    actions: self.actions,
-                },
-            ),
+            RepoPanel::History => {
+                let status = self.status.ok_ref();
+                let config = self.config.ok_ref().map(|config| &**config);
+                super::history::show(
+                    ui,
+                    HistoryPane {
+                        id: self.id,
+                        git: self.git,
+                        repository: self.repository,
+                        history: self.history,
+                        view: self.history_view,
+                        head: status.map(|status| &status.head),
+                        writing_commit_graph: self.writing_commit_graph,
+                        partial_clone: config.map(ConfigSnapshot::is_partial_clone),
+                        work_tree: self.work_tree,
+                        staging: self.staging,
+                        committing: self.committing,
+                        commits_made: self.commits_made,
+                        sign_by_default: config
+                            .and_then(|config| config.get("commit.gpgSign"))
+                            .and_then(egit_git::ConfigEntry::bool)
+                            .unwrap_or(false),
+                        operations: status.map_or(&[], |status| status.operations.as_slice()),
+                        config,
+                        syncing: self.syncing,
+                        actions: self.actions,
+                    },
+                );
+            }
             RepoPanel::Overview => overview(ui, self),
             RepoPanel::Configuration => configuration(ui, self),
         }

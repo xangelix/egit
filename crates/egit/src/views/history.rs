@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
 use egit_git::{
-    CancelToken, Committed, FileChange, Git, Head, ObjectId, RefKind, Reference, Repository,
-    SignatureCheck, Status, Verdict,
+    CancelToken, Committed, ConfigSnapshot, FileChange, Git, Head, ObjectId, Operation, RefKind,
+    Reference, Repository, SignatureCheck, Status, Verdict,
 };
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
@@ -26,6 +26,7 @@ use egui_table_kit::layout::{
 };
 
 use super::file::{self, FileView, WorkFile};
+use super::sync::{self, SyncEvent, SyncPane, SyncView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
 use crate::fonts;
@@ -36,6 +37,7 @@ use crate::history::{
 };
 use crate::problem::Problem;
 use crate::repo::RepoId;
+use crate::sync::Syncing;
 use crate::tables::ChangesTable;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
@@ -105,6 +107,12 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) commits_made: u64,
     /// Whether commits are signed unless asked otherwise (`commit.gpgSign`).
     pub(crate) sign_by_default: bool,
+    /// The operations git stopped in the middle of (a merge, a rebase, …).
+    pub(crate) operations: &'a [Operation],
+    /// The repository's configuration, once read.
+    pub(crate) config: Option<&'a ConfigSnapshot>,
+    /// Fetching, pulling, and pushing.
+    pub(crate) syncing: &'a mut Syncing,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -132,6 +140,7 @@ pub(crate) struct HistoryView {
     /// commit's.
     work_selected: bool,
     work: WorkPanel,
+    sync: SyncView,
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -214,6 +223,7 @@ impl HistoryView {
             file: None,
             work_selected: false,
             work: WorkPanel::new(repo),
+            sync: SyncView::default(),
         }
     }
 
@@ -431,6 +441,9 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         committing,
         commits_made,
         sign_by_default,
+        operations,
+        config,
+        syncing,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -454,6 +467,14 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
     egui::Panel::top(Id::new(("history-bar", id)))
         .frame(Frame::new().inner_margin(Margin::symmetric(12, 8)))
         .show(ui, |ui| {
+            let mut pane = SyncPane {
+                id,
+                head,
+                operations,
+                config,
+                syncing: &mut *syncing,
+                actions: &mut *actions,
+            };
             top_bar(
                 ui,
                 &shared,
@@ -461,9 +482,25 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
                 work_tree,
                 view,
                 writing_commit_graph,
-                actions,
+                &mut pane,
             );
+            sync::outcome(ui, &mut view.sync, &mut pane);
+            if sync::banner(ui, &mut view.sync, &mut pane) == Some(SyncEvent::ShowWorkTree) {
+                view.select_work();
+            }
         });
+    sync::dialogs(
+        ui.ctx(),
+        &mut view.sync,
+        &mut SyncPane {
+            id,
+            head,
+            operations,
+            config,
+            syncing: &mut *syncing,
+            actions: &mut *actions,
+        },
+    );
 
     let no_commits = history.shown.rows() == 0;
     if no_commits && work_status.as_ref().is_none_or(|status| status.is_empty()) {
@@ -477,7 +514,41 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         return;
     }
 
-    egui::Panel::right(Id::new(("history-details", id)))
+    let work = WorkSide {
+        staging,
+        committing,
+        commits_made,
+        sign_by_default,
+    };
+    panels(ui, &shared, history, view, work, actions, no_commits);
+}
+
+/// What the working tree's details need besides: staging, and committing.
+struct WorkSide<'a> {
+    staging: &'a mut Bind<(), Problem>,
+    committing: &'a mut Bind<Committed, Problem>,
+    commits_made: u64,
+    sign_by_default: bool,
+}
+
+/// The details beside the history (a commit's, or the working tree's), and the commit table
+/// (or a file looked at) in the middle.
+fn panels(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &mut HistoryState,
+    view: &mut HistoryView,
+    work: WorkSide<'_>,
+    actions: &mut Vec<Action>,
+    no_commits: bool,
+) {
+    let WorkSide {
+        staging,
+        committing,
+        commits_made,
+        sign_by_default,
+    } = work;
+    egui::Panel::right(Id::new(("history-details", shared.id)))
         .resizable(true)
         .default_size(380.0)
         .size_range(260.0..=900.0)
@@ -493,9 +564,9 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
                     repository: shared.repository,
                     objects: &history.objects,
                 };
-                work_details(ui, &shared, view, staging, commit, actions);
+                work_details(ui, shared, view, staging, commit, actions);
             } else {
-                details(ui, &shared, history, view);
+                details(ui, shared, history, view);
             }
         });
 
@@ -504,7 +575,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         .frame(Frame::new())
         .show(ui, |ui| match &mut view.file {
             Some(file) => {
-                if !file::show(ui, &shared, &history.objects, file, actions) {
+                if !file::show(ui, shared, &history.objects, file, actions) {
                     view.file = None;
                 }
             }
@@ -516,7 +587,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
                     ));
                 });
             }
-            None => commit_table(ui, &shared, history, view),
+            None => commit_table(ui, shared, history, view),
         });
 }
 
@@ -565,7 +636,7 @@ fn top_bar(
     work_tree: &mut WorkTree,
     view: &mut HistoryView,
     writing: &mut Bind<(), Problem>,
-    actions: &mut Vec<Action>,
+    sync_pane: &mut SyncPane<'_>,
 ) {
     let palette = shared.palette;
     ui.horizontal(|ui| {
@@ -576,12 +647,16 @@ fn top_bar(
             format!("{} commits", count(rows))
         };
         ui.label(RichText::new(commits).strong());
+        // What comes and goes follows the summary's button: ids are counted in order, and a
+        // click pressed on one id and released on another is lost.
+        work_tree_summary(ui, work_tree, view, palette);
         if history.is_loading() {
             ui.spinner();
             ui.label(muted(ui, "Reading the history…"));
         }
-        work_tree_summary(ui, work_tree, view, palette);
+        sync::bar(ui, &mut view.sync, sync_pane);
     });
+    let actions = &mut *sync_pane.actions;
     for problem in [history.shown.problem(), history.summaries.problem.as_ref()]
         .into_iter()
         .flatten()

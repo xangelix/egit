@@ -14,8 +14,8 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
 | 1 | Foundation: shell, running git, askpass, profile, opening repositories | done |
 | 2 | Commit graph: lanes, the commit table, details and changed files | done |
 | 3 | Text grid and read-only diff viewer | done |
-| 4 | Working tree, staging, signed commits | done; awaiting the owner's review |
-| 5 | Clone, pull, push | not started |
+| 4 | Working tree, staging, signed commits | done |
+| 5 | Clone, pull, push | in progress: fetch, pull, and push done; clone next |
 
 ## Toolchain & commands
 
@@ -256,7 +256,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     lands), its `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph),
     its own tiles (`RepoPanel::{History, Overview, Configuration}`), and its `Watcher`
     (`follow_changes`: refs or operation state changed → status read again, refs → history
-    read again; config → config; the index, refs, state, or a file → the `WorkTree`'s status). `poll` (each frame, every tab) takes in its jobs' results.
+    read again; config → config; the index, refs, state, or a file → the `WorkTree`'s
+    status; a sync task ended → status and work tree read again, its refs left to the
+    watcher, so a history is walked once). `poll` (each frame, every tab) takes in its jobs'
+    results.
   - `history.rs` — `History`: a walk (`jobs::detached`) streams `Piece`s through a channel:
     the refs and whether a commit-graph exists, then each completed `egit-graph` chunk with
     its commits' names packed (20 bytes each), then the end. `id(row)`, `row_of(id, near)` (a
@@ -347,6 +350,14 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     blob read through the shared `cat-file`, `apply_lines`, `write_index_content` against the
     entry the diff was read with; a stale diff says so). `RepoTab::stage` runs one
     (`Action::Stage`), keeps its result for the panel, and reads the work tree again after.
+  - `sync.rs` — `Syncing`, a repository's exchanges with its remotes: one `SyncTask` the user
+    asked for at a time (fetch `--all --prune`, pull as configured or by merge or rebase,
+    push, abort or continue an operation, or remember `pull.rebase` then pull;
+    `Action::Sync`), under the `WriteLock`, its `Progress` shown and `CancelToken` stopped
+    by `Action::CancelSync`; and a background fetch every 5 minutes (the first 10 s after
+    opening; only with a remote): non-interactive, without the lock, stopped when the user
+    starts a task, its failure kept apart (`background_problem`). `remote_names`,
+    `has_remotes` (a scan, nothing allocated), and `upstream_of` read the configuration.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the XDG font directories (CJK families, then
@@ -354,10 +365,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     the user's `LANG` first; outlines required, so no colour bitmaps) and adds what it finds as
     lowest-priority fallbacks to both families. Kept fonts are leaked once into `'static`
     slices: egui copies owned font data on every rebuild of its fonts, but borrows static.
-  - `views/history.rs` — the top bar (the commit count, and how many files have uncommitted
+  - `views/history.rs` — the top bar (the commit count, how many files have uncommitted
     changes: a button showing the working tree beside the history in place of a commit's
-    details, as it always is before the first commit), and the commit table on egui-table-kit's layout `Table` (its `TableKit`
-    keeps per-row state a graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
+    details, as it always is before the first commit; and `views/sync.rs`'s bar), and the
+    commit table on egui-table-kit's layout `Table` (its `TableKit` keeps per-row state a
+    graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
     screen, then a screen below and above). Graph cells paint lines (cubic curves between
@@ -387,6 +399,16 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     and the last commit's output (its hooks') or problem (git's whole complaint). It clears
     once the tab's `commits_made` grows. A history of 10,000+ commits
     without a commit-graph is offered one (`Action::WriteCommitGraph`).
+    `views/sync.rs` — the sync bar at the top bar's right: Push, Pull, Fetch, and the branch
+    beside its upstream with ↑ ahead ↓ behind (or "(not pushed yet)", "(gone)"); while a task
+    runs, its progress and Cancel. Under it the last task's outcome until dismissed (a line,
+    the remote's notes, or a problem box), a refused push explained by its reason (behind:
+    "Force push…" or Pull; a lease that failed: nothing forced, fetch first), and the banner
+    of an operation in progress (Show the conflicts, Continue, Abort…; a bisect's Stop).
+    Modal dialogs: diverged branches (Rebase or Merge, optionally remembered as
+    `pull.rebase`), a force push's confirmation (`--force-with-lease --force-if-includes`),
+    a branch's first push (remote and name; `--set-upstream`), and an abort's. Its parts draw
+    in `Ui`s with ids of their own (`own_ids`): what the row drew before them comes and goes.
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
     credentials, pull and push, and every setting, each with its origin), `repo` (overview
@@ -438,7 +460,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
 - **Tests:** unit tests beside the logic (`mod tests`); tests against a real git live in the
   crate's `tests/` directory and run in a sandbox (a temporary `HOME`, no system config).
 - **Interface:** never block the interface thread: every git command, dialog, and file read is
-  a job. Colours come from `theme::Palette::of(ctx)`, icons from `theme::icon`, shared pieces
+  a job. Controls drawn after something that comes and goes (a spinner, a chip, a problem)
+  belong in a `Ui` with an explicit id (`UiBuilder::id`): egui counts ids in drawing order
+  (a salt alone doesn't change that), and a click pressed on one id and released on another
+  is lost. Colours come from `theme::Palette::of(ctx)`, icons from `theme::icon`, shared pieces
   from `widgets`. Text inside an `egui::Grid` is sized explicitly (`add_sized`): a grid sizes
   cells to their content. Names and paths come from people: assume them long, in any script.
 - **Performance:** CPU time and peak memory are features. Nothing proportional to a

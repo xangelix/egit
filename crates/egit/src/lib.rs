@@ -27,6 +27,7 @@ mod problem;
 mod repo;
 mod settings;
 mod staging;
+mod sync;
 mod syntax;
 mod tables;
 mod tabs;
