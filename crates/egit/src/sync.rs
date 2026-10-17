@@ -12,9 +12,9 @@ use std::time::{Duration, Instant};
 
 use bstr::{BStr, ByteSlice as _};
 use egit_git::{
-    CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, FetchOptions, Git, Operation, Progress,
-    PullMode, Pulled, PushOptions, Pushed, Repository, abort_operation, continue_operation, fetch,
-    pull, push, set_config,
+    CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, FetchOptions, Git, GitError, Operation,
+    Progress, PullMode, Pulled, PushOptions, Pushed, Repository, abort_operation,
+    continue_operation, fetch, pull, push, set_config,
 };
 use egui_async::Bind;
 
@@ -57,6 +57,8 @@ impl SyncTask {
 /// How a task ended, when git didn't fail outright.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SyncOutcome {
+    /// The user stopped it (git cleaned up after itself).
+    Cancelled,
     Fetched,
     Pulled(Pulled),
     Pushed(Pushed),
@@ -191,7 +193,13 @@ fn run(
     progress: &Progress,
     cancel: &CancelToken,
 ) -> Result<SyncOutcome, Problem> {
-    let failed = |title: &'static str| move |error| Problem::git(title, &error);
+    // A cancelled task isn't a failure: the user asked for it.
+    let failed = |title: &'static str| {
+        move |error: GitError| match error {
+            GitError::Cancelled { .. } => Ok(SyncOutcome::Cancelled),
+            error => Err(Problem::git(title, &error)),
+        }
+    };
     match task {
         SyncTask::Fetch => {
             let options = FetchOptions {
@@ -201,11 +209,11 @@ fn run(
             };
             fetch(git, repository, options, progress, cancel)
                 .map(|()| SyncOutcome::Fetched)
-                .map_err(failed("Fetching failed"))
+                .or_else(failed("Fetching failed"))
         }
         SyncTask::Pull(mode) => pull(git, repository, *mode, progress, cancel)
             .map(SyncOutcome::Pulled)
-            .map_err(failed("Pulling failed")),
+            .or_else(failed("Pulling failed")),
         SyncTask::PullAndRemember { rebase } => {
             let value = if *rebase { "true" } else { "false" };
             set_config(
@@ -214,7 +222,7 @@ fn run(
                 "pull.rebase",
                 value,
             )
-            .map_err(failed("The choice couldn't be remembered"))?;
+            .map_err(|error| Problem::git("The choice couldn't be remembered", &error))?;
             let mode = if *rebase {
                 PullMode::Rebase
             } else {
@@ -222,17 +230,17 @@ fn run(
             };
             pull(git, repository, mode, progress, cancel)
                 .map(SyncOutcome::Pulled)
-                .map_err(failed("Pulling failed"))
+                .or_else(failed("Pulling failed"))
         }
         SyncTask::Push(options) => push(git, repository, options, progress, cancel)
             .map(SyncOutcome::Pushed)
-            .map_err(failed("Pushing failed")),
+            .or_else(failed("Pushing failed")),
         SyncTask::Abort(operation) => abort_operation(git, repository, *operation, cancel)
             .map(|()| SyncOutcome::Aborted)
-            .map_err(failed("It couldn't be aborted")),
+            .or_else(failed("It couldn't be aborted")),
         SyncTask::Continue(operation) => continue_operation(git, repository, *operation, cancel)
             .map(|()| SyncOutcome::Continued)
-            .map_err(failed("It couldn't carry on")),
+            .or_else(failed("It couldn't carry on")),
     }
 }
 

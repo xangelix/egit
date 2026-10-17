@@ -1,7 +1,11 @@
-//! Text for people: paths with `~` for the home folder, and times.
+//! Text for people: paths with `~` for the home folder, times, sizes, counts, and how far a
+//! long command has got.
 
+use std::fmt::Write as _;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use egit_git::ProgressReport;
 
 /// Now, in seconds since the Unix epoch.
 pub(crate) fn now() -> u64 {
@@ -133,6 +137,36 @@ fn civil_from_days(days: i64) -> (i64, i64, i64) {
         .wrapping_add(era.wrapping_mul(400))
         .wrapping_add(i64::from(month <= 2));
     (year, month, day)
+}
+
+/// What a long command is doing: `Cloning: Receiving objects 45% (1234/2742), 1.20 MiB | …`,
+/// or `Cloning…` before git says.
+pub(crate) fn progress(doing: &str, report: &ProgressReport) -> String {
+    if report.phase.is_empty() {
+        return format!("{doing}…");
+    }
+    let mut text = format!("{doing}: {}", report.phase);
+    if report.remote {
+        text.push_str(" (remote)");
+    }
+    match report.total {
+        Some(total) if total > 0 => {
+            let percent = report
+                .done
+                .saturating_mul(100)
+                .checked_div(total)
+                .unwrap_or(0);
+            let _ = write!(text, " {percent}% ({}/{total})", report.done);
+        }
+        _ => {
+            let _ = write!(text, " {}", report.done);
+        }
+    }
+    if let Some(transfer) = &report.transfer {
+        text.push_str(", ");
+        text.push_str(transfer);
+    }
+    text
 }
 
 #[cfg(test)]

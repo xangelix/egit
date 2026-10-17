@@ -13,12 +13,12 @@ use egit_git::{
 use egui::{Align, Id, Layout, Modal, RichText, TextStyle, Ui, UiBuilder};
 
 use crate::app::Action;
-use crate::fonts;
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::sync::{SyncOutcome, SyncTask, Syncing, has_remotes, remote_names, upstream_of};
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
+use crate::{fonts, format};
 
 /// What the sync parts remember between frames.
 #[derive(Debug, Default)]
@@ -225,35 +225,10 @@ fn compared(tracking: Tracking) -> String {
     text
 }
 
-/// What the running task is doing: `Pulling: Receiving objects 45% (1234/2742), 1.2 MiB | …`.
+/// What the running task is doing.
 fn progress_text(syncing: &Syncing) -> String {
     let doing = syncing.task.as_ref().map_or("Working", SyncTask::doing);
-    let report = syncing.progress.report();
-    if report.phase.is_empty() {
-        return format!("{doing}…");
-    }
-    let mut text = format!("{doing}: {}", report.phase);
-    if report.remote {
-        text.push_str(" (remote)");
-    }
-    match report.total {
-        Some(total) if total > 0 => {
-            let percent = report
-                .done
-                .saturating_mul(100)
-                .checked_div(total)
-                .unwrap_or(0);
-            let _ = write!(text, " {percent}% ({}/{total})", report.done);
-        }
-        _ => {
-            let _ = write!(text, " {}", report.done);
-        }
-    }
-    if let Some(transfer) = &report.transfer {
-        text.push_str(", ");
-        text.push_str(transfer);
-    }
-    text
+    format::progress(doing, &syncing.progress.report())
 }
 
 /// How the last task ended (until dismissed or another starts): a line, a problem, or the
@@ -295,19 +270,24 @@ fn outcome_lines(ui: &mut Ui, view: &mut SyncView, pane: &mut SyncPane<'_>) {
             refused(ui, view, pane, &pushed, &mut dismiss);
         }
         Some(Ok(outcome)) => {
-            let text = match &outcome {
-                SyncOutcome::Fetched => "Fetched.".to_owned(),
-                SyncOutcome::Pulled(Pulled::Updated) => "Pulled.".to_owned(),
-                SyncOutcome::Pulled(_) => {
+            let (text, color) = match &outcome {
+                SyncOutcome::Cancelled => ("Cancelled.".to_owned(), palette.muted),
+                SyncOutcome::Fetched => ("Fetched.".to_owned(), palette.ok),
+                SyncOutcome::Pulled(Pulled::Updated) => ("Pulled.".to_owned(), palette.ok),
+                SyncOutcome::Pulled(_) => (
                     "The pull stopped at conflicts: resolve them, stage them, then Continue."
-                        .to_owned()
-                }
-                SyncOutcome::Pushed(pushed) => pushed_text(pushed),
-                SyncOutcome::Aborted => "Aborted: everything is as it was before.".to_owned(),
-                SyncOutcome::Continued => "Carried on.".to_owned(),
+                        .to_owned(),
+                    palette.ok,
+                ),
+                SyncOutcome::Pushed(pushed) => (pushed_text(pushed), palette.ok),
+                SyncOutcome::Aborted => (
+                    "Aborted: everything is as it was before.".to_owned(),
+                    palette.ok,
+                ),
+                SyncOutcome::Continued => ("Carried on.".to_owned(), palette.ok),
             };
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(text).color(palette.ok));
+                ui.label(RichText::new(text).color(color));
                 if widgets::secondary(ui, true, "Dismiss").clicked() {
                     dismiss = true;
                 }

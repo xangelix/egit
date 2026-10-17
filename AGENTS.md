@@ -354,7 +354,7 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     asked for at a time (fetch `--all --prune`, pull as configured or by merge or rebase,
     push, abort or continue an operation, or remember `pull.rebase` then pull;
     `Action::Sync`), under the `WriteLock`, its `Progress` shown and `CancelToken` stopped
-    by `Action::CancelSync`; and a background fetch every 5 minutes (the first 10 s after
+    by `Action::CancelSync` (`SyncOutcome::Cancelled`, not a failure); and a background fetch every 5 minutes (the first 10 s after
     opening; only with a remote): non-interactive, without the lock, stopped when the user
     starts a task, its failure kept apart (`background_problem`). `remote_names`,
     `has_remotes` (a scan, nothing allocated), and `upstream_of` read the configuration.
