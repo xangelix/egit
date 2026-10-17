@@ -27,6 +27,7 @@ it.
 | 13 | Searching the history | done; awaiting the owner's review |
 | 14 | The menus' remaining actions | done; awaiting the owner's review |
 | 15 | Patches | done; awaiting the owner's review |
+| 16 | Undo, and the reflog | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -126,12 +127,14 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     so a cancel can't signal a reused id; `cancel.rs` holds the running groups under one lock.
   - `error.rs` — `GitError`, with `Failure` (exit status + stderr tail, `message()`).
   - `object_id.rs` — `ObjectId` (SHA-1 or SHA-256, by length; never assume 40 digits) and
-    `ObjectFormat`.
+    `ObjectFormat` (`zero`, the name of no object).
   - `repo.rs` — `Repository::discover` (two `rev-parse`s; `DiscoverError` names not a
     repository, `safe.directory` refusals (`trust_directory` adds one), bare repositories, and
     paths inside `.git`), `head` (`symbolic-ref`, then `for-each-ref` on that exact ref for the
-    commit and `%(upstream:track)`, or `log -1` when detached), and `operations` (merge,
-    rebase, am, cherry-pick, revert, bisect from their state files in the git dir).
+    commit and `%(upstream:track)`, or `log -1` when detached), `head_ref` (`HeadRef`: just
+    the branch's full name and the commit, by `symbolic-ref` and `rev-parse`, without the
+    upstream's ahead and behind), and `operations` (merge, rebase, am, cherry-pick, revert,
+    bisect from their state files in the git dir).
   - `config.rs` — `ConfigSnapshot::read(git, ConfigPlace::{User, Repository})`: one
     `git config --list --show-origin --show-scope --null`, kept as one buffer the entries point
     into (u32 spans); entries in the command scope (egit's own `-c`) are dropped. `get` is the
@@ -280,7 +283,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `delete_branch` (`DeleteBranchError::NotMerged` unless forced), `create_tag` (annotated
     from a message on standard input, `--cleanup=whitespace`; lightweight `--no-sign`, as
     `tag.gpgSign` would ask for a message), `delete_tag`, `set_upstream` (`branch
-    --set-upstream-to`, or `--unset-upstream`).
+    --set-upstream-to`, or `--unset-upstream`), `move_branch` (`branch --force`: git refuses
+    a branch checked out).
   - `forward.rs` — fast-forwards, never a merge: `fast_forward_current` (`merge --ff-only`:
     "Already up to date", "Not possible to fast-forward" read as `Forwarded`), and
     `fast_forward_branch` for a branch not checked out (`fetch --porcelain --no-prune` with a
@@ -311,12 +315,13 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `rev-list --parents`), each `Integrated::Done`, `Conflicts` (failed with the operation in
     progress and `ls-files -u` not empty), `Empty` (a pick that is "now empty", skipped), or
     `Stopped` (an operation left with nothing to resolve); `reset` (`ResetMode`: soft, mixed,
-    hard).
+    hard, keep: uncommitted changes kept, nothing moved when they're in the way).
   - `stash.rs` — `stashes` (`stash list -z`, `%gd %H %ct %gs`: index, commit, time, git's
     message), `stash_push` (a message, untracked files with `--include-untracked`; whether
     anything was stashed, from `refs/stash` before and after, as `--quiet` says nothing),
     `stash_apply` (and pop; `Integrated::Conflicts` keeps a popped stash) and `stash_drop`,
-    each refused (`StashError::Stale`) unless `stash@{n}` is still the stash listed.
+    each refused (`StashError::Stale`) unless `stash@{n}` is still the stash listed;
+    `stash_store` (a dropped stash's commit put back as the latest, `stash store`).
     `tests/actions.rs` runs all of these, and the pushes, against sandboxes.
   - `rebase.rs` — interactive rebase. `rebase_range`: the commits from one up to `HEAD`
     (`merge-base --is-ancestor`, then `log -z --reverse <from>^..HEAD`, or all from a root),
@@ -349,6 +354,14 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `reject_credential` hand back every attribute `fill` gave (an expiry, a refresh token).
     A `Credential` is wiped when dropped. `tests/credential.rs` fills, rejects, and approves
     through a sandbox's `store` helper.
+  - `reflog.rs` — `reflog`: a ref's moves (`HEAD`, or a full name; never an option), newest
+    first, at most a limit (`log --walk-reflogs -z --date=unix`, so `%gd` carries the time):
+    each `ReflogEntry`'s place, commit, time, what moved it (`%gs`), and subject; none when
+    there's no reflog (no commit yet, no such ref). `ref_target` (`rev-parse --verify`: the
+    object a ref points to, an annotated tag's own), `create_ref` and `delete_ref`
+    (`update-ref` with the old value: zeros, so it must not exist, or where it must still be).
+    `tests/reflog.rs` reads reflogs, `HEAD` and refs, resets keeping changes, stores a dropped
+    stash again, and makes and removes refs only where expected.
   - `search.rs` — `find_commits`: the commits a `CommitFilter` finds among every commit a
     history shows (`rev-list --exclude=refs/stash --all`, streamed through `Lines`): a
     message (`--grep`) or author (`--author`) holding some text (`--fixed-strings`,
@@ -489,7 +502,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `git am`'s progress) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
     lands) and its stash list (read at once, when refs change, and after each task), its
-    `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph),
+    `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph), its
+    `Journal` (what to undo and redo; `undo` runs the next as a task, and a commit made notes
+    how to take it back),
     its own tiles (`RepoPanel::{History, Overview, Configuration}`), and its `Watcher`
     (`follow_changes`: refs or operation state changed → status read again, refs → history
     read again; config → config; the index, refs, state, or a file → the `WorkTree`'s
@@ -655,6 +670,22 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `SaveChanges`. A forge's tasks run with the tab's accounts:
     `CheckOutPullRequest` (`fetch_refspecs` of its refspec, then a switch; changes in the way
     lead to stash-and-switch, as a switch's do) and `CreatePullRequest` (`Outcome::Opened`).
+    Every task but these reads what its undo needs first (`undo::before`) and notes how to take
+    it back once it went through (`undo::noted`, into the tab's journal); `Undo` and `Redo`
+    run `undo::take_back` and `do_again` instead (one stopped before changing anything goes
+    back on its list).
+  - `undo.rs` — taking back what egit did. An `Undo`: what it was in words ("the merge of
+    topic", "the commit “Fix it”") and its `Change`s in order: `HEAD` moved (from, to, and
+    the `ResetMode` that moves it back and forth: soft for a commit, a soft or mixed reset's
+    own, keep otherwise), a switch (`Place`: a branch, or a commit detached), a branch made,
+    removed, renamed, or moved (a fast-forward of another), a tag made or removed, changes
+    stashed (only a stash the action made) or a stash dropped. Each change is checked before
+    it is reversed (`HEAD` where the action left it, a branch or tag where it was, the stash
+    still the latest), last first; done again first first, a stash pushed again noted anew.
+    `Journal`: up to `KEPT` (100) to undo and those undone, to redo, until a new action; jobs
+    report through its inbox (`Landed`), taken in each frame. A stop says why (`Halt`: moved
+    on, or git's words, and whether part was done) and whether it can be tried again. Pushes,
+    fetches, and what an operation stopped part-way did aren't taken back.
   - `forge.rs` — `RepoForge`, a tab's forge side: `configured` (whenever new configuration
     lands) works out in a job which remotes are GitHub repositories or GitLab projects
     (`remote_urls`, as git rewrites them, else as `remote.<name>.url` writes them; the hosts
@@ -804,6 +835,19 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     The Patches menu (`actions::patches_menu`, beside the stash menu): apply from files,
     paste, and the staged or every change copied or saved as a patch; a commit's row menu:
     Save as a patch, Copy as a patch, Save this and later commits as patches.
+    `views/reflog.rs` — `ReflogView`, a ref's reflog in the commit table's place (the top
+    bar's Reflog: `HEAD`'s; a branch badge's "Show <name>'s reflog"): read in a job (10,000
+    moves at most), read again when the history is (`follow`) or `HEAD` moves, the selection
+    kept on its move (by commit and time). Each row (`show_rows`; ↑ ↓; named by what moved
+    it): its place, how long ago, what moved it, the commit and its subject. The selected
+    move's commit shows in the details beside it (`peeked`, though no branch may reach it),
+    its files opened in the reflog's place; "Show the commit" (when the history has it),
+    "Create a branch here…" (not switched to: kept), "Reset <branch> to here" (soft, mixed,
+    keep, or hard after the dialog), "Switch here, without a branch". The top bar's Undo and
+    Redo (first in it, where nothing before them changes width, as the commit and stash
+    counts do; icons named in words; their hover says what they'd take back or do again; ⌘Z,
+    ⇧⌘Z while no text field or dialog has the keys; disabled while a task runs or a commit is
+    made) push `Action::Undo`; their outcome reads "Undid …" or "Redid …".
     `views/blame.rs` — `BlameView`, and `views/file_history.rs` — `FileHistoryView`: a
     `FileView`'s "Blame" and "File history" (`FileWanted`; a deleted file is blamed as its
     parent had it) open them in the commit table's place, each a `Tool` of the history view
