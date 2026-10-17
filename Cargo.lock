@@ -1100,6 +1100,7 @@ dependencies = [
  "eframe",
  "egit-forge",
  "egit-git",
+ "egit-gix",
  "egit-graph",
  "egit-text",
  "egui",

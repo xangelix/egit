@@ -30,6 +30,7 @@ eframe = { workspace = true, features = [
 ] }
 egit-forge.workspace = true
 egit-git.workspace = true
+egit-gix.workspace = true
 egit-graph.workspace = true
 egit-text.workspace = true
 egui.workspace = true

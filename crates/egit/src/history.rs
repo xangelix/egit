@@ -18,7 +18,9 @@ use egit_git::{
     CancelToken, Commit, CountedFile, FileChange, Git, GitError, LineCounts, Object, ObjectFormat,
     ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, SignatureCheck, TreeEntry,
     Verdict, check_signatures, commit_changes, line_counts, list_references, walk_history,
+    walk_history_from,
 };
+use egit_gix::GixRepository;
 use egit_graph::{CHUNK_ROWS, Chunk, GraphBuilder};
 use egit_text::Text;
 use egui_async::Bind;
@@ -92,18 +94,24 @@ enum Piece {
 
 impl History {
     /// Starts reading `repository`'s history; rows arrive as [`Self::poll`] takes them in.
-    pub(crate) fn load(git: &Git, repository: &Arc<Repository>, ctx: &egui::Context) -> Self {
+    pub(crate) fn load(
+        git: &Git,
+        repository: &Arc<Repository>,
+        objects: &Objects,
+        ctx: &egui::Context,
+    ) -> Self {
         let (sender, pieces) = mpsc::channel();
         let cancel = CancelToken::new();
         let job = (
             git.clone(),
             Arc::clone(repository),
+            objects.clone(),
             cancel.clone(),
             ctx.clone(),
         );
         jobs::detached(move || {
-            let (git, repository, cancel, ctx) = job;
-            let walked = walk(&git, &repository, &cancel, &sender, &ctx);
+            let (git, repository, objects, cancel, ctx) = job;
+            let walked = walk(&git, &repository, &objects, &cancel, &sender, &ctx);
             // When nobody listens any more, there is no one to tell.
             let _ = sender.send(Piece::Done(walked));
             ctx.request_repaint();
@@ -232,20 +240,33 @@ fn locate(row: u64) -> Option<(usize, usize)> {
     ))
 }
 
-/// Walks the history, handing over the refs first, then the rows a chunk at a time.
+/// Walks the history, handing over the refs first, then the rows a chunk at a time. Its refs and
+/// the commits it starts from come from gitoxide where it reads them as git does.
 fn walk(
     git: &Git,
     repository: &Repository,
+    objects: &Objects,
     cancel: &CancelToken,
     pieces: &Sender<Piece>,
     ctx: &egui::Context,
 ) -> Result<(), Problem> {
-    let refs = list_references(git, repository).map_err(|error| {
-        Problem::git(
-            "The repository's branches and tags couldn't be read",
-            &error,
-        )
-    })?;
+    let gix = objects.reopen(repository.work_tree());
+    let read_by_gix = gix.as_ref().and_then(|gix| match gix.references() {
+        Ok(refs) => Some(refs),
+        Err(error) => {
+            tracing::warn!(%error, "gitoxide couldn't list the refs; git lists them");
+            None
+        }
+    });
+    let refs = match read_by_gix {
+        Some(refs) => refs,
+        None => list_references(git, repository).map_err(|error| {
+            Problem::git(
+                "The repository's branches and tags couldn't be read",
+                &error,
+            )
+        })?,
+    };
     let start = Piece::Start {
         refs: Refs::new(refs),
         commit_graph: repository.has_commit_graph(),
@@ -262,7 +283,7 @@ fn walk(
     };
     let mut builder = GraphBuilder::new();
     let mut ids = Vec::with_capacity(capacity);
-    walk_history(git, repository, cancel, |id, parents| {
+    let each = |id: ObjectId, parents: &[ObjectId]| {
         if let Some(graph) = builder.push(id, parents) {
             let full = std::mem::replace(&mut ids, Vec::with_capacity(capacity));
             if !hand_over(graph, full, builder.widest()) {
@@ -271,7 +292,12 @@ fn walk(
         }
         ids.extend_from_slice(id.as_bytes());
         ControlFlow::Continue(())
-    })
+    };
+    let tips = gix.as_ref().and_then(|gix| gix.tips().ok());
+    match tips {
+        Some(tips) => walk_history_from(git, repository, tips, cancel, each),
+        None => walk_history(git, repository, cancel, each),
+    }
     .map_err(|error| Problem::git("The history couldn't be read", &error))?;
     let widest = builder.widest();
     if let Some(graph) = builder.finish() {
@@ -323,28 +349,89 @@ const fn rank(kind: RefKind) -> u8 {
     }
 }
 
-/// One `git cat-file` for a repository, started when first needed and shared by the jobs that
-/// read its commits; one that failed is started again next time.
+/// What reads a repository's objects, shared by the jobs that read its commits and files:
+/// gitoxide in process where it reads as git does (`GixRepository::open`; opened again with each
+/// read of the history, so a change that leaves it to git is noticed), else one `git cat-file`,
+/// started when first needed (one that failed is started again next time). `EGIT_GIX=0` leaves
+/// every read to git.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct Objects(Arc<Mutex<Option<ObjectReader>>>);
+pub(crate) struct Objects {
+    git: Arc<Mutex<Option<ObjectReader>>>,
+    gix: Arc<Mutex<Gix>>,
+}
+
+/// Whether gitoxide reads a repository's objects.
+#[derive(Clone, Debug, Default)]
+enum Gix {
+    /// Not looked at yet.
+    #[default]
+    Unopened,
+    Open(GixRepository),
+    /// It can't (or mustn't): git reads them.
+    Unavailable,
+}
+
+/// Whether gitoxide may read at all (`EGIT_GIX=0` says it mayn't).
+fn gix_allowed() -> bool {
+    static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ALLOWED.get_or_init(|| std::env::var_os("EGIT_GIX").is_none_or(|value| value != "0"))
+}
 
 impl Objects {
-    /// Reads `ids` (see [`ObjectReader::read`]), inside a job.
+    /// Opens the repository for gitoxide again (inside a job): what it reads, or `None` when
+    /// git reads everything.
+    pub(crate) fn reopen(&self, work_tree: &Path) -> Option<GixRepository> {
+        let opened = gix_allowed()
+            .then(|| GixRepository::open(work_tree))
+            .flatten();
+        *self.gix.lock() = opened.clone().map_or(Gix::Unavailable, Gix::Open);
+        opened
+    }
+
+    /// gitoxide's reader, opened the first time it is asked for (inside a job).
+    fn gix(&self, work_tree: &Path) -> Option<GixRepository> {
+        let known = self.gix.lock().clone();
+        match known {
+            Gix::Open(gix) => Some(gix),
+            Gix::Unavailable => None,
+            Gix::Unopened => self.reopen(work_tree),
+        }
+    }
+
+    /// Reads `ids` (see [`ObjectReader::read`]), inside a job: through gitoxide, or git; git
+    /// reads what gitoxide didn't (a partial clone's objects it hasn't, which git fetches, or
+    /// all after gitoxide failed partway).
     pub(crate) fn read(
         &self,
         git: &Git,
         work_tree: &Path,
         ids: &[ObjectId],
-        each: impl FnMut(ObjectId, Option<Object<'_>>),
+        mut each: impl FnMut(ObjectId, Option<Object<'_>>),
     ) -> Result<(), GitError> {
-        let mut reader = self.0.lock();
+        let mut handed = 0_usize;
+        if let Some(gix) = self.gix(work_tree) {
+            let read = gix.read(ids, |id, object| {
+                handed = handed.saturating_add(1);
+                each(id, object);
+            });
+            match read {
+                Ok(all) if all == ids.len() => return Ok(()),
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "gitoxide couldn't read objects; git reads them");
+                    *self.gix.lock() = Gix::Unavailable;
+                }
+            }
+        }
+        let rest = ids.get(handed..).unwrap_or_default();
+        let mut reader = self.git.lock();
         if reader.is_none() {
             *reader = Some(ObjectReader::start(git, work_tree)?);
         }
         let Some(active) = reader.as_mut() else {
             return Ok(());
         };
-        let read = active.read(ids, each);
+        let read = active.read(rest, each);
         if read.is_err() {
             *reader = None;
         }
@@ -898,21 +985,22 @@ pub(crate) struct HistoryState {
 impl HistoryState {
     /// Starts reading `repository`'s history.
     pub(crate) fn new(git: &Git, repository: &Arc<Repository>, ctx: &egui::Context) -> Self {
+        let objects = Objects::default();
         Self {
-            shown: History::load(git, repository, ctx),
+            shown: History::load(git, repository, &objects, ctx),
             next: None,
             replaced: false,
             restarted: false,
             summaries: Summaries::default(),
             signatures: Signatures::default(),
-            objects: Objects::default(),
+            objects,
         }
     }
 
     /// Reads the history again. The table keeps showing the current one until the new one is
     /// complete, unless the current one isn't complete either.
     pub(crate) fn reload(&mut self, git: &Git, repository: &Arc<Repository>, ctx: &egui::Context) {
-        let next = History::load(git, repository, ctx);
+        let next = History::load(git, repository, &self.objects, ctx);
         if self.shown.is_loading() || self.shown.rows() == 0 {
             self.shown = next;
             self.next = None;

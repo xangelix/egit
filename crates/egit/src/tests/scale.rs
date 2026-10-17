@@ -52,10 +52,15 @@ pub(super) fn reset_peak_memory() {
 
 /// The process's peak resident memory, in MB.
 pub(super) fn peak_memory_mb() -> f64 {
+    memory_mb("VmHWM:")
+}
+
+/// One of the process's `/proc/self/status` memory figures (`field`, with its colon), in MB.
+fn memory_mb(field: &str) -> f64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
     status
         .lines()
-        .find_map(|line| line.strip_prefix("VmHWM:"))
+        .find_map(|line| line.strip_prefix(field))
         .and_then(|value| value.trim().trim_end_matches(" kB").parse::<f64>().ok())
         .map_or(0.0, |kb| kb / 1024.0)
 }
@@ -159,7 +164,14 @@ fn a_large_history_opens_at_once_and_scrolls_within_a_frame() {
         frames.push(frame.elapsed());
     }
     let scrolling = report("scrolling", frames);
-    println!("peak memory {:.0} MB", peak_memory_mb());
+    // Packs gitoxide read are mapped into the process: resident, but page cache, as they were
+    // in `cat-file`'s process when git read them.
+    println!(
+        "peak memory {:.0} MB; now {:.0} MB allocated, {:.0} MB of files mapped",
+        peak_memory_mb(),
+        memory_mb("RssAnon:"),
+        memory_mb("RssFile:")
+    );
     if !cfg!(debug_assertions) {
         let budget = Duration::from_millis(8);
         assert!(jumps < budget && scrolling < budget, "frames over 8 ms");
