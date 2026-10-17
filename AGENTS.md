@@ -24,6 +24,7 @@ it.
 | 10 | Pull requests on GitHub | done |
 | 11 | Merge requests on GitLab | done; awaiting the owner's review |
 | 12 | gitoxide as a read accelerator | done; awaiting the owner's review |
+| 13 | Searching the history | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -65,6 +66,10 @@ it.
   78 MB allocated, the rest mostly packs gix read, mapped (page cache, which git's `cat-file`
   held in its own process: 91 MB with `EGIT_GIX=0`, first rows in 112–119 ms); with
   rendering 368 MB (124 MB allocated; 227 MB with `EGIT_GIX=0`), and `scale-*.png` screens.
+  Then it searches the history (each kind) and prints how soon the first commit was found,
+  how long all took, and the memory held: Linux's messages or authors in 0.6 s (the first in
+  4 ms), peaking at 1 GB while the packs are read (mapped: released as it ends); a name at
+  once (17 ms, the index built).
 - gitoxide's reads: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit-gix --release
   --test measure -- --ignored --nocapture` times each against git's (the walk both ways,
   commits read fresh and warm, the walk's tips, references); `EGIT_GIX=0` leaves the
@@ -128,7 +133,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `git config --list --show-origin --show-scope --null`, kept as one buffer the entries point
     into (u32 spans); entries in the command scope (egit's own `-c`) are dropped. `get` is the
     last value (git's rule), keys compare like git's (section and name in any case, subsection
-    exactly); `is_partial_clone` (a promisor remote or a clone's filter). `set_config`
+    exactly); `is_partial_clone` (a promisor remote or a clone's filter), `has_every_tree`
+    (not partial, or each filter `blob:…`: walking trees fetches nothing). `set_config`
     (`--replace-all`) and `unset_config` (`--unset-all`; exit 5 is fine) write `--global` from
     `/` or `--local` in a work tree; `add_config_value` and `unset_config_value` add and remove
     one value of a key that has several (`--fixed-value`: a value is never a pattern).
@@ -311,6 +317,14 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `reject_credential` hand back every attribute `fill` gave (an expiry, a refresh token).
     A `Credential` is wiped when dropped. `tests/credential.rs` fills, rejects, and approves
     through a sandbox's `store` helper.
+  - `search.rs` — `find_commits`: the commits a `CommitFilter` finds among every commit a
+    history shows (`rev-list --exclude=refs/stash --all`, streamed through `Lines`): a
+    message (`--grep`) or author (`--author`) holding some text (`--fixed-strings`,
+    `--regexp-ignore-case` when folded), or a path changed, as `git log -- <path>` lists them
+    (literal pathspecs, `GIT_NO_LAZY_FETCH`; git's default simplification: `--full-history`
+    lists twenty times as many commits for a file of git's own, nearly all merges, five times
+    as slowly). `resolve_commit`: `rev-parse --verify --quiet <name>^{commit}` (a name
+    starting with `-` names nothing). `tests/search.rs` runs each against a sandbox.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-forge` — forges' web APIs: GitHub's (github.com, Enterprise Server) and GitLab's
   (gitlab.com, self-managed); no egui. egit's only network connections of its own (git makes
@@ -370,7 +384,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     decoded). `tips`: what `rev-list --no-walk=unsorted --exclude=refs/stash --all` lists, in
     its order (refs by name, `HEAD`, other worktrees' `HEAD`s; commits only, each once).
     `read`: objects as `ObjectReader::read` hands them over, saying how many: in a partial
-    clone it stops at the first object it hasn't, for git to fetch. `tests/parity.rs` checks
+    clone it stops at the first object it hasn't, for git to fetch; `reader`, a `GixReader`
+    of a thread's own (its handle and buffer), for reading on several. `tests/parity.rs` checks
     each against git's (every kind of ref, packed and loose, another worktree; 50 random
     histories; a blobless clone read by both; replaced objects and reftable left to git);
     `tests/measure.rs` measures them against a large repository (`EGIT_SCALE_REPO`).
@@ -404,7 +419,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     lines sharing under 40% of their words.
   - `find.rs` — `find_all`: a query's matches as byte offsets (`memmem`, or ASCII case folded
     by a two-byte scan), in 4 MiB windows overlapping by the query's length, asking whether
-    to stop between them; `matches_case` is smart case.
+    to stop between them; `matches_case` is smart case; `Needle`, a query made ready for
+    many short texts (a finder built once, or ASCII folded).
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
   (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io: bump
   `rev` to the owner's pushed commit after each change made there), `egui-async` 0.7 (stay on
@@ -444,7 +460,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     walk), else one shared `cat-file` per repository (restarted after a failure), which also
     reads what gix didn't: a partial clone's objects it hasn't (git fetches them), and all
     once gix failed; `EGIT_GIX=0` leaves every read to git. The walk takes its refs and tips
-    from gix too, and has git walk from them (`walk_history_from`).
+    from gix too, and has git walk from them (`walk_history_from`). `Names`: the rows'
+    commits' names, a chunk (`Arc<[u8]>`) at a time, shared with jobs as the history goes on.
     `Summaries`: subject, author, preformatted date, read as rows come into view (at most 512
     a read, one read at a time), about 4,096 kept, least recently drawn forgotten first; each
     says whether its commit is signed. `Signatures`: the signed commits on screen (and the one
@@ -456,6 +473,18 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     total). `HistoryState`: the history shown,
     and a re-read (`reload`) that takes over only once complete (`replaced`), so the table
     never empties or jumps meanwhile.
+  - `search.rs` — searching the history: `SearchKind` (message, author, path, commit); a
+    `Search` (a detached job, stopped when dropped) marks what it finds in `Found`, a bit a
+    row the table reads as it draws (atomic: no lock; `next`, `previous` wrapping, `rank` for
+    "3 of 120", progress). Messages and authors: every row's commit read here, through a
+    `GixRepository` opened for the search alone (its packs unmapped as it ends), on up to 8
+    threads taking 4,096 rows at a time from the top, a `Needle` with smart case against the
+    message (after the headers' blank line) or the author's `Name <email>`; where gix doesn't
+    open the repository (or fails), `find_commits` instead. Paths: `find_commits` (refused
+    unless `has_every_tree`). Names: 4+ hex digits found among the rows, else
+    `resolve_commit`. What git finds gets its row from a `RowIndex` (each row's name's first
+    four bytes beside the row, sorted: 8 bytes a row), built by the first search that needs
+    it and kept, shared, until the history is replaced.
   - `watch.rs` — inotify (`notify`) on git directories, configuration files, and a work tree's
     folders, never a work tree recursively: a repository's git dir and common dir
     (non-recursive) and `refs/` (recursive);
@@ -680,6 +709,14 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     text field has the focus: ↑ ↓, Alt+↑ Alt+↓ to move, P R S F D. `plan` hands git the rows
     oldest first, or says why not (nothing changes, nothing to meld into, an empty message,
     everything dropped); "Start rebase" runs it as a task.
+    `views/search.rs` — `HistorySearch`, the search bar over the commit table (⌘F, or the
+    top bar's Search, which shows the table in place of a file or a tool): the kind, the
+    query (searched once typing pauses 0.3 s, the history read whole, the previous search
+    dropped), "3 of 120" / "Searching… 45% · 120 found" / "No commits match" / the problem,
+    Previous and Next (Shift+Enter and Enter, wrapping), Close (or Escape). The search's first
+    find, from the selection on, is selected as it comes; each step selects one, centred.
+    Found rows take `Palette::found` behind them. A history read again is searched again
+    (`follow`), the selection kept.
     `views/blame.rs` — `BlameView`, and `views/file_history.rs` — `FileHistoryView`: a
     `FileView`'s "Blame" and "File history" (`FileWanted`; a deleted file is blamed as its
     parent had it) open them in the commit table's place, each a `Tool` of the history view
@@ -744,7 +781,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     boundary ("…/core/dc_link.c", `elided_start`, summing cached glyph widths), the full path
     and a rename's old one on hover.
   - `theme.rs` (palettes, WCAG AA checked by tests, text over every line background too: diff
-    lines and words, a conflict's sides and headers, resolved lines; Phosphor icons), `widgets.rs` (cards,
+    lines and words, a conflict's sides and headers, resolved lines, rows a search found;
+    Phosphor icons), `widgets.rs` (cards,
     buttons, origin labels, problem boxes), `format.rs` (`~` paths, "5 minutes ago",
     dates, a long command's progress), `settings.rs` (theme, recent repositories, open tabs,
     the clone folder; non-UTF-8 paths kept as
@@ -764,8 +802,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `double_click` puts both clicks in one frame (the harness's frames are a quarter second
     apart). After an action, wait for the history's rows to settle before aiming a click at
     one: a re-read moves them. Not yet audited, as eshine does: hover response,
-    cursors, focus rings, and 24-point targets. `src/tests/scale.rs` and `src/tests/corpus.rs`
-    are the opt-in measurements (see Scale and Text corpus above).
+    cursors, focus rings, and 24-point targets. `src/tests/search.rs` drives the search bar
+    (by message, author, path, and name; both themes) and holds egit's own reading of messages
+    and authors to what `find_commits` finds on 300 assorted commits. `src/tests/scale.rs`
+    and `src/tests/corpus.rs` are the opt-in measurements (see Scale and Text corpus above).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
 - `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older
   releases don't compile as C23).
