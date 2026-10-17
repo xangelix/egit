@@ -20,7 +20,7 @@ it.
 | 6 | The merge editor | done |
 | 7 | The graph's actions: branches, commits brought in, tags, stashes | done |
 | 8 | Interactive rebase | done |
-| 9 | Blame and file history | in progress |
+| 9 | Blame and file history | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
