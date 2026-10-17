@@ -11,6 +11,7 @@ use bstr::{BStr, BString, ByteSlice as _};
 use crate::cancel::CancelToken;
 use crate::error::GitError;
 use crate::git::Git;
+use crate::integrate::{Integrated, carried_on};
 use crate::progress::Progress;
 use crate::repo::{Operation, Repository};
 
@@ -527,6 +528,41 @@ pub fn abort_operation(
         .cancel_token(cancel)
         .output()
         .map(drop)
+}
+
+/// Skips the commit (or patch) an operation stopped at, dropping its changes, and carries on.
+///
+/// `git rebase`, `am`, `cherry-pick`, or `revert --skip`; says how it then ended: done, or
+/// stopped again (at conflicts, or a patch that doesn't apply). A merge or a bisect has nothing
+/// to skip.
+///
+/// # Errors
+///
+/// When there is nothing to skip, git refuses, or is cancelled.
+pub fn skip_operation(
+    git: &Git,
+    repository: &Repository,
+    operation: Operation,
+    cancel: &CancelToken,
+) -> Result<Integrated, GitError> {
+    let subcommand = match operation {
+        Operation::Rebase => "rebase",
+        Operation::ApplyMailbox => "am",
+        Operation::CherryPick => "cherry-pick",
+        Operation::Revert => "revert",
+        Operation::Merge | Operation::Bisect => {
+            return Err(GitError::unexpected("skip", "nothing to skip"));
+        }
+    };
+    let skipped = git
+        .write(subcommand)
+        .arg("--skip")
+        .prompt_context("Signing the commit")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .map(drop);
+    carried_on(git, repository, skipped, cancel)
 }
 
 /// Carries on with an operation git stopped in the middle of, once its conflicts are resolved

@@ -25,6 +25,9 @@ pub enum Integrated {
     Conflicts,
     /// The commit changed nothing here (its changes were already in): skipped.
     Empty,
+    /// Stopped with nothing to resolve: a patch that doesn't apply, the operation in progress
+    /// (to fix by hand, skip, or abort).
+    Stopped,
 }
 
 /// Merges `what` (a branch's name, or a commit's) into the current branch (`git merge
@@ -192,6 +195,35 @@ pub(crate) fn stopped(
     });
     if in_progress && has_conflicts(git, repository, cancel)? {
         Ok(Integrated::Conflicts)
+    } else {
+        Err(error)
+    }
+}
+
+/// How an operation carried on after a skip ended: done, stopped at the next conflicts, or (a
+/// `git am`) stopped at a patch that doesn't apply.
+pub(crate) fn carried_on(
+    git: &Git,
+    repository: &Repository,
+    done: Result<(), GitError>,
+    cancel: &CancelToken,
+) -> Result<Integrated, GitError> {
+    let Err(error) = done else {
+        return Ok(Integrated::Done);
+    };
+    if error.failure().is_none() {
+        return Err(error);
+    }
+    let operations = repository.operations().map_err(|source| GitError::Io {
+        subcommand: "status",
+        source,
+    })?;
+    if operations.is_empty() {
+        Err(error)
+    } else if has_conflicts(git, repository, cancel)? {
+        Ok(Integrated::Conflicts)
+    } else if operations.contains(&Operation::ApplyMailbox) {
+        Ok(Integrated::Stopped)
     } else {
         Err(error)
     }

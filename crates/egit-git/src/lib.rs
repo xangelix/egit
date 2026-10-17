@@ -9,6 +9,7 @@
 //! [`Git::write`] build a [`GitCommand`], which runs git in a session of its own and can be
 //! cancelled through a [`CancelToken`].
 
+mod applying;
 pub mod askpass;
 mod batch;
 mod blame;
@@ -51,6 +52,11 @@ mod tree;
 mod version;
 mod worktree;
 
+pub use applying::{
+    Applies, ApplyAs, MAX_SUMMARIZED, MailboxProgress, PatchChange, PatchCommit, PatchFile,
+    PatchKind, PatchSummary, apply_patch, current_patch, looks_like_patch, patch_kind,
+    summarize_patch,
+};
 pub use batch::GitProcess;
 pub use blame::{BlameCommit, BlameRun, FileCommit, Moves, blame, file_log};
 pub use branch::{
@@ -77,7 +83,7 @@ pub use diff::{
     uncommitted_diff,
 };
 pub use error::{Failure, GitError};
-pub use format_patch::{format_patch, patch_file_name};
+pub use format_patch::{Changes, changes_patch, format_patch, format_patches, patch_file_name};
 pub use forward::{ForwardFrom, Forwarded, fast_forward_branch, fast_forward_current};
 pub use git::{Git, GitOptions};
 pub use history::{
@@ -99,7 +105,7 @@ pub use rebase::{
 pub use remote::{
     CloneOptions, FetchOptions, PullMode, Pulled, PushFlag, PushOptions, Pushed, PushedRef,
     abort_operation, clone, continue_operation, delete_remote_branch, fetch, fetch_refspecs, pull,
-    push, push_tag, remote_urls, remotes,
+    push, push_tag, remote_urls, remotes, skip_operation,
 };
 pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,
