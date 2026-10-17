@@ -14,7 +14,7 @@ use egit_git::{
     CancelToken, ChangeKind, DiffOptions, Direction, FileChange, ObjectId, Status, TreeEntry,
     Uncommitted, WHOLE_FILE,
 };
-use egui::{Align, Frame, Key, Label, Margin, Modifiers, RichText, Ui};
+use egui::{Frame, Key, Label, Margin, Modifiers, RichText, Ui};
 use egui_async::Bind;
 
 use super::history::{ID_DIGITS, Shared};
@@ -31,7 +31,7 @@ use crate::history::{
 use crate::problem::Problem;
 use crate::staging::{LinesRequest, StageRequest};
 use crate::tables::change_name;
-use crate::theme::icon;
+use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
 /// Whose change a file view shows.
@@ -433,14 +433,16 @@ pub(super) fn show(
     open
 }
 
-/// The bar over a file view: back, how the file changed, and what to show.
+/// The bar over a file view: back, the file's blame and history, and what to show; under
+/// them how the file changed. Each line wraps, so nothing overlaps however narrow it is.
 fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bool) {
     let palette = shared.palette;
     Frame::new()
         .fill(palette.panel)
         .inner_margin(Margin::symmetric(8, 6))
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
+            ui.set_min_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
                 if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
                 {
                     *open = false;
@@ -458,62 +460,69 @@ fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bo
                     file.wanted = Some(FileWanted::History(file.path().to_owned()));
                 }
                 ui.add_space(8.0);
-                let (change, from) = match &file.source {
-                    Source::Commit { change, .. } => (
-                        change_name(&change.kind).to_owned(),
-                        match &change.kind {
-                            ChangeKind::Renamed { from, similarity }
-                            | ChangeKind::Copied { from, similarity } => Some(format!(
-                                "from {} ({similarity}% alike)",
-                                from.to_str_lossy()
-                            )),
-                            _ => None,
-                        },
-                    ),
-                    Source::WorkTree(work) => (
-                        format!("{} · {}", side_name(work.which), work.change),
-                        work.from
-                            .as_ref()
-                            .map(|from| format!("from {}", from.to_str_lossy())),
-                    ),
-                };
-                ui.label(RichText::new(change).color(palette.muted));
-                ui.add(Label::new(RichText::new(file.path().to_str_lossy()).strong()).truncate());
-                if let Some(from) = from {
-                    ui.label(muted(ui, from));
-                }
-                if let Some(Ok(diff)) = file.diff.read_as_ref() {
-                    let (added, removed) = diff.changed();
-                    ui.label(RichText::new(format!("+{added}")).color(palette.ok));
-                    ui.label(RichText::new(format!("−{removed}")).color(palette.danger));
-                }
-                ui.with_layout(egui::Layout::right_to_left(Align::Center), |ui| {
-                    let mut wrap = file.diff_grid.wraps();
-                    if ui.checkbox(&mut wrap, "Wrap lines").changed() {
-                        file.diff_grid.set_wrap(wrap);
-                        file.sides_grid.set_wrap(wrap);
-                        file.file_grid.set_wrap(wrap);
-                        if let Some(merging) = &mut file.merge {
-                            merging.grid.set_wrap(wrap);
-                        }
-                    }
-                    if file.merge.is_some() {
-                        return;
-                    }
-                    if file.shown == Shown::Diff {
-                        ui.checkbox(&mut file.split, "Side by side");
-                    }
-                    if file.shown == Shown::Diff
-                        && ui.checkbox(&mut file.whole, "Whole file").changed()
-                    {
-                        file.read_diff(shared);
-                    }
-                    ui.add_space(8.0);
-                    ui.selectable_value(&mut file.shown, Shown::File, "File");
-                    ui.selectable_value(&mut file.shown, Shown::Diff, "Diff");
-                });
+                shown_controls(ui, shared, file);
             });
+            ui.horizontal_wrapped(|ui| change_line(ui, palette, file));
         });
+}
+
+/// What the file view shows: its diff or the file, wrapped or not, and (for a diff) its whole
+/// file around it and side by side. Those that come and go come last.
+fn shown_controls(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) {
+    if file.merge.is_none() {
+        ui.selectable_value(&mut file.shown, Shown::Diff, "Diff");
+        ui.selectable_value(&mut file.shown, Shown::File, "File");
+    }
+    let mut wrap = file.diff_grid.wraps();
+    if ui.checkbox(&mut wrap, "Wrap lines").changed() {
+        file.diff_grid.set_wrap(wrap);
+        file.sides_grid.set_wrap(wrap);
+        file.file_grid.set_wrap(wrap);
+        if let Some(merging) = &mut file.merge {
+            merging.grid.set_wrap(wrap);
+        }
+    }
+    if file.merge.is_some() || file.shown != Shown::Diff {
+        return;
+    }
+    ui.checkbox(&mut file.split, "Side by side");
+    if ui.checkbox(&mut file.whole, "Whole file").changed() {
+        file.read_diff(shared);
+    }
+}
+
+/// How the file changed: the change, its path (and where it came from), and its lines added
+/// and removed.
+fn change_line(ui: &mut Ui, palette: Palette, file: &mut FileView) {
+    let (change, from) = match &file.source {
+        Source::Commit { change, .. } => (
+            change_name(&change.kind).to_owned(),
+            match &change.kind {
+                ChangeKind::Renamed { from, similarity }
+                | ChangeKind::Copied { from, similarity } => Some(format!(
+                    "from {} ({similarity}% alike)",
+                    from.to_str_lossy()
+                )),
+                _ => None,
+            },
+        ),
+        Source::WorkTree(work) => (
+            format!("{} · {}", side_name(work.which), work.change),
+            work.from
+                .as_ref()
+                .map(|from| format!("from {}", from.to_str_lossy())),
+        ),
+    };
+    ui.label(RichText::new(change).color(palette.muted));
+    ui.add(Label::new(RichText::new(file.path().to_str_lossy()).strong()).truncate());
+    if let Some(from) = from {
+        ui.label(muted(ui, from));
+    }
+    if let Some(Ok(diff)) = file.diff.read_as_ref() {
+        let (added, removed) = diff.changed();
+        ui.label(RichText::new(format!("+{added}")).color(palette.ok));
+        ui.label(RichText::new(format!("−{removed}")).color(palette.danger));
+    }
 }
 
 /// Which uncommitted changes, for people.
