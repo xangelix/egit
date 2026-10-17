@@ -106,6 +106,32 @@ impl ForgeRepository {
             ForgeKind::GitLab => format!("/{path}/-/commit/{commit}"),
         })
     }
+
+    /// A branch's web page (`branch`, its name there: whatever a ref may hold is escaped).
+    #[must_use]
+    pub fn branch_url(&self, branch: &str) -> String {
+        let path = &self.path;
+        let branch = escape_path(branch);
+        self.host.web_url(&match self.host.kind() {
+            ForgeKind::GitHub => format!("/{path}/tree/{branch}"),
+            ForgeKind::GitLab => format!("/{path}/-/tree/{branch}"),
+        })
+    }
+}
+
+/// `text` as a URL's path: its slashes kept, anything but letters, digits, and `-._~`
+/// percent-escaped.
+fn escape_path(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut escaped = String::with_capacity(text.len());
+    for byte in text.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-._~/".contains(&byte) {
+            escaped.push(char::from(byte));
+        } else {
+            let _ = write!(escaped, "%{byte:02X}");
+        }
+    }
+    escaped
 }
 
 /// The forge repository the remote URL `url` names on `hosts`, if any.
@@ -250,6 +276,24 @@ mod tests {
             _ => None,
         })
         .map(|repository| format!("{} {}", repository.host().name(), repository.full_name()))
+    }
+
+    #[test]
+    fn branches_have_web_pages_whatever_their_names() {
+        let github = ForgeRepository::new(ForgeHost::github_com(), "ada/tool").unwrap();
+        assert_eq!(
+            github.branch_url("feat/keep-newest"),
+            "https://github.com/ada/tool/tree/feat/keep-newest"
+        );
+        assert_eq!(
+            github.branch_url("fix#12 100%"),
+            "https://github.com/ada/tool/tree/fix%2312%20100%25"
+        );
+        let gitlab = ForgeRepository::new(ForgeHost::gitlab_com(), "team/sub/tool").unwrap();
+        assert_eq!(
+            gitlab.branch_url("main"),
+            "https://gitlab.com/team/sub/tool/-/tree/main"
+        );
     }
 
     #[test]
