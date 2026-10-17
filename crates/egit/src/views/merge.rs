@@ -417,7 +417,7 @@ fn step_bar(
         !first && !editing,
         &format!("{}  Previous", icon::ARROW_UP),
     )
-    .on_hover_text("The conflict before (Alt+↑)")
+    .on_hover_text(format!("The conflict before (Alt+{})", icon::ARROW_UP))
     .clicked()
     {
         view.select(view.selected.saturating_sub(1));
@@ -427,7 +427,7 @@ fn step_bar(
         !last && !editing,
         &format!("{}  Next", icon::ARROW_DOWN),
     )
-    .on_hover_text("The conflict after (Alt+↓)")
+    .on_hover_text(format!("The conflict after (Alt+{})", icon::ARROW_DOWN))
     .clicked()
     {
         view.select(view.selected.saturating_add(1));
