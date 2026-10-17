@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use egit_forge::GitHubHost;
+use egit_forge::ForgeHost;
 use egit_git::{
     ConfigEntry, ConfigScope, ConfigSnapshot, PullFastForward, PullRebase, SigningFormat,
 };
@@ -480,7 +480,7 @@ fn github_card(
                 )
                 .labelled_by(label.id);
             let typed = view.new_host.trim();
-            let host = GitHubHost::parse(typed).filter(|host| !host.is_github_com());
+            let host = ForgeHost::parse(typed).filter(|host| !host.is_github_com());
             let entered =
                 field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
             if (widgets::secondary(ui, host.is_some() && !saving, "Add").clicked() || entered)

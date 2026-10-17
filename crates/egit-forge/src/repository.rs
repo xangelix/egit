@@ -8,20 +8,20 @@ use std::time::{Duration, Instant};
 
 use egit_git::ObjectId;
 
-use crate::host::{GitHubHost, GitHubHosts, strip_prefix_ignore_case};
+use crate::host::{ForgeHost, ForgeHosts, strip_prefix_ignore_case};
 
 /// A repository on a GitHub host.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct GitHubRepository {
-    host: GitHubHost,
+pub struct ForgeRepository {
+    host: ForgeHost,
     owner: String,
     name: String,
 }
 
-impl GitHubRepository {
+impl ForgeRepository {
     /// `owner/name` on `host`; `None` unless both are names GitHub could give.
     #[must_use]
-    pub fn new(host: GitHubHost, owner: &str, name: &str) -> Option<Self> {
+    pub fn new(host: ForgeHost, owner: &str, name: &str) -> Option<Self> {
         (is_name(owner) && is_name(name)).then(|| Self {
             host,
             owner: owner.to_owned(),
@@ -31,7 +31,7 @@ impl GitHubRepository {
 
     /// Its host.
     #[must_use]
-    pub const fn host(&self) -> &GitHubHost {
+    pub const fn host(&self) -> &ForgeHost {
         &self.host
     }
 
@@ -94,11 +94,11 @@ impl GitHubRepository {
 ///
 /// An ssh URL whose host isn't one of them may be an alias from the user's ssh configuration:
 /// `alias` says which host it stands for ([`resolve_ssh_alias`]).
-pub fn github_repository(
+pub fn forge_repository(
     url: &str,
-    hosts: &GitHubHosts,
+    hosts: &ForgeHosts,
     alias: impl FnOnce(&str) -> Option<String>,
-) -> Option<GitHubRepository> {
+) -> Option<ForgeRepository> {
     let url = url.trim();
     let (host, path) = if let Some((scheme, rest)) = url.split_once("://") {
         let (authority, path) = rest.split_once('/')?;
@@ -131,15 +131,15 @@ pub fn github_repository(
         .or_else(|| strip_suffix_ignore_case(path, ".git"))
         .unwrap_or(path);
     let (owner, name) = path.split_once('/')?;
-    GitHubRepository::new(host, owner, name)
+    ForgeRepository::new(host, owner, name)
 }
 
 /// The GitHub host an ssh URL's host name is, directly or as an alias of one.
 fn ssh_host(
-    hosts: &GitHubHosts,
+    hosts: &ForgeHosts,
     hostname: &str,
     alias: impl FnOnce(&str) -> Option<String>,
-) -> Option<GitHubHost> {
+) -> Option<ForgeHost> {
     if let Some(host) = hosts.for_ssh(hostname) {
         return Some(host.clone());
     }
@@ -226,8 +226,8 @@ mod tests {
     use super::*;
 
     fn named(url: &str) -> Option<String> {
-        let hosts = GitHubHosts::with_enterprise(["ghe.example.com:8443"]);
-        github_repository(url, &hosts, |alias| {
+        let hosts = ForgeHosts::with_enterprise(["ghe.example.com:8443"]);
+        forge_repository(url, &hosts, |alias| {
             (alias == "github-work").then(|| "github.com".to_owned())
         })
         .map(|repository| format!("{} {}", repository.host().name(), repository.full_name()))
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn web_pages_are_on_the_host() {
         let repository =
-            GitHubRepository::new(GitHubHost::github_com(), "rust-lang", "rust").unwrap();
+            ForgeRepository::new(ForgeHost::github_com(), "rust-lang", "rust").unwrap();
         assert_eq!(
             repository.pull_request_url(42),
             "https://github.com/rust-lang/rust/pull/42"

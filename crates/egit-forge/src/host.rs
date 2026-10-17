@@ -3,7 +3,7 @@
 
 /// A GitHub host: github.com, or a GitHub Enterprise Server.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct GitHubHost {
+pub struct ForgeHost {
     /// The host, lowercase, with its port when it isn't the scheme's default.
     name: String,
     /// HTTPS; plain HTTP only for the loopback address (a test server).
@@ -13,7 +13,7 @@ pub struct GitHubHost {
 /// github.com's name.
 const GITHUB_COM: &str = "github.com";
 
-impl GitHubHost {
+impl ForgeHost {
     /// github.com.
     #[must_use]
     pub fn github_com() -> Self {
@@ -95,25 +95,25 @@ impl GitHubHost {
 
 /// The GitHub hosts known: github.com, then the Enterprise hosts listed.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GitHubHosts {
-    hosts: Vec<GitHubHost>,
+pub struct ForgeHosts {
+    hosts: Vec<ForgeHost>,
 }
 
-impl Default for GitHubHosts {
+impl Default for ForgeHosts {
     fn default() -> Self {
         Self {
-            hosts: vec![GitHubHost::github_com()],
+            hosts: vec![ForgeHost::github_com()],
         }
     }
 }
 
-impl GitHubHosts {
-    /// github.com and the Enterprise hosts `listed` (as [`GitHubHost::parse`] reads them; the
+impl ForgeHosts {
+    /// github.com and the Enterprise hosts `listed` (as [`ForgeHost::parse`] reads them; the
     /// unusable are skipped, and so are repeats).
     #[must_use]
     pub fn with_enterprise<'a>(listed: impl IntoIterator<Item = &'a str>) -> Self {
         let mut hosts = Self::default();
-        for host in listed.into_iter().filter_map(GitHubHost::parse) {
+        for host in listed.into_iter().filter_map(ForgeHost::parse) {
             if !hosts.hosts.iter().any(|known| known.name == host.name) {
                 hosts.hosts.push(host);
             }
@@ -123,19 +123,19 @@ impl GitHubHosts {
 
     /// The hosts, github.com first.
     #[must_use]
-    pub fn hosts(&self) -> &[GitHubHost] {
+    pub fn hosts(&self) -> &[ForgeHost] {
         &self.hosts
     }
 
     /// The host an `http(s)://` URL's address (`host[:port]`) names.
-    pub(crate) fn for_web(&self, address: &str, secure: bool) -> Option<&GitHubHost> {
+    pub(crate) fn for_web(&self, address: &str, secure: bool) -> Option<&ForgeHost> {
         let address = normalized_address(address, secure)?;
         let address = address.strip_prefix("www.").unwrap_or(&address);
         self.hosts.iter().find(|host| host.name == address)
     }
 
     /// The host an ssh URL's host name names (its port is ssh's, not the web's).
-    pub(crate) fn for_ssh(&self, hostname: &str) -> Option<&GitHubHost> {
+    pub(crate) fn for_ssh(&self, hostname: &str) -> Option<&ForgeHost> {
         let hostname = hostname.to_ascii_lowercase();
         // GitHub's ssh over the HTTPS port.
         let hostname = if hostname == "ssh.github.com" {
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn github_com_s_apis_are_on_api_github_com() {
-        let host = GitHubHost::github_com();
+        let host = ForgeHost::github_com();
         assert_eq!(host.graphql_url(), "https://api.github.com/graphql");
         assert_eq!(
             host.rest_url("/repos/a/b/pulls"),
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn enterprise_hosts_serve_their_apis_under_api() {
-        let host = GitHubHost::parse("https://GHE.example.com:8443/").unwrap();
+        let host = ForgeHost::parse("https://GHE.example.com:8443/").unwrap();
         assert_eq!(host.name(), "ghe.example.com:8443");
         assert_eq!(
             host.graphql_url(),
@@ -227,15 +227,15 @@ mod tests {
             "https://ghe.example.com:8443/api/v3/repos/a/b/pulls"
         );
         assert_eq!(
-            GitHubHost::parse("ghe.example.com:443").unwrap().name(),
+            ForgeHost::parse("ghe.example.com:443").unwrap().name(),
             "ghe.example.com"
         );
     }
 
     #[test]
     fn plain_http_is_only_for_the_loopback_address() {
-        assert!(GitHubHost::parse("http://ghe.example.com").is_none());
-        let local = GitHubHost::parse("http://127.0.0.1:8080").unwrap();
+        assert!(ForgeHost::parse("http://ghe.example.com").is_none());
+        let local = ForgeHost::parse("http://127.0.0.1:8080").unwrap();
         assert_eq!(local.protocol(), "http");
         assert!(local.is_safe_for_credentials());
         assert_eq!(local.graphql_url(), "http://127.0.0.1:8080/api/graphql");
@@ -253,16 +253,15 @@ mod tests {
             "host:http",
             "[::1",
         ] {
-            assert!(GitHubHost::parse(entry).is_none(), "{entry}");
+            assert!(ForgeHost::parse(entry).is_none(), "{entry}");
         }
-        let hosts =
-            GitHubHosts::with_enterprise(["ghe.example.com", "GHE.example.com", "bad host"]);
+        let hosts = ForgeHosts::with_enterprise(["ghe.example.com", "GHE.example.com", "bad host"]);
         assert_eq!(hosts.hosts().len(), 2);
     }
 
     #[test]
     fn web_and_ssh_addresses_find_their_hosts() {
-        let hosts = GitHubHosts::with_enterprise(["ghe.example.com:8443"]);
+        let hosts = ForgeHosts::with_enterprise(["ghe.example.com:8443"]);
         assert!(
             hosts
                 .for_web("www.github.com", true)

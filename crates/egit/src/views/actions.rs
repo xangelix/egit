@@ -6,7 +6,7 @@
 //! Each choice asks for a task, or a dialog first ([`Ask`]); the history view carries it out.
 
 use bstr::{BStr, BString, ByteSlice as _};
-use egit_forge::GitHubRepository;
+use egit_forge::ForgeRepository;
 use egit_git::{ConfigSnapshot, ObjectId, RefKind, Reference, ResetMode, Stash, SwitchTo};
 use egui::{Response, Ui};
 
@@ -38,7 +38,7 @@ pub(super) enum Ask {
         branch: BString,
         remote: BString,
         head_branch: String,
-        head: GitHubRepository,
+        head: ForgeRepository,
     },
 }
 

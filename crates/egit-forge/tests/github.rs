@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use egit_forge::testing::{FakeGitHub, FakePull, FakeRepository};
 use egit_forge::{
-    Account, CheckState, ForgeError, GitHubHost, GitHubRepository, NewPullRequest, ReviewDecision,
+    Account, CheckState, ForgeError, ForgeHost, ForgeRepository, NewPullRequest, ReviewDecision,
     ReviewState, create_pull_request, pull_request_details, pull_requests, repository_info,
 };
 use egit_git::testing::Sandbox;
@@ -26,7 +26,7 @@ const TOKEN: &str = "t0ken";
 
 /// A fake serving `pulls` open pull requests on `octo/tool`, and a sandbox whose credential
 /// helper keeps `token` for it.
-fn setup(pulls: u32, token: &str) -> (FakeGitHub, Sandbox, Account, GitHubRepository) {
+fn setup(pulls: u32, token: &str) -> (FakeGitHub, Sandbox, Account, ForgeRepository) {
     let fake = FakeGitHub::start(TOKEN, "ada").unwrap();
     fake.state().repositories.push(FakeRepository {
         owner: "octo".to_owned(),
@@ -62,9 +62,9 @@ fn setup(pulls: u32, token: &str) -> (FakeGitHub, Sandbox, Account, GitHubReposi
             ],
         )
         .unwrap();
-    let host = GitHubHost::parse(&fake.host_entry()).unwrap();
+    let host = ForgeHost::parse(&fake.host_entry()).unwrap();
     let account = Account::new(sandbox.git().clone(), None, host.clone());
-    let repository = GitHubRepository::new(host, "octo", "tool").unwrap();
+    let repository = ForgeRepository::new(host, "octo", "tool").unwrap();
     (fake, sandbox, account, repository)
 }
 
@@ -222,7 +222,7 @@ fn signing_in_says_who_and_keeps_the_credential() {
 #[test]
 fn rate_limits_and_missing_repositories_say_so() {
     let (fake, _sandbox, account, repository) = setup(1, TOKEN);
-    let other = GitHubRepository::new(repository.host().clone(), "octo", "missing").unwrap();
+    let other = ForgeRepository::new(repository.host().clone(), "octo", "missing").unwrap();
     assert!(matches!(
         pull_requests(&account, &other, 100, &CancelToken::new(), |_| {}),
         Err(ForgeError::NotFound { .. })
@@ -265,7 +265,7 @@ fn signing_in_asks_the_user_and_has_the_helper_keep_what_worked() {
     let git = sandbox
         .git_with([("GIT_ASKPASS", askpass.as_os_str())])
         .unwrap();
-    let host = GitHubHost::parse(&fake.host_entry()).unwrap();
+    let host = ForgeHost::parse(&fake.host_entry()).unwrap();
     let account = Account::new(git, None, host);
     assert_eq!(
         account.sign_in("Signing in", &CancelToken::new()).unwrap(),

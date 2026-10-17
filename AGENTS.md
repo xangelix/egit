@@ -301,13 +301,13 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-forge` — forges' web APIs (GitHub: github.com and Enterprise Server); no egui.
   egit's only network connections of its own (git makes every other).
-  - `host.rs` — `GitHubHost`: github.com (its APIs on `api.github.com`) or an Enterprise host
+  - `host.rs` — `ForgeHost`: github.com (its APIs on `api.github.com`) or an Enterprise host
     (`/api/graphql`, `/api/v3`); `parse` reads a listed entry (`host[:port]`, `https://`;
-    `http://` only for the loopback address). `GitHubHosts`: github.com and the listed;
+    `http://` only for the loopback address). `ForgeHosts`: github.com and the listed;
     `for_web` by `host[:port]` (no default port), `for_ssh` by host name (`ssh.github.com` is
     github.com).
-  - `repository.rs` — `GitHubRepository` (host, owner, name; web pages of it, a pull request,
-    a commit). `github_repository`: a remote URL of any form (https, ssh, scp-like, `git://`)
+  - `repository.rs` — `ForgeRepository` (host, owner, name; web pages of it, a pull request,
+    a commit). `forge_repository`: a remote URL of any form (https, ssh, scp-like, `git://`)
     to its repository; an ssh host alias through `resolve_ssh_alias` (`ssh -G -- <alias>`'s
     `hostname`, 2 s at most; never an option).
   - `http.rs` — `Http`, a ureq agent per host: rustls on aws-lc-rs (`deny.toml` bans `ring`

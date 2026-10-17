@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bstr::{BStr, BString, ByteSlice as _};
-use egit_forge::{Account, GitHubRepository, NewPullRequest, Opened, create_pull_request};
+use egit_forge::{Account, ForgeRepository, NewPullRequest, Opened, create_pull_request};
 use egit_git::{
     CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError, FetchOptions, Git,
     GitError, Integrated, MAX_PLANNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled,
@@ -130,7 +130,7 @@ pub(crate) enum Task {
 /// A pull request to open, and the repository it goes into.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PullRequestToOpen {
-    pub(crate) repository: GitHubRepository,
+    pub(crate) repository: ForgeRepository,
     pub(crate) new: NewPullRequest,
 }
 

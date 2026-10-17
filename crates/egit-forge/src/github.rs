@@ -16,7 +16,7 @@ use serde_json::json;
 use crate::account::Account;
 use crate::error::ForgeError;
 use crate::http::Answer;
-use crate::repository::GitHubRepository;
+use crate::repository::ForgeRepository;
 
 /// Pull requests a page.
 const PAGE: u32 = 100;
@@ -206,7 +206,7 @@ pub struct Opened {
 /// Any of [`ForgeError`]'s, from the page that failed (the pages before it were handed over).
 pub fn pull_requests(
     account: &Account,
-    repository: &GitHubRepository,
+    repository: &ForgeRepository,
     limit: u32,
     cancel: &CancelToken,
     mut found: impl FnMut(PullRequestPage),
@@ -270,7 +270,7 @@ pub fn pull_requests(
 /// Any of [`ForgeError`]'s.
 pub fn pull_request_details(
     account: &Account,
-    repository: &GitHubRepository,
+    repository: &ForgeRepository,
     number: u32,
     cancel: &CancelToken,
 ) -> Result<PullRequestDetails, ForgeError> {
@@ -300,7 +300,7 @@ pub fn pull_request_details(
 /// Any of [`ForgeError`]'s.
 pub fn repository_info(
     account: &Account,
-    repository: &GitHubRepository,
+    repository: &ForgeRepository,
     cancel: &CancelToken,
 ) -> Result<RepositoryInfo, ForgeError> {
     let data: RepositoryData = graphql(
@@ -332,7 +332,7 @@ pub fn repository_info(
 /// already open for the branch, nothing to merge, …).
 pub fn create_pull_request(
     account: &Account,
-    repository: &GitHubRepository,
+    repository: &ForgeRepository,
     new: &NewPullRequest,
     cancel: &CancelToken,
 ) -> Result<Opened, ForgeError> {

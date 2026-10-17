@@ -21,5 +21,5 @@ pub use github::{
     PullRequestPage, RepositoryInfo, Review, ReviewDecision, ReviewState, create_pull_request,
     pull_request_details, pull_requests, repository_info,
 };
-pub use host::{GitHubHost, GitHubHosts};
-pub use repository::{GitHubRepository, github_repository, resolve_ssh_alias};
+pub use host::{ForgeHost, ForgeHosts};
+pub use repository::{ForgeRepository, forge_repository, resolve_ssh_alias};

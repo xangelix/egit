@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use bstr::{BString, ByteSlice as _};
-use egit_forge::{GitHubRepository, NewPullRequest, repository_info};
+use egit_forge::{ForgeRepository, NewPullRequest, repository_info};
 use egit_git::{CancelToken, Commit, ObjectKind, commits_between};
 use egui::{Id, Modal, RichText, TextEdit, Ui};
 use egui_async::Bind;
@@ -23,7 +23,7 @@ use crate::widgets::{self, muted};
 #[derive(Debug)]
 struct Prepared {
     /// The repositories it may go into: the branch's own, then the one it was forked from.
-    targets: Vec<(GitHubRepository, Option<String>)>,
+    targets: Vec<(ForgeRepository, Option<String>)>,
     /// The title and description the branch's commits suggest.
     title: String,
     body: String,
@@ -37,7 +37,7 @@ pub(super) struct PullRequestForm {
     /// The remote it is pushed to, its branch there, and the repository that remote is.
     remote: BString,
     head_branch: String,
-    head: GitHubRepository,
+    head: ForgeRepository,
     prepared: Bind<Arc<Prepared>, Problem>,
     started: bool,
     /// Which target, and what is typed.
@@ -56,7 +56,7 @@ impl PullRequestForm {
         branch: BString,
         remote: BString,
         head_branch: String,
-        head: GitHubRepository,
+        head: ForgeRepository,
     ) -> Self {
         Self {
             branch,
@@ -103,7 +103,7 @@ impl PullRequestForm {
             let mut targets = vec![(head.clone(), info.default_branch.clone())];
             if let Some((parent, default)) = info.parent
                 && let Some((owner, name)) = parent.split_once('/')
-                && let Some(parent) = GitHubRepository::new(head.host().clone(), owner, name)
+                && let Some(parent) = ForgeRepository::new(head.host().clone(), owner, name)
             {
                 // A fork's pull requests usually go to the repository it came from.
                 targets.insert(0, (parent, default));

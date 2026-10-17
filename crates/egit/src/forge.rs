@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_forge::{
-    Account, CheckState, ForgeError, GitHubHost, GitHubHosts, GitHubRepository, PullRequest,
-    github_repository, pull_requests, resolve_ssh_alias,
+    Account, CheckState, ForgeError, ForgeHost, ForgeHosts, ForgeRepository, PullRequest,
+    forge_repository, pull_requests, resolve_ssh_alias,
 };
 use egit_git::{CancelToken, ConfigSnapshot, Git, ObjectId, Repository, remote_urls};
 use egui_async::Bind;
@@ -30,7 +30,7 @@ pub(crate) const LIMIT: u32 = 1_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ForgeRemote {
     pub(crate) remote: BString,
-    pub(crate) repository: GitHubRepository,
+    pub(crate) repository: ForgeRepository,
 }
 
 /// A pull request, and which of the forge's repositories it is in.
@@ -108,7 +108,7 @@ pub(crate) struct RepoForge {
     /// What they were worked out as, last.
     pub(crate) remotes: Arc<[ForgeRemote]>,
     /// The distinct repositories among them, in the remotes' order.
-    pub(crate) repositories: Arc<[GitHubRepository]>,
+    pub(crate) repositories: Arc<[ForgeRepository]>,
     /// A sign-in per host.
     accounts: Vec<Arc<Account>>,
     /// The pull requests shown: the first read as it goes, then each complete read.
@@ -165,7 +165,7 @@ impl RepoForge {
         repository: &Arc<Repository>,
         config: &ConfigSnapshot,
     ) {
-        let hosts = GitHubHosts::with_enterprise(
+        let hosts = ForgeHosts::with_enterprise(
             config
                 .get_all(HOSTS_KEY)
                 .filter_map(|entry| entry.text().to_str().ok()),
@@ -181,13 +181,13 @@ impl RepoForge {
                     let resolved = url
                         .to_str()
                         .ok()
-                        .and_then(|url| github_repository(url, &hosts, resolve_ssh_alias));
+                        .and_then(|url| forge_repository(url, &hosts, resolve_ssh_alias));
                     let repository = resolved.or_else(|| {
                         let written = written
                             .iter()
                             .find(|(name, _)| *name == remote)
                             .and_then(|(_, url)| url.to_str().ok())?;
-                        github_repository(written, &hosts, resolve_ssh_alias)
+                        forge_repository(written, &hosts, resolve_ssh_alias)
                     })?;
                     Some(ForgeRemote { remote, repository })
                 })
@@ -308,7 +308,7 @@ impl RepoForge {
     /// one is listed: its repository's place and its number.
     pub(crate) fn pull_request_for(
         &self,
-        head: &GitHubRepository,
+        head: &ForgeRepository,
         branch: &str,
     ) -> Option<(usize, u32)> {
         let found = self.shown.lock();
@@ -348,7 +348,7 @@ impl RepoForge {
     }
 
     /// The sign-in for `host`, if one of the remotes is there.
-    pub(crate) fn account(&self, host: &GitHubHost) -> Option<Arc<Account>> {
+    pub(crate) fn account(&self, host: &ForgeHost) -> Option<Arc<Account>> {
         self.accounts
             .iter()
             .find(|account| account.host() == host)
@@ -365,7 +365,7 @@ impl RepoForge {
     }
 
     /// The repository a remote is, if it is one of GitHub's.
-    pub(crate) fn repository_of(&self, remote: &BStr) -> Option<&GitHubRepository> {
+    pub(crate) fn repository_of(&self, remote: &BStr) -> Option<&ForgeRepository> {
         self.remotes
             .iter()
             .find(|known| known.remote == remote)
@@ -380,7 +380,7 @@ impl RepoForge {
         repository: &Arc<Repository>,
         remotes: Arc<[ForgeRemote]>,
     ) {
-        let mut repositories: Vec<GitHubRepository> = Vec::new();
+        let mut repositories: Vec<ForgeRepository> = Vec::new();
         for remote in remotes.iter() {
             if !repositories
                 .iter()
@@ -433,7 +433,7 @@ impl RepoForge {
         into.lock().totals = vec![None; repositories.len()];
         jobs::detached(move || {
             // A host that needs signing in fails the same way for each of its repositories.
-            let mut failed_hosts: Vec<&GitHubHost> = Vec::new();
+            let mut failed_hosts: Vec<&ForgeHost> = Vec::new();
             for (index, repository) in repositories.iter().enumerate() {
                 let host = repository.host();
                 let Some(account) = accounts.iter().find(|account| account.host() == host) else {

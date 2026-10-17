@@ -217,7 +217,7 @@ fn bar(
                 let names: Vec<String> = forge
                     .repositories
                     .iter()
-                    .map(egit_forge::GitHubRepository::full_name)
+                    .map(egit_forge::ForgeRepository::full_name)
                     .collect();
                 ui.add(egui::Label::new(RichText::new(names.join(", ")).strong()).truncate());
                 let shown = u64::try_from(count).unwrap_or(u64::MAX);

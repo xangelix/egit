@@ -13,7 +13,7 @@ use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 use zeroize::Zeroizing;
 
 use crate::error::ForgeError;
-use crate::host::GitHubHost;
+use crate::host::ForgeHost;
 
 /// The largest answer read: a page of a hundred pull requests is a few hundred kilobytes.
 const ANSWER_LIMIT: u64 = 32 * 1024 * 1024;
@@ -34,13 +34,13 @@ pub(crate) struct Answer {
 /// A host's API client.
 #[derive(Clone, Debug)]
 pub(crate) struct Http {
-    host: GitHubHost,
+    host: ForgeHost,
     agent: Agent,
 }
 
 impl Http {
     /// The client for `host`.
-    pub(crate) fn new(host: GitHubHost) -> Self {
+    pub(crate) fn new(host: ForgeHost) -> Self {
         let tls = TlsConfig::builder()
             .provider(TlsProvider::Rustls)
             .root_certs(RootCerts::PlatformVerifier)
@@ -66,7 +66,7 @@ impl Http {
     }
 
     /// The host it talks to.
-    pub(crate) const fn host(&self) -> &GitHubHost {
+    pub(crate) const fn host(&self) -> &ForgeHost {
         &self.host
     }
 

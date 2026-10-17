@@ -12,7 +12,7 @@ use egit_git::{
 use parking_lot::Mutex;
 
 use crate::error::ForgeError;
-use crate::host::GitHubHost;
+use crate::host::ForgeHost;
 use crate::http::{Answer, Http};
 
 /// One host's sign-in, under one repository's configuration (a repository may name credential
@@ -38,7 +38,7 @@ struct State {
 impl Account {
     /// `host`'s sign-in, with `repository`'s configuration (the user's without one).
     #[must_use]
-    pub fn new(git: Git, repository: Option<Arc<Repository>>, host: GitHubHost) -> Self {
+    pub fn new(git: Git, repository: Option<Arc<Repository>>, host: ForgeHost) -> Self {
         Self {
             http: Http::new(host),
             git,
@@ -49,7 +49,7 @@ impl Account {
 
     /// The host.
     #[must_use]
-    pub const fn host(&self) -> &GitHubHost {
+    pub const fn host(&self) -> &ForgeHost {
         self.http.host()
     }
 
