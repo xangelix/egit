@@ -148,7 +148,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     --raw --no-abbrev -M` against the first parent, or `--root`: each side's mode and object),
     `line_counts` (the same with `--numstat`, in the same order: every file diffed, so it
     follows the list; `GIT_NO_LAZY_FETCH` where git honours it, never prompting),
-    `write_commit_graph`;
+    `write_commit_graph`, `commits_between` (`rev-list <tip> ^<base>`, newest first, at most
+    a limit: what a branch would bring in);
     `Repository::has_commit_graph` (without one, a topological walk outputs nothing until
     git has read all history: 6 s for Linux's 1.5M commits).
   - `diff.rs` — `file_diff`: one file's patch from `diff-tree -p` (plumbing, so no colour,

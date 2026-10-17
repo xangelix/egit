@@ -17,7 +17,8 @@ use std::path::Path;
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, ChangeKind, Commit, LineCounts, ObjectId, ObjectKind, ObjectReader, RefKind,
-    Repository, commit_changes, line_counts, list_references, walk_history, write_commit_graph,
+    Repository, commit_changes, commits_between, line_counts, list_references, walk_history,
+    write_commit_graph,
 };
 
 fn sandbox() -> Sandbox {
@@ -515,4 +516,43 @@ fn a_partial_clones_commit_graph_fetches_nothing() {
         before,
         "computing changed paths fetched trees"
     );
+}
+
+#[test]
+fn a_branch_s_own_commits_are_listed_newest_first() {
+    let sandbox = sandbox();
+    let repo = branchy(&sandbox);
+    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let between = |base: &str, tip: &str, limit| {
+        commits_between(
+            sandbox.git(),
+            &repository,
+            base.into(),
+            tip.into(),
+            limit,
+            &CancelToken::new(),
+        )
+    };
+    let (d, e) = (
+        rev(&sandbox, &repo, "topic~1"),
+        rev(&sandbox, &repo, "topic"),
+    );
+    let (c, m) = (rev(&sandbox, &repo, "main~1"), rev(&sandbox, &repo, "main"));
+    assert_eq!(
+        between("refs/heads/main~1", "refs/heads/topic", 5).unwrap(),
+        [e, d]
+    );
+    assert_eq!(
+        between("refs/heads/main~1", "refs/heads/topic", 1).unwrap(),
+        [e]
+    );
+    assert_eq!(
+        between("refs/heads/topic", "refs/heads/main", 5).unwrap(),
+        [m, c]
+    );
+    assert_eq!(
+        between("refs/heads/main", "refs/heads/topic", 5).unwrap(),
+        []
+    );
+    assert!(between("refs/remotes/origin/main", "refs/heads/topic", 5).is_err());
 }

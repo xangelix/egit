@@ -498,6 +498,43 @@ pub fn write_commit_graph(
     command.output().map(drop)
 }
 
+/// The commits `tip` has that `base` hasn't (both full ref names, or commit names), newest
+/// first, at most `limit` of them: what a branch would bring into another.
+///
+/// # Errors
+///
+/// When git fails (a ref that doesn't exist) or is cancelled.
+pub fn commits_between(
+    git: &Git,
+    repository: &Repository,
+    base: &BStr,
+    tip: &BStr,
+    limit: usize,
+    cancel: &CancelToken,
+) -> Result<Vec<ObjectId>, GitError> {
+    let mut not_base = BString::from("^");
+    not_base.extend_from_slice(base);
+    let listed = git
+        .read("rev-list")
+        .arg(format!("--max-count={limit}"))
+        .arg("--end-of-options")
+        .arg(tip.to_os_str_lossy())
+        .arg(not_base.to_os_str_lossy())
+        .arg("--")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()?;
+    listed
+        .stdout
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            ObjectId::from_hex(line)
+                .ok_or_else(|| GitError::unexpected("rev-list", "a commit name"))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
