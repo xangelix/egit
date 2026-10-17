@@ -4,7 +4,8 @@
 //!
 //! The change is a commit's, or one in the work tree not yet committed. A work tree's file
 //! follows the status (its diff is read again whenever it changes) and can be staged or
-//! unstaged whole, or the lines or hunks selected in its diff.
+//! unstaged whole, or the lines or hunks selected in its diff. A file in conflict shows the
+//! merge editor instead, until it is resolved: then its staged changes.
 
 use std::sync::Arc;
 
@@ -17,6 +18,7 @@ use egui::{Align, Frame, Key, Label, Margin, Modifiers, RichText, Ui};
 use egui_async::Bind;
 
 use super::history::{ID_DIGITS, Shared};
+use super::merge::{self, MergeView};
 use crate::app::Action;
 use crate::diff::{
     DiffDocument, LfsChange, SplitDiff, read_diff, read_uncommitted_diff, split_diff,
@@ -131,6 +133,8 @@ pub(super) struct FileView {
     file_grid: TextGrid,
     /// Stops the diff's git when the view closes first.
     cancel: CancelToken,
+    /// The merge editor, for a work tree's file in conflict.
+    merge: Option<MergeView>,
 }
 
 impl FileView {
@@ -182,8 +186,15 @@ impl FileView {
             diff_grid,
             file_grid,
             cancel: CancelToken::new(),
+            merge: None,
         };
-        file.read_diff(shared);
+        match &file.source {
+            // A conflict's diff isn't one egit reads: it is merged instead.
+            Source::WorkTree(work) if work.conflict => {
+                file.merge = Some(MergeView::new(shared, work.path.clone(), wrap));
+            }
+            _ => file.read_diff(shared),
+        }
         file
     }
 
@@ -254,13 +265,25 @@ impl FileView {
             return;
         }
         self.status_seen = Some(Arc::clone(status));
-        if let Some(now) = WorkFile::find(status, work.path.as_ref(), work.which) {
+        let entry = status.entries().find(|entry| entry.path == work.path);
+        let in_conflict = entry.is_some_and(|entry| entry.kind == egit_git::EntryKind::Unmerged);
+        if work.conflict && in_conflict {
+            // Still in conflict: read again (another program may have changed its sides).
+            if let Some(merge) = &mut self.merge {
+                merge.read(shared);
+            }
+            return;
+        }
+        if work.conflict {
+            // Resolved: what it now stages.
+            self.merge = None;
+            if let Some(staged) = WorkFile::find(status, work.path.as_ref(), Uncommitted::Staged) {
+                *work = staged;
+            }
+        } else if let Some(now) = WorkFile::find(status, work.path.as_ref(), work.which) {
             *work = now;
         } else {
-            work.entry = status
-                .entries()
-                .find(|entry| entry.path == work.path)
-                .and_then(egit_git::StatusEntry::index);
+            work.entry = entry.and_then(egit_git::StatusEntry::index);
         }
         self.content = Bind::new(true);
         self.read_diff(shared);
@@ -359,11 +382,16 @@ pub(super) fn show(
     // the view.
     let selecting = [&file.diff_grid, &file.sides_grid, &file.file_grid]
         .iter()
-        .any(|grid| grid.has_selection() || grid.is_finding());
+        .any(|grid| grid.has_selection() || grid.is_finding())
+        || file.merge.as_ref().is_some_and(MergeView::takes_escape);
     let mut open =
         selecting || !ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
     file_bar(ui, shared, file, &mut open);
     work_bar(ui, shared, file, actions);
+    if let Some(merging) = &mut file.merge {
+        merge::show(ui, shared, merging, actions);
+        return open;
+    }
     match file.shown {
         Shown::Diff => show_diff(ui, file),
         Shown::File => show_file(ui, shared, objects, file),
@@ -419,6 +447,12 @@ fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bo
                         file.diff_grid.set_wrap(wrap);
                         file.sides_grid.set_wrap(wrap);
                         file.file_grid.set_wrap(wrap);
+                        if let Some(merging) = &mut file.merge {
+                            merging.grid.set_wrap(wrap);
+                        }
+                    }
+                    if file.merge.is_some() {
+                        return;
                     }
                     if file.shown == Shown::Diff {
                         ui.checkbox(&mut file.split, "Side by side");
@@ -473,7 +507,11 @@ fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut
                     });
                 }
                 if work.conflict {
-                    ui.label(muted(ui, "Staging a file in conflict marks it resolved."));
+                    ui.label(muted(
+                        ui,
+                        "Staging it as it is marks it resolved (as after resolving it in an \
+                         editor of your own).",
+                    ));
                     return;
                 }
                 if widgets::secondary(ui, has_lines, &format!("{verb} lines")).clicked() {
@@ -626,14 +664,8 @@ fn lfs_placeholder(ui: &mut Ui, lfs: LfsChange) -> bool {
 
 /// What the commit (or the work tree) changed in the file.
 fn show_diff(ui: &mut Ui, file: &mut FileView) {
-    let work = file.work().map(|work| (work.conflict, work.which));
-    if let Some((true, _)) = work {
-        placeholder(
-            ui,
-            "A file in conflict: resolve it in your editor, then stage it.".to_owned(),
-        );
-        return;
-    }
+    // (A file in conflict shows the merge editor instead.)
+    let work = file.work().map(|work| work.which);
     match file.diff.read_as_ref() {
         None => {
             Frame::new()
@@ -661,7 +693,7 @@ fn show_diff(ui: &mut Ui, file: &mut FileView) {
         }
         Some(Ok(diff)) if diff.changed() == (0, 0) => {
             let text = match work {
-                Some((_, Uncommitted::Staged)) => "Nothing staged in the file's text.",
+                Some(Uncommitted::Staged) => "Nothing staged in the file's text.",
                 Some(_) => "Nothing left to stage in the file's text.",
                 None => "Nothing changed in the file's text (only its mode, say).",
             };

@@ -2,7 +2,9 @@
 //! and highlighted, a 10 MB line wrapped and not, CJK and emoji, and resizing while wrapped at
 //! line 900,000. Each case reports frame times (laid out and tessellated) jumping across the
 //! text and scrolling it. Then the whole application on a commit that moves 100,000 files:
-//! how soon they are listed and counted, and frames scrolling through them beside a diff.
+//! how soon they are listed and counted, and frames scrolling through them beside a diff. And
+//! the merge editor on 100,000 lines of C with 1,000 conflicts: how soon git merges them and
+//! the document is made (open, and again after a pick), and frames stepping through them.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
@@ -461,6 +463,131 @@ fn corpus_mass_rename() {
     let worst = report("scrolling the files", scrolling);
     snapshot(&mut harness, "mass-rename");
     println!("  peak memory {:.0} MB", peak_memory_mb());
+    if !cfg!(debug_assertions) {
+        assert!(
+            worst < Duration::from_millis(8),
+            "the 99th percentile frame took {worst:?}"
+        );
+    }
+}
+
+/// Lines of the merge editor's file, and how often both sides changed one.
+const MERGED_LINES: usize = 100_000;
+const CONFLICT_EVERY: usize = 100;
+
+/// The merge editor's file: the base, and each side changing every hundredth line its way.
+fn sides() -> [Vec<u8>; 3] {
+    let base = code(MERGED_LINES);
+    let changed = |side: &str| {
+        let mut text = Vec::with_capacity(base.len() + MERGED_LINES);
+        for (index, line) in base.split_inclusive(|&byte| byte == b'\n').enumerate() {
+            text.extend_from_slice(line);
+            if index % CONFLICT_EVERY == 50 {
+                text.pop();
+                text.extend_from_slice(format!(" /* {side} */\n").as_bytes());
+            }
+        }
+        text
+    };
+    [changed("current"), base.clone(), changed("incoming")]
+}
+
+/// The merge editor's document on the grid, its selected conflict marked.
+struct Merging {
+    grid: TextGrid,
+    document: std::sync::Arc<crate::merge::MergeDocument>,
+    selected: usize,
+}
+
+#[test]
+#[ignore = "a release-build measurement: see the module's documentation"]
+fn corpus_merge() {
+    use egit_git::{CancelToken, ConflictSides, Merge, ObjectId, Repository, TreeEntry};
+
+    use crate::merge::{Choice, Labels, MergeDocument, Shown};
+
+    let conflicts = MERGED_LINES / CONFLICT_EVERY;
+    println!("{MERGED_LINES} lines of C with {conflicts} conflicts:");
+    // Highlighting parses in the background (without a runtime, it would parse in place).
+    crate::jobs::install_runtime().unwrap();
+    let sandbox = Sandbox::new().unwrap();
+    let path = sandbox.init("repo").unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let ids = sides().map(|text| {
+        let hashed = sandbox
+            .git()
+            .write("hash-object")
+            .args(["-w", "--stdin"])
+            .current_dir(&path)
+            .stdin(text)
+            .output()
+            .unwrap();
+        ObjectId::from_hex(hashed.stdout.trim_ascii()).unwrap()
+    });
+    let entry = |id| {
+        Some(TreeEntry {
+            mode: 0o100_644,
+            id,
+        })
+    };
+    let sides = ConflictSides {
+        current: entry(ids[0]),
+        base: entry(ids[1]),
+        incoming: entry(ids[2]),
+    };
+    let started = Instant::now();
+    let merge = egit_git::merge_sides(sandbox.git(), &repository, &sides, &CancelToken::new());
+    let Ok(Merge::Text(merged)) = merge else {
+        panic!("not merged: {merge:?}");
+    };
+    println!("  merged by git in {:?}", started.elapsed());
+    assert_eq!(merged.conflicts(), conflicts);
+
+    let labels = Labels {
+        current: "HEAD (main)".to_owned(),
+        incoming: "side · 1234abcd A change".to_owned(),
+    };
+    let path_name = bstr::BStr::new("probe.c");
+    let mut choices = vec![Choice::Open; conflicts];
+    let started = Instant::now();
+    let document = MergeDocument::new(&merged, path_name, &choices, false, &labels);
+    println!("  shown open in {:?}", started.elapsed());
+    choices[0] = Choice::CurrentThenIncoming;
+    let started = Instant::now();
+    drop(MergeDocument::new(
+        &merged, path_name, &choices, false, &labels,
+    ));
+    println!("  made again after a pick in {:?}", started.elapsed());
+
+    let builder = Harness::builder().with_size([1400.0, 900.0]);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    let mut harness = builder.build_ui_state(
+        |ui, merging: &mut Merging| {
+            let shown = Shown {
+                document: &merging.document,
+                selected: Some(merging.selected),
+            };
+            merging.grid.show(ui, &shown);
+        },
+        Merging {
+            grid: TextGrid::new("corpus-merge"),
+            document: std::sync::Arc::new(document),
+            selected: 0,
+        },
+    );
+    harness
+        .ctx
+        .plugin_or_default::<egui_async::EguiAsyncPlugin>();
+    harness.run_steps(2);
+    // From each conflict to the next, as Next or Alt+↓ steps.
+    let stepping = measure_frames(&mut harness, conflicts, |harness, frame| {
+        let merging = harness.state_mut();
+        merging.selected = frame;
+        let start = merging.document.start(frame).unwrap();
+        merging.grid.scroll_to_line(start.saturating_sub(2));
+    });
+    let worst = report("stepping through the conflicts", stepping);
+    snapshot(&mut harness, "merge");
     if !cfg!(debug_assertions) {
         assert!(
             worst < Duration::from_millis(8),

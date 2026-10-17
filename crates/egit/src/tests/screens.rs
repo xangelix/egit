@@ -1302,6 +1302,137 @@ fn a_repository_is_cloned_from_home_and_opened() {
     );
 }
 
+/// `notes.txt` as the merge editor's test has it, with `alpha` and `beta` on its two lines that
+/// conflict.
+fn notes(alpha: &str, beta: &str) -> String {
+    format!("intro\n{alpha}\nmiddle 1\nmiddle 2\nmiddle 3\nmiddle 4\n{beta}\nend\n")
+}
+
+/// A repository stopped merging `side`: `notes.txt` with two conflicts, and `gone`, which `main`
+/// deleted and `side` changed.
+fn stopped_merging(sandbox: &Sandbox) -> PathBuf {
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(&repo, "notes.txt", &notes("alpha", "beta"), "Start")
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "gone", "kept\n", "Add gone")
+        .unwrap();
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--create", "side"])
+        .unwrap();
+    sandbox
+        .commit_file(
+            &repo,
+            "notes.txt",
+            &notes("alpha (theirs)", "beta (theirs)"),
+            "Theirs",
+        )
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "gone", "changed\n", "Change gone")
+        .unwrap();
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    sandbox
+        .commit_file(
+            &repo,
+            "notes.txt",
+            &notes("alpha (ours)", "beta (ours)"),
+            "Ours",
+        )
+        .unwrap();
+    sandbox.run(&repo, "rm", &["--quiet", "gone"]).unwrap();
+    sandbox
+        .run(&repo, "commit", &["--quiet", "--message", "Remove gone"])
+        .unwrap();
+    let merged = sandbox
+        .git()
+        .write("merge")
+        .args(["--quiet", "side"])
+        .current_dir(&repo)
+        .output_unchecked()
+        .unwrap();
+    assert!(!merged.status.success());
+
+    repo
+}
+
+#[test]
+fn conflicts_are_resolved_in_the_merge_editor() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = stopped_merging(&sandbox);
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness.get_by_label("Show the conflicts").click();
+    wait_for_label(&mut harness, "notes.txt");
+    harness
+        .get_by_role_and_label(Role::Button, "notes.txt")
+        .click();
+    wait_for_label(&mut harness, "Conflict 1 of 2: not resolved");
+    wait_for_label(&mut harness, "2 left to resolve.");
+    render(&mut harness, "merge-editor");
+
+    // The incoming side for the first; the pick moves on to the second, edited by hand.
+    harness.get_by_label("Incoming").click();
+    wait_for_label(&mut harness, "Conflict 2 of 2: not resolved");
+    harness.get_by_label("Edit…").click();
+    let editor = "Conflict 2 resolves to (Escape cancels):";
+    wait_for_label(&mut harness, editor);
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, editor)
+        .focus();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.run_steps(1);
+    type_into(
+        &mut harness,
+        Role::MultilineTextInput,
+        editor,
+        "beta (both)\n",
+    );
+    harness.get_by_label("Apply").click();
+    wait_for_label(&mut harness, "All resolved.");
+    render(&mut harness, "merge-resolved");
+    click_when_enabled(&mut harness, &format!("{}  Save resolution", icon::CHECK));
+    let resolved = notes("alpha (theirs)", "beta (both)");
+    let index = |file: &str| {
+        sandbox
+            .run(&repo, "cat-file", &["-p", &format!(":0:{file}")])
+            .map(|shown| shown.stdout)
+            .unwrap_or_default()
+    };
+    // Staged, then written to the work tree.
+    settle(&mut harness, "the resolution staged and written", |_| {
+        index("notes.txt") == resolved.as_bytes()
+            && std::fs::read_to_string(repo.join("notes.txt")).is_ok_and(|file| file == resolved)
+    });
+    // The view goes on to what it stages.
+    wait_for_label(&mut harness, "Staged · Modified");
+
+    // A file one side deleted: kept as the other changed it.
+    harness
+        .get_by_label(&format!("{}  History", icon::ARROW_LEFT))
+        .click();
+    wait_for_label(&mut harness, "gone");
+    harness.get_by_role_and_label(Role::Button, "gone").click();
+    wait_for_label(
+        &mut harness,
+        "The current side deleted the file, and the incoming side changed it.",
+    );
+    render(&mut harness, "merge-whole");
+    harness.get_by_label("Keep the incoming side's").click();
+    settle(&mut harness, "the file kept", |_| {
+        index("gone") == b"changed\n"
+    });
+
+    // Every conflict resolved: the merge carries on.
+    click_when_enabled(&mut harness, "Continue");
+    wait_for_label(&mut harness, "Carried on.");
+    let parents = sandbox.run(&repo, "log", &["-1", "--format=%P"]).unwrap();
+    assert_eq!(parents.stdout.split(|&byte| byte == b' ').count(), 2);
+}
+
 #[test]
 fn whole_file_shows_all_of_the_file_and_back() {
     let sandbox = Sandbox::new().unwrap();

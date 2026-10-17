@@ -4,6 +4,7 @@ pub(crate) mod clone;
 mod file;
 pub(crate) mod history;
 pub(crate) mod home;
+mod merge;
 pub(crate) mod profile;
 pub(crate) mod prompts;
 pub(crate) mod repo;

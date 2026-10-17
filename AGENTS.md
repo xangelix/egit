@@ -41,6 +41,9 @@ it.
   430 ms), and prints frame times, laid out and tessellated (it fails past 8 ms at p99);
   renders `corpus-*.png` where it can. Every case stays under 2 ms but the highlighted ones
   (3.7 ms jumping, up to 2.6 ms scrolling: colouring takes up to 3 ms a frame).
+  `corpus_merge`: the merge editor on 100,000 lines of C with 1,000 conflicts: merged by git
+  in 220 ms, the document made in 9 ms (open, and again after a pick), stepping from conflict
+  to conflict highlighted at 3.4 ms p99.
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a
@@ -372,8 +375,19 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `staging.rs` — `StageRequest`s as jobs under the repository's `WriteLock`: whole files
     (`stage`, `unstage`), or the lines picked in a file's diff (`LinesRequest`: the index's
     blob read through the shared `cat-file`, `apply_lines`, `write_index_content` against the
-    entry the diff was read with; a stale diff says so). `RepoTab::stage` runs one
-    (`Action::Stage`), keeps its result for the panel, and reads the work tree again after.
+    entry the diff was read with; a stale diff says so), or a conflict's resolution
+    (`ResolveRequest`: each conflict as chosen, built into the file in the job, a whole side,
+    or deletion, through `resolve_conflict`; sides changed since say so). `RepoTab::stage` runs
+    one (`Action::Stage`), keeps its result for the panel, and reads the work tree again after.
+  - `merge.rs` — a file in conflict: `read_conflict` (a job: `conflict_sides`, `merge_sides`,
+    `incoming_commit` for the operation in progress) makes a `ConflictFile`; `Choice` (open, a
+    side, both in either order, the base, edited text) per conflict; `MergeDocument` (`build`,
+    a job, again whenever a choice changes): the merged text with each open conflict's sides
+    under headers ("Conflict 2 of 5 · current: HEAD (main)", "incoming: side · 1234abcd …",
+    the base's with `show_base`, "(no lines)" for an empty side) and each resolved one's lines,
+    numbered as the resolved file will be, `<`/`|`/`>` in the gutter, the current side's lines
+    through the old parser and the incoming side's through the new; `start` and `conflict_at`
+    map conflicts and lines. `Shown` draws it with its selected conflict's headers stronger.
   - `sync.rs` — `Syncing`, a repository's exchanges with its remotes: one `SyncTask` the user
     asked for at a time (fetch `--all --prune`, pull as configured or by merge or rebase,
     push, abort or continue an operation, or remember `pull.rebase` then pull;
@@ -413,8 +427,17 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     files, LFS pointers, submodules, and files over 256 MiB. A `FileView` of a work tree's
     file (`WorkFile`: a path, which `Uncommitted` changes, the index entry its diff was read
     against) reads its diff again whenever the status changes, and has a second bar: stage
-    or unstage the file, the lines selected in its unified diff, or their hunks; a conflict
-    gets a placeholder (its combined diff isn't read) and only "Stage file" (resolved).
+    or unstage the file, the lines selected in its unified diff, or their hunks. A file in
+    conflict shows `views/merge.rs`'s `MergeView` instead (and "Stage file", resolving it as
+    the work tree has it), reading the conflict again when the status changes (its choices kept
+    while its sides are the same), then, resolved, its staged changes. `MergeView`: "Conflict 2
+    of 5: <its choice>", Previous and Next (Alt+↑ and Alt+↓), how many are left, "Show the
+    base", "Save resolution" once none is open; "Take" Current, Incoming, both either way, or
+    Base (moving on to the next open conflict), "Edit…" (its text in a code field, Apply or
+    Cancel; a line ending is added unless it ends the file), "Reopen", "All current", "All
+    incoming"; lines selected in a conflict select it. A conflict that isn't two texts says
+    what each side did and offers keeping a side or deleting the file. `Shared::operation`
+    and `branch` label the sides.
     `views/work.rs` — `WorkPanel`: "Not staged" and "Staged", each a table-kit list (indices
     into the status, made once per read) with a button for all and one per file (named
     "Stage <path>"), a file clicked opened in the `FileView`; then the commit form: summary
@@ -456,7 +479,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     third column, and its (new) path in what is left, losing its start first, from a folder's
     boundary ("…/core/dc_link.c", `elided_start`, summing cached glyph widths), the full path
     and a rename's old one on hover.
-  - `theme.rs` (palettes, WCAG AA checked by a test; Phosphor icons), `widgets.rs` (cards,
+  - `theme.rs` (palettes, WCAG AA checked by tests, text over every line background too: diff
+    lines and words, a conflict's sides and headers, resolved lines; Phosphor icons), `widgets.rs` (cards,
     buttons, origin labels, problem boxes), `format.rs` (`~` paths, "5 minutes ago",
     dates, a long command's progress), `settings.rs` (theme, recent repositories, open tabs,
     the clone folder; non-UTF-8 paths kept as

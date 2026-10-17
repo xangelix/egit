@@ -23,6 +23,7 @@ mod format;
 mod grid;
 mod history;
 mod jobs;
+mod merge;
 mod problem;
 mod repo;
 mod settings;

@@ -458,6 +458,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         palette: Palette::of(ui.ctx()),
         partial_clone,
         work_status: work_status.as_ref(),
+        operation: operations.first().copied(),
     };
     // Before the first commit, the work tree is all there is to look at.
     if history.shown.rows() == 0 && !history.shown.is_loading() {
@@ -601,6 +602,21 @@ pub(super) struct Shared<'a> {
     partial_clone: Option<bool>,
     /// The working tree's latest status, once read.
     pub(super) work_status: Option<&'a Arc<Status>>,
+    /// The operation git stopped in the middle of, if any (it names a conflict's sides).
+    pub(super) operation: Option<Operation>,
+}
+
+impl Shared<'_> {
+    /// The branch `HEAD` is on, by its short name.
+    pub(super) fn branch(&self) -> Option<&BStr> {
+        let reference = self.head.reference?;
+        Some(
+            reference
+                .strip_prefix(b"refs/heads/")
+                .unwrap_or(reference)
+                .as_bstr(),
+        )
+    }
 }
 
 /// Where `HEAD` is: its commit, and the branch it is on.

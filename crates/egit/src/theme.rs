@@ -57,6 +57,14 @@ pub(crate) struct Palette {
     pub(crate) removed_word: Color32,
     /// Behind a diff's hunk headers.
     pub(crate) hunk: Color32,
+    /// Behind a conflict's current lines, and its current side's header.
+    pub(crate) current: Color32,
+    pub(crate) current_header: Color32,
+    /// Behind a conflict's incoming lines, and its incoming side's header.
+    pub(crate) incoming: Color32,
+    pub(crate) incoming_header: Color32,
+    /// Behind a resolved conflict's lines.
+    pub(crate) resolved: Color32,
 }
 
 impl Palette {
@@ -92,6 +100,11 @@ impl Palette {
         removed: Color32::from_rgba_unmultiplied_const(0xF8, 0x51, 0x49, 40),
         removed_word: Color32::from_rgba_unmultiplied_const(0xF8, 0x51, 0x49, 100),
         hunk: Color32::from_rgba_unmultiplied_const(0x3F, 0xB6, 0xA8, 30),
+        current: Color32::from_rgba_unmultiplied_const(0x4F, 0xC3, 0xF7, 30),
+        current_header: Color32::from_rgba_unmultiplied_const(0x4F, 0xC3, 0xF7, 64),
+        incoming: Color32::from_rgba_unmultiplied_const(0xB3, 0x88, 0xFF, 30),
+        incoming_header: Color32::from_rgba_unmultiplied_const(0xB3, 0x88, 0xFF, 64),
+        resolved: Color32::from_rgba_unmultiplied_const(0x3F, 0xB6, 0xA8, 22),
     };
 
     /// The light theme.
@@ -126,6 +139,11 @@ impl Palette {
         removed: Color32::from_rgba_unmultiplied_const(0xCF, 0x22, 0x2E, 32),
         removed_word: Color32::from_rgba_unmultiplied_const(0xCF, 0x22, 0x2E, 80),
         hunk: Color32::from_rgba_unmultiplied_const(0x0A, 0x84, 0x77, 26),
+        current: Color32::from_rgba_unmultiplied_const(0x02, 0x77, 0xBD, 24),
+        current_header: Color32::from_rgba_unmultiplied_const(0x02, 0x77, 0xBD, 52),
+        incoming: Color32::from_rgba_unmultiplied_const(0x7B, 0x1F, 0xA2, 22),
+        incoming_header: Color32::from_rgba_unmultiplied_const(0x7B, 0x1F, 0xA2, 46),
+        resolved: Color32::from_rgba_unmultiplied_const(0x0A, 0x84, 0x77, 20),
     };
 
     /// The palette egui is currently showing.
@@ -251,6 +269,53 @@ mod tests {
                 }
             }
             assert!(contrast(palette.on_accent, palette.accent) >= 4.5);
+        }
+    }
+
+    /// `over` (premultiplied, maybe translucent) drawn over the opaque `under`.
+    // The relaxations `clippy.toml` gives `#[test]` functions, for this helper.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        clippy::integer_division,
+        clippy::unwrap_used
+    )]
+    fn blend(over: Color32, under: Color32) -> Color32 {
+        let mix = |top: u8, bottom: u8| {
+            let rest = u16::from(255 - over.a());
+            top + u8::try_from(u16::from(bottom) * rest / 255).unwrap()
+        };
+        Color32::from_rgb(
+            mix(over.r(), under.r()),
+            mix(over.g(), under.g()),
+            mix(over.b(), under.b()),
+        )
+    }
+
+    /// Text on every background a line takes in the grid; muted text (hunk headers, a
+    /// conflict's headers but the selected one's) on all but words' highlights and the selected
+    /// conflict's headers, which always take the text colour.
+    #[test]
+    fn text_meets_wcag_aa_on_every_line_background() {
+        for palette in [Palette::DARK, Palette::LIGHT] {
+            for (name, line, muted) in [
+                ("added", palette.added, true),
+                ("added word", palette.added_word, false),
+                ("removed", palette.removed, true),
+                ("removed word", palette.removed_word, false),
+                ("hunk", palette.hunk, true),
+                ("current", palette.current, true),
+                ("current header", palette.current_header, false),
+                ("incoming", palette.incoming, true),
+                ("incoming header", palette.incoming_header, false),
+                ("resolved", palette.resolved, true),
+            ] {
+                let background = blend(line, palette.background);
+                let texts = [Some(palette.text), muted.then_some(palette.muted)];
+                for text in texts.into_iter().flatten() {
+                    let ratio = contrast(text, background);
+                    assert!(ratio >= 4.5, "{name} ({}): {ratio:.2}", palette.dark);
+                }
+            }
         }
     }
 }

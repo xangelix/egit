@@ -1,6 +1,7 @@
-//! Staging and unstaging, as jobs: whole files (`git add`, `git reset`), or the lines picked in
-//! a file's diff (the index's blob edited and written back, refused when the file changed since
-//! its diff was read).
+//! Staging and unstaging, as jobs: whole files (`git add`, `git reset`), the lines picked in a
+//! file's diff (the index's blob edited and written back, refused when the file changed since
+//! its diff was read), or a conflict's resolution (refused when its sides changed since they
+//! were read).
 
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
@@ -9,12 +10,13 @@ use std::sync::Arc;
 
 use bstr::{BStr, BString};
 use egit_git::{
-    CancelToken, Direction, FileDiff, Git, LinesError, ObjectKind, Repository, TreeEntry,
-    apply_lines, stage, unstage, write_index_content,
+    CancelToken, Direction, FileDiff, Git, LinesError, ObjectKind, Pick, Repository, Resolution,
+    ResolveError, TreeEntry, apply_lines, resolve_conflict, stage, unstage, write_index_content,
 };
 
 use crate::history::Objects;
 use crate::jobs::{self, WriteLock};
+use crate::merge::{Choice, ConflictFile};
 use crate::problem::Problem;
 
 /// What to stage or unstage.
@@ -27,6 +29,29 @@ pub(crate) enum StageRequest {
     },
     /// Some lines of one file.
     Lines(Box<LinesRequest>),
+    /// A conflict resolved.
+    Resolve(ResolveRequest),
+}
+
+/// A conflict to resolve, and how.
+#[derive(Debug)]
+pub(crate) struct ResolveRequest {
+    /// The conflict, as it was read (its sides must still be the index's).
+    pub(crate) file: Arc<ConflictFile>,
+    pub(crate) how: Resolve,
+}
+
+/// How a conflict is resolved.
+#[derive(Debug)]
+pub(crate) enum Resolve {
+    /// Each of its conflicts as chosen (none open).
+    Merged(Arc<[Choice]>),
+    /// The current side's file as it is.
+    Current,
+    /// The incoming side's.
+    Incoming,
+    /// The file deleted.
+    Delete,
 }
 
 /// Some lines of a file to stage or unstage.
@@ -65,6 +90,7 @@ pub(crate) async fn run(
                 done.map_err(|error| Problem::git(failed(direction), &error))
             }
             StageRequest::Lines(lines) => stage_lines(&git, &repository, &objects, *lines, &cancel),
+            StageRequest::Resolve(request) => resolve(&git, &repository, &request, &cancel),
         }
     })
     .await
@@ -126,6 +152,64 @@ fn stage_lines(
         Err(LinesError::Stale) => Err(stale()),
         Err(LinesError::Git(error)) => Err(Problem::git(title, &error)),
     }
+}
+
+/// Resolves a conflict as `request` says, if its sides are still the index's.
+fn resolve(
+    git: &Git,
+    repository: &Repository,
+    request: &ResolveRequest,
+    cancel: &CancelToken,
+) -> Result<(), Problem> {
+    const TITLE: &str = "The conflict couldn't be resolved";
+    let ResolveRequest { file, how } = request;
+    let missing = |side| Problem::new(TITLE, format!("The {side} side deleted the file."));
+    let resolution = match how {
+        Resolve::Merged(choices) => {
+            let text = file
+                .text()
+                .ok_or_else(|| Problem::new(TITLE, "The file's sides aren't two texts."))?;
+            let mut open = false;
+            let content = text.resolve(|index| {
+                choices
+                    .get(index)
+                    .and_then(Choice::pick)
+                    .unwrap_or_else(|| {
+                        open = true;
+                        Pick::Current
+                    })
+            });
+            if open {
+                return Err(Problem::new(
+                    TITLE,
+                    "Some of its conflicts aren't resolved yet.",
+                ));
+            }
+            let mode = file.sides.merged_mode().unwrap_or(0o100_644);
+            Resolution::Content { content, mode }
+        }
+        Resolve::Current => Resolution::Side(file.sides.current.ok_or_else(|| missing("current"))?),
+        Resolve::Incoming => {
+            Resolution::Side(file.sides.incoming.ok_or_else(|| missing("incoming"))?)
+        }
+        Resolve::Delete => Resolution::Delete,
+    };
+    resolve_conflict(
+        git,
+        repository,
+        file.path.as_ref(),
+        &file.sides,
+        resolution,
+        cancel,
+    )
+    .map_err(|error| match error {
+        ResolveError::Stale => Problem::new(
+            TITLE,
+            "Its sides changed since egit read them (another program resolved it, say). Look \
+             at it again.",
+        ),
+        ResolveError::Git(error) => Problem::git(TITLE, &error),
+    })
 }
 
 /// The mode a file not yet tracked gets: executable or not, as the work tree has it.
