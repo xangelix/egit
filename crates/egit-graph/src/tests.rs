@@ -11,7 +11,14 @@ use crate::{
 
 /// Lays out `commits` (children first) and returns the chunks with the lanes before each row.
 fn build(commits: &[(u32, Vec<u32>)]) -> (Vec<Chunk>, Vec<Vec<u16>>, usize) {
-    let mut builder = GraphBuilder::new();
+    build_with(GraphBuilder::new(), commits)
+}
+
+/// [`build`], with `builder`.
+fn build_with(
+    mut builder: GraphBuilder<u32>,
+    commits: &[(u32, Vec<u32>)],
+) -> (Vec<Chunk>, Vec<Vec<u16>>, usize) {
     let mut chunks = Vec::new();
     let mut before = Vec::new();
     for (commit, parents) in commits {
@@ -233,37 +240,121 @@ fn every_lane_drawn_into_a_row_is_drawn_out_of_it() {
     for seed in 1..=20 {
         let commits = random_history(3_000, seed);
         let (chunks, before, _) = build(&commits);
-        let rows = drawn(&chunks, 3_000);
-        assert_eq!(rows.len(), 3_000);
-        for (index, (lanes, row, _, segments)) in rows.iter().enumerate() {
+        lanes_drawn_whole(seed, &chunks, &before, false);
+    }
+}
+
+/// Every lane drawn into each row is drawn out of it, as the lanes say; a node is at most a
+/// slot past the lanes open (two with the first kept for a pinned branch).
+fn lanes_drawn_whole(seed: u64, chunks: &[Chunk], before: &[Vec<u16>], first_kept: bool) {
+    let rows = drawn(chunks, 3_000);
+    assert_eq!(rows.len(), 3_000);
+    for (index, (lanes, row, _, segments)) in rows.iter().enumerate() {
+        assert_eq!(
+            lanes, &before[index],
+            "seed {seed}: lanes before row {index}"
+        );
+        let open = |lanes: &[u16]| -> BTreeSet<u16> {
+            lanes
+                .iter()
+                .enumerate()
+                .filter(|(_, color)| **color != FREE)
+                .map(|(slot, _)| u16::try_from(slot).unwrap())
+                .collect()
+        };
+        let from_top: BTreeSet<u16> = segments
+            .iter()
+            .filter(|segment| segment.from.level == Level::Top)
+            .map(|segment| segment.from.lane)
+            .collect();
+        assert_eq!(from_top, open(lanes), "seed {seed}: row {index}'s top");
+        let after = before.get(index + 1).cloned().unwrap_or_default();
+        let to_bottom: BTreeSet<u16> = segments
+            .iter()
+            .filter(|segment| segment.to.level == Level::Bottom)
+            .map(|segment| segment.to.lane)
+            .collect();
+        assert_eq!(to_bottom, open(&after), "seed {seed}: row {index}'s bottom");
+        assert!(
+            usize::from(row.lane) <= lanes.len().max(usize::from(first_kept)),
+            "seed {seed}: a node far from the lanes"
+        );
+    }
+}
+
+#[test]
+fn a_pinned_branch_keeps_the_first_lane_from_its_tip_down() {
+    // `topic` (4, 3) is newer than `main` (2, 1), both from 0: pinned, `main` takes the first
+    // lane, which is empty above it; `topic`'s lane joins it at 0.
+    let commits = [
+        (4, vec![3]),
+        (3, vec![0]),
+        (2, vec![1]),
+        (1, vec![0]),
+        (0, vec![]),
+    ];
+    let (chunks, before, widest) = build_with(GraphBuilder::pinned(2), &commits);
+    let rows = drawn(&chunks, 5);
+    let lanes: Vec<u16> = rows.iter().map(|(_, row, _, _)| row.lane).collect();
+    assert_eq!(lanes, [1, 1, 0, 0, 0]);
+    assert_eq!(widest, 2);
+    assert_eq!(
+        before[1],
+        [FREE, 0],
+        "nothing in the first lane above the tip"
+    );
+    assert!(!rows[2].1.from_above, "the tip starts its lane");
+    let (_, root, edges, _) = &rows[4];
+    assert_eq!(root.lane, 0);
+    assert_eq!(
+        edges[0].kind,
+        EdgeKind::Join,
+        "topic joins main at its root"
+    );
+
+    // Unpinned, the newer branch would have the first lane.
+    let (chunks, _, _) = build(&commits);
+    let lanes: Vec<u16> = drawn(&chunks, 5)
+        .iter()
+        .map(|(_, row, _, _)| row.lane)
+        .collect();
+    assert_eq!(lanes, [0, 0, 1, 1, 0]);
+}
+
+#[test]
+fn a_pinned_line_alone_takes_the_first_lane_in_any_history() {
+    for seed in 1..=20 {
+        let commits = random_history(3_000, seed);
+        // The tip of the newest branch whose first-parent line is long: the first commit
+        // listed that no other commit has as a parent.
+        let parents: BTreeSet<u32> = commits
+            .iter()
+            .flat_map(|(_, parents)| parents.iter().copied())
+            .collect();
+        let tips: Vec<u32> = commits
+            .iter()
+            .map(|(id, _)| *id)
+            .filter(|id| !parents.contains(id))
+            .collect();
+        let tip = tips[usize::try_from(seed).unwrap() % tips.len()];
+        let mut line = BTreeSet::new();
+        let mut at = Some(tip);
+        let first_parent: std::collections::HashMap<u32, Option<u32>> = commits
+            .iter()
+            .map(|(id, parents)| (*id, parents.first().copied()))
+            .collect();
+        while let Some(id) = at {
+            line.insert(id);
+            at = first_parent[&id];
+        }
+        let (chunks, before, _) = build_with(GraphBuilder::pinned(tip), &commits);
+        lanes_drawn_whole(seed, &chunks, &before, true);
+        for ((id, _), (_, row, _, _)) in commits.iter().zip(drawn(&chunks, 3_000)) {
             assert_eq!(
-                lanes, &before[index],
-                "seed {seed}: lanes before row {index}"
-            );
-            let open = |lanes: &[u16]| -> BTreeSet<u16> {
-                lanes
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, color)| **color != FREE)
-                    .map(|(slot, _)| u16::try_from(slot).unwrap())
-                    .collect()
-            };
-            let from_top: BTreeSet<u16> = segments
-                .iter()
-                .filter(|segment| segment.from.level == Level::Top)
-                .map(|segment| segment.from.lane)
-                .collect();
-            assert_eq!(from_top, open(lanes), "seed {seed}: row {index}'s top");
-            let after = before.get(index + 1).cloned().unwrap_or_default();
-            let to_bottom: BTreeSet<u16> = segments
-                .iter()
-                .filter(|segment| segment.to.level == Level::Bottom)
-                .map(|segment| segment.to.lane)
-                .collect();
-            assert_eq!(to_bottom, open(&after), "seed {seed}: row {index}'s bottom");
-            assert!(
-                usize::from(row.lane) <= lanes.len(),
-                "seed {seed}: a node far from the lanes"
+                row.lane == 0,
+                line.contains(id),
+                "seed {seed}: commit {id} in lane {}",
+                row.lane
             );
         }
     }

@@ -139,6 +139,10 @@ struct Lane {
 /// A commit costs time in proportion to its parents and the lanes meeting it, never the graph's
 /// width: the lanes leading to each commit are chained from a hash table, and free slots are
 /// found in a bitmap.
+///
+/// A branch can be pinned to the left ([`Self::pinned`]): the first slot is kept for its tip's
+/// first-parent line, which nothing else takes; once the tip has it, the line keeps it, a node
+/// taking the leftmost lane leading to it.
 #[derive(Debug)]
 pub struct GraphBuilder<K> {
     lanes: Vec<Option<Lane>>,
@@ -152,6 +156,10 @@ pub struct GraphBuilder<K> {
     widest: usize,
     /// The lanes leading to the commit being laid out (reused).
     leading: Vec<usize>,
+    /// The pinned branch's tip, until it is laid out.
+    pinned: Option<K>,
+    /// Whether the first slot is kept for the pinned branch.
+    keep_first: bool,
 }
 
 impl<K: Copy + Eq + Hash> Default for GraphBuilder<K> {
@@ -173,6 +181,19 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
             rows: 0,
             widest: 0,
             leading: Vec::new(),
+            pinned: None,
+            keep_first: false,
+        }
+    }
+
+    /// A builder keeping the first lane for `tip`'s first-parent line (a branch pinned to the
+    /// left): before the tip comes, the lane is empty; from it on, the line is there.
+    #[must_use]
+    pub fn pinned(tip: K) -> Self {
+        Self {
+            pinned: Some(tip),
+            keep_first: true,
+            ..Self::new()
         }
     }
 
@@ -225,12 +246,18 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
         }
         self.leading.sort_unstable();
         let edges_start = u32::try_from(self.chunk.edges.len()).unwrap_or(u32::MAX);
-        let (node, color, from_above) = if let Some(&first) = self.leading.first() {
+        // The pinned tip starts its lane in the first slot, kept empty for it: every lane
+        // leading to it (its children's) joins it there.
+        let pinned_here = self.pinned == Some(commit);
+        let (node, color, from_above) = if pinned_here {
+            self.pinned = None;
+            (0, self.new_color(), false)
+        } else if let Some(&first) = self.leading.first() {
             (first, self.lane(first).map_or(0, |lane| lane.color), true)
         } else {
             (self.free_slot(0), self.new_color(), false)
         };
-        for index in 1..self.leading.len() {
+        for index in usize::from(!pinned_here)..self.leading.len() {
             let Some(&other) = self.leading.get(index) else {
                 continue;
             };
@@ -341,8 +368,10 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
         }
     }
 
-    /// The first free slot at or after `from`, or a new one past the last.
+    /// The first free slot at or after `from` (never the first, while it is kept), or a new one
+    /// past the last.
     fn free_slot(&self, from: usize) -> usize {
+        let from = if self.keep_first { from.max(1) } else { from };
         let (first, bit) = bit(from);
         let mut wanted = !bit.wrapping_sub(1);
         for (index, &word) in self.occupied.iter().enumerate().skip(first) {
