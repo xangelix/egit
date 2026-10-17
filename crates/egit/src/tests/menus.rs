@@ -83,6 +83,10 @@ fn opened_with_branches(
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &mine);
     settle(&mut harness, "the history", history_shown);
+    // Not a test of it: it would read the history again under the screens rendered.
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
     (colleague, mine, harness)
 }
 

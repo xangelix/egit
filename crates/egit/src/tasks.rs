@@ -364,6 +364,14 @@ impl Tasks {
         }
     }
 
+    /// Holds the background fetch off for an hour (tests that aren't about it: it would read
+    /// the history again under them).
+    #[cfg(test)]
+    pub(crate) fn hold_background_fetch(&mut self) {
+        let now = Instant::now();
+        self.next_background = now.checked_add(Duration::from_secs(3600)).unwrap_or(now);
+    }
+
     /// Whether a task the user asked for is running.
     pub(crate) fn is_busy(&mut self) -> bool {
         self.result.is_pending()
