@@ -497,7 +497,7 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     before stashing the changes in a switch's way. The stash dialog: a message, and
     untracked files too.
     `views/actions.rs` — what the commit table offers (`Menus`, from `Shared::menus`: the
-    branch, `HEAD`, the remotes, the refs, whether a task runs or an operation is in progress,
+    branch, `HEAD`, the configuration (its remotes read only when a menu needs them), the refs, whether a task runs or an operation is in progress,
     which disable what would change the branch, saying why): a commit's context menu (switch
     there detached, create a branch or tag there, merge it in, rebase onto it, cherry-pick,
     revert, reset soft or mixed, hard after a dialog), a ref badge's (switch to a branch, a

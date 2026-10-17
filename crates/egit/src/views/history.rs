@@ -39,7 +39,7 @@ use crate::history::{
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::tables::ChangesTable;
-use crate::tasks::{Tasks, remote_names};
+use crate::tasks::Tasks;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 use crate::worktree::WorkTree;
@@ -466,7 +466,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         partial_clone,
         work_status: work_status.as_ref(),
         operation: operations.first().copied(),
-        remotes: config.map(remote_names).unwrap_or_default(),
+        config,
         busy: tasks.is_busy(),
     };
     // Before the first commit, the work tree is all there is to look at.
@@ -618,8 +618,8 @@ pub(super) struct Shared<'a> {
     pub(super) work_status: Option<&'a Arc<Status>>,
     /// The operation git stopped in the middle of, if any (it names a conflict's sides).
     pub(super) operation: Option<Operation>,
-    /// The remotes configured, in order.
-    pub(super) remotes: Vec<String>,
+    /// The repository's configuration, once read (its remotes, for the menus).
+    pub(super) config: Option<&'a ConfigSnapshot>,
     /// Whether a task is running.
     pub(super) busy: bool,
 }
@@ -630,7 +630,7 @@ impl Shared<'_> {
         Menus {
             branch: self.branch(),
             head: self.head.commit,
-            remotes: &self.remotes,
+            config: self.config,
             refs,
             busy: self.busy,
             operation: self.operation.is_some(),

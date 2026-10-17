@@ -6,14 +6,14 @@
 //! Each choice asks for a task, or a dialog first ([`Ask`]); the history view carries it out.
 
 use bstr::{BStr, BString, ByteSlice as _};
-use egit_git::{ObjectId, RefKind, Reference, ResetMode, Stash, SwitchTo};
+use egit_git::{ConfigSnapshot, ObjectId, RefKind, Reference, ResetMode, Stash, SwitchTo};
 use egui::{Response, Ui};
 
 use super::dialogs::Dialog;
 use super::history::ID_DIGITS;
 use crate::format;
 use crate::history::Refs;
-use crate::tasks::Task;
+use crate::tasks::{Task, remote_names};
 use crate::widgets::muted;
 
 /// What a menu asked for.
@@ -29,8 +29,8 @@ pub(super) struct Menus<'a> {
     pub(super) branch: Option<&'a BStr>,
     /// The commit `HEAD` is at.
     pub(super) head: Option<ObjectId>,
-    /// The remotes configured, in order.
-    pub(super) remotes: &'a [String],
+    /// The repository's configuration, once read (its remotes, read when a menu needs them).
+    pub(super) config: Option<&'a ConfigSnapshot>,
     pub(super) refs: &'a Refs,
     /// Whether a task is running (nothing else starts meanwhile).
     pub(super) busy: bool,
@@ -67,19 +67,14 @@ impl Menus<'_> {
         }
     }
 
-    /// The remote a remote-tracking branch's short name (`origin/topic`) belongs to, and its
-    /// name there: the longest remote it starts with (remote names may hold `/`).
+    /// The remotes configured, in order.
+    fn remotes(&self) -> Vec<String> {
+        self.config.map(remote_names).unwrap_or_default()
+    }
+
+    /// The remote a remote-tracking branch's short name belongs to, and its name there.
     fn split_remote<'n>(&self, name: &'n BStr) -> Option<(&'n BStr, &'n BStr)> {
-        let remote = self
-            .remotes
-            .iter()
-            .filter(|remote| {
-                name.strip_prefix(remote.as_bytes())
-                    .is_some_and(|rest| rest.starts_with(b"/"))
-            })
-            .max_by_key(|remote| remote.len())?;
-        let (remote, rest) = name.split_at(remote.len());
-        Some((remote.as_bstr(), rest.get(1..)?.as_bstr()))
+        split_remote(&self.remotes(), name)
     }
 
     /// Where switching to `reference` goes: a local branch; a remote branch through the local
@@ -102,6 +97,20 @@ impl Menus<'_> {
             RefKind::Tag | RefKind::Other => None,
         }
     }
+}
+
+/// The remote a remote-tracking branch's short name (`origin/topic`) belongs to, and its name
+/// there: the longest of `remotes` it starts with (remote names may hold `/`).
+fn split_remote<'n>(remotes: &[String], name: &'n BStr) -> Option<(&'n BStr, &'n BStr)> {
+    let remote = remotes
+        .iter()
+        .filter(|remote| {
+            name.strip_prefix(remote.as_bytes())
+                .is_some_and(|rest| rest.starts_with(b"/"))
+        })
+        .max_by_key(|remote| remote.len())?;
+    let (remote, rest) = name.split_at(remote.len());
+    Some((remote.as_bstr(), rest.get(1..)?.as_bstr()))
 }
 
 /// An item that may be disabled (with why on hover).
@@ -226,11 +235,11 @@ pub(super) fn ref_menu(
         }
         RefKind::Tag => {
             let busy = menus.idle();
-            if let Some(remote) = menus
-                .remotes
+            let remotes = menus.remotes();
+            if let Some(remote) = remotes
                 .iter()
                 .find(|remote| *remote == "origin")
-                .or_else(|| menus.remotes.first())
+                .or_else(|| remotes.first())
                 && item(ui, &format!("Push {name} to {remote}"), busy)
             {
                 ask(Ask::Task(Task::PushTag {
@@ -382,19 +391,9 @@ mod tests {
 
     #[test]
     fn a_remote_branch_belongs_to_its_longest_remote() {
-        let refs = Refs::default();
         let remotes = ["origin".to_owned(), "team".to_owned(), "team/eu".to_owned()];
-        let menus = Menus {
-            branch: None,
-            head: None,
-            remotes: &remotes,
-            refs: &refs,
-            busy: false,
-            operation: false,
-        };
         let split = |name: &str| {
-            menus
-                .split_remote(BStr::new(name))
+            split_remote(&remotes, BStr::new(name))
                 .map(|(remote, branch)| (remote.to_string(), branch.to_string()))
         };
         assert_eq!(split("origin/main"), Some(("origin".into(), "main".into())));
