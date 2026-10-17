@@ -63,7 +63,7 @@ fn found(commits: u64) -> impl Fn(&mut EgitApp) -> bool {
 }
 
 /// Whether the selected commit's details, and their lines counted, are shown.
-fn details_shown(app: &mut EgitApp) -> bool {
+pub(super) fn details_shown(app: &mut EgitApp) -> bool {
     let view = &mut app.state.repos[0].history_view;
     view.details_shown() && view.counts_shown()
 }

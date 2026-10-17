@@ -35,6 +35,7 @@ use super::patch::{self, PatchEvent, PatchSource, PatchView};
 use super::pull_form::{self, PullRequestForm};
 use super::pulls::{self, PullRequestEvent, PullRequestView};
 use super::rebase::{self, RebaseEvent, RebaseView};
+use super::reflog::{self, ReflogEvent, ReflogView};
 use super::search::{self, HistorySearch};
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
@@ -52,6 +53,7 @@ use crate::repo::RepoId;
 use crate::tables::ChangesTable;
 use crate::tasks::Tasks;
 use crate::theme::{Palette, icon};
+use crate::undo::Journal;
 use crate::widgets::{self, muted};
 use crate::worktree::WorkTree;
 
@@ -133,6 +135,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) forge: &'a RepoForge,
     /// The user's home folder, shown as `~`.
     pub(crate) home: Option<&'a Path>,
+    /// What egit did here, to take back, and what it took back, to do again.
+    pub(crate) journal: &'a Journal,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -182,6 +186,7 @@ enum Tool {
     FileHistory(FileHistoryView),
     PullRequests(PullRequestView),
     Patch(PatchView),
+    Reflog(Box<ReflogView>),
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -273,6 +278,15 @@ impl HistoryView {
         }
     }
 
+    /// The commit the details show in place of the selected one's: the reflog's selected
+    /// move's, while it is open (in no history, maybe).
+    fn peeked(&self) -> Option<ObjectId> {
+        match &self.tool {
+            Some(Tool::Reflog(reflog)) => reflog.selected_commit(),
+            _ => None,
+        }
+    }
+
     /// Opens `change` of commit `details` in a file view, shown as the one open was.
     fn open_file(&mut self, shared: &Shared<'_>, details: &CommitDetails, change: FileChange) {
         self.file = Some(FileView::open(shared, details, change, self.file.as_ref()));
@@ -356,7 +370,9 @@ impl HistoryView {
     /// Whether the selected commit's lines are counted.
     #[cfg(test)]
     pub(crate) fn counts_shown(&mut self) -> bool {
-        let selected = self.selected.map(|selected| selected.id);
+        let selected = self
+            .peeked()
+            .or_else(|| self.selected.map(|selected| selected.id));
         !self.counting.counts.is_pending()
             && self
                 .counting
@@ -368,7 +384,9 @@ impl HistoryView {
     /// Whether the selected commit's details are shown.
     #[cfg(test)]
     pub(crate) fn details_shown(&mut self) -> bool {
-        let selected = self.selected.map(|selected| selected.id);
+        let selected = self
+            .peeked()
+            .or_else(|| self.selected.map(|selected| selected.id));
         !self.details.is_pending()
             && self
                 .details
@@ -444,6 +462,12 @@ impl HistoryView {
         self.tool = Some(Tool::Patch(PatchView::new(source, self.repo)));
     }
 
+    /// Shows `reference`'s reflog (`HEAD`, or a branch's full name) in the commit table's place.
+    fn show_reflog(&mut self, reference: bstr::BString) {
+        self.file = None;
+        self.tool = Some(Tool::Reflog(Box::new(ReflogView::new(reference))));
+    }
+
     /// Opens the search bar, over the commit table.
     fn open_search(&mut self) {
         self.file = None;
@@ -464,9 +488,14 @@ impl HistoryView {
     }
 
     /// Finds its place again in a history that replaced the one shown: the selected commit,
-    /// and the commit that was at the top of the screen; and searches it again.
+    /// and the commit that was at the top of the screen; searches it again, and reads a reflog
+    /// shown again.
     fn follow(&mut self, history: &History) {
         self.search.history_replaced();
+        if let Some(Tool::Reflog(reflog)) = &mut self.tool {
+            // Refs moved: where they have been is read again.
+            reflog.refresh();
+        }
         if let Some(selected) = self.selected {
             self.selected = history
                 .row_of(&selected.id, selected.row)
@@ -585,6 +614,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         stashes,
         forge,
         home,
+        journal,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -602,9 +632,11 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         operation: operations.first().copied(),
         config,
         busy: tasks.is_busy(),
+        committing: committing.is_pending(),
         forge,
         scope: history.scope().clone(),
         home,
+        journal,
     };
     // Before the first commit, the work tree is all there is to look at.
     if history.shown.rows() == 0 && !history.shown.is_loading() {
@@ -813,12 +845,16 @@ pub(super) struct Shared<'a> {
     pub(super) config: Option<&'a ConfigSnapshot>,
     /// Whether a task is running.
     pub(super) busy: bool,
+    /// Whether a commit is being made.
+    committing: bool,
     /// Its remotes on GitHub and GitLab, and their requests.
     pub(super) forge: &'a RepoForge,
     /// What of the history is shown, as asked.
     scope: Scope,
     /// The user's home folder, shown as `~`.
     pub(super) home: Option<&'a Path>,
+    /// What egit did here, to take back, and what it took back, to do again.
+    journal: &'a Journal,
 }
 
 impl Shared<'_> {
@@ -892,6 +928,8 @@ fn top_bar(
 ) {
     let palette = shared.palette;
     ui.horizontal(|ui| {
+        // First: nothing before them changes width (a count would), so they stay put.
+        undo_buttons(ui, shared, view, task_pane.actions);
         let rows = history.shown.rows();
         let commits = if rows == 1 {
             "1 commit".to_owned()
@@ -921,6 +959,7 @@ fn top_bar(
             carry_out(asked, shared, view, task_pane.actions);
         }
         search_button(ui, view);
+        reflog_button(ui, view);
         // What comes and goes follows the buttons: ids are counted in order, and a click
         // pressed on one id and released on another is lost.
         work_tree_summary(ui, work_tree, view, palette);
@@ -983,6 +1022,78 @@ fn search_button(ui: &mut Ui, view: &mut HistoryView) {
             view.search.close();
         } else {
             view.open_search();
+        }
+    }
+}
+
+/// Undo and Redo, saying what each would take back or do again; ⌘Z and ⇧⌘Z while no text field
+/// or dialog has the keys.
+fn undo_buttons(ui: &mut Ui, shared: &Shared<'_>, view: &HistoryView, actions: &mut Vec<Action>) {
+    let idle = !shared.busy && !shared.committing;
+    let keys = idle && view.tasks.dialog.is_none() && !ui.ctx().text_edit_focused();
+    let (undo, redo) = (shared.journal.next_undo(), shared.journal.next_redo());
+    let pressed = |modifiers| {
+        keys && ui
+            .input_mut(|input| input.consume_shortcut(&KeyboardShortcut::new(modifiers, Key::Z)))
+    };
+    // Shift first: ⌘Z alone would match ⇧⌘Z too.
+    let shifted = pressed(Modifiers::COMMAND | Modifiers::SHIFT);
+    let plain = !shifted && pressed(Modifiers::COMMAND);
+    let mut asked = if shifted && redo.is_some() {
+        Some(true)
+    } else if plain && undo.is_some() {
+        Some(false)
+    } else {
+        None
+    };
+    for (glyph, name, next, redoing, keys) in [
+        (icon::ARROW_COUNTER_CLOCKWISE, "Undo", undo, false, "⌘Z"),
+        (icon::ARROW_CLOCKWISE, "Redo", redo, true, "⇧⌘Z"),
+    ] {
+        let enabled = idle && next.is_some();
+        let button = ui.add_enabled(enabled, egui::Button::new(glyph));
+        // Named in words, for those who don't see the arrow.
+        button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
+        let hover = next.map_or_else(
+            || {
+                if redoing {
+                    "Nothing taken back to do again".to_owned()
+                } else {
+                    "Nothing egit did here to take back".to_owned()
+                }
+            },
+            |next| format!("{name} {} ({keys})", next.what),
+        );
+        let button = if enabled {
+            button.on_hover_text(hover)
+        } else if next.is_some() {
+            button.on_disabled_hover_text(format!("{hover}: once the task running ends"))
+        } else {
+            button.on_disabled_hover_text(hover)
+        };
+        if button.clicked() {
+            asked = Some(redoing);
+        }
+    }
+    ui.add_space(8.0);
+    if let Some(redo) = asked {
+        actions.push(Action::Undo(shared.id, redo));
+    }
+}
+
+/// The button showing `HEAD`'s reflog in the commit table's place (or going back).
+fn reflog_button(ui: &mut Ui, view: &mut HistoryView) {
+    let showing = matches!(view.tool, Some(Tool::Reflog(_)));
+    let label = RichText::new(format!("{}  Reflog", icon::CLOCK_COUNTER_CLOCKWISE));
+    if ui
+        .add(egui::Button::selectable(showing, label))
+        .on_hover_text("Where HEAD has been: every commit it was at, and what moved it")
+        .clicked()
+    {
+        if showing {
+            view.tool = None;
+        } else {
+            view.show_reflog("HEAD".into());
         }
     }
 }
@@ -1206,6 +1317,7 @@ fn tool(
     view: &mut HistoryView,
     actions: &mut Vec<Action>,
 ) {
+    let (mut menu, mut wanted_file) = (None, None);
     let asked = match &mut view.tool {
         Some(Tool::Rebase(rebase)) => match rebase::show(ui, shared, rebase) {
             Some(RebaseEvent::Start(task)) => {
@@ -1246,8 +1358,30 @@ fn tool(
             }
             None => None,
         },
+        Some(Tool::Reflog(found)) => {
+            let read = (&history.shown, &history.objects);
+            match reflog::show(ui, shared, read, found, actions) {
+                Some(ReflogEvent::Close) => Some(BlameEvent::Close),
+                Some(ReflogEvent::ShowCommit(id)) => Some(BlameEvent::ShowCommit(id)),
+                Some(ReflogEvent::Ask(asked)) => {
+                    menu = Some(asked);
+                    None
+                }
+                Some(ReflogEvent::Wanted(wanted)) => {
+                    wanted_file = Some(wanted);
+                    None
+                }
+                None => None,
+            }
+        }
         None => None,
     };
+    if let Some(asked) = menu {
+        carry_out(asked, shared, view, actions);
+    }
+    if let Some(wanted) = wanted_file {
+        view.open_tool(shared, &history.objects, wanted);
+    }
     match asked {
         Some(BlameEvent::Close) => view.tool = None,
         Some(BlameEvent::ShowCommit(id)) => {
@@ -1313,6 +1447,7 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
             name: String::new(),
         }),
         Ask::Paste => view.show_patch(PatchSource::Pasted),
+        Ask::Reflog(reference) => view.show_reflog(reference),
         Ask::PullRequest(selected) => view.show_pull_request(selected),
         Ask::CreatePullRequest {
             branch,
@@ -1854,20 +1989,21 @@ fn work_details(
 
 /// The selected commit's details and changed files.
 fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &mut HistoryView) {
-    let Some(selected) = view.selected else {
+    let peeked = view.peeked();
+    let Some(id) = peeked.or_else(|| view.selected.map(|selected| selected.id)) else {
         ui.label(muted(ui, "Select a commit to see what it changed."));
         return;
     };
-    if view.details_for != Some(selected.id)
+    if view.details_for != Some(id)
         && let Some(git) = shared.git
     {
         view.details.request(read_details(
             git.clone(),
             Arc::clone(shared.repository),
             history.objects.clone(),
-            selected.id,
+            id,
         ));
-        view.details_for = Some(selected.id);
+        view.details_for = Some(id);
     }
     let pending = view.details.is_pending();
     let shown = match view.details.read_as_ref() {
@@ -1918,12 +2054,23 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
     if let Some(index) = view.changes.show(ui, &shown, counts.as_deref(), height)
         && let Some(change) = shown.changes.get(index)
     {
-        view.open_file(shared, &shown, change.clone());
+        match &mut view.tool {
+            Some(Tool::Reflog(reflog)) if peeked.is_some() => {
+                let file = FileView::open(shared, &shown, change.clone(), reflog.file());
+                reflog.open_file(file);
+            }
+            _ => view.open_file(shared, &shown, change.clone()),
+        }
     }
 
+    let near = view.selected.map_or(0, |selected| selected.row);
     if let Some(parent) = go_to
-        && let Some(row) = history.shown.row_of(&parent, selected.row)
+        && let Some(row) = history.shown.row_of(&parent, near)
     {
+        // A parent of the reflog's commit is shown in the history.
+        if peeked.is_some() {
+            view.tool = None;
+        }
         view.select(&history.shown, row, Some(Align::Center));
     }
 }

@@ -95,10 +95,10 @@ fn patches_menu(harness: &mut Harness<'_, EgitApp>, item: &str) {
 }
 
 /// Steps until a label holds `text`.
-fn wait_for_text(harness: &mut Harness<'_, EgitApp>, text: &str) {
+pub(super) fn wait_for_text(harness: &mut Harness<'_, EgitApp>, text: &str) {
     for _ in 0..2_000 {
         harness.step();
-        if harness.query_by_label_contains(text).is_some() {
+        if harness.query_all_by_label_contains(text).next().is_some() {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));

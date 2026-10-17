@@ -29,10 +29,12 @@ use egit_git::{
     revert, set_config, set_upstream, skip_operation, stash_apply, stash_drop, stash_push, switch,
 };
 use egui_async::Bind;
+use parking_lot::Mutex;
 
 use crate::forge::{request_noun, request_number};
 use crate::jobs::{self, WriteLock};
 use crate::problem::Problem;
+use crate::undo::{self, Landed, Undo};
 
 /// How long after a repository opens its first background fetch starts.
 const FIRST_BACKGROUND_FETCH: Duration = Duration::from_secs(10);
@@ -189,6 +191,10 @@ pub(crate) enum Task {
         changes: Changes,
         path: PathBuf,
     },
+    /// Take an action back.
+    Undo(Box<Undo>),
+    /// Do an action taken back again.
+    Redo(Box<Undo>),
 }
 
 /// A patch's bytes, shared (never copied with the task), shown by their length.
@@ -287,6 +293,8 @@ impl Task {
             Self::Skip(_) => "Skipping",
             Self::CopyPatch(_) | Self::CopyChanges(_) => "Making the patch",
             Self::SavePatches { .. } => "Saving the patches",
+            Self::Undo(_) => "Undoing",
+            Self::Redo(_) => "Redoing",
         }
     }
 }
@@ -378,13 +386,14 @@ impl Tasks {
     }
 
     /// Starts `task` (stopping the background fetch first); a forge's task signs in with
-    /// `accounts`.
+    /// `accounts`; how to take it back goes to `journal`.
     pub(crate) fn start(
         &mut self,
         git: &Git,
         repository: &Arc<Repository>,
         writes: &WriteLock,
         accounts: &[Arc<Account>],
+        journal: Arc<Mutex<Vec<Landed>>>,
         task: Task,
     ) {
         self.background_cancel.cancel();
@@ -397,7 +406,40 @@ impl Tasks {
         let accounts = accounts.to_vec();
         self.result.request(jobs::blocking(move || {
             let _queued = writes.hold();
-            run(&git, &repository, &running, &progress, &cancel, &accounts)
+            match &running {
+                Task::Undo(undo) | Task::Redo(undo) => {
+                    let redo = matches!(running, Task::Redo(_));
+                    let done = if redo {
+                        undo::do_again(&git, &repository, undo, &cancel).map(Landed::Redone)
+                    } else {
+                        undo::take_back(&git, &repository, undo, &cancel).map(Landed::Undone)
+                    };
+                    match done {
+                        Ok(landed) => {
+                            journal.lock().push(landed);
+                            Ok(Outcome::Done)
+                        }
+                        Err(stopped) => {
+                            // Nothing changed: it can be tried again.
+                            if stopped.again {
+                                let undo = Undo::clone(undo);
+                                journal.lock().push(Landed::Kept { undo, redo });
+                            }
+                            Err(stopped.problem)
+                        }
+                    }
+                }
+                task => {
+                    let before = undo::before(&git, &repository, task);
+                    let ran = run(&git, &repository, task, &progress, &cancel, &accounts);
+                    if let Ok(outcome) = &ran
+                        && let Some(noted) = undo::noted(&git, &repository, task, before, outcome)
+                    {
+                        journal.lock().push(Landed::Done(noted));
+                    }
+                    ran
+                }
+            }
         }));
         self.task = Some(task);
         self.started = self.started.wrapping_add(1);
@@ -468,6 +510,8 @@ fn run(
     accounts: &[Arc<Account>],
 ) -> Result<Outcome, Problem> {
     match task {
+        // `start` takes them back and does them again itself.
+        Task::Undo(_) | Task::Redo(_) => Ok(Outcome::Done),
         Task::CheckOutPullRequest { .. } | Task::CreatePullRequest(_) => {
             forge(git, repository, task, progress, cancel, accounts)
         }

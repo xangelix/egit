@@ -16,6 +16,7 @@ use crate::problem::Problem;
 use crate::staging::{self, StageRequest};
 use crate::tables::SnapshotTable;
 use crate::tasks::{Task, Tasks, has_remotes};
+use crate::undo::{self, Journal, Landed, Place};
 use crate::views::history::HistoryView;
 use crate::watch::{Changes, Taken, Watcher, Watching};
 use crate::worktree::WorkTree;
@@ -72,6 +73,8 @@ pub(crate) struct RepoTab {
     pub(crate) commits_made: u64,
     /// What the user asked of it: fetching, pulling, pushing, ….
     pub(crate) tasks: Tasks,
+    /// What egit did here, to take back (and what it took back, to do again).
+    pub(crate) journal: Journal,
     /// Its remotes on GitHub and GitLab, and their requests.
     pub(crate) forge: RepoForge,
     /// The configuration the forge last worked its remotes out from.
@@ -115,6 +118,7 @@ impl RepoTab {
             committing_open: false,
             commits_made: 0,
             tasks: Tasks::new(Instant::now()),
+            journal: Journal::default(),
             forge: RepoForge::new(ctx),
             forge_config: None,
             forge_fetches: 0,
@@ -139,6 +143,7 @@ impl RepoTab {
     /// Takes in what its jobs finished.
     pub(crate) fn poll(&mut self) {
         self.history.poll();
+        self.journal.poll();
         if matches!(self.writing_commit_graph.read_as_ref(), Some(Ok(()))) {
             self.history.shown.wrote_commit_graph();
         }
@@ -163,9 +168,19 @@ impl RepoTab {
             Arc::clone(&self.repository),
             self.writes.clone(),
         );
+        let journal = self.journal.inbox();
         self.committing.request(jobs::blocking(move || {
             let _queued = writes.hold();
-            create_commit(&git, &repository, &commit, &CancelToken::new()).map_err(|error| {
+            let head = || Place::read(&git, &repository);
+            let before = head();
+            let made = create_commit(&git, &repository, &commit, &CancelToken::new());
+            if made.is_ok() {
+                let subject = commit.message.lines().next().unwrap_or_default().trim();
+                if let Some(undo) = undo::committed(before, head(), subject, commit.amend) {
+                    journal.lock().push(Landed::Done(undo));
+                }
+            }
+            made.map_err(|error| {
                 const TITLE: &str = "The commit wasn't made";
                 // A hook's whole complaint, not only its last line.
                 error.failure().map_or_else(
@@ -255,8 +270,28 @@ impl RepoTab {
             &self.repository,
             &self.writes,
             self.forge.accounts(),
+            self.journal.inbox(),
             task,
         );
+    }
+
+    /// Takes the last action back (`redo`: does the last one taken back again).
+    pub(crate) fn undo(&mut self, git: &Git, redo: bool) {
+        if self.tasks.is_busy() {
+            return;
+        }
+        let taken = if redo {
+            self.journal
+                .take_redo()
+                .map(|undo| Task::Redo(Box::new(undo)))
+        } else {
+            self.journal
+                .take_undo()
+                .map(|undo| Task::Undo(Box::new(undo)))
+        };
+        if let Some(task) = taken {
+            self.run_task(git, task);
+        }
     }
 
     /// Keeps the forge current: its remotes worked out again from new configuration, and its

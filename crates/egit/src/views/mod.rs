@@ -15,6 +15,7 @@ pub(crate) mod prompts;
 mod pull_form;
 mod pulls;
 mod rebase;
+mod reflog;
 pub(crate) mod repo;
 mod search;
 pub(crate) mod status_bar;

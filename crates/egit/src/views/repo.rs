@@ -19,6 +19,7 @@ use crate::repo::{RepoId, RepoPanel, Status};
 use crate::tables::SnapshotTable;
 use crate::tasks::Tasks;
 use crate::theme::{Palette, icon};
+use crate::undo::Journal;
 use crate::views::history::{HistoryPane, HistoryView};
 use crate::widgets::{self, muted};
 use crate::worktree::WorkTree;
@@ -56,6 +57,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         writing_commit_graph: &mut repo.writing_commit_graph,
         forge: &repo.forge,
         home: home_dir.as_deref(),
+        journal: &repo.journal,
         actions,
     };
     repo.panels.ui(&mut behavior, ui);
@@ -81,6 +83,7 @@ struct Panels<'a> {
     writing_commit_graph: &'a mut Bind<(), Problem>,
     forge: &'a RepoForge,
     home: Option<&'a Path>,
+    journal: &'a Journal,
     actions: &'a mut Vec<Action>,
 }
 
@@ -116,6 +119,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                         stashes: self.stashes.ok_ref().map_or(&[], |stashes| &**stashes),
                         forge: self.forge,
                         home: self.home,
+                        journal: self.journal,
                         actions: self.actions,
                     },
                 );

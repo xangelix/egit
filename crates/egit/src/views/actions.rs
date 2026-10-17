@@ -56,6 +56,8 @@ pub(super) enum Ask {
     ApplyFiles,
     /// A patch to apply, pasted.
     Paste,
+    /// A ref's reflog (`HEAD`, or a branch's full name), in the commit table's place.
+    Reflog(BString),
     /// The dialog opening a pull request from `branch`, pushed to `remote`'s `head_branch`,
     /// which is `head`.
     CreatePullRequest {
@@ -99,7 +101,7 @@ impl Menus<'_> {
     }
 
     /// Whether a task may start, and why not.
-    const fn idle(&self) -> Result<(), &'static str> {
+    pub(super) const fn idle(&self) -> Result<(), &'static str> {
         if self.busy {
             Err("Another task is running")
         } else {
@@ -108,7 +110,7 @@ impl Menus<'_> {
     }
 
     /// Whether the current branch may change, and why not.
-    const fn can_change(&self) -> Result<(), &'static str> {
+    pub(super) const fn can_change(&self) -> Result<(), &'static str> {
         if self.busy {
             Err("Another task is running")
         } else if self.operation {
@@ -378,6 +380,9 @@ pub(super) fn ref_menu(
             copy_items(ui, menus, reference);
             ui.separator();
             graph_items(ui, menus, reference, &mut ask);
+            if item(ui, &format!("Show {name}'s reflog"), Ok(())) {
+                ask(Ask::Reflog(reference.name.clone()));
+            }
         }
         RefKind::Tag => {
             let busy = menus.idle();

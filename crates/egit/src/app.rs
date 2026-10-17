@@ -130,6 +130,8 @@ pub(crate) enum Action {
     Task(RepoId, Task),
     /// Stop a repository's running task.
     CancelTask(RepoId),
+    /// Take a repository's last action back (`true`: do the last one taken back again).
+    Undo(RepoId, bool),
     /// A repository's tab was closed.
     Closed(RepoId),
     /// Use a theme.
@@ -319,6 +321,13 @@ impl EgitApp {
                     && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
                 {
                     repo.run_task(&git, task);
+                }
+            }
+            Action::Undo(id, redo) => {
+                if let Some(git) = state.git()
+                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
+                {
+                    repo.undo(&git, redo);
                 }
             }
             Action::CancelTask(id) => {

@@ -753,7 +753,7 @@ fn a_git_lfs_pointers_diff_shows_what_it_stands_for() {
 }
 
 /// The label of the history's count of files with uncommitted changes.
-fn uncommitted(files: usize) -> String {
+pub(super) fn uncommitted(files: usize) -> String {
     let files = if files == 1 {
         "1 file".to_owned()
     } else {
@@ -1454,7 +1454,7 @@ fn conflicts_are_resolved_in_the_merge_editor() {
 
 /// Double-clicks the control labelled `label`: both clicks in one frame (each of the harness's
 /// frames is a quarter of a second: two apart are no double-click).
-fn double_click(harness: &mut Harness<'_, EgitApp>, label: &str) {
+pub(super) fn double_click(harness: &mut Harness<'_, EgitApp>, label: &str) {
     harness.get_by_label(label).hover();
     harness.step();
     let at = harness.get_by_label(label).rect().center();
@@ -1477,7 +1477,7 @@ pub(super) fn menu_item(harness: &mut Harness<'_, EgitApp>, label: &str, item: &
 }
 
 /// `main` with `f` changed twice, and `other` from the first commit adding `g`.
-fn two_branches(sandbox: &Sandbox) -> PathBuf {
+pub(super) fn two_branches(sandbox: &Sandbox) -> PathBuf {
     let repo = sandbox.init("repo").unwrap();
     sandbox.commit_file(&repo, "f", "one\n", "One").unwrap();
     sandbox

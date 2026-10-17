@@ -544,6 +544,8 @@ fn done_text(task: &Task) -> String {
         Task::DeleteBranchEverywhere { name, remote, .. } => {
             format!("Deleted {} here and on {}.", short(name), short(remote))
         }
+        Task::Undo(undo) => format!("Undid {}.", undo.what),
+        Task::Redo(undo) => format!("Redid {}.", undo.what),
         _ => "Done.".to_owned(),
     }
 }

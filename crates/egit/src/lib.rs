@@ -37,6 +37,7 @@ mod tables;
 mod tabs;
 mod tasks;
 mod theme;
+mod undo;
 mod views;
 mod watch;
 mod widgets;
