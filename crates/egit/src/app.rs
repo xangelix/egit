@@ -9,12 +9,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, NewCommit, Repository, set_config,
-    trust_directory, unset_config,
+    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, NewCommit, Repository,
+    add_config_value, set_config, trust_directory, unset_config, unset_config_value,
 };
 use egui::{CentralPanel, Frame, Panel, Ui};
 use egui_async::Bind;
 
+use crate::desktop::Opener;
 use crate::fonts::Fallbacks;
 use crate::format::now;
 use crate::jobs::{self, WriteLock};
@@ -66,6 +67,8 @@ pub(crate) struct AppState {
     fonts: Fallbacks,
     /// Whether the window had the focus last frame (coming back to it reads work trees again).
     focused: bool,
+    /// Where web pages go.
+    pub(crate) opener: Opener,
 }
 
 /// A repository being opened.
@@ -73,11 +76,18 @@ struct Opening {
     job: Bind<Repository, OpenProblem>,
 }
 
-/// A configuration value to write to the user's global configuration; `None` removes it.
+/// A change to the user's global configuration.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ConfigChange {
-    pub(crate) key: &'static str,
-    pub(crate) value: Option<String>,
+pub(crate) enum ConfigChange {
+    /// `key` set to `value`, every value it had replaced; `None` removes it.
+    Set {
+        key: &'static str,
+        value: Option<String>,
+    },
+    /// `value` added to the values of `key` (one that may have several), unless it has it.
+    Add { key: &'static str, value: String },
+    /// `value` removed from the values of `key`, its others kept.
+    Remove { key: &'static str, value: String },
 }
 
 /// What the views (and finished jobs) ask the application to do.
@@ -121,6 +131,12 @@ pub(crate) enum Action {
     Closed(RepoId),
     /// Use a theme.
     SetTheme(ThemeChoice),
+    /// Sign in to a forge's host, for a repository's pull requests.
+    SignIn(RepoId, String),
+    /// Read a repository's pull requests again.
+    RefreshPullRequests(RepoId),
+    /// Open a web page in the user's browser.
+    OpenUrl(String),
 }
 
 impl EgitApp {
@@ -156,7 +172,7 @@ impl EgitApp {
         home_dir: Option<PathBuf>,
         prompts: Prompts,
     ) -> Self {
-        Self::start(
+        let mut app = Self::start(
             ctx,
             settings,
             home_dir,
@@ -164,7 +180,10 @@ impl EgitApp {
             GitOptions::default(),
             prompts,
             Vec::new(),
-        )
+        );
+        // Tests look at the pages asked for; no browser starts.
+        app.state.opener = Opener::recording();
+        app
     }
 
     fn start(
@@ -212,6 +231,7 @@ impl EgitApp {
             actions: Vec::new(),
             next_repo: 0,
             focused: true,
+            opener: Opener::default(),
             fonts: Fallbacks::default(),
         };
         match git {
@@ -297,6 +317,17 @@ impl EgitApp {
                 state.settings.theme = choice;
                 theme::apply(ctx, choice);
             }
+            Action::SignIn(id, host) => {
+                if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
+                    repo.forge.sign_in(&host);
+                }
+            }
+            Action::RefreshPullRequests(id) => {
+                if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
+                    repo.forge.refresh();
+                }
+            }
+            Action::OpenUrl(url) => state.opener.open(url),
         }
     }
 
@@ -526,9 +557,17 @@ impl AppState {
         self.profile.saving.request(jobs::blocking(move || {
             let _queued = writes.hold();
             for change in changes {
-                let written = match &change.value {
-                    Some(value) => set_config(&git, ConfigTarget::Global, change.key, value),
-                    None => unset_config(&git, ConfigTarget::Global, change.key),
+                let target = ConfigTarget::Global;
+                let written = match &change {
+                    ConfigChange::Set {
+                        key,
+                        value: Some(value),
+                    } => set_config(&git, target, key, value),
+                    ConfigChange::Set { key, value: None } => unset_config(&git, target, key),
+                    ConfigChange::Add { key, value } => add_config_value(&git, target, key, value),
+                    ConfigChange::Remove { key, value } => {
+                        unset_config_value(&git, target, key, value)
+                    }
                 };
                 written.map_err(|error| Problem::git("Your settings couldn't be saved", &error))?;
             }

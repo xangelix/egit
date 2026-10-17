@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use egit_forge::testing::{FakeGitHub, FakePull, FakeRepository};
 use egit_git::askpass::{PromptKind, ask_as_helper};
 use egit_git::testing::Sandbox;
 use egit_git::{ConfigPlace, ConfigSnapshot, Git};
@@ -2180,4 +2181,286 @@ fn the_tabs_open_at_the_last_close_come_back() {
     assert_eq!(app.state.repos.len(), 1);
     assert_eq!(app.state.repos[0].repository.work_tree(), repo);
     assert_eq!(app.state.home.problem, None);
+}
+
+/// A commit's name in `repo`.
+fn commit_of(sandbox: &Sandbox, repo: &Path, name: &str) -> String {
+    let shown = sandbox.run(repo, "rev-parse", &[name]).unwrap();
+    String::from_utf8(shown.stdout).unwrap().trim().to_owned()
+}
+
+/// A clone whose `origin` is `octo/tool` on `fake` (fetched through a bare repository, by
+/// `insteadOf`), signed in with `token` through a `store` helper: `main` (Start), `topic` (Add
+/// topic), and a fork's pull request kept as `refs/pull/7/head`. Returns the clone, `topic`'s
+/// commit, and the fork's.
+fn github_clone(sandbox: &Sandbox, fake: &FakeGitHub, token: &str) -> (PathBuf, String, String) {
+    let bare = sandbox.path("origin.git");
+    let bare_path = bare.to_str().unwrap().to_owned();
+    sandbox
+        .run(sandbox.home(), "init", &["--quiet", "--bare", &bare_path])
+        .unwrap();
+    let seed = sandbox.init("seed").unwrap();
+    sandbox.commit_file(&seed, "a", "a\n", "Start").unwrap();
+    let push = |what: &str| {
+        sandbox
+            .run(&seed, "push", &["--quiet", &bare_path, what])
+            .unwrap();
+    };
+    push("HEAD:refs/heads/main");
+    sandbox
+        .run(&seed, "switch", &["--quiet", "--create", "topic"])
+        .unwrap();
+    sandbox.commit_file(&seed, "t", "t\n", "Add topic").unwrap();
+    let topic = commit_of(sandbox, &seed, "HEAD");
+    push("HEAD:refs/heads/topic");
+    sandbox.run(&seed, "switch", &["--quiet", "main"]).unwrap();
+    sandbox
+        .commit_file(&seed, "f", "f\n", "Fork change")
+        .unwrap();
+    let fork = commit_of(sandbox, &seed, "HEAD");
+    push("HEAD:refs/pull/7/head");
+
+    let work = sandbox.path("work");
+    sandbox
+        .run(
+            sandbox.home(),
+            "clone",
+            &[
+                "--quiet",
+                &format!("file://{bare_path}"),
+                work.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+    let url = format!("http://{}/octo/tool.git", fake.address());
+    sandbox
+        .run(&work, "remote", &["set-url", "origin", &url])
+        .unwrap();
+    let rewrite = format!("url.file://{bare_path}.insteadOf");
+    sandbox.run(&work, "config", &[&rewrite, &url]).unwrap();
+    sandbox
+        .run(&work, "config", &["egit.githubHost", &fake.host_entry()])
+        .unwrap();
+    let store = sandbox.path("credentials");
+    std::fs::write(&store, format!("http://ada:{token}@{}\n", fake.address())).unwrap();
+    let helper = format!("store --file={}", store.display());
+    sandbox
+        .run(&work, "config", &["credential.helper", &helper])
+        .unwrap();
+    fake.state().repositories.push(FakeRepository {
+        owner: "octo".to_owned(),
+        name: "tool".to_owned(),
+        default_branch: "main".to_owned(),
+        parent: None,
+        pulls: vec![
+            FakePull {
+                number: 8,
+                title: "Add topic".to_owned(),
+                author: "bo".to_owned(),
+                head_branch: "topic".to_owned(),
+                base_branch: "main".to_owned(),
+                head_commit: topic.clone(),
+                review: Some("APPROVED".to_owned()),
+                checks: Some("SUCCESS".to_owned()),
+                check_runs: vec![(
+                    "build".to_owned(),
+                    "COMPLETED".to_owned(),
+                    Some("SUCCESS".to_owned()),
+                )],
+                body: "Adds the topic.".to_owned(),
+                ..FakePull::default()
+            },
+            FakePull {
+                number: 7,
+                title: "Fork change".to_owned(),
+                author: "cy".to_owned(),
+                head_branch: "feature".to_owned(),
+                fork: Some("cy/tool".to_owned()),
+                base_branch: "main".to_owned(),
+                head_commit: fork.clone(),
+                checks: Some("FAILURE".to_owned()),
+                ..FakePull::default()
+            },
+        ],
+    });
+    (work, topic, fork)
+}
+
+/// Whether the first repository's pull requests are read, `count` of them.
+fn pull_requests_read(count: usize) -> impl Fn(&mut EgitApp) -> bool {
+    move |app| {
+        app.state
+            .repos
+            .first()
+            .is_some_and(|repo| !repo.forge.is_reading() && repo.forge.found().pulls.len() == count)
+    }
+}
+
+#[test]
+fn pull_requests_are_listed_badged_checked_out_and_opened() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeGitHub::start("t0ken", "ada").unwrap();
+    let (work, _, _) = github_clone(&sandbox, &fake, "t0ken");
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    settle(&mut harness, "the pull requests", pull_requests_read(2));
+    // The same repository's pull request is on its head commit; the fork's head isn't here.
+    wait_for_label(&mut harness, &format!("{} #8", icon::GIT_PULL_REQUEST));
+    assert!(
+        harness
+            .query_by_label(&format!("{} #7", icon::GIT_PULL_REQUEST))
+            .is_none()
+    );
+    render(&mut harness, "pull-request-badges");
+
+    harness.get_by_label_contains("2 pull requests").click();
+    wait_for_label(&mut harness, "Adds the topic.");
+    harness.get_by_label("build");
+    harness.get_by_label("bo wants to merge topic into main");
+    render(&mut harness, "pull-requests");
+
+    // Checked out: the same repository's through its branch, tracking the remote's.
+    click_when_enabled(&mut harness, "Check out");
+    wait_for_label(&mut harness, "Checked out pull request #8 as topic.");
+    let branch = sandbox.run(&work, "branch", &["--show-current"]).unwrap();
+    assert_eq!(branch.stdout.trim_ascii(), b"topic");
+    let upstream = sandbox
+        .run(
+            &work,
+            "for-each-ref",
+            &["--format=%(upstream:short)", "refs/heads/topic"],
+        )
+        .unwrap();
+    assert_eq!(upstream.stdout.trim_ascii(), b"origin/topic");
+
+    // The fork's: fetched from its pull request's head into pr/7.
+    harness
+        .get_by_role_and_label(Role::Button, "Fork change")
+        .click();
+    wait_for_label(
+        &mut harness,
+        "cy wants to merge feature into main, from cy/tool",
+    );
+    assert!(
+        harness
+            .get_by_label("Show the commit")
+            .accesskit_node()
+            .is_disabled()
+    );
+    click_when_enabled(&mut harness, "Check out");
+    wait_for_label(&mut harness, "Checked out pull request #7 as pr/7.");
+    let branch = sandbox.run(&work, "branch", &["--show-current"]).unwrap();
+    assert_eq!(branch.stdout.trim_ascii(), b"pr/7");
+
+    harness.get_by_label_contains("Open on GitHub").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state.opener.recorded(),
+        [format!("http://{}/octo/tool/pull/7", fake.address())]
+    );
+}
+
+#[test]
+fn a_pull_request_is_opened_from_a_branch_s_menu() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeGitHub::start("t0ken", "ada").unwrap();
+    let (work, _, _) = github_clone(&sandbox, &fake, "t0ken");
+    sandbox
+        .run(&work, "switch", &["--quiet", "--create", "fresh"])
+        .unwrap();
+    sandbox
+        .run(
+            &work,
+            "commit",
+            &[
+                "--quiet",
+                "--allow-empty",
+                "--message",
+                "Make it fresh\n\nBecause it was stale.",
+            ],
+        )
+        .unwrap();
+    sandbox
+        .run(
+            &work,
+            "push",
+            &["--quiet", "--set-upstream", "origin", "fresh"],
+        )
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(3));
+    settle(&mut harness, "the pull requests", pull_requests_read(2));
+
+    let fresh = format!("{} fresh", icon::GIT_BRANCH);
+    menu_item(&mut harness, &fresh, "Create pull request…");
+    wait_for_label(&mut harness, "Create a pull request");
+    settle(&mut harness, "the suggestions", |app| {
+        app.state.repos[0].history_view.pull_form_title() == Some("Make it fresh".to_owned())
+    });
+    render(&mut harness, "pull-request-create");
+    click_when_enabled(&mut harness, "Create pull request");
+    wait_for_label(&mut harness, "Opened pull request #9.");
+    // The pull requests are read again at once: find the request that opened it.
+    let sent = fake
+        .state()
+        .requests
+        .iter()
+        .find(|request| request.path.ends_with("/pulls"))
+        .unwrap()
+        .body
+        .clone();
+    assert_eq!(sent["head"], "fresh");
+    assert_eq!(sent["base"], "main");
+    assert_eq!(sent["title"], "Make it fresh");
+    assert_eq!(sent["body"], "Because it was stale.");
+    assert_eq!(sent["draft"], false);
+
+    // Read again: the branch's menu shows it now.
+    settle(
+        &mut harness,
+        "the pull requests again",
+        pull_requests_read(3),
+    );
+    menu_item(&mut harness, &fresh, "Show pull request #9");
+    wait_for_label(&mut harness, "ada wants to merge fresh into main");
+}
+
+#[test]
+fn pull_requests_without_credentials_offer_to_sign_in() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeGitHub::start("t0ken", "ada").unwrap();
+    let (work, _, _) = github_clone(&sandbox, &fake, "wrong");
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    harness.get_by_label_contains("Pull requests").click();
+    let host = fake.address();
+    wait_for_label(
+        &mut harness,
+        &format!("{}  Sign in to {host}", icon::SIGN_IN),
+    );
+    harness.get_by_label(&format!(
+        "{host} refused the credentials git gave it. Sign in with a token that can read this \
+         repository."
+    ));
+    // The refused credential is forgotten.
+    let kept = std::fs::read_to_string(sandbox.path("credentials")).unwrap();
+    assert!(!kept.contains("wrong"), "{kept}");
+    render(&mut harness, "pull-requests-sign-in");
+    harness.get_by_label("Create a token…").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state.opener.recorded(),
+        [format!(
+            "http://{host}/settings/tokens/new?scopes=repo&description=egit"
+        )]
+    );
+    // Nobody can answer git's question here: signing in says so.
+    harness.get_by_label("Sign in").click();
+    wait_for_label(&mut harness, "No credentials were given.");
 }

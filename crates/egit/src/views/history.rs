@@ -29,11 +29,14 @@ use super::actions::{self, Ask, Menus};
 use super::blame::{self, BlameEvent, BlameView};
 use super::file::{self, FileView, FileWanted, WorkFile};
 use super::file_history::{self, FileHistoryView};
+use super::pull_form::{self, PullRequestForm};
+use super::pulls::{self, PullRequestEvent, PullRequestView};
 use super::rebase::{self, RebaseEvent, RebaseView};
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
 use crate::fonts;
+use crate::forge::{Badge, RepoForge};
 use crate::format::{count, date_time};
 use crate::history::{
     ChangeCounts, CommitDetails, History, HistoryState, Objects, Refs, Signatures, Summaries,
@@ -119,6 +122,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) tasks: &'a mut Tasks,
     /// The stashes, once read, the latest first.
     pub(crate) stashes: &'a [Stash],
+    /// Its remotes on GitHub, and their pull requests.
+    pub(crate) forge: &'a RepoForge,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -149,8 +154,11 @@ pub(crate) struct HistoryView {
     tasks: TasksView,
     /// What a menu in the details asked for, carried out once the panels are drawn.
     asked: Option<Ask>,
-    /// A tool in place of the commit table: the rebase editor, a blame, a file's history.
+    /// A tool in place of the commit table: the rebase editor, a blame, a file's history, the
+    /// pull requests.
     tool: Option<Tool>,
+    /// The dialog opening a pull request, while it is open.
+    pull_form: Option<PullRequestForm>,
 }
 
 /// What can take the commit table's place, besides a changed file.
@@ -159,6 +167,7 @@ enum Tool {
     Rebase(RebaseView),
     Blame(BlameView),
     FileHistory(FileHistoryView),
+    PullRequests(PullRequestView),
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -244,6 +253,7 @@ impl HistoryView {
             tasks: TasksView::default(),
             asked: None,
             tool: None,
+            pull_form: None,
         }
     }
 
@@ -260,6 +270,12 @@ impl HistoryView {
             (None, Some(Tool::Blame(blame))) => blame.spot(line, cell),
             _ => None,
         }
+    }
+
+    /// The title in the pull request dialog, while it is open.
+    #[cfg(test)]
+    pub(crate) fn pull_form_title(&self) -> Option<String> {
+        self.pull_form.as_ref().map(PullRequestForm::title)
     }
 
     /// Whether a blame is shown, and done.
@@ -383,6 +399,13 @@ impl HistoryView {
             }
             FileWanted::History(path) => Tool::FileHistory(FileHistoryView::new(shared, path)),
         });
+    }
+
+    /// Shows the pull requests in the commit table's place, `selected` (a repository's place
+    /// and a number) selected if given.
+    fn show_pull_request(&mut self, selected: Option<(usize, u32)>) {
+        self.file = None;
+        self.tool = Some(Tool::PullRequests(PullRequestView::new(selected)));
     }
 
     fn select_work(&mut self) {
@@ -515,6 +538,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         config,
         tasks,
         stashes,
+        forge,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -532,6 +556,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         operation: operations.first().copied(),
         config,
         busy: tasks.is_busy(),
+        forge,
     };
     // Before the first commit, the work tree is all there is to look at.
     if history.shown.rows() == 0 && !history.shown.is_loading() {
@@ -564,9 +589,11 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
                 view.select_work();
             }
         });
-    tasks::dialogs(
+    dialogs(
         ui.ctx(),
-        &mut view.tasks,
+        &shared,
+        &history.objects,
+        view,
         &mut TaskPane {
             id,
             head,
@@ -597,6 +624,20 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         sign_by_default,
     };
     panels(ui, &shared, history, view, work, actions, no_commits);
+}
+
+/// The dialogs a task asks, and the one opening a pull request.
+fn dialogs(
+    ctx: &egui::Context,
+    shared: &Shared<'_>,
+    objects: &Objects,
+    view: &mut HistoryView,
+    pane: &mut TaskPane<'_>,
+) {
+    tasks::dialogs(ctx, &mut view.tasks, pane);
+    if let Some(task) = pull_form::show(ctx, shared, objects, &mut view.pull_form) {
+        pane.actions.push(Action::Task(shared.id, task));
+    }
 }
 
 /// What the working tree's details need besides: staging, and committing.
@@ -692,6 +733,8 @@ pub(super) struct Shared<'a> {
     pub(super) config: Option<&'a ConfigSnapshot>,
     /// Whether a task is running.
     pub(super) busy: bool,
+    /// Its remotes on GitHub, and their pull requests.
+    pub(super) forge: &'a RepoForge,
 }
 
 impl Shared<'_> {
@@ -704,6 +747,7 @@ impl Shared<'_> {
             refs,
             busy: self.busy,
             operation: self.operation.is_some(),
+            forge: self.forge,
         }
     }
 
@@ -778,6 +822,7 @@ fn top_bar(
         // What comes and goes follows the buttons: ids are counted in order, and a click
         // pressed on one id and released on another is lost.
         work_tree_summary(ui, work_tree, view, palette);
+        pull_requests_button(ui, shared, view);
         if history.is_loading() {
             ui.spinner();
             ui.label(muted(ui, "Reading the history…"));
@@ -815,6 +860,37 @@ fn top_bar(
         });
         if let Some(problem) = writing.err_ref() {
             ui.label(RichText::new(problem.to_string()).color(palette.danger));
+        }
+    }
+}
+
+/// The pull requests' button, when a remote is on GitHub: how many are open, and whether
+/// any checks failed.
+fn pull_requests_button(ui: &mut Ui, shared: &Shared<'_>, view: &mut HistoryView) {
+    if shared.forge.repositories.is_empty() {
+        return;
+    }
+    let open = shared.forge.found().pulls.len();
+    let text = match open {
+        0 => "Pull requests".to_owned(),
+        1 => "1 pull request".to_owned(),
+        open => format!(
+            "{} pull requests",
+            count(u64::try_from(open).unwrap_or(u64::MAX))
+        ),
+    };
+    let showing = matches!(view.tool, Some(Tool::PullRequests(_)));
+    ui.add_space(8.0);
+    let label = RichText::new(format!("{}  {text}", icon::GIT_PULL_REQUEST));
+    if ui
+        .add(egui::Button::selectable(showing, label))
+        .on_hover_text("The open pull requests on GitHub")
+        .clicked()
+    {
+        if showing {
+            view.tool = None;
+        } else {
+            view.show_pull_request(None);
         }
     }
 }
@@ -950,6 +1026,27 @@ fn tool(
         },
         Some(Tool::Blame(blame)) => blame::show(ui, shared, blame),
         Some(Tool::FileHistory(found)) => file_history::show(ui, shared, found),
+        Some(Tool::PullRequests(pulls)) => match pulls::show(ui, shared, history, pulls) {
+            Some(PullRequestEvent::Close) => Some(BlameEvent::Close),
+            Some(PullRequestEvent::ShowCommit(id)) => Some(BlameEvent::ShowCommit(id)),
+            Some(PullRequestEvent::Task(task)) => {
+                actions.push(Action::Task(shared.id, task));
+                None
+            }
+            Some(PullRequestEvent::Open(url)) => {
+                actions.push(Action::OpenUrl(url));
+                None
+            }
+            Some(PullRequestEvent::SignIn(host)) => {
+                actions.push(Action::SignIn(shared.id, host));
+                None
+            }
+            Some(PullRequestEvent::Refresh) => {
+                actions.push(Action::RefreshPullRequests(shared.id));
+                None
+            }
+            None => None,
+        },
         None => None,
     };
     match asked {
@@ -981,6 +1078,16 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
         Ask::Rebase { from, reword } => {
             view.file = None;
             view.tool = Some(Tool::Rebase(RebaseView::new(shared, from, reword)));
+        }
+        Ask::Open(url) => actions.push(Action::OpenUrl(url)),
+        Ask::PullRequest(selected) => view.show_pull_request(selected),
+        Ask::CreatePullRequest {
+            branch,
+            remote,
+            head_branch,
+            head,
+        } => {
+            view.pull_form = Some(PullRequestForm::new(branch, remote, head_branch, head));
         }
     }
 }
@@ -1182,6 +1289,12 @@ impl TableDelegate for CommitRows<'_> {
             if badges(ui, refs, &menus, self.shared.palette, &mut self.asked) {
                 self.clicked = Some(cell.row_nr);
             }
+            pull_badges(
+                ui,
+                self.shared.forge.badges_at(&id),
+                self.shared,
+                &mut self.asked,
+            );
         }
         if cell.col_nr == 4 {
             let name = id.abbreviated(ID_DIGITS).to_string();
@@ -1406,6 +1519,56 @@ fn badges(
         ui.add(Label::new(muted(ui, format!("+{more}"))).selectable(false));
     }
     clicked
+}
+
+/// The pull requests whose head is a commit, as badges (their number, coloured by their
+/// checks): clicking one shows it, and its menu opens its page.
+fn pull_badges(
+    ui: &mut Ui,
+    pulls: &[(ObjectId, Badge)],
+    shared: &Shared<'_>,
+    asked: &mut Option<Ask>,
+) {
+    let palette = shared.palette;
+    for (_, badge) in pulls.iter().take(MAX_BADGES) {
+        let (_, color, meaning) = pulls::check_look(badge.checks, palette);
+        let label = format!("{} #{}", icon::GIT_PULL_REQUEST, badge.number);
+        let response = Frame::new()
+            .fill(color.gamma_multiply(0.16))
+            .stroke(Stroke::new(1.0, color.gamma_multiply(0.7)))
+            .corner_radius(CornerRadius::same(4))
+            .inner_margin(Margin::symmetric(5, 0))
+            .show(ui, |ui| {
+                ui.add(
+                    Label::new(RichText::new(label).size(12.0).color(palette.text))
+                        .selectable(false)
+                        .sense(Sense::click()),
+                )
+            })
+            .inner;
+        let selected = (badge.repository, badge.number);
+        let response = response.on_hover_ui(|ui| {
+            if let Some(title) = shared.forge.title_of(selected) {
+                ui.label(title);
+            }
+            ui.label(muted(ui, meaning));
+        });
+        if response.clicked() {
+            *asked = Some(Ask::PullRequest(Some(selected)));
+        }
+        response.context_menu(|ui| {
+            if ui.button("Show the pull request").clicked() {
+                *asked = Some(Ask::PullRequest(Some(selected)));
+                ui.close();
+            }
+            if let Some(repository) = shared.forge.repositories.get(badge.repository)
+                && ui.button("Open on GitHub").clicked()
+            {
+                *asked = Some(Ask::Open(repository.pull_request_url(badge.number)));
+                ui.close();
+            }
+        });
+    }
 }
 
 /// The working tree's changes: what isn't staged and what is.

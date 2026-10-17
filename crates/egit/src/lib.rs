@@ -18,8 +18,10 @@
 
 mod app;
 mod blame;
+mod desktop;
 mod diff;
 mod fonts;
+mod forge;
 mod format;
 mod grid;
 mod history;

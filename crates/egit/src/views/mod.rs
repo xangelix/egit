@@ -11,6 +11,8 @@ pub(crate) mod home;
 mod merge;
 pub(crate) mod profile;
 pub(crate) mod prompts;
+mod pull_form;
+mod pulls;
 mod rebase;
 pub(crate) mod repo;
 pub(crate) mod status_bar;

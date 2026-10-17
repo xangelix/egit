@@ -13,14 +13,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bstr::{BStr, BString, ByteSlice as _};
+use egit_forge::{Account, GitHubRepository, NewPullRequest, Opened, create_pull_request};
 use egit_git::{
     CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError, FetchOptions, Git,
     GitError, Integrated, MAX_PLANNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled,
     PushOptions, Pushed, RangeError, RebaseError, RebaseRange, Repository, ResetMode, Stash,
     StashError, Step, SwitchError, SwitchTo, abort_operation, cherry_pick, continue_operation,
-    create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag, fetch, merge, pull,
-    push, push_tag, rebase, rebase_interactive, rebase_range, rename_branch, reset, revert,
-    set_config, stash_apply, stash_drop, stash_push, switch,
+    create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag, fetch,
+    fetch_refspecs, merge, pull, push, push_tag, rebase, rebase_interactive, rebase_range,
+    rename_branch, reset, revert, set_config, stash_apply, stash_drop, stash_push, switch,
 };
 use egui_async::Bind;
 
@@ -115,6 +116,22 @@ pub(crate) enum Task {
         pop: bool,
     },
     DropStash(Stash),
+    /// Fetch a pull request's head (`refspec`, from `remote`), then switch to it.
+    CheckOutPullRequest {
+        remote: BString,
+        refspec: BString,
+        number: u32,
+        to: SwitchTo,
+    },
+    /// Open a pull request on a forge.
+    CreatePullRequest(Box<PullRequestToOpen>),
+}
+
+/// A pull request to open, and the repository it goes into.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PullRequestToOpen {
+    pub(crate) repository: GitHubRepository,
+    pub(crate) new: NewPullRequest,
 }
 
 impl Task {
@@ -144,6 +161,8 @@ impl Task {
             Self::ApplyStash { pop: false, .. } => "Applying the stash",
             Self::ApplyStash { pop: true, .. } => "Popping the stash",
             Self::DropStash(_) => "Dropping the stash",
+            Self::CheckOutPullRequest { .. } => "Checking out the pull request",
+            Self::CreatePullRequest(_) => "Opening the pull request",
         }
     }
 }
@@ -171,6 +190,8 @@ pub(crate) enum Outcome {
     },
     /// A branch not deleted: it isn't merged.
     NotMerged,
+    /// A pull request opened.
+    Opened(Opened),
 }
 
 /// A repository's exchanges with its remotes.
@@ -191,6 +212,8 @@ pub(crate) struct Tasks {
     next_background: Instant,
     /// Why the last background fetch failed, if it did.
     pub(crate) background_problem: Option<Problem>,
+    /// How many background fetches ended (what follows the remotes reads again when it grows).
+    pub(crate) background_fetches: u64,
 }
 
 impl Tasks {
@@ -207,6 +230,7 @@ impl Tasks {
             background_cancel: CancelToken::new(),
             next_background: now.checked_add(FIRST_BACKGROUND_FETCH).unwrap_or(now),
             background_problem: None,
+            background_fetches: 0,
         }
     }
 
@@ -215,12 +239,14 @@ impl Tasks {
         self.result.is_pending()
     }
 
-    /// Starts `task` (stopping the background fetch first).
+    /// Starts `task` (stopping the background fetch first); a forge's task signs in with
+    /// `accounts`.
     pub(crate) fn start(
         &mut self,
         git: &Git,
         repository: &Arc<Repository>,
         writes: &WriteLock,
+        accounts: &[Arc<Account>],
         task: Task,
     ) {
         self.background_cancel.cancel();
@@ -230,9 +256,10 @@ impl Tasks {
         let (git, repository, writes) = (git.clone(), Arc::clone(repository), writes.clone());
         let (progress, cancel) = (self.progress.clone(), self.cancel.clone());
         let running = task.clone();
+        let accounts = accounts.to_vec();
         self.result.request(jobs::blocking(move || {
             let _queued = writes.hold();
-            run(&git, &repository, &running, &progress, &cancel)
+            run(&git, &repository, &running, &progress, &cancel, &accounts)
         }));
         self.task = Some(task);
         self.started = self.started.wrapping_add(1);
@@ -261,6 +288,7 @@ impl Tasks {
         if self.background.is_finished() {
             self.background_problem = self.background.err_ref().cloned();
             self.background = Bind::new(true);
+            self.background_fetches = self.background_fetches.wrapping_add(1);
         }
         let due = now >= self.next_background;
         if due && has_remotes && !self.result.is_pending() && !self.background.is_pending() {
@@ -299,8 +327,12 @@ fn run(
     task: &Task,
     progress: &Progress,
     cancel: &CancelToken,
+    accounts: &[Arc<Account>],
 ) -> Result<Outcome, Problem> {
     match task {
+        Task::CheckOutPullRequest { .. } | Task::CreatePullRequest(_) => {
+            forge(git, repository, task, progress, cancel, accounts)
+        }
         Task::Fetch
         | Task::Pull(_)
         | Task::PullAndRemember { .. }
@@ -335,6 +367,67 @@ fn failed(title: &'static str) -> impl Fn(GitError) -> Result<Outcome, Problem> 
     move |error| match error {
         GitError::Cancelled { .. } => Ok(Outcome::Cancelled),
         error => Err(Problem::git(title, &error)),
+    }
+}
+
+/// Pull requests: checking one out, or opening one.
+fn forge(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    progress: &Progress,
+    cancel: &CancelToken,
+    accounts: &[Arc<Account>],
+) -> Result<Outcome, Problem> {
+    match task {
+        Task::CheckOutPullRequest {
+            remote,
+            refspec,
+            number,
+            to,
+        } => {
+            let fetched = fetch_refspecs(
+                git,
+                repository,
+                remote.as_ref(),
+                std::slice::from_ref(refspec),
+                &format!("Fetching pull request #{number}"),
+                progress,
+                cancel,
+            )
+            .map(|()| Outcome::Done)
+            .or_else(failed("The pull request couldn't be fetched"))?;
+            if fetched == Outcome::Cancelled {
+                return Ok(fetched);
+            }
+            match switch(git, repository, to, cancel) {
+                Ok(()) => Ok(Outcome::Done),
+                Err(SwitchError::WouldOverwrite { paths, untracked }) => {
+                    Ok(Outcome::WouldOverwrite { paths, untracked })
+                }
+                Err(SwitchError::Git(error)) => failed("Switching failed")(error),
+            }
+        }
+        Task::CreatePullRequest(open) => {
+            let PullRequestToOpen {
+                repository: on,
+                new,
+            } = &**open;
+            let account = accounts
+                .iter()
+                .find(|account| account.host() == on.host())
+                .ok_or_else(|| {
+                    Problem::new(
+                        "The pull request wasn't opened",
+                        format!("{} isn't one of this repository's remotes.", on.full_name()),
+                    )
+                })?;
+            create_pull_request(account, on, new, cancel)
+                .map(Outcome::Opened)
+                .map_err(|error| Problem::new("The pull request wasn't opened", error.to_string()))
+        }
+        // `run` sends the others elsewhere.
+        _ => Ok(Outcome::Done),
     }
 }
 

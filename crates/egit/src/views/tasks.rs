@@ -270,7 +270,9 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
             dismiss = true;
         }
         Some(Ok(Outcome::WouldOverwrite { paths, untracked })) => {
-            if let Some(Task::Switch(to)) = &pane.tasks.task {
+            // A pull request's head is fetched by then: stashing and switching is what's left.
+            if let Some(Task::Switch(to) | Task::CheckOutPullRequest { to, .. }) = &pane.tasks.task
+            {
                 view.dialog = Some(Dialog::StashAndSwitch {
                     to: to.clone(),
                     paths,
@@ -330,6 +332,7 @@ fn ended(task: Option<&Task>, outcome: &Outcome) -> String {
         (_, Outcome::Continued) => "Carried on.".to_owned(),
         (_, Outcome::Stashed(true)) => "Stashed your changes.".to_owned(),
         (_, Outcome::Stashed(false)) => "There were no changes to stash.".to_owned(),
+        (_, Outcome::Opened(opened)) => format!("Opened pull request #{}.", opened.number),
         (Task::ApplyStash { stash, .. }, Outcome::Integrated(Integrated::Conflicts)) => format!(
             "Applying stash@{{{}}} conflicts: resolve the files marked Conflict, then stage \
              them (a popped stash is kept).",
@@ -398,6 +401,12 @@ fn done_text(task: &Task) -> String {
             stash.index
         ),
         Task::DropStash(stash) => format!("Dropped stash@{{{}}}.", stash.index),
+        Task::CheckOutPullRequest { number, to, .. } => match to {
+            SwitchTo::Branch(name) | SwitchTo::Track { local: name, .. } => {
+                format!("Checked out pull request #{number} as {}.", short(name))
+            }
+            _ => format!("Checked out pull request #{number}."),
+        },
         Task::InteractiveRebase { .. } => "Rebased: the branch is rewritten.".to_owned(),
         Task::DropCommit(commit) => format!("Dropped {}.", commit.abbreviated(ID_DIGITS)),
         Task::SquashIntoParent(commit) => format!(

@@ -9,6 +9,7 @@ use egit_git::{
 };
 use egui_async::Bind;
 
+use crate::forge::RepoForge;
 use crate::history::HistoryState;
 use crate::jobs::{self, WriteLock};
 use crate::problem::Problem;
@@ -69,6 +70,12 @@ pub(crate) struct RepoTab {
     pub(crate) commits_made: u64,
     /// What the user asked of it: fetching, pulling, pushing, ….
     pub(crate) tasks: Tasks,
+    /// Its remotes on GitHub, and their pull requests.
+    pub(crate) forge: RepoForge,
+    /// The configuration the forge last worked its remotes out from.
+    forge_config: Option<Arc<ConfigSnapshot>>,
+    /// The background fetches the forge last followed.
+    forge_fetches: u64,
     pub(crate) panels: egui_tiles::Tree<RepoPanel>,
     /// Commands that write to the repository take it.
     writes: WriteLock,
@@ -106,6 +113,9 @@ impl RepoTab {
             committing_open: false,
             commits_made: 0,
             tasks: Tasks::new(Instant::now()),
+            forge: RepoForge::new(ctx),
+            forge_config: None,
+            forge_fetches: 0,
             panels: egui_tiles::Tree::new_tabs(
                 egui::Id::new(("repo-panels", id)),
                 vec![
@@ -227,6 +237,7 @@ impl RepoTab {
             self.refresh_stashes(git);
             self.work_tree.refresh_now();
         }
+        self.follow_forge(git, finished);
         [wait, tree_wait, Some(fetch_wait)]
             .into_iter()
             .flatten()
@@ -235,7 +246,49 @@ impl RepoTab {
 
     /// Starts `task`.
     pub(crate) fn run_task(&mut self, git: &Git, task: Task) {
-        self.tasks.start(git, &self.repository, &self.writes, task);
+        self.tasks.start(
+            git,
+            &self.repository,
+            &self.writes,
+            self.forge.accounts(),
+            task,
+        );
+    }
+
+    /// Keeps the forge current: its remotes worked out again from new configuration, and its
+    /// pull requests read again after anything that exchanged with a remote (`finished`: a
+    /// task just ended).
+    fn follow_forge(&mut self, git: &Git, finished: bool) {
+        if let Some(config) = self.config.ok_ref()
+            && self
+                .forge_config
+                .as_ref()
+                .is_none_or(|seen| !Arc::ptr_eq(seen, config))
+        {
+            let config = Arc::clone(config);
+            self.forge.configured(git, &self.repository, &config);
+            self.forge_config = Some(config);
+        }
+        let exchanged = finished
+            && matches!(
+                self.tasks.task,
+                Some(
+                    Task::Fetch
+                        | Task::Pull(_)
+                        | Task::PullAndRemember { .. }
+                        | Task::Push(_)
+                        | Task::PushTag { .. }
+                        | Task::DeleteRemoteBranch { .. }
+                        | Task::CheckOutPullRequest { .. }
+                        | Task::CreatePullRequest(_)
+                )
+            );
+        let fetched = self.tasks.background_fetches != self.forge_fetches;
+        self.forge_fetches = self.tasks.background_fetches;
+        if exchanged || fetched {
+            self.forge.refresh();
+        }
+        self.forge.poll(git, &self.repository);
     }
 
     /// The commit `HEAD` points at, once read (`None` before the first commit too).

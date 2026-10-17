@@ -365,8 +365,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     start) turns finished jobs into state or actions. Git is detected by a job
     (`Bind<Git, Problem>`); paths asked for before it is ready wait in `waiting`. The tabs
     open at the last close (`Settings::open`) come back. Profile edits are `ConfigChange`s
-    written under the user's `WriteLock`, then the user's and every repository's settings
-    are read again.
+    (set or unset a key, add or remove one of its values) written under the user's
+    `WriteLock`, then the user's and every repository's settings are read again. Web pages go
+    through `AppState::opener` (`desktop.rs`'s `Opener`: the browser, or for tests a list,
+    `recorded`; `Action::OpenUrl`).
   - `jobs.rs` — the runtime (2 workers, at most 16 blocking jobs: git processes queue
     beyond), `blocking` (a closure on the blocking pool as a future for a `Bind`), and
     `WriteLock` (taken inside jobs, never on the interface thread).
@@ -506,8 +508,26 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `Stashed` (whether anything was), `WouldOverwrite` (a switch refused, with the paths), or
     `NotMerged` (a delete refused). And a background fetch every 5 minutes (the first 10 s
     after opening; only with a remote): non-interactive, without the lock, stopped when the
-    user starts a task, its failure kept apart (`background_problem`). `remote_names`,
-    `has_remotes` (a scan, nothing allocated), and `upstream_of` read the configuration.
+    user starts a task, its failure kept apart (`background_problem`; `background_fetches`
+    counts them, for the forge). `remote_names`, `has_remotes` (a scan, nothing allocated),
+    and `upstream_of` read the configuration. A forge's tasks run with the tab's accounts:
+    `CheckOutPullRequest` (`fetch_refspecs` of its refspec, then a switch; changes in the way
+    lead to stash-and-switch, as a switch's do) and `CreatePullRequest` (`Outcome::Opened`).
+  - `forge.rs` — `RepoForge`, a tab's GitHub side: `configured` (whenever new configuration
+    lands) works out in a job which remotes are GitHub repositories (`remote_urls`, as git
+    rewrites them, else as `remote.<name>.url` writes them; the hosts listed as
+    `egit.githubHost`); an `Account` per host (the repository's credential configuration);
+    the open pull requests read in a detached job, each repository up to `LIMIT` (1,000),
+    each page into a shared `Found` as it lands (the window woken); a read again
+    (`refresh`: after any task that exchanged with a remote, each background fetch, a
+    sign-in, and Refresh) takes over only once complete, a failed one keeping what is shown
+    and saying why (`ForgeProblem`: sign in, refused, rate limited until, other). Badges:
+    head commits sorted with their pull request's number and checks, made again when the
+    list grows or is replaced (`badges_at`, a binary search). `pull_request_for` (a branch's
+    open one), `remote_of`, `repository_of`, `sign_in` (asks through egit's prompts;
+    `signing`, `sign_in_problem`).
+  - `desktop.rs` — `Opener`, and `is_web_page` (HTTPS, or HTTP to the loopback address;
+    nothing that could pass for an option): `xdg-open`, else `gio open`, in a job.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the XDG font directories (CJK families, then
@@ -618,9 +638,31 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     as git names it, until edited), submodules, partial; `Action::Clone` runs `clone` as a
     job (one at a time; `format::progress` and Cancel while it runs, `CancelClone`), then
     opens the repository; cancelled, it says git removed what it had made.
+    `views/pulls.rs` — `PullRequestView`, the pull requests in the commit table's place (a
+    `Tool`, from the top bar's "N pull requests" button or a badge): a bar (repositories,
+    "12 open" or "1,000 of 5,512 open: the most recently updated", Refresh, a problem), the
+    rows (`show_rows`: number, checks, title, a draft's chip, author, head → base and a
+    fork, review, age; ↑ ↓), and the selected one's details (read when selected:
+    `pull_request_details`): "Show the commit" (when its head is in the history: looked for
+    once a selection, a scan), "Check out" (a same-repository one fetches its branch into the
+    remote-tracking one and switches to the local branch, tracking it; a fork's fetches
+    `refs/pull/<n>/head` into `pr/<n>`; disabled, saying why, while a task runs or an
+    operation is in progress), "Open on GitHub", its size and mergeability, labels, checks
+    (each with its page), latest reviews, description. Without credentials, a card to sign in
+    (git's prompts) or to create a token on the host. `check_look` gives a checks state's
+    icon and colour, which the commit table's pull request badges (`#12`, on head commits,
+    their title on hover; a click shows it, the menu opens its page) share.
+    `views/pull_form.rs` — `PullRequestForm`, the dialog opening a pull request, from a
+    local branch's menu ("Create pull request…" once it is pushed to a remote on GitHub;
+    "Show pull request #n" when one is open for it): in a job, the repository's default branch
+    and the one it was forked from (`repository_info`; a fork's pull request goes there by
+    default), and the title and description of the branch's one commit
+    (`commits_between` against the base, then its message), its name otherwise; then into,
+    base, title, description, draft. "Open on GitHub" is on a commit's menu too.
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
-    credentials, pull and push, and every setting, each with its origin), `repo` (overview
+    credentials, the GitHub Enterprise hosts (added and removed as `egit.githubHost`), pull
+    and push, and every setting, each with its origin), `repo` (overview
     and settings table), `status_bar` (git's version and path, the theme, a warning when
     questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
     `AskpassServer` at launch and gives git its environment; questions queue and show one

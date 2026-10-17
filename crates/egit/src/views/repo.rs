@@ -11,6 +11,7 @@ use egui_async::Bind;
 use egui_tiles::{TileId, Tiles, UiResponse};
 
 use crate::app::{Action, AppState};
+use crate::forge::RepoForge;
 use crate::format::display_path;
 use crate::history::HistoryState;
 use crate::problem::Problem;
@@ -53,6 +54,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         tasks: &mut repo.tasks,
         stashes: &mut repo.stashes,
         writing_commit_graph: &mut repo.writing_commit_graph,
+        forge: &repo.forge,
         home: home_dir.as_deref(),
         actions,
     };
@@ -77,6 +79,7 @@ struct Panels<'a> {
     tasks: &'a mut Tasks,
     stashes: &'a mut Bind<Arc<[Stash]>, Problem>,
     writing_commit_graph: &'a mut Bind<(), Problem>,
+    forge: &'a RepoForge,
     home: Option<&'a Path>,
     actions: &'a mut Vec<Action>,
 }
@@ -110,6 +113,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                         config,
                         tasks: self.tasks,
                         stashes: self.stashes.ok_ref().map_or(&[], |stashes| &**stashes),
+                        forge: self.forge,
                         actions: self.actions,
                     },
                 );

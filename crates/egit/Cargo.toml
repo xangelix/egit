@@ -28,6 +28,7 @@ eframe = { workspace = true, features = [
     "wgpu",
     "x11",
 ] }
+egit-forge.workspace = true
 egit-git.workspace = true
 egit-graph.workspace = true
 egit-text.workspace = true
@@ -50,5 +51,6 @@ tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt"
 zeroize.workspace = true
 
 [dev-dependencies]
+egit-forge = { workspace = true, features = ["testing"] }
 egit-git = { workspace = true, features = ["testing"] }
 egui_kittest = { workspace = true, features = ["eframe", "snapshot", "wgpu"] }

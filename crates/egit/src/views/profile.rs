@@ -1,16 +1,21 @@
-//! The Profile tab: who you are to git, how you sign, how git gets your credentials, and how
-//! pull and push behave, each with where it is set. Identity and signing can be changed here
-//! (in your global configuration).
+//! The Profile tab: who you are to git, how you sign, how git gets your credentials, the GitHub
+//! hosts pull requests come from, and how pull and push behave, each with where it is set.
+//! Identity, signing, and the GitHub Enterprise hosts can be changed here (in your global
+//! configuration).
 
 use std::path::Path;
 use std::sync::Arc;
 
-use egit_git::{ConfigEntry, ConfigSnapshot, PullFastForward, PullRebase, SigningFormat};
+use egit_forge::GitHubHost;
+use egit_git::{
+    ConfigEntry, ConfigScope, ConfigSnapshot, PullFastForward, PullRebase, SigningFormat,
+};
 use egui::{Grid, RichText, TextEdit, Ui};
 use egui_async::Bind;
 use egui_table_kit::table::TableKit;
 
 use crate::app::{Action, AppState, ConfigChange};
+use crate::forge::HOSTS_KEY;
 use crate::problem::Problem;
 use crate::tables::{ConfigRows, ROW_HEIGHT, SnapshotTable, fitted};
 use crate::theme::{Palette, icon};
@@ -31,6 +36,8 @@ pub(crate) struct ProfileView {
     /// The settings the form was filled from.
     filled_from: Option<Arc<ConfigSnapshot>>,
     table: SnapshotTable,
+    /// A GitHub Enterprise host being typed, to add.
+    new_host: String,
 }
 
 impl Default for ProfileView {
@@ -42,6 +49,7 @@ impl Default for ProfileView {
             saved: Form::default(),
             filled_from: None,
             table: SnapshotTable::new("profile-config".to_owned()),
+            new_host: String::new(),
         }
     }
 }
@@ -97,37 +105,37 @@ impl Form {
             (!value.is_empty()).then(|| value.to_owned())
         };
         if self.name.trim() != saved.name.trim() {
-            changes.push(ConfigChange {
+            changes.push(ConfigChange::Set {
                 key: "user.name",
                 value: text(&self.name),
             });
         }
         if self.email.trim() != saved.email.trim() {
-            changes.push(ConfigChange {
+            changes.push(ConfigChange::Set {
                 key: "user.email",
                 value: text(&self.email),
             });
         }
         if self.format != saved.format {
-            changes.push(ConfigChange {
+            changes.push(ConfigChange::Set {
                 key: "gpg.format",
                 value: Some(self.format.name().to_owned()),
             });
         }
         if self.key.trim() != saved.key.trim() {
-            changes.push(ConfigChange {
+            changes.push(ConfigChange::Set {
                 key: "user.signingKey",
                 value: text(&self.key),
             });
         }
         if self.sign_commits != saved.sign_commits {
-            changes.push(ConfigChange {
+            changes.push(ConfigChange::Set {
                 key: "commit.gpgSign",
                 value: Some(self.sign_commits.to_string()),
             });
         }
         if self.sign_tags != saved.sign_tags {
-            changes.push(ConfigChange {
+            changes.push(ConfigChange::Set {
                 key: "tag.gpgSign",
                 value: Some(self.sign_tags.to_string()),
             });
@@ -198,6 +206,14 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         save_row(ui, view, &mut state.actions);
         ui.add_space(12.0);
         credentials_card(ui, &snapshot, home.as_deref());
+        ui.add_space(12.0);
+        github_card(
+            ui,
+            &mut state.profile,
+            &snapshot,
+            home.as_deref(),
+            &mut state.actions,
+        );
         ui.add_space(12.0);
         pull_push_card(ui, &snapshot, home.as_deref());
         ui.add_space(12.0);
@@ -409,6 +425,81 @@ fn credentials_card(ui: &mut Ui, snapshot: &ConfigSnapshot, home: Option<&Path>)
     });
 }
 
+/// The GitHub hosts egit reads pull requests from: github.com, and the Enterprise hosts listed
+/// (`egit.githubHost`), added and removed here.
+fn github_card(
+    ui: &mut Ui,
+    view: &mut ProfileView,
+    snapshot: &ConfigSnapshot,
+    home: Option<&Path>,
+    actions: &mut Vec<Action>,
+) {
+    let saving = view.saving.is_pending();
+    widgets::card(ui, |ui| {
+        widgets::heading(ui, "GitHub");
+        ui.add(
+            egui::Label::new(muted(
+                ui,
+                "egit reads the pull requests of remotes on github.com, and on the GitHub \
+                 Enterprise hosts listed here, signing in with the credentials git keeps for \
+                 each host.",
+            ))
+            .wrap(),
+        );
+        ui.add_space(6.0);
+        Grid::new("profile-github")
+            .num_columns(3)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| {
+                for entry in snapshot.get_all(HOSTS_KEY) {
+                    let host = entry.text().to_string();
+                    ui.label(&host);
+                    widgets::origin(ui, Some(entry), home);
+                    if entry.scope == ConfigScope::Global {
+                        if widgets::secondary(ui, !saving, "Remove")
+                            .on_hover_text(format!("Stop reading {host}'s pull requests"))
+                            .clicked()
+                        {
+                            actions.push(Action::SaveProfile(vec![ConfigChange::Remove {
+                                key: HOSTS_KEY,
+                                value: host.clone(),
+                            }]));
+                        }
+                    } else {
+                        ui.label(muted(ui, "Set outside your global settings"));
+                    }
+                    ui.end_row();
+                }
+            });
+        ui.horizontal(|ui| {
+            let label = ui.label(muted(ui, "Enterprise host"));
+            let field = ui
+                .add_sized(
+                    FIELD,
+                    TextEdit::singleline(&mut view.new_host).hint_text("github.example.com"),
+                )
+                .labelled_by(label.id);
+            let typed = view.new_host.trim();
+            let host = GitHubHost::parse(typed).filter(|host| !host.is_github_com());
+            let entered =
+                field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if (widgets::secondary(ui, host.is_some() && !saving, "Add").clicked() || entered)
+                && host.is_some()
+            {
+                actions.push(Action::SaveProfile(vec![ConfigChange::Add {
+                    key: HOSTS_KEY,
+                    value: typed.to_owned(),
+                }]));
+                view.new_host.clear();
+            } else if !typed.is_empty() && host.is_none() {
+                ui.label(
+                    RichText::new("Not a host egit can use").color(Palette::of(ui.ctx()).danger),
+                );
+            }
+        });
+    });
+}
+
 fn pull_push_card(ui: &mut Ui, snapshot: &ConfigSnapshot, home: Option<&Path>) {
     let profile = snapshot.profile();
     widgets::card(ui, |ui| {
@@ -551,19 +642,19 @@ mod tests {
         assert_eq!(
             edited.changes(&form()),
             [
-                ConfigChange {
+                ConfigChange::Set {
                     key: "user.name",
                     value: Some("Someone Else".to_owned())
                 },
-                ConfigChange {
+                ConfigChange::Set {
                     key: "user.email",
                     value: None
                 },
-                ConfigChange {
+                ConfigChange::Set {
                     key: "gpg.format",
                     value: Some("ssh".to_owned())
                 },
-                ConfigChange {
+                ConfigChange::Set {
                     key: "commit.gpgSign",
                     value: Some("true".to_owned())
                 },

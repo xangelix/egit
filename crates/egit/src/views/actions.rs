@@ -6,14 +6,16 @@
 //! Each choice asks for a task, or a dialog first ([`Ask`]); the history view carries it out.
 
 use bstr::{BStr, BString, ByteSlice as _};
+use egit_forge::GitHubRepository;
 use egit_git::{ConfigSnapshot, ObjectId, RefKind, Reference, ResetMode, Stash, SwitchTo};
 use egui::{Response, Ui};
 
 use super::dialogs::Dialog;
 use super::history::ID_DIGITS;
+use crate::forge::RepoForge;
 use crate::format;
 use crate::history::Refs;
-use crate::tasks::{Task, remote_names};
+use crate::tasks::{Task, remote_names, upstream_of};
 use crate::widgets::muted;
 
 /// What a menu asked for.
@@ -25,6 +27,18 @@ pub(super) enum Ask {
     Rebase {
         from: ObjectId,
         reword: Option<ObjectId>,
+    },
+    /// A web page, in the browser.
+    Open(String),
+    /// The pull requests, one selected (its repository's place in the forge's, its number).
+    PullRequest(Option<(usize, u32)>),
+    /// The dialog opening a pull request from `branch`, pushed to `remote`'s `head_branch`,
+    /// which is `head`.
+    CreatePullRequest {
+        branch: BString,
+        remote: BString,
+        head_branch: String,
+        head: GitHubRepository,
     },
 }
 
@@ -41,6 +55,8 @@ pub(super) struct Menus<'a> {
     pub(super) busy: bool,
     /// Whether an operation is in progress (the current branch can't change meanwhile).
     pub(super) operation: bool,
+    /// Its remotes on GitHub, and their pull requests.
+    pub(super) forge: &'a RepoForge,
 }
 
 impl Menus<'_> {
@@ -190,6 +206,12 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             ask(Ask::Dialog(Dialog::HardReset { at: id }));
         }
     });
+    if let Some(repository) = menus.forge.repositories.first() {
+        ui.separator();
+        if item(ui, "Open on GitHub", Ok(())) {
+            ask(Ask::Open(repository.commit_url(id)));
+        }
+    }
 }
 
 /// Rewriting the current branch from a commit: interactively, its message, squashing it into
@@ -266,6 +288,7 @@ pub(super) fn ref_menu(
                     shown: name.clone().into_owned(),
                 }));
             }
+            pull_request_items(ui, menus, reference, &mut ask);
             ui.separator();
             branch_items(ui, menus, reference, is_current, &mut ask);
         }
@@ -288,6 +311,60 @@ pub(super) fn ref_menu(
             }
         }
         RefKind::Other => {}
+    }
+}
+
+/// A branch's pull request, when one of the remotes is on GitHub: the open one bringing it
+/// in, or opening one (once it is pushed there).
+fn pull_request_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    reference: &Reference,
+    ask: &mut impl FnMut(Ask),
+) {
+    let forge = menus.forge;
+    if forge.repositories.is_empty() {
+        return;
+    }
+    let short = reference.short_name();
+    // Where the branch is on a remote: its upstream, or the remote's branch itself.
+    let pushed = match reference.kind {
+        RefKind::Branch => menus.config.and_then(|config| {
+            let (remote, branch) = upstream_of(config, &short.to_str_lossy())?;
+            Some((BString::from(remote), branch))
+        }),
+        _ => menus
+            .split_remote(short)
+            .map(|(remote, branch)| (remote.to_owned(), branch.to_str_lossy().into_owned())),
+    };
+    let on_github = pushed.as_ref().and_then(|(remote, branch)| {
+        Some((remote, branch, forge.repository_of(remote.as_bstr())?))
+    });
+    ui.separator();
+    match on_github {
+        Some((_, branch, head)) if let Some(open) = forge.pull_request_for(head, branch) => {
+            if item(ui, &format!("Show pull request #{}", open.1), Ok(())) {
+                ask(Ask::PullRequest(Some(open)));
+            }
+        }
+        Some((remote, branch, head)) if reference.kind == RefKind::Branch => {
+            if item(ui, "Create pull request…", menus.idle()) {
+                ask(Ask::CreatePullRequest {
+                    branch: short.to_owned(),
+                    remote: remote.clone(),
+                    head_branch: branch.clone(),
+                    head: head.clone(),
+                });
+            }
+        }
+        None if reference.kind == RefKind::Branch => {
+            item(
+                ui,
+                "Create pull request…",
+                Err("Push it to a remote on GitHub first"),
+            );
+        }
+        Some(_) | None => {}
     }
 }
 
