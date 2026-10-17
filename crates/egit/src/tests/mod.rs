@@ -4,3 +4,4 @@ mod audit;
 mod corpus;
 mod scale;
 mod screens;
+mod search;

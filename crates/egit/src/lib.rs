@@ -29,6 +29,7 @@ mod jobs;
 mod merge;
 mod problem;
 mod repo;
+mod search;
 mod settings;
 mod staging;
 mod syntax;

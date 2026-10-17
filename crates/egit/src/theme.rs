@@ -65,6 +65,8 @@ pub(crate) struct Palette {
     pub(crate) incoming_header: Color32,
     /// Behind a resolved conflict's lines.
     pub(crate) resolved: Color32,
+    /// Behind the commit table's rows a search found.
+    pub(crate) found: Color32,
 }
 
 impl Palette {
@@ -105,6 +107,7 @@ impl Palette {
         incoming: Color32::from_rgba_unmultiplied_const(0xB3, 0x88, 0xFF, 30),
         incoming_header: Color32::from_rgba_unmultiplied_const(0xB3, 0x88, 0xFF, 64),
         resolved: Color32::from_rgba_unmultiplied_const(0x3F, 0xB6, 0xA8, 22),
+        found: Color32::from_rgba_unmultiplied_const(0xE5, 0xB5, 0x46, 40),
     };
 
     /// The light theme.
@@ -144,6 +147,7 @@ impl Palette {
         incoming: Color32::from_rgba_unmultiplied_const(0x7B, 0x1F, 0xA2, 22),
         incoming_header: Color32::from_rgba_unmultiplied_const(0x7B, 0x1F, 0xA2, 46),
         resolved: Color32::from_rgba_unmultiplied_const(0x0A, 0x84, 0x77, 20),
+        found: Color32::from_rgba_unmultiplied_const(0xE8, 0xA8, 0x00, 56),
     };
 
     /// The palette egui is currently showing.
@@ -308,6 +312,7 @@ mod tests {
                 ("incoming", palette.incoming, true),
                 ("incoming header", palette.incoming_header, false),
                 ("resolved", palette.resolved, true),
+                ("found", palette.found, true),
             ] {
                 let background = blend(line, palette.background);
                 let texts = [Some(palette.text), muted.then_some(palette.muted)];

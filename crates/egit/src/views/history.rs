@@ -17,8 +17,8 @@ use egit_git::{
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
 use egui::{
-    Align, Color32, CornerRadius, Frame, Id, Key, Label, Margin, Modifiers, Pos2, RichText, Sense,
-    Stroke, Ui, WidgetInfo, WidgetType, pos2,
+    Align, Color32, CornerRadius, Frame, Id, Key, KeyboardShortcut, Label, Margin, Modifiers, Pos2,
+    RichText, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2,
 };
 use egui_async::Bind;
 use egui_table_kit::layout::{
@@ -32,6 +32,7 @@ use super::file_history::{self, FileHistoryView};
 use super::pull_form::{self, PullRequestForm};
 use super::pulls::{self, PullRequestEvent, PullRequestView};
 use super::rebase::{self, RebaseEvent, RebaseView};
+use super::search::{self, HistorySearch};
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
@@ -159,6 +160,8 @@ pub(crate) struct HistoryView {
     tool: Option<Tool>,
     /// The dialog opening a pull request, while it is open.
     pull_form: Option<PullRequestForm>,
+    /// The search bar over the commit table, and what it found.
+    search: HistorySearch,
 }
 
 /// What can take the commit table's place, besides a changed file.
@@ -254,6 +257,7 @@ impl HistoryView {
             asked: None,
             tool: None,
             pull_form: None,
+            search: HistorySearch::default(),
         }
     }
 
@@ -360,6 +364,15 @@ impl HistoryView {
                 .is_some_and(|details| Some(details.id) == selected)
     }
 
+    /// How many commits the search found, once it ended.
+    #[cfg(test)]
+    pub(crate) fn search_found(&self) -> Option<u64> {
+        self.search
+            .found()
+            .filter(|found| found.is_done())
+            .map(crate::search::Found::count)
+    }
+
     /// Scrolls `row` to the top.
     #[cfg(test)]
     pub(crate) const fn scroll_to(&mut self, row: u64) {
@@ -408,6 +421,13 @@ impl HistoryView {
         self.tool = Some(Tool::PullRequests(PullRequestView::new(selected)));
     }
 
+    /// Opens the search bar, over the commit table.
+    fn open_search(&mut self) {
+        self.file = None;
+        self.tool = None;
+        self.search.open();
+    }
+
     fn select_work(&mut self) {
         self.work_selected = true;
         if self.file.as_ref().is_some_and(|file| file.work().is_none()) {
@@ -421,8 +441,9 @@ impl HistoryView {
     }
 
     /// Finds its place again in a history that replaced the one shown: the selected commit,
-    /// and the commit that was at the top of the screen.
+    /// and the commit that was at the top of the screen; and searches it again.
     fn follow(&mut self, history: &History) {
+        self.search.history_replaced();
         if let Some(selected) = self.selected {
             self.selected = history
                 .row_of(&selected.id, selected.row)
@@ -819,6 +840,7 @@ fn top_bar(
         if let Some(asked) = asked {
             carry_out(asked, shared, view, task_pane.actions);
         }
+        search_button(ui, view);
         // What comes and goes follows the buttons: ids are counted in order, and a click
         // pressed on one id and released on another is lost.
         work_tree_summary(ui, work_tree, view, palette);
@@ -860,6 +882,24 @@ fn top_bar(
         });
         if let Some(problem) = writing.err_ref() {
             ui.label(RichText::new(problem.to_string()).color(palette.danger));
+        }
+    }
+}
+
+/// The button opening the search bar over the commit table (shown in place of a file or a
+/// tool), or closing it.
+fn search_button(ui: &mut Ui, view: &mut HistoryView) {
+    let open = view.search.is_open();
+    let label = RichText::new(format!("{}  Search", icon::MAGNIFYING_GLASS));
+    if ui
+        .add(egui::Button::selectable(open, label))
+        .on_hover_text("Search the history (⌘F)")
+        .clicked()
+    {
+        if open {
+            view.search.close();
+        } else {
+            view.open_search();
         }
     }
 }
@@ -944,7 +984,7 @@ fn work_tree_summary(
     }
 }
 
-/// The commit table, and the keys that move through it.
+/// The search bar (when open), the commit table, and the keys that move through it.
 fn commit_table(
     ui: &mut Ui,
     shared: &Shared<'_>,
@@ -952,6 +992,15 @@ fn commit_table(
     view: &mut HistoryView,
     actions: &mut Vec<Action>,
 ) {
+    if ui.input_mut(|input| {
+        input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::F))
+    }) {
+        view.search.open();
+    }
+    let selected = view.selected.map(|selected| selected.row);
+    if let Some(row) = search::bar(ui, shared, &history.shown, &mut view.search, selected) {
+        view.select(&history.shown, row, Some(Align::Center));
+    }
     let keys = ui.id().with("commit-keys");
     let area = ui.interact(
         ui.available_rect_before_wrap(),
@@ -1234,8 +1283,15 @@ impl TableDelegate for CommitRows<'_> {
             .view
             .selected
             .is_some_and(|selected| selected.row == row);
+        let found = self
+            .view
+            .search
+            .found()
+            .is_some_and(|found| found.contains(row));
         let fill = if selected {
             Some(self.shared.palette.accent.gamma_multiply(0.28))
+        } else if found {
+            Some(self.shared.palette.found)
         } else if response.hovered() {
             Some(self.shared.palette.surface_alt)
         } else {

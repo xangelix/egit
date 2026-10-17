@@ -41,7 +41,7 @@ pub(super) fn rendering() -> bool {
 }
 
 /// The whole application around `git`, at a typical window size.
-fn harness_with(git: Git, home: &Path, theme: egui::Theme) -> Harness<'static, EgitApp> {
+pub(super) fn harness_with(git: Git, home: &Path, theme: egui::Theme) -> Harness<'static, EgitApp> {
     harness_with_settings(git, home, theme, Settings::default())
 }
 
@@ -68,12 +68,12 @@ fn harness_with_settings(
     })
 }
 
-fn harness(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
+pub(super) fn harness(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
     harness_with(sandbox.git().clone(), sandbox.home(), egui::Theme::Dark)
 }
 
 /// Checks the screen (`audit`) and renders it into `name.png` (where screens are rendered).
-fn render(harness: &mut Harness<'_, EgitApp>, name: &str) {
+pub(super) fn render(harness: &mut Harness<'_, EgitApp>, name: &str) {
     super::audit::assert_clean(harness, name);
     if !rendering() {
         return;
@@ -100,7 +100,11 @@ fn gave_up(harness: &mut Harness<'_, EgitApp>, why: &str) -> ! {
 }
 
 /// Steps the application until `done` holds (jobs finish on their own threads).
-fn settle(harness: &mut Harness<'_, EgitApp>, what: &str, done: impl Fn(&mut EgitApp) -> bool) {
+pub(super) fn settle(
+    harness: &mut Harness<'_, EgitApp>,
+    what: &str,
+    done: impl Fn(&mut EgitApp) -> bool,
+) {
     for _ in 0..2_000 {
         harness.step();
         if done(harness.state_mut()) {
@@ -114,7 +118,7 @@ fn settle(harness: &mut Harness<'_, EgitApp>, what: &str, done: impl Fn(&mut Egi
 }
 
 /// Steps until something labelled `label` is shown (a job's result, say), or panics.
-fn wait_for_label(harness: &mut Harness<'_, EgitApp>, label: &str) {
+pub(super) fn wait_for_label(harness: &mut Harness<'_, EgitApp>, label: &str) {
     for _ in 0..2_000 {
         harness.step();
         if harness.query_all_by_label(label).next().is_some() {
@@ -147,7 +151,7 @@ fn click_when_enabled(harness: &mut Harness<'_, EgitApp>, label: &str) {
     );
 }
 
-fn profile_loaded(app: &mut EgitApp) -> bool {
+pub(super) fn profile_loaded(app: &mut EgitApp) -> bool {
     app.state.user_config.is_ok()
 }
 
@@ -159,7 +163,7 @@ fn repository_shown(app: &mut EgitApp) -> bool {
 }
 
 /// Whether the first repository's history is read, with the summaries of the rows on screen.
-fn history_shown(app: &mut EgitApp) -> bool {
+pub(super) fn history_shown(app: &mut EgitApp) -> bool {
     app.state.repos.first_mut().is_some_and(|repo| {
         !repo.history.is_loading()
             && !repo.history.summaries.is_reading()
@@ -186,7 +190,7 @@ fn show_panel(harness: &mut Harness<'_, EgitApp>, panel: &str) {
 }
 
 /// Types `path` into Home's path field and opens it.
-fn open_path(harness: &mut Harness<'_, EgitApp>, path: &Path) {
+pub(super) fn open_path(harness: &mut Harness<'_, EgitApp>, path: &Path) {
     let field = harness.get_by_role_and_label(Role::TextInput, "Open a repository");
     field.focus();
     field.type_text(&path.display().to_string());
@@ -527,7 +531,7 @@ fn work_done_outside_egit_shows_up_by_itself() {
 }
 
 /// A history with branches, a merge, and a tag: `main` merged `parser` and goes on to `docs`.
-fn branchy(sandbox: &Sandbox) -> PathBuf {
+pub(super) fn branchy(sandbox: &Sandbox) -> PathBuf {
     let repo = sandbox.init("project").unwrap();
     sandbox
         .commit_file(&repo, "README", "hello\n", "Start the project")

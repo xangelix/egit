@@ -49,11 +49,10 @@ const LFS_POINTER: &[u8] = b"version https://git-lfs.github.com/spec/v1\n";
 /// A history: every commit reachable from a ref, children first, as rows.
 #[derive(Debug)]
 pub(crate) struct History {
-    format: ObjectFormat,
     /// The rows' lanes, [`CHUNK_ROWS`] rows a chunk.
     graph: Vec<Chunk>,
-    /// Each chunk's commits' names, packed: `format.byte_len()` bytes a row.
-    ids: Vec<Box<[u8]>>,
+    /// The rows' commits' names.
+    names: Names,
     rows: u64,
     widest: usize,
     refs: Refs,
@@ -85,7 +84,7 @@ enum Piece {
     /// The next rows: their lanes and their commits' names.
     Rows {
         graph: Chunk,
-        ids: Box<[u8]>,
+        ids: Arc<[u8]>,
         widest: usize,
     },
     /// The walk's end.
@@ -117,9 +116,8 @@ impl History {
             ctx.request_repaint();
         });
         Self {
-            format: repository.object_format(),
             graph: Vec::new(),
-            ids: Vec::new(),
+            names: Names::new(repository.object_format()),
             rows: 0,
             widest: 0,
             refs: Refs::default(),
@@ -144,7 +142,7 @@ impl History {
                     let rows = u64::try_from(graph.len()).unwrap_or(0);
                     self.rows = self.rows.saturating_add(rows);
                     self.graph.push(graph);
-                    self.ids.push(ids);
+                    self.names.chunks.push(ids);
                     self.widest = widest;
                 }
                 Ok(Piece::Done(walked)) => {
@@ -204,21 +202,67 @@ impl History {
 
     /// The commit in `row`.
     pub(crate) fn id(&self, row: u64) -> Option<ObjectId> {
-        let (chunk, index) = locate(row)?;
-        let width = self.format.byte_len();
-        let start = index.checked_mul(width)?;
-        let bytes = self.ids.get(chunk)?.get(start..start.checked_add(width)?)?;
-        ObjectId::from_bytes(bytes)
+        self.names.id(row)
     }
 
     /// The row of commit `id`, looking from `near` on first (where it most likely is), then
     /// before. A scan of the names: Linux's 30 MB take about 10 ms.
     pub(crate) fn row_of(&self, id: &ObjectId, near: u64) -> Option<u64> {
+        self.names.row_of(id, near)
+    }
+
+    /// Its rows' commits' names so far, for a job to read (shared, not copied).
+    pub(crate) fn names(&self) -> Names {
+        self.names.clone()
+    }
+}
+
+/// Every row's commit's name, packed a chunk ([`CHUNK_ROWS`] rows) at a time. A clone shares
+/// the chunks, so a job can read them while the history goes on.
+#[derive(Clone, Debug)]
+pub(crate) struct Names {
+    format: ObjectFormat,
+    /// Each chunk's names: `format.byte_len()` bytes a row.
+    chunks: Vec<Arc<[u8]>>,
+}
+
+impl Names {
+    const fn new(format: ObjectFormat) -> Self {
+        Self {
+            format,
+            chunks: Vec::new(),
+        }
+    }
+
+    /// How many rows it names.
+    pub(crate) fn rows(&self) -> u64 {
         let width = self.format.byte_len();
-        let first = locate(near).map_or(0, |(chunk, _)| chunk.min(self.ids.len()));
-        let chunks = (first..self.ids.len()).chain(0..first);
+        let packed: usize = self.chunks.iter().map(|chunk| chunk.len()).sum();
+        u64::try_from(packed.checked_div(width).unwrap_or(0)).unwrap_or(0)
+    }
+
+    /// The name of the commit in `row`, as bytes.
+    pub(crate) fn bytes(&self, row: u64) -> Option<&[u8]> {
+        let (chunk, index) = locate(row)?;
+        let width = self.format.byte_len();
+        let start = index.checked_mul(width)?;
+        self.chunks
+            .get(chunk)?
+            .get(start..start.checked_add(width)?)
+    }
+
+    /// The commit in `row`.
+    pub(crate) fn id(&self, row: u64) -> Option<ObjectId> {
+        ObjectId::from_bytes(self.bytes(row)?)
+    }
+
+    /// The row of commit `id`, looking from `near` on first, then before (a scan).
+    pub(crate) fn row_of(&self, id: &ObjectId, near: u64) -> Option<u64> {
+        let width = self.format.byte_len();
+        let first = locate(near).map_or(0, |(chunk, _)| chunk.min(self.chunks.len()));
+        let chunks = (first..self.chunks.len()).chain(0..first);
         for chunk in chunks {
-            let found = self.ids.get(chunk).and_then(|ids| {
+            let found = self.chunks.get(chunk).and_then(|ids| {
                 ids.chunks_exact(width)
                     .position(|bytes| bytes == id.as_bytes())
             });
@@ -228,6 +272,52 @@ impl History {
             }
         }
         None
+    }
+
+    /// The names chunk by chunk, each with its first row.
+    pub(crate) fn chunks(&self) -> impl Iterator<Item = (u64, &[u8])> {
+        let per_chunk = u64::try_from(CHUNK_ROWS).unwrap_or(u64::MAX);
+        (0_u64..)
+            .zip(&self.chunks)
+            .map(move |(chunk, names)| (chunk.saturating_mul(per_chunk), &**names))
+    }
+
+    /// The bytes one name takes.
+    pub(crate) const fn width(&self) -> usize {
+        self.format.byte_len()
+    }
+}
+
+#[cfg(test)]
+impl Names {
+    /// `rows` made-up SHA-1 names, spread as real ones are, but every seventh starting with the
+    /// same four bytes.
+    pub(crate) fn made_up(rows: u32) -> Self {
+        let mut names = Self::new(ObjectFormat::Sha1);
+        let mut chunk = Vec::new();
+        for row in 0..rows {
+            // SplitMix64, a word at a time.
+            let mut state = u64::from(row).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let mut name = [0_u8; 20];
+            for slot in name.chunks_mut(8) {
+                state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                let mut mixed = (state ^ (state >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                mixed ^= mixed >> 31;
+                slot.copy_from_slice(&mixed.to_le_bytes()[..slot.len()]);
+            }
+            if row.is_multiple_of(7) {
+                name[..4].copy_from_slice(&[0xab, 0xcd, 0xef, 0x01]);
+            }
+            chunk.extend_from_slice(&name);
+            if chunk.len() == CHUNK_ROWS * 20 {
+                names.chunks.push(Arc::from(std::mem::take(&mut chunk)));
+            }
+        }
+        if !chunk.is_empty() {
+            names.chunks.push(Arc::from(chunk));
+        }
+        names
     }
 }
 
@@ -276,7 +366,7 @@ fn walk(
     }
     let capacity = CHUNK_ROWS.saturating_mul(repository.object_format().byte_len());
     let hand_over = |graph: Chunk, ids: Vec<u8>, widest: usize| {
-        let ids = ids.into_boxed_slice();
+        let ids = Arc::from(ids);
         let sent = pieces.send(Piece::Rows { graph, ids, widest }).is_ok();
         ctx.request_repaint();
         sent
@@ -372,7 +462,7 @@ enum Gix {
 }
 
 /// Whether gitoxide may read at all (`EGIT_GIX=0` says it mayn't).
-fn gix_allowed() -> bool {
+pub(crate) fn gix_allowed() -> bool {
     static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ALLOWED.get_or_init(|| std::env::var_os("EGIT_GIX").is_none_or(|value| value != "0"))
 }
@@ -1135,7 +1225,7 @@ mod tests {
                 Vec::new()
             };
             if let Some(graph) = builder.push(commit, &parents) {
-                let ids = std::mem::take(&mut ids).into_boxed_slice();
+                let ids = Arc::from(std::mem::take(&mut ids));
                 let widest = builder.widest();
                 sender.send(Piece::Rows { graph, ids, widest }).unwrap();
             }
@@ -1143,16 +1233,15 @@ mod tests {
         }
         let widest = builder.widest();
         if let Some(graph) = builder.finish() {
-            let ids = ids.into_boxed_slice();
+            let ids = Arc::from(ids);
             sender.send(Piece::Rows { graph, ids, widest }).unwrap();
         }
         if ended {
             sender.send(Piece::Done(Ok(()))).unwrap();
         }
         let history = History {
-            format: ObjectFormat::Sha1,
             graph: Vec::new(),
-            ids: Vec::new(),
+            names: Names::new(ObjectFormat::Sha1),
             rows: 0,
             widest: 0,
             refs: Refs::default(),
@@ -1256,9 +1345,8 @@ mod tests {
         let (sender, pieces) = mpsc::channel();
         drop(sender);
         let mut history = History {
-            format: ObjectFormat::Sha1,
             graph: Vec::new(),
-            ids: Vec::new(),
+            names: Names::new(ObjectFormat::Sha1),
             rows: 0,
             widest: 0,
             refs: Refs::default(),

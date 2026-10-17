@@ -15,6 +15,7 @@ mod pull_form;
 mod pulls;
 mod rebase;
 pub(crate) mod repo;
+mod search;
 pub(crate) mod status_bar;
 mod tasks;
 mod work;

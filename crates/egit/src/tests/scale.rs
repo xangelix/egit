@@ -1,5 +1,7 @@
 //! The history at a large repository's scale, measured: how soon the first rows show, how long
-//! the whole history takes, and how long frames take while jumping all over it and scrolling.
+//! the whole history takes, and how long frames take while jumping all over it and scrolling;
+//! then searching it (messages, authors, a path, a name): how soon the first commit is found,
+//! how long it takes, and the memory it holds while it runs and after.
 //!
 //! Not run by default, as it needs a large repository (Linux's, say) and a release build:
 //!
@@ -20,13 +22,16 @@
 )]
 
 use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use egit_git::{Git, GitOptions};
+use egit_git::{ConfigPlace, ConfigSnapshot, Git, GitOptions, Repository};
 use egui_kittest::Harness;
 
 use super::screens::{rendering, screens};
 use crate::app::{Action, EgitApp};
+use crate::history::Names;
+use crate::search::{self, Asked, SearchKind};
 use crate::settings::Settings;
 use crate::views::prompts::Prompts;
 
@@ -101,7 +106,11 @@ fn a_large_history_opens_at_once_and_scrolls_within_a_frame() {
             });
     harness.run_steps(2);
     let start = Instant::now();
-    harness.state_mut().state.actions.push(Action::Open(repo));
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(Action::Open(repo.clone()));
     harness.step();
     step_until(&mut harness, Duration::from_secs(60), |app| {
         app.state
@@ -175,5 +184,67 @@ fn a_large_history_opens_at_once_and_scrolls_within_a_frame() {
     if !cfg!(debug_assertions) {
         let budget = Duration::from_millis(8);
         assert!(jumps < budget && scrolling < budget, "frames over 8 ms");
+    }
+    let names = harness.state().state.repos[0].history.shown.names();
+    searches(&repo, &names);
+}
+
+/// Searches the history, each kind in turn, printing how soon the first commit was found, how
+/// long it all took, and the memory held at its end and once it was dropped.
+fn searches(repo: &std::path::Path, names: &Names) {
+    let git = Git::new(GitOptions::default()).unwrap();
+    let repository = Arc::new(Repository::discover(&git, repo).unwrap());
+    let config =
+        ConfigSnapshot::read(&git, ConfigPlace::Repository(repository.work_tree())).unwrap();
+    let index = Arc::new(OnceLock::new());
+    let ctx = egui::Context::default();
+    let abbreviated = names
+        .id(names.rows() / 2)
+        .unwrap()
+        .abbreviated(9)
+        .to_string();
+    for (kind, query) in [
+        (SearchKind::Message, "memory leak"),
+        (SearchKind::Message, "xyzzy-nowhere"),
+        (SearchKind::Author, "torvalds"),
+        (SearchKind::Path, "MAINTAINERS"),
+        (SearchKind::Commit, abbreviated.as_str()),
+        (SearchKind::Commit, "HEAD~1000"),
+    ] {
+        reset_peak_memory();
+        let started = Instant::now();
+        let search = search::start(
+            Asked {
+                git: &git,
+                repository: &repository,
+                names: names.clone(),
+                index: &index,
+                every_tree: config.has_every_tree(),
+                kind,
+                query,
+            },
+            &ctx,
+        );
+        let mut first = None;
+        while !search.found().is_done() {
+            if first.is_none() && search.found().count() > 0 {
+                first = Some(started.elapsed());
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        let all = started.elapsed();
+        let outcome = search.found().problem().map_or_else(
+            || format!("{} found", search.found().count()),
+            |problem| problem.title,
+        );
+        // The repository gitoxide read for it is closed by now: its packs unmapped.
+        println!(
+            "search {kind:?} {query:?}: {outcome}, the first after {}, all in {all:?}; peak \
+             {:.0} MB, after it {:.0} MB allocated, {:.0} MB of files mapped",
+            first.map_or_else(|| "-".to_owned(), |first| format!("{first:?}")),
+            peak_memory_mb(),
+            memory_mb("RssAnon:"),
+            memory_mb("RssFile:")
+        );
     }
 }
