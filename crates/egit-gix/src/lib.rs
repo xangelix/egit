@@ -9,6 +9,7 @@
 //! it hasn't may be its remote's, which git fetches when asked for it, so reading stops there
 //! and leaves the rest to git.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -120,9 +121,12 @@ impl GixRepository {
     pub fn tips(&self) -> Result<Vec<ObjectId>, GixError> {
         let repository = self.repository.to_thread_local();
         let mut tips: Vec<gix::ObjectId> = Vec::new();
-        let add = |id: gix::ObjectId, packed: Option<gix::ObjectId>, tips: &mut Vec<_>| {
+        // Each commit once, in the order first met: refs by the hundred thousand often share
+        // commits, and a list searched for each would take time in the square of their number.
+        let mut seen: HashSet<gix::ObjectId> = HashSet::new();
+        let mut add = |id: gix::ObjectId, packed: Option<gix::ObjectId>, tips: &mut Vec<_>| {
             let (peeled, kind) = peel(&repository, id, packed)?;
-            if kind == Some(gix::object::Kind::Commit) && !tips.contains(&peeled) {
+            if kind == Some(gix::object::Kind::Commit) && seen.insert(peeled) {
                 tips.push(peeled);
             }
             Ok::<_, GixError>(())

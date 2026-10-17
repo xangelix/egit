@@ -49,6 +49,14 @@ fn tips(git: &Git, repository: &Repository) -> Vec<gix::ObjectId> {
         .filter(|line| !line.is_empty())
         .map(|line| line.to_str().unwrap().to_owned())
         .collect();
+    // As egit's walk does: past so many, walking them all costs no more than reducing them
+    // (and their names would pass what a command line holds).
+    if all.len() > 4_096 {
+        return all
+            .iter()
+            .map(|line| gix::ObjectId::from_hex(line.as_bytes()).unwrap())
+            .collect();
+    }
     let reduced = git
         .read("merge-base")
         .arg("--independent")
