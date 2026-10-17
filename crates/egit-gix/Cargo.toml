@@ -1,0 +1,19 @@
+[package]
+name = "egit-gix"
+description = "egit's in-process reads through gitoxide, where measured faster than the git binary and shown to give its answers; git stays the authority, and writes stay git's."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+egit-git.workspace = true
+gix.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+bstr.workspace = true
+egit-git = { workspace = true, features = ["testing"] }

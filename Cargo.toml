@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/egit",
     "crates/egit-forge",
+    "crates/egit-gix",
     "crates/egit-git",
     "crates/egit-graph",
     "crates/egit-text",
@@ -17,6 +18,7 @@ publish = false
 
 [workspace.dependencies]
 egit-forge = { path = "crates/egit-forge" }
+egit-gix = { path = "crates/egit-gix" }
 egit-git = { path = "crates/egit-git" }
 egit-graph = { path = "crates/egit-graph" }
 egit-text = { path = "crates/egit-text" }
@@ -30,6 +32,9 @@ egui-phosphor = "0.14.0"
 egui-table-kit = { git = "https://github.com/xangelix/egui-table-kit", rev = "9701b2d7663c7d870b2f89ac3898cea29d347951" }
 egui_kittest = "0.36.2"
 egui_tiles = "0.17.1"
+# Local reads only: no network, no TLS (never `ring`).
+# Its dynamic pack cache only: the static one needs `uluru` (MPL-2.0).
+gix = { version = "0.89.0", default-features = false, features = ["pack-cache-lru-dynamic", "parallel", "sha1", "sha256"] }
 memchr = "2.8.3"
 notify = { version = "8.2.0", default-features = false }
 parking_lot = "0.12.5"
