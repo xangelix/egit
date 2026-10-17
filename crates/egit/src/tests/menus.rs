@@ -112,11 +112,12 @@ fn branches_are_pulled_and_pushed_from_their_menus() {
         &remote_badge("origin/main"),
         "Fast-forward main to origin/main",
     );
+    // The last fast-forward's words are still shown: the branch itself says when it is done.
+    let origin = rev(&sandbox, &mine, "origin/main");
+    settle(&mut harness, "main fast-forwarded", |app| {
+        !app.state.repos[0].tasks.is_busy() && rev(&sandbox, &mine, "main") == origin
+    });
     wait_for_label(&mut harness, "Fast-forwarded to origin/main.");
-    assert_eq!(
-        rev(&sandbox, &mine, "main"),
-        rev(&sandbox, &mine, "origin/main")
-    );
 
     // A branch pushed for the first time from its menu, then again.
     for step in ["one", "two"] {
