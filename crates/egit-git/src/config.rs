@@ -6,7 +6,6 @@
 //! The output of `git config --list` is kept in one buffer that the entries point into.
 
 use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
 use bstr::{BStr, ByteSlice as _};
@@ -111,7 +110,7 @@ impl<'a> ConfigEntry<'a> {
     /// The file it was read from, when it was read from one.
     #[must_use]
     pub fn file(self) -> Option<PathBuf> {
-        let path = Path::new(OsStr::from_bytes(self.origin.strip_prefix(b"file:")?));
+        let path = self.origin.strip_prefix(b"file:")?.to_path_lossy();
         Some(self.base.join(path))
     }
 
@@ -138,7 +137,7 @@ impl ConfigSnapshot {
     pub fn read(git: &Git, place: ConfigPlace<'_>) -> Result<Self, GitError> {
         let base = match place {
             // Anywhere but egit's own working directory, which might be inside a repository.
-            ConfigPlace::User => Path::new("/"),
+            ConfigPlace::User => crate::git::outside_repositories(),
             ConfigPlace::Repository(work_tree) => work_tree,
         };
         let listed = git
@@ -373,7 +372,10 @@ pub fn unset_config(git: &Git, target: ConfigTarget<'_>, key: &str) -> Result<()
 
 fn config_command(git: &Git, target: ConfigTarget<'_>) -> crate::GitCommand {
     match target {
-        ConfigTarget::Global => git.write("config").arg("--global").current_dir("/"),
+        ConfigTarget::Global => git
+            .write("config")
+            .arg("--global")
+            .current_dir(crate::git::outside_repositories()),
         ConfigTarget::Repository(work_tree) => {
             git.write("config").arg("--local").current_dir(work_tree)
         }

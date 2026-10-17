@@ -12,9 +12,7 @@
 //! the file can pass for one; the result is git's output and ranges into it. [`resolve_conflict`]
 //! saves a resolution through git.
 
-use std::ffi::OsStr;
 use std::ops::Range;
-use std::os::unix::ffi::OsStrExt as _;
 
 use bstr::{BStr, ByteSlice as _};
 
@@ -98,7 +96,7 @@ pub fn conflict_sides(
     let listed = git
         .read("ls-files")
         .args(["-u", "-z", "--"])
-        .arg(OsStr::from_bytes(path))
+        .arg(path.to_os_str_lossy())
         .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
@@ -593,7 +591,7 @@ pub fn resolve_conflict(
         Resolution::Delete => {
             git.write("rm")
                 .args(["--quiet", "--force", "--"])
-                .arg(OsStr::from_bytes(path))
+                .arg(path.to_os_str_lossy())
                 .env("GIT_LITERAL_PATHSPECS", "1")
                 .current_dir(work_tree)
                 .cancel_token(cancel)

@@ -5,11 +5,9 @@ use std::io::{self, BufReader};
 use std::process::{Child, ChildStdin, ChildStdout, ExitStatus};
 use std::thread::JoinHandle;
 
-use rustix::process::Pid;
-
 use crate::error::GitError;
 use crate::output::Stderr;
-use crate::process;
+use crate::process::{self, Group};
 
 /// How much of git's answers is read at a time.
 const READ_BUFFER: usize = 64 * 1024;
@@ -22,7 +20,7 @@ const READ_BUFFER: usize = 64 * 1024;
 pub struct GitProcess {
     subcommand: &'static str,
     child: Child,
-    group: Pid,
+    group: Group,
     stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     drain: Option<JoinHandle<Stderr>>,

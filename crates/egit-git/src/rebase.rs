@@ -271,8 +271,7 @@ pub fn rebase_interactive(
         .and_then(|()| file.flush())
         .map_err(RebaseError::Todo)?;
     // Git runs the sequence editor with the todo's path after it: `cp -- ours theirs`.
-    let path = file.path().to_string_lossy().into_owned();
-    let editor = format!("cp -- {}", quote(&path));
+    let editor = format!("cp -- {}", quote(&shell_path(file.path())));
     let mut command = git
         .write("rebase")
         .args([
@@ -330,10 +329,7 @@ pub fn rebase_keeping_merges(
     let theirs = scratch.path().join("theirs");
     // Git's todo, copied out by a sequence editor that then fails: git gives up before
     // anything moves.
-    let copy = format!(
-        "cp -- \"$1\" {}; exit 1 #",
-        quote(&theirs.to_string_lossy())
-    );
+    let copy = format!("cp -- \"$1\" {}; exit 1 #", quote(&shell_path(&theirs)));
     let tried = merging_rebase(git, repository, base, copy, cancel).output_unchecked()?;
     let generated = std::fs::read_to_string(&theirs).unwrap_or_default();
     if generated.trim().is_empty() {
@@ -342,7 +338,7 @@ pub fn rebase_keeping_merges(
     let todo = with_plan(&generated, plan)?;
     let ours = scratch.path().join("ours");
     std::fs::write(&ours, todo).map_err(RebaseError::Todo)?;
-    let editor = format!("cp -- {}", quote(&ours.to_string_lossy()));
+    let editor = format!("cp -- {}", quote(&shell_path(&ours)));
     let done = merging_rebase(git, repository, base, editor, cancel)
         .output()
         .map(drop);
@@ -481,6 +477,17 @@ fn reword(todo: &mut String, message: &str) {
 }
 
 /// `text` quoted for the shell: in single quotes, each `'` closed, escaped, and reopened.
+/// A path as git's shell reads it: on Windows with `/` between folders (`C:/Users/…`), which
+/// Git for Windows' shell takes as it is.
+fn shell_path(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.replace('\\', "/")
+    } else {
+        text.into_owned()
+    }
+}
+
 fn quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', r"'\''"))
 }

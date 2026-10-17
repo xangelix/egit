@@ -6,9 +6,6 @@
 //! `+`, `-`, or ` ` prefix, numbered in the old and new file, so the raw patch is never held
 //! whole.
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
-
 use bstr::{BStr, ByteSlice as _};
 
 use crate::cancel::CancelToken;
@@ -125,7 +122,7 @@ pub fn uncommitted_diff(
     if let Some(algorithm) = &options.algorithm {
         command = command.arg(format!("--diff-algorithm={algorithm}"));
     }
-    let paths = paths.iter().map(|path| OsStr::from_bytes(path));
+    let paths = paths.iter().map(|path| path.to_os_str_lossy());
     match which {
         Uncommitted::Unstaged => parse_streamed(command.arg("--").args(paths)),
         Uncommitted::Staged => parse_streamed(command.args(["--cached", "-M", "--"]).args(paths)),
@@ -197,7 +194,7 @@ pub fn file_diff(
     };
     command = command
         .arg("--")
-        .args(paths.iter().map(|path| OsStr::from_bytes(path)));
+        .args(paths.iter().map(|path| path.to_os_str_lossy()));
     parse_streamed(command)
 }
 

@@ -2,26 +2,34 @@
 //!
 //! Git asks for credentials it has no helper for through `GIT_ASKPASS`, and ssh asks for
 //! passphrases, PINs, and decisions about unknown hosts through `SSH_ASKPASS`. egit points both
-//! at itself: [`AskpassServer`] makes a directory private to the user holding a Unix socket and
-//! a link to egit's executable named [`HELPER_NAME`], and [`AskpassServer::environment`] puts
-//! them in every git process's environment. When git or ssh runs the link, egit starts as the
+//! at itself: [`AskpassServer`] makes a directory private to the user holding a link to egit's
+//! executable named [`HELPER_NAME`], listens where helpers can reach it (a Unix socket in that
+//! directory; on Windows, which has none in the standard library, a port on the loopback
+//! address), and [`AskpassServer::environment`] puts them in every git process's environment. When git or ssh runs the link, egit starts as the
 //! helper ([`run_helper`]): it sends the prompt over the socket, waits for the window's
 //! [`Prompt`] to be answered, and prints the answer.
 //!
-//! Only the user's own processes reach the socket (the directory is `0700`, and the peer's
-//! uid is checked), each connection must carry the random token from the environment, every
-//! field is bounded, and answers are wiped from memory once written.
+//! On Unix only the user's own processes reach the socket (the directory is `0700`, and the
+//! peer's uid is checked); everywhere each connection must carry the random token from the
+//! environment, every field is bounded, and answers are wiped from memory once written.
 
 mod client;
 mod protocol;
 mod server;
+
+#[cfg(unix)]
+#[path = "unix.rs"]
+mod platform;
+#[cfg(windows)]
+#[path = "windows.rs"]
+mod platform;
 
 pub use client::run_helper;
 pub use protocol::PromptKind;
 pub use server::{AskpassServer, Prompt};
 
 /// The name of the helper. egit runs as the helper when started under this name.
-pub const HELPER_NAME: &str = "egit-askpass";
+pub const HELPER_NAME: &str = platform::HELPER_NAME;
 
 /// The socket the helper connects to.
 pub(crate) const SOCKET_VAR: &str = "EGIT_ASKPASS_SOCKET";
@@ -56,13 +64,7 @@ pub fn ask_as_helper(
     let token = find(TOKEN_VAR)
         .and_then(|token| protocol::Token::from_hex(token.as_encoded_bytes()))
         .ok_or_else(missing)?;
-    client::ask(
-        std::path::Path::new(socket),
-        &token,
-        kind,
-        prompt.as_bytes(),
-        context.as_bytes(),
-    )
+    client::ask(socket, &token, kind, prompt.as_bytes(), context.as_bytes())
 }
 
 #[cfg(test)]

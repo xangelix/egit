@@ -16,7 +16,6 @@
     clippy::print_stderr
 )]
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -243,7 +242,7 @@ fn signs_with_a_program_of_the_users_own() {
         ),
     )
     .unwrap();
-    std::fs::set_permissions(&signer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    egit_git::testing::set_mode(&signer, 0o755).unwrap();
     let repo = staged(
         &sandbox,
         &[
@@ -267,7 +266,7 @@ impl GnuPg {
     fn new(sandbox: &Sandbox) -> Self {
         let home = sandbox.home().join(".gnupg");
         std::fs::create_dir(&home).unwrap();
-        std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        egit_git::testing::set_mode(&home, 0o700).unwrap();
         Self(home)
     }
 

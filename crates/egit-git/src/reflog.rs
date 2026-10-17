@@ -2,9 +2,6 @@
 //! where a ref is now; and refs made or removed only where they were expected (`update-ref`
 //! with the old value, so a ref someone else moved meanwhile is left alone).
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
-
 use bstr::{BStr, BString, ByteSlice as _};
 
 use crate::cancel::CancelToken;
@@ -54,7 +51,7 @@ pub fn reflog(
             "--format=%H%x1f%gd%x1f%gs%x1f%s",
         ])
         .arg(format!("--max-count={limit}"))
-        .arg(OsStr::from_bytes(reference))
+        .arg(reference.to_os_str_lossy())
         .arg("--")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
@@ -127,7 +124,7 @@ pub fn ref_target(
     let done = git
         .read("rev-parse")
         .args(["--verify", "--quiet"])
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .output_unchecked()?;
     Ok(done
@@ -152,7 +149,7 @@ pub fn create_ref(
 ) -> Result<(), GitError> {
     git.write("update-ref")
         .arg("--")
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .arg(at.to_string())
         .arg(at.format().zero().to_string())
         .current_dir(repository.work_tree())
@@ -175,7 +172,7 @@ pub fn delete_ref(
 ) -> Result<(), GitError> {
     git.write("update-ref")
         .args(["-d", "--"])
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .arg(was.to_string())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)

@@ -9,9 +9,6 @@
 //! already in the form git stores) and puts it in the index (`update-index --index-info`),
 //! after checking the index's entry is the one the diff was made from.
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
-
 use bstr::{BStr, ByteSlice as _};
 
 use crate::cancel::CancelToken;
@@ -275,7 +272,7 @@ pub fn write_index_content(
     let listed = git
         .read("ls-files")
         .args(["--stage", "-z", "--"])
-        .arg(OsStr::from_bytes(path))
+        .arg(path.to_os_str_lossy())
         .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(work_tree)
         .cancel_token(cancel)

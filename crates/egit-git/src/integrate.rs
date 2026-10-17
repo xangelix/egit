@@ -5,9 +5,6 @@
 //! Continue or Abort ([`Integrated::Conflicts`]); a pick or revert that changes nothing is
 //! skipped ([`Integrated::Empty`]) rather than left waiting.
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
-
 use bstr::{BStr, ByteSlice as _};
 
 use crate::cancel::CancelToken;
@@ -45,7 +42,7 @@ pub fn merge(
     let done = git
         .write("merge")
         .args(["--no-edit", "--no-stat", "--quiet"])
-        .arg(OsStr::from_bytes(what))
+        .arg(what.to_os_str_lossy())
         .prompt_context("Merging")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
@@ -75,7 +72,7 @@ pub fn rebase(
     }
     let done = command
         .arg("--end-of-options")
-        .arg(OsStr::from_bytes(onto))
+        .arg(onto.to_os_str_lossy())
         .prompt_context("Rebasing")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)

@@ -1145,11 +1145,14 @@ version = "0.1.0"
 dependencies = [
  "bstr",
  "egit-git",
+ "getrandom 0.4.3",
+ "libc",
  "parking_lot",
  "rustix 1.1.5",
  "tempfile",
  "thiserror 2.0.21",
  "tracing",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

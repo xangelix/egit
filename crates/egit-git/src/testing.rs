@@ -55,6 +55,29 @@ pub struct Sandbox {
     git: Git,
 }
 
+/// Sets `path`'s permission bits to `mode` where files have them (Unix); elsewhere does
+/// nothing: Git for Windows runs a script by its `#!` line, and keeps no permission bits.
+///
+/// # Errors
+///
+/// When the permissions can't be set.
+#[cfg(unix)]
+pub fn set_mode(path: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+}
+
+/// Sets `path`'s permission bits to `mode` where files have them (Unix); elsewhere does
+/// nothing: Git for Windows runs a script by its `#!` line, and keeps no permission bits.
+///
+/// # Errors
+///
+/// None here.
+#[cfg(not(unix))]
+pub const fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
+    Ok(())
+}
+
 impl Sandbox {
     /// A new sandbox around the git named by `EGIT_TEST_GIT`, or the one on `PATH`.
     ///

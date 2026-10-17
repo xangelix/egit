@@ -2,8 +2,7 @@
 
 use std::ffi::OsString;
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
@@ -24,7 +23,11 @@ impl Base {
         let nonce = Token::random().unwrap().to_hex();
         let path = std::env::temp_dir().join(format!("egit-askpass-test-{}", &nonce[..12]));
         fs::create_dir(&path).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        }
         Self(path)
     }
 }
@@ -35,8 +38,14 @@ impl Drop for Base {
     }
 }
 
-/// The socket and token a helper started by `server` would find in its environment.
-fn helper_view(server: &AskpassServer) -> (PathBuf, Token) {
+/// The executable the helper links to: this test's own (a link needs a file where it can't be
+/// a symbolic one).
+fn executable() -> PathBuf {
+    std::env::current_exe().unwrap()
+}
+
+/// The address and token a helper started by `server` would find in its environment.
+fn helper_view(server: &AskpassServer) -> (OsString, Token) {
     let environment = server.environment();
     let find = |name: &str| {
         environment
@@ -45,7 +54,7 @@ fn helper_view(server: &AskpassServer) -> (PathBuf, Token) {
             .map(|(_, value)| value.clone())
             .unwrap()
     };
-    let socket = PathBuf::from(find(SOCKET_VAR));
+    let socket = find(SOCKET_VAR);
     let token = Token::from_hex(find(TOKEN_VAR).as_encoded_bytes()).unwrap();
     (socket, token)
 }
@@ -59,11 +68,10 @@ fn start(
 ) {
     let notified = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&notified);
-    let (server, prompts) =
-        AskpassServer::start_in(&base.0, Path::new("/usr/bin/egit"), move || {
-            counter.fetch_add(1, Ordering::SeqCst);
-        })
-        .unwrap();
+    let (server, prompts) = AskpassServer::start_in(&base.0, &executable(), move || {
+        counter.fetch_add(1, Ordering::SeqCst);
+    })
+    .unwrap();
     (server, prompts, notified)
 }
 
@@ -147,7 +155,7 @@ fn notices_an_asker_that_went_away() {
     let (socket, token) = helper_view(&server);
     let (leave, left) = std::sync::mpsc::channel::<()>();
     let helper = thread::spawn(move || {
-        let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        let mut stream = platform::connect(&socket).unwrap();
         protocol::write_request(
             &mut stream,
             &token,
@@ -190,10 +198,8 @@ fn the_environment_points_git_and_ssh_at_the_helper() {
     assert_eq!(value("SSH_ASKPASS"), Some(helper));
     assert_eq!(value("SSH_ASKPASS_REQUIRE"), Some(OsString::from("force")));
     assert_eq!(server.helper().file_name().unwrap(), HELPER_NAME);
-    assert_eq!(
-        fs::read_link(server.helper()).unwrap(),
-        Path::new("/usr/bin/egit")
-    );
+    #[cfg(unix)]
+    assert_eq!(fs::read_link(server.helper()).unwrap(), executable());
 }
 
 #[test]
@@ -202,10 +208,14 @@ fn stopping_removes_the_directory_and_ends_the_prompts() {
     let (server, prompts, _) = start(&base);
     let dir = server.helper().parent().unwrap().to_owned();
     assert!(dir.is_dir());
-    assert_eq!(
-        fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
-        0o700
-    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
     drop(server);
     assert!(!dir.exists());
     assert_eq!(
@@ -228,11 +238,13 @@ fn stopping_needs_nothing_on_disk() {
     finished.recv_timeout(WAIT).unwrap();
 }
 
+#[cfg(unix)]
 #[test]
 fn refuses_a_directory_others_can_enter() {
+    use std::os::unix::fs::PermissionsExt as _;
     let base = Base::new();
     fs::set_permissions(&base.0, fs::Permissions::from_mode(0o755)).unwrap();
-    let error = AskpassServer::start_in(&base.0, Path::new("/usr/bin/egit"), || {}).unwrap_err();
+    let error = AskpassServer::start_in(&base.0, &executable(), || {}).unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
 }
 

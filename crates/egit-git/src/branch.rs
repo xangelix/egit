@@ -4,9 +4,6 @@
 //! Names given are short names (`topic`, `v1.2`), checked by [`check_ref_name`] as git checks
 //! them; git refuses any it would not take anyway.
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
-
 use bstr::{BStr, BString, ByteSlice as _};
 
 use crate::cancel::CancelToken;
@@ -147,18 +144,18 @@ pub fn switch(
         .current_dir(repository.work_tree())
         .cancel_token(cancel);
     command = match to {
-        SwitchTo::Branch(name) => command.arg(OsStr::from_bytes(name)),
+        SwitchTo::Branch(name) => command.arg(name.to_os_str_lossy()),
         SwitchTo::Track {
             remote_branch,
             local,
         } => command
             .arg("--create")
-            .arg(OsStr::from_bytes(local))
+            .arg(local.to_os_str_lossy())
             .arg("--track")
-            .arg(OsStr::from_bytes(remote_branch)),
+            .arg(remote_branch.to_os_str_lossy()),
         SwitchTo::NewBranch { name, at } => command
             .arg("--create")
-            .arg(OsStr::from_bytes(name))
+            .arg(name.to_os_str_lossy())
             .arg(at.to_string()),
         SwitchTo::Detached(at) => command.arg("--detach").arg(at.to_string()),
     };
@@ -202,7 +199,7 @@ pub fn create_branch(
     cancel: &CancelToken,
 ) -> Result<(), GitError> {
     git.write("branch")
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .arg(at.to_string())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
@@ -224,8 +221,8 @@ pub fn rename_branch(
 ) -> Result<(), GitError> {
     git.write("branch")
         .arg("--move")
-        .arg(OsStr::from_bytes(old))
-        .arg(OsStr::from_bytes(new))
+        .arg(old.to_os_str_lossy())
+        .arg(new.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
@@ -247,7 +244,7 @@ pub fn move_branch(
 ) -> Result<(), GitError> {
     git.write("branch")
         .args(["--quiet", "--force"])
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .arg(commit.to_string())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
@@ -275,12 +272,12 @@ pub fn set_upstream(
         Some(upstream) => {
             let mut option = b"--set-upstream-to=".to_vec();
             option.extend_from_slice(upstream);
-            command.arg(OsStr::from_bytes(&option))
+            command.arg(option.to_os_str_lossy())
         }
         None => command.arg("--unset-upstream"),
     };
     command
-        .arg(OsStr::from_bytes(branch))
+        .arg(branch.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
@@ -317,7 +314,7 @@ pub fn delete_branch(
         command = command.arg("--force");
     }
     let done = command
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output();
@@ -360,7 +357,7 @@ pub fn create_tag(
         None => command.arg("--no-sign"),
     };
     command
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .arg(at.to_string())
         .output()
         .map(drop)
@@ -379,7 +376,7 @@ pub fn delete_tag(
 ) -> Result<(), GitError> {
     git.write("tag")
         .arg("--delete")
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()

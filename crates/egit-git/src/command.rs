@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use rustix::process::Pid;
 use zeroize::Zeroizing;
 
 use crate::batch::GitProcess;
@@ -18,7 +17,7 @@ use crate::cancel::{CancelToken, Registration};
 use crate::error::GitError;
 use crate::git::Git;
 use crate::output::{Completed, Stderr, TailBuffer};
-use crate::process;
+use crate::process::{self, Group};
 use crate::progress::{Progress, ProgressReader};
 
 /// Whether a command only reads the repository or may change it.
@@ -622,7 +621,7 @@ impl GitCommand {
 }
 
 /// Stops a git process that won't be read after all, and reaps it.
-fn abandon(mut child: Child, group: Pid, registration: Option<Registration<'_>>) {
+fn abandon(mut child: Child, group: Group, registration: Option<Registration<'_>>) {
     process::terminate_group(group);
     // The caller reports why the process was abandoned; failing to wait here only means it is
     // already gone.

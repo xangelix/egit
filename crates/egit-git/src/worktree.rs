@@ -2,8 +2,6 @@
 //! or a commit checked out in a folder of its own, sharing the repository's history), each one
 //! listed, removed, locked or unlocked, and those whose folders are gone pruned.
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
 use bstr::{BStr, BString, ByteSlice as _};
@@ -51,10 +49,11 @@ pub fn add_worktree(
     let start = match from {
         WorktreeFrom::Branch(branch) => branch.to_vec(),
         WorktreeFrom::NewBranch { name, at, track } => {
-            command = command
-                .arg("-b")
-                .arg(OsStr::from_bytes(name))
-                .arg(if track { "--track" } else { "--no-track" });
+            command = command.arg("-b").arg(name.to_os_str_lossy()).arg(if track {
+                "--track"
+            } else {
+                "--no-track"
+            });
             at.to_vec()
         }
         WorktreeFrom::Detached(commit) => {
@@ -65,7 +64,7 @@ pub fn add_worktree(
     command
         .arg("--")
         .arg(path)
-        .arg(OsStr::from_bytes(&start))
+        .arg(start.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
@@ -121,7 +120,7 @@ fn parse_worktrees(listed: &[u8]) -> Result<Vec<Worktree>, GitError> {
         if key == b"worktree" {
             found.extend(current.take());
             current = Some(Worktree {
-                path: PathBuf::from(OsStr::from_bytes(value.ok_or_else(malformed)?)),
+                path: value.ok_or_else(malformed)?.to_path_lossy().into_owned(),
                 head: None,
                 branch: None,
                 main: found.is_empty(),

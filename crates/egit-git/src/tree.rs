@@ -1,10 +1,9 @@
 //! A commit's tree: what it holds at a path, and its folders; and which of some paths git
 //! ignores (for watching a work tree's folders).
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
+use std::path::Path;
 
-use bstr::{BStr, BString, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _, ByteVec as _};
 
 use crate::cancel::CancelToken;
 use crate::error::GitError;
@@ -31,7 +30,7 @@ pub fn tree_entry(
         .args(["-z", "--full-tree"])
         .arg(commit.to_string())
         .arg("--")
-        .arg(OsStr::from_bytes(path))
+        .arg(path.to_os_str_lossy())
         .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
@@ -133,6 +132,21 @@ pub fn ignored_paths(
             checked.stderr,
         )),
     }
+}
+
+/// A path relative to a work tree as git writes one: its bytes, with `/` between folders (on
+/// Windows, `\\` turned around).
+#[must_use]
+pub fn git_path(relative: &Path) -> BString {
+    let mut bytes = <Vec<u8>>::from_path_lossy(relative).into_owned();
+    if cfg!(windows) {
+        for byte in &mut bytes {
+            if *byte == b'\\' {
+                *byte = b'/';
+            }
+        }
+    }
+    BString::from(bytes)
 }
 
 #[cfg(test)]

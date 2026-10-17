@@ -210,7 +210,10 @@ pub fn reject_credential(
 fn credential_command(git: &Git, repository: Option<&Repository>, action: &str) -> GitCommand {
     git.read("credential")
         .arg(action)
-        .current_dir(repository.map_or_else(|| "/".into(), |repo| repo.work_tree().to_owned()))
+        .current_dir(repository.map_or_else(
+            || crate::git::outside_repositories().to_owned(),
+            |repo| repo.work_tree().to_owned(),
+        ))
 }
 
 #[cfg(test)]

@@ -8,9 +8,7 @@
 //! place in a table that grows as commits appear. Uncommitted lines (blaming the work tree)
 //! come from a commit of zeros.
 
-use std::ffi::OsStr;
 use std::ops::ControlFlow;
-use std::os::unix::ffi::OsStrExt as _;
 
 use bstr::{BStr, BString, ByteSlice as _};
 
@@ -108,7 +106,7 @@ pub fn blame(
     };
     command
         .arg("--")
-        .arg(OsStr::from_bytes(path))
+        .arg(path.to_os_str_lossy())
         .stream(|chunk| lines.feed(chunk, &mut handle))?;
     if malformed {
         return Err(GitError::unexpected("blame", "incremental blame"));
@@ -269,7 +267,7 @@ pub fn file_log(
             "--format=%x1e%H%x1f%P%x1f%an%x1f%at%x1f%s",
         ])
         .arg("--")
-        .arg(OsStr::from_bytes(path))
+        .arg(path.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .stream(|chunk| {

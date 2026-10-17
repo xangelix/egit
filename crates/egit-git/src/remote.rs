@@ -2,8 +2,6 @@
 //! progress (`--progress`) and stoppable, with git asking for credentials and host keys through
 //! askpass (labelled by what is being done) unless it mustn't ask at all.
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
 use bstr::{BStr, BString, ByteSlice as _};
@@ -44,7 +42,7 @@ pub fn clone(
         .write("clone")
         .arg("--progress")
         .prompt_context(format!("Cloning {url}"))
-        .current_dir("/")
+        .current_dir(crate::git::outside_repositories())
         .progress(progress)
         .cancel_token(cancel);
     if options.submodules {
@@ -134,7 +132,7 @@ pub fn fetch_remote(
     }
     command
         .arg("--")
-        .arg(OsStr::from_bytes(remote))
+        .arg(remote.to_os_str_lossy())
         .output()
         .map(drop)
 }
@@ -160,8 +158,8 @@ pub fn fetch_refspecs(
 ) -> Result<(), GitError> {
     git.write("fetch")
         .args(["--progress", "--no-tags", "--"])
-        .arg(OsStr::from_bytes(remote))
-        .args(refspecs.iter().map(|refspec| OsStr::from_bytes(refspec)))
+        .arg(remote.to_os_str_lossy())
+        .args(refspecs.iter().map(|refspec| refspec.to_os_str_lossy()))
         .prompt_context(context)
         .current_dir(repository.work_tree())
         .progress(progress)
@@ -425,8 +423,8 @@ impl Push<'_> {
             .progress(progress)
             .cancel_token(cancel)
             .arg("--")
-            .arg(OsStr::from_bytes(self.remote))
-            .arg(OsStr::from_bytes(self.refspec))
+            .arg(self.remote.to_os_str_lossy())
+            .arg(self.refspec.to_os_str_lossy())
             .output_unchecked()?;
         let (refs, mut notes) = parse_porcelain(&done.stdout)?;
         if refs.is_empty() && !done.status.success() {
@@ -523,7 +521,7 @@ pub fn remote_urls(
         let url = git
             .read("ls-remote")
             .args(["--get-url", "--"])
-            .arg(OsStr::from_bytes(&name))
+            .arg(name.to_os_str_lossy())
             .current_dir(repository.work_tree())
             .output()?
             .stdout;

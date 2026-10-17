@@ -9,7 +9,6 @@
     clippy::arithmetic_side_effects
 )]
 
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use egit_git::testing::Sandbox;
@@ -107,7 +106,7 @@ fn hook(repo: &Path, name: &str, say: &str, code: u8) {
     let path = repo.join(".git/hooks").join(name);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, format!("#!/bin/sh\necho '{say}'\nexit {code}\n")).unwrap();
-    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    egit_git::testing::set_mode(&path, 0o755).unwrap();
 }
 
 #[test]
@@ -153,7 +152,7 @@ fn declining_to_sign_overrides_the_configuration() {
     // A signer that always fails: had it run, the commit would have failed.
     let signer = sandbox.path("refuse-to-sign");
     std::fs::write(&signer, "#!/bin/sh\nexit 1\n").unwrap();
-    std::fs::set_permissions(&signer, std::fs::Permissions::from_mode(0o755)).unwrap();
+    egit_git::testing::set_mode(&signer, 0o755).unwrap();
     sandbox
         .run(&repo, "config", &["commit.gpgSign", "true"])
         .unwrap();

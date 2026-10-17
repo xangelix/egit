@@ -9,7 +9,6 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -139,6 +138,6 @@ fn a_non_interactive_command_never_asks() {
 /// A directory only this user may enter.
 fn private_dir(path: &Path) -> PathBuf {
     fs::create_dir_all(path).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    egit_git::testing::set_mode(path, 0o700).unwrap();
     path.to_owned()
 }

@@ -16,12 +16,21 @@ testing = []
 
 [dependencies]
 bstr.workspace = true
+getrandom.workspace = true
 parking_lot.workspace = true
-rustix.workspace = true
 tempfile = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix.workspace = true
+
+[target.'cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
 
 [dev-dependencies]
 egit-git = { workspace = true, features = ["testing"] }

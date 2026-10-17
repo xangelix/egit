@@ -5,9 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
-use rustix::process::Pid;
 
-use crate::process;
+use crate::process::{self, Group};
 
 /// Cancels the git commands run with it.
 ///
@@ -26,7 +25,7 @@ struct Shared {
     cancelled: AtomicBool,
     /// The process groups running under this token right now. Each is removed only after its
     /// leader has exited and before it is reaped, so a group id here is never a reused one.
-    running: Mutex<Vec<Pid>>,
+    running: Mutex<Vec<Group>>,
     /// Wakes [`CancelToken::sleep`] when the token is cancelled.
     woken: Condvar,
 }
@@ -77,7 +76,7 @@ impl CancelToken {
     /// Records a process group running under this token until the returned guard is dropped.
     ///
     /// Drop the guard after the group's leader has exited and before reaping it.
-    pub(crate) fn register(&self, group: Pid) -> Registration<'_> {
+    pub(crate) fn register(&self, group: Group) -> Registration<'_> {
         let mut running = self.0.running.lock();
         running.push(group);
         // A cancel that came between the check before spawning and now: it may not have seen
@@ -94,7 +93,7 @@ impl CancelToken {
 #[must_use = "the group stays signallable only while the registration lives"]
 pub(crate) struct Registration<'a> {
     token: &'a CancelToken,
-    group: Pid,
+    group: Group,
 }
 
 impl Drop for Registration<'_> {

@@ -1,9 +1,7 @@
 //! Finding a repository, where its `HEAD` points, and what it is in the middle of.
 
-use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 
 use bstr::{BStr, BString, ByteSlice as _};
@@ -249,7 +247,7 @@ impl Repository {
                 "--format=%(refname)%00%(objectname)%00%(upstream:short)%00\
                  %(upstream:track,nobracket)%00%(contents:subject)",
             )
-            .arg(OsStr::from_bytes(&reference))
+            .arg(reference.to_os_str_lossy())
             .current_dir(&self.work_tree)
             .output()?;
         // The pattern also matches refs below the branch's name; only an exact match counts.
@@ -362,7 +360,7 @@ pub fn trust_directory(git: &Git, path: &Path) -> Result<(), GitError> {
     git.write("config")
         .args(["--global", "--add", "safe.directory"])
         .arg(path)
-        .current_dir("/")
+        .current_dir(crate::git::outside_repositories())
         .output()
         .map(drop)
 }
@@ -507,7 +505,7 @@ fn classify(error: GitError, start: &Path) -> DiscoverError {
 }
 
 fn path_from(bytes: &[u8]) -> PathBuf {
-    PathBuf::from(OsStr::from_bytes(bytes))
+    bytes.to_path_lossy().into_owned()
 }
 
 fn flag(line: &[u8]) -> Result<bool, GitError> {

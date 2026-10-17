@@ -2,9 +2,8 @@
 
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::command::{Access, GitCommand};
 use crate::env::Environment;
@@ -47,7 +46,7 @@ impl Git {
     pub fn new(options: GitOptions) -> Result<Self, GitError> {
         let program = match options.program {
             Some(program) => program,
-            None => find_on_path(OsStr::new("git")).ok_or(GitError::NotFound)?,
+            None => find_on_path(OsStr::new(GIT)).ok_or(GitError::NotFound)?,
         };
         let mut environment = Environment::plan(std::env::vars_os());
         for (key, value) in options.env {
@@ -112,6 +111,25 @@ impl fmt::Debug for Git {
     }
 }
 
+/// The executable's name on `PATH`.
+const GIT: &str = if cfg!(windows) { "git.exe" } else { "git" };
+
+/// A directory no repository contains, where a command that must not see one runs (the
+/// user's global configuration, a clone): `/`, or on Windows the system drive's root.
+pub(crate) fn outside_repositories() -> &'static Path {
+    static OUTSIDE: OnceLock<PathBuf> = OnceLock::new();
+    OUTSIDE.get_or_init(|| {
+        if cfg!(windows) {
+            let drive = std::env::var_os("SystemDrive").unwrap_or_else(|| "C:".into());
+            let mut root = PathBuf::from(drive);
+            root.push("\\");
+            root
+        } else {
+            PathBuf::from("/")
+        }
+    })
+}
+
 /// The first executable called `name` in a directory on `PATH`.
 fn find_on_path(name: &OsStr) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
@@ -121,7 +139,15 @@ fn find_on_path(name: &OsStr) -> Option<PathBuf> {
         .find(|candidate| is_executable(candidate))
 }
 
+#[cfg(unix)]
 fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
     path.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+/// On Windows a file is run by its name (`.exe`), not a permission.
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
 }

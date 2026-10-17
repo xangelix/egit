@@ -2,9 +2,6 @@
 //! `merge --ff-only`, any other by `fetch` from a remote or from the repository itself, which
 //! moves a branch only by a fast-forward (and never the one checked out: git refuses).
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
-
 use bstr::{BStr, ByteSlice as _};
 
 use crate::cancel::CancelToken;
@@ -53,7 +50,7 @@ pub fn fast_forward_current(
     let done = git
         .write("merge")
         .args(["--ff-only", "--no-stat"])
-        .arg(OsStr::from_bytes(to))
+        .arg(to.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output_unchecked()?;
@@ -105,8 +102,8 @@ pub fn fast_forward_branch(
     let done = git
         .write("fetch")
         .args(["--porcelain", "--progress", "--no-tags", "--no-prune", "--"])
-        .arg(OsStr::from_bytes(remote))
-        .arg(OsStr::from_bytes(&refspec))
+        .arg(remote.to_os_str_lossy())
+        .arg(refspec.to_os_str_lossy())
         .prompt_context(format!("Pulling {branch}"))
         .current_dir(repository.work_tree())
         .progress(progress)

@@ -2,9 +2,6 @@
 
 use std::ffi::OsStr;
 use std::io::{self, Write as _};
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::process::ExitCode;
 
 use bstr::ByteSlice as _;
@@ -24,20 +21,23 @@ pub fn run_helper(prompt: &OsStr) -> ExitCode {
     if var(INTERACTIVE_VAR).is_some_and(|value| value == "0") {
         return ExitCode::FAILURE;
     }
-    let token = var(TOKEN_VAR).and_then(|token| Token::from_hex(token.as_bytes()));
+    let token = var(TOKEN_VAR).and_then(|token| Token::from_hex(token.as_encoded_bytes()));
     let (Some(socket), Some(token)) = (var(SOCKET_VAR), token) else {
         complain("not started by egit");
         return ExitCode::FAILURE;
     };
-    let kind = classify(prompt.as_bytes(), var("SSH_ASKPASS_PROMPT").as_deref());
+    let kind = classify(
+        prompt.as_encoded_bytes(),
+        var("SSH_ASKPASS_PROMPT").as_deref(),
+    );
     let context = var(CONTEXT_VAR).unwrap_or_default();
 
     match ask(
-        Path::new(&socket),
+        &socket,
         &token,
         kind,
-        prompt.as_bytes(),
-        context.as_bytes(),
+        prompt.as_encoded_bytes(),
+        context.as_encoded_bytes(),
     ) {
         Ok(Some(answer)) => match kind {
             // Answered by the exit code alone.
@@ -68,13 +68,13 @@ pub fn run_helper(prompt: &OsStr) -> ExitCode {
 /// Sends a prompt to the window at `socket` and waits for the answer: `Some` answered, `None`
 /// refused.
 pub(crate) fn ask(
-    socket: &Path,
+    socket: &OsStr,
     token: &Token,
     kind: PromptKind,
     prompt: &[u8],
     context: &[u8],
 ) -> io::Result<Option<Zeroizing<Vec<u8>>>> {
-    let mut stream = UnixStream::connect(socket)?;
+    let mut stream = super::platform::connect(socket)?;
     protocol::write_request(&mut stream, token, kind, prompt, context)?;
     protocol::read_response(&mut stream)
 }
@@ -82,7 +82,7 @@ pub(crate) fn ask(
 /// What a prompt asks for, from its text and the `SSH_ASKPASS_PROMPT` ssh sets for prompts
 /// that aren't typed answers.
 pub(crate) fn classify(prompt: &[u8], ssh_askpass_prompt: Option<&OsStr>) -> PromptKind {
-    match ssh_askpass_prompt.map(OsStrExt::as_bytes) {
+    match ssh_askpass_prompt.map(OsStr::as_encoded_bytes) {
         Some(b"confirm") => PromptKind::Confirm,
         Some(b"none") => PromptKind::Notice,
         _ if prompt.find(b"(yes/no").is_some() => PromptKind::YesNo,

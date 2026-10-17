@@ -76,10 +76,7 @@ impl Token {
     /// A fresh random token.
     pub(crate) fn random() -> io::Result<Self> {
         let mut bytes = [0_u8; 32];
-        let filled = rustix::rand::getrandom(&mut bytes, rustix::rand::GetRandomFlags::empty())?;
-        if filled != bytes.len() {
-            return Err(io::Error::other("the kernel gave too few random bytes"));
-        }
+        getrandom::fill(&mut bytes).map_err(io::Error::other)?;
         Ok(Self(bytes))
     }
 

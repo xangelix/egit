@@ -124,7 +124,7 @@ pub use stage::{stage, unstage};
 pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stash_store, stashes};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
 pub use submodule::{Submodule, submodules, update_submodules};
-pub use tree::{ignored_paths, tree_entry, tree_folders};
+pub use tree::{git_path, ignored_paths, tree_entry, tree_folders};
 pub use version::{GitVersion, VersionParseError};
 pub use worktree::{
     RemoveWorktreeError, Worktree, WorktreeFrom, add_worktree, lock_worktree, prune_worktrees,

@@ -2,8 +2,7 @@
 //! branches following them with them), pointed at another address, and removed (their
 //! remote-tracking branches with them), by `git remote`.
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
+use bstr::ByteSlice as _;
 
 use bstr::BStr;
 
@@ -47,7 +46,7 @@ pub fn rename_remote(
 ) -> Result<(), GitError> {
     git.write("remote")
         .args(["rename", "--"])
-        .arg(OsStr::from_bytes(old))
+        .arg(old.to_os_str_lossy())
         .arg(new)
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
@@ -69,7 +68,7 @@ pub fn remove_remote(
 ) -> Result<(), GitError> {
     git.write("remote")
         .args(["remove", "--"])
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
@@ -96,7 +95,7 @@ pub fn set_remote_url(
     }
     command
         .arg("--")
-        .arg(OsStr::from_bytes(name))
+        .arg(name.to_os_str_lossy())
         .arg(url)
         .current_dir(repository.work_tree())
         .cancel_token(cancel)

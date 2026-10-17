@@ -1,21 +1,16 @@
 //! The window's side: a private socket helpers connect to, and the prompts they bring.
 
 use std::ffi::OsString;
-use std::fs::{self, DirBuilder};
+use std::fs;
 use std::io;
-use std::os::fd::OwnedFd;
-use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
-use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use rustix::event::{EventfdFlags, PollFd, PollFlags};
-use rustix::io::Errno;
-use rustix::net::RecvFlags;
-
+use super::platform::{
+    self, Listener, Presence, Stopper, Stream, ensure_private, make_private_dir, private_base,
+};
 use super::protocol::{self, PromptKind, Token};
 use super::{HELPER_NAME, SOCKET_VAR, TOKEN_VAR};
 
@@ -32,12 +27,14 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Debug)]
 pub struct AskpassServer {
     dir: PathBuf,
-    socket: PathBuf,
+    /// Where helpers connect (a socket's path, or a port on the loopback address).
+    address: OsString,
     helper: PathBuf,
     token: Token,
-    /// Wakes the accept loop to stop it. Its own descriptor, so stopping never depends on the
-    /// socket's path still being there.
-    wake: Arc<OwnedFd>,
+    /// Stops the accept loop.
+    stopper: Stopper,
+    /// Marks the directory as in use, where that needs something kept.
+    presence: Option<Presence>,
     accept: Option<JoinHandle<()>>,
 }
 
@@ -52,13 +49,14 @@ pub struct Prompt {
     kind: PromptKind,
     text: String,
     context: Option<String>,
-    stream: Option<UnixStream>,
+    stream: Option<Stream>,
 }
 
 impl AskpassServer {
     /// Starts relaying prompts for the executable at `executable` (normally
-    /// [`std::env::current_exe`]), in a directory private to this user: under
-    /// `$XDG_RUNTIME_DIR`, or the temporary directory when that isn't usable.
+    /// [`std::env::current_exe`]), in a directory private to this user: on Unix under
+    /// `$XDG_RUNTIME_DIR`, or the temporary directory when that isn't usable; on Windows under
+    /// the user's temporary directory.
     ///
     /// `notify` is called, on the server's own thread, whenever a prompt arrives; it should wake
     /// the window. Prompts arrive on the returned receiver.
@@ -92,35 +90,30 @@ impl AskpassServer {
             std::process::id(),
             nonce.get(..8).unwrap_or(&nonce)
         ));
-        DirBuilder::new().mode(0o700).create(&dir)?;
+        make_private_dir(&dir)?;
         let cleanup = RemoveOnDrop(Some(dir.clone()));
+        let presence = platform::mark_present(&dir)?;
 
-        let socket = dir.join("socket");
         let helper = dir.join(HELPER_NAME);
-        std::os::unix::fs::symlink(executable, &helper)?;
-        let listener = UnixListener::bind(&socket)?;
-        listener.set_nonblocking(true)?;
-        let wake = Arc::new(rustix::event::eventfd(
-            0,
-            EventfdFlags::CLOEXEC | EventfdFlags::NONBLOCK,
-        )?);
+        platform::link_helper(executable, &helper)?;
+        let (listener, stopper, address) = Listener::bind(&dir)?;
         let (sender, receiver) = mpsc::channel();
         let accept = {
             let token = token.clone();
-            let wake = Arc::clone(&wake);
             thread::Builder::new()
                 .name("askpass".to_owned())
                 .stack_size(128 * 1024)
-                .spawn(move || accept_loop(&listener, &wake, &token, &sender, &notify))?
+                .spawn(move || accept_loop(&listener, &token, &sender, &notify))?
         };
         cleanup.disarm();
         Ok((
             Self {
                 dir,
-                socket,
+                address,
                 helper,
                 token,
-                wake,
+                stopper,
+                presence: Some(presence),
                 accept: Some(accept),
             },
             receiver,
@@ -140,10 +133,7 @@ impl AskpassServer {
                 OsString::from("SSH_ASKPASS_REQUIRE"),
                 OsString::from("force"),
             ),
-            (
-                OsString::from(SOCKET_VAR),
-                self.socket.as_os_str().to_owned(),
-            ),
+            (OsString::from(SOCKET_VAR), self.address.clone()),
             (
                 OsString::from(TOKEN_VAR),
                 OsString::from(self.token.to_hex()),
@@ -160,7 +150,7 @@ impl AskpassServer {
 
 impl Drop for AskpassServer {
     fn drop(&mut self) {
-        if let Err(error) = rustix::io::write(&*self.wake, &1_u64.to_ne_bytes()) {
+        if let Err(error) = self.stopper.stop() {
             tracing::error!(%error, "couldn't stop the askpass server");
             // Its thread may never end: leave it rather than wait forever.
             self.accept = None;
@@ -170,6 +160,8 @@ impl Drop for AskpassServer {
         {
             tracing::error!("the askpass server's thread panicked");
         }
+        // Let go of the directory before removing it.
+        self.presence = None;
         if let Err(error) = fs::remove_dir_all(&self.dir) {
             tracing::warn!(%error, dir = %self.dir.display(), "couldn't remove the askpass directory");
         }
@@ -223,16 +215,7 @@ impl Prompt {
     /// Whether the asker has gone away without waiting for an answer.
     #[must_use]
     pub fn is_abandoned(&self) -> bool {
-        let Some(stream) = &self.stream else {
-            return true;
-        };
-        let mut byte = [0_u8; 1];
-        match rustix::net::recv(stream, &mut byte, RecvFlags::PEEK | RecvFlags::DONTWAIT) {
-            // The other end closed.
-            Ok((0, _)) => true,
-            Ok(_) | Err(Errno::AGAIN | Errno::INTR) => false,
-            Err(_) => true,
-        }
+        self.stream.as_ref().is_none_or(platform::hung_up)
     }
 
     fn respond(&mut self, answer: Option<&[u8]>) -> io::Result<()> {
@@ -250,66 +233,29 @@ impl Drop for Prompt {
     }
 }
 
-/// Accepts helpers until `wake` is signalled.
-fn accept_loop(
-    listener: &UnixListener,
-    wake: &OwnedFd,
-    token: &Token,
-    prompts: &Sender<Prompt>,
-    notify: &impl Fn(),
-) {
+/// Accepts helpers until the server is stopped.
+fn accept_loop(listener: &Listener, token: &Token, prompts: &Sender<Prompt>, notify: &impl Fn()) {
     let mut next_id = 0_u64;
-    loop {
-        let mut ready = [
-            PollFd::new(listener, PollFlags::IN),
-            PollFd::new(wake, PollFlags::IN),
-        ];
-        match rustix::event::poll(&mut ready, None) {
-            Ok(_) => {}
-            Err(Errno::INTR) => continue,
-            Err(error) => {
-                tracing::error!(%error, "the askpass server stopped");
-                return;
-            }
-        }
-        let [listening, woken] = &ready;
-        if !woken.revents().is_empty() {
-            return;
-        }
-        if listening.revents().is_empty() {
-            continue;
-        }
-        loop {
-            let stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) => {
-                    tracing::warn!(%error, "askpass connection failed");
-                    // Don't spin on an error that persists (no file descriptors left, say).
-                    thread::sleep(Duration::from_millis(50));
-                    break;
+    listener.serve(|stream| {
+        next_id = next_id.wrapping_add(1);
+        match receive(stream, token, next_id) {
+            Ok(prompt) => {
+                if prompts.send(prompt).is_err() {
+                    // Nobody is listening any more; the prompt was refused as it dropped.
+                    return false;
                 }
-            };
-            next_id = next_id.wrapping_add(1);
-            match receive(stream, token, next_id) {
-                Ok(prompt) => {
-                    if prompts.send(prompt).is_err() {
-                        // Nobody is listening any more; the prompt was refused as it dropped.
-                        return;
-                    }
-                    notify();
-                }
-                Err(error) => tracing::warn!(%error, "refused an askpass connection"),
+                notify();
             }
+            Err(error) => tracing::warn!(%error, "refused an askpass connection"),
         }
-    }
+        true
+    });
 }
 
 /// Checks a connection and reads its request.
-fn receive(stream: UnixStream, token: &Token, id: u64) -> io::Result<Prompt> {
+fn receive(stream: Stream, token: &Token, id: u64) -> io::Result<Prompt> {
     stream.set_nonblocking(false)?;
-    let peer = rustix::net::sockopt::socket_peercred(&stream)?;
-    if peer.uid != rustix::process::getuid() {
+    if !platform::same_user(&stream)? {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "a helper of another user",
@@ -335,52 +281,6 @@ fn receive(stream: UnixStream, token: &Token, id: u64) -> io::Result<Prompt> {
     })
 }
 
-/// `egit-<uid>` under `$XDG_RUNTIME_DIR`, or under the temporary directory when the runtime
-/// directory is missing or unusable.
-fn private_base() -> io::Result<PathBuf> {
-    let name = format!("egit-{}", rustix::process::getuid().as_raw());
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute());
-    let mut failure = None;
-    for parent in runtime.into_iter().chain([std::env::temp_dir()]) {
-        let base = parent.join(&name);
-        match ensure_private(&base) {
-            Ok(()) => return Ok(base),
-            Err(error) => {
-                tracing::debug!(%error, base = %base.display(), "not a usable askpass directory");
-                failure = Some(error);
-            }
-        }
-    }
-    Err(failure.unwrap_or_else(|| io::Error::other("no directory for the askpass socket")))
-}
-
-/// Creates `dir` (0700) unless it exists, then refuses it unless it is a directory this user
-/// owns that nobody else may enter.
-fn ensure_private(dir: &Path) -> io::Result<()> {
-    match DirBuilder::new().mode(0o700).create(dir) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    let metadata = fs::symlink_metadata(dir)?;
-    let ours = metadata.uid() == rustix::process::getuid().as_raw();
-    #[expect(
-        clippy::verbose_bit_mask,
-        reason = "permission bits read best as a mask"
-    )]
-    let closed_to_others = metadata.mode() & 0o077 == 0;
-    if metadata.is_dir() && ours && closed_to_others {
-        Ok(())
-    } else {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("{} isn't a directory private to this user", dir.display()),
-        ))
-    }
-}
-
 /// Removes the directories of servers whose process is gone (egit crashed, or was killed).
 fn sweep_stale(base: &Path) {
     let Ok(entries) = fs::read_dir(base) else {
@@ -396,9 +296,12 @@ fn sweep_stale(base: &Path) {
         else {
             continue;
         };
-        let alive = Path::new("/proc").join(pid).exists();
-        if !alive
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if pid != std::process::id()
             && entry.file_type().is_ok_and(|kind| kind.is_dir())
+            && platform::is_stale(&entry.path(), pid)
             && let Err(error) = fs::remove_dir_all(entry.path())
         {
             tracing::debug!(%error, "couldn't sweep a stale askpass directory");

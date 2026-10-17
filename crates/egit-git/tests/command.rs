@@ -90,6 +90,7 @@ fn a_missing_directory_is_named() {
     assert!(error.to_string().contains("isn't a directory"), "{error}");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn git_runs_in_a_session_of_its_own_without_a_terminal() {
     let sandbox = sandbox();

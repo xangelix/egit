@@ -2,9 +2,6 @@
 //! path, address, the commit recorded, and whether `submodule init` set it up here), and
 //! submodules brought to the commits recorded (`submodule update --init --recursive`).
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
-
 use bstr::{BStr, BString, ByteSlice as _};
 
 use crate::cancel::CancelToken;
@@ -148,7 +145,7 @@ fn gitlinks(
     let listed = git
         .read("ls-files")
         .args(["-s", "-z", "--"])
-        .args(paths.iter().map(|path| OsStr::from_bytes(path)))
+        .args(paths.iter().map(|path| path.to_os_str_lossy()))
         .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(repository.work_tree())
         .output()?;
@@ -191,7 +188,7 @@ pub fn update_submodules(
 ) -> Result<(), GitError> {
     git.write("submodule")
         .args(["update", "--init", "--recursive", "--progress", "--"])
-        .args(paths.iter().map(|path| OsStr::from_bytes(path)))
+        .args(paths.iter().map(|path| path.to_os_str_lossy()))
         .env("GIT_LITERAL_PATHSPECS", "1")
         .prompt_context("Updating submodules")
         .current_dir(repository.work_tree())

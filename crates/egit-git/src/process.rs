@@ -1,71 +1,23 @@
-//! Spawning git in a session of its own, and signalling and waiting on it safely.
+//! Spawning git as the leader of a group of its own, stopping that group, and waiting on it
+//! safely, on each platform.
 //!
-//! Every git process starts a new session (`setsid`) before it runs. That has two effects egit
-//! relies on:
+//! Every git process leads a group: cancelling stops git together with every hook, ssh, and
+//! helper it started, in a way that lets git remove its lock files first (SIGTERM on Unix; on
+//! Windows, git's own way of stopping a process gently). Stopping a group by its id is only
+//! safe while that id can't be reused: [`wait_until_exited`] waits for the leader's exit while
+//! its id stays reserved, so the owner can stop asking to stop it before letting the id go.
 //!
-//! - It has no controlling terminal, so nothing it starts (ssh, gpg's pinentry, a credential
-//!   helper) can prompt on the terminal egit was launched from, where nobody is looking. Prompts
-//!   go through the askpass helper or fail.
-//! - It leads its own process group, so cancelling signals git together with every hook, ssh,
-//!   and helper it started.
-//!
-//! Signalling a process group by id is only safe while that id can't be reused, i.e. until the
-//! process is reaped. [`wait_until_exited`] waits for the exit *without* reaping, so the owner can
-//! stop signalling first and reap afterwards.
-//!
-//! This is the crate's only `unsafe` code: the `pre_exec` hook that calls `setsid`.
+//! These modules hold the crate's `unsafe` code, the calls the standard library doesn't make,
+//! but for the askpass's `getpeereid` on macOS.
 
-#![expect(
-    unsafe_code,
-    reason = "`pre_exec` is the only way to run `setsid` in the child"
-)]
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+pub(crate) use unix::{Group, group_of, spawn_in_new_session, terminate_group, wait_until_exited};
 
-use std::io;
-use std::os::unix::process::CommandExt as _;
-use std::process::{Child, Command};
-
-use rustix::io::Errno;
-use rustix::process::{Pid, Signal, WaitId, WaitIdOptions};
-
-/// Spawns `command` as the leader of a new session.
-pub(crate) fn spawn_in_new_session(command: &mut Command) -> io::Result<Child> {
-    // SAFETY: the hook runs in the child between `fork` and `exec`, where only
-    // async-signal-safe operations are allowed. `setsid` is a single system call (rustix calls
-    // it directly, without allocating or taking locks), and the error conversion only moves an
-    // integer.
-    unsafe {
-        command.pre_exec(|| {
-            rustix::process::setsid()?;
-            Ok(())
-        });
-    }
-    command.spawn()
-}
-
-/// The process group a spawned git leads (its id is the child's).
-pub(crate) fn group_of(child: &Child) -> Pid {
-    Pid::from_child(child)
-}
-
-/// Asks every process in the group to stop (SIGTERM). Git removes its lock files on SIGTERM.
-pub(crate) fn terminate_group(group: Pid) {
-    match rustix::process::kill_process_group(group, Signal::TERM) {
-        // Everything in the group has already exited.
-        Ok(()) | Err(Errno::SRCH) => {}
-        Err(error) => tracing::warn!(%error, group = group.as_raw_pid(), "could not signal git"),
-    }
-}
-
-/// Blocks until `pid` has exited, leaving it unreaped so its id stays reserved.
-pub(crate) fn wait_until_exited(pid: Pid) -> io::Result<()> {
-    loop {
-        match rustix::process::waitid(
-            WaitId::Pid(pid),
-            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
-        ) {
-            Ok(_) => return Ok(()),
-            Err(Errno::INTR) => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
+#[cfg(windows)]
+mod windows;
+#[cfg(windows)]
+pub(crate) use windows::{
+    Group, group_of, spawn_in_new_session, terminate_group, wait_until_exited,
+};
