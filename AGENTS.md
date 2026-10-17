@@ -324,7 +324,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     GitHub's media type and API version only to GitHub; either forge's rate-limit headers.
   - `account.rs` — `Account`: a host's sign-in under a repository's configuration: the
     credential filled without asking on first use; `sign_in` asks (labelled) and checks it
-    (who it is); a 401 rejects and forgets it (`Refused`), the first success approves it.
+    (who it is); a 401 rejects and forgets it (`Refused`; finding none after that is still
+    `Refused`, until a credential is accepted), the first success approves it.
   - `api.rs` — the calls, each sent to its repository's forge: `pull_requests` (open, most
     recently updated first, 100 a page, each handed over as it lands, up to a limit),
     `pull_request_details`, `repository_info` (default branch, the repository it was forked

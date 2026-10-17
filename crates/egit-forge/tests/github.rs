@@ -191,8 +191,12 @@ fn a_refused_credential_is_forgotten() {
     assert!(matches!(result, Err(ForgeError::Refused { .. })));
     let kept = std::fs::read_to_string(sandbox.path("credentials")).unwrap();
     assert!(!kept.contains("wrong"), "{kept}");
-    // Then there is none, and nothing asks.
+    // Then there is none, and nothing asks: still refused, saying why there is none.
     let result = pull_requests(&account, &repository, 100, &CancelToken::new(), |_| {});
+    assert!(matches!(result, Err(ForgeError::Refused { .. })));
+    // A fresh account (a new session) has none, and isn't signed in.
+    let fresh = Account::new(sandbox.git().clone(), None, repository.host().clone());
+    let result = pull_requests(&fresh, &repository, 100, &CancelToken::new(), |_| {});
     assert!(matches!(result, Err(ForgeError::NotSignedIn { .. })));
 }
 

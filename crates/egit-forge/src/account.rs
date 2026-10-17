@@ -33,6 +33,9 @@ struct State {
     approved: bool,
     /// Who the host says the credential is.
     login: Option<String>,
+    /// Whether the host refused the last credential (forgotten since): finding none after
+    /// that is still a refusal, until one is accepted.
+    refused: bool,
 }
 
 impl Account {
@@ -89,9 +92,15 @@ impl Account {
         let credential = if let Some(credential) = known {
             credential
         } else {
-            let filled = self
-                .fill(Asking::Never, cancel)?
-                .ok_or_else(|| self.not_signed_in())?;
+            let filled = self.fill(Asking::Never, cancel)?.ok_or_else(|| {
+                if self.state.lock().refused {
+                    ForgeError::Refused {
+                        host: self.host().name().to_owned(),
+                    }
+                } else {
+                    self.not_signed_in()
+                }
+            })?;
             let mut state = self.state.lock();
             Arc::clone(state.credential.get_or_insert(filled))
         };
@@ -141,13 +150,15 @@ impl Account {
             return;
         }
         state.approved = true;
+        state.refused = false;
         drop(state);
         if let Err(error) = approve_credential(&self.git, self.repository.as_deref(), credential) {
             tracing::warn!(%error, host = self.host().name(), "the credential couldn't be kept");
         }
     }
 
-    /// Has the helpers forget `credential`, and forgets it here (unless another replaced it).
+    /// Has the helpers forget `credential`, and forgets it here (unless another replaced it),
+    /// remembering that the host refused it.
     fn forget(&self, credential: &Arc<Credential>) {
         let mut state = self.state.lock();
         if state
@@ -155,7 +166,10 @@ impl Account {
             .as_ref()
             .is_some_and(|known| Arc::ptr_eq(known, credential))
         {
-            *state = State::default();
+            *state = State {
+                refused: true,
+                ..State::default()
+            };
         }
         drop(state);
         if let Err(error) = reject_credential(&self.git, self.repository.as_deref(), credential) {

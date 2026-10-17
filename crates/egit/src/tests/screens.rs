@@ -18,6 +18,7 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use crate::app::EgitApp;
+use crate::forge::ForgeProblem;
 use crate::settings::{Settings, StoredPath};
 use crate::theme::icon;
 use crate::views::prompts::Prompts;
@@ -2465,6 +2466,16 @@ fn pull_requests_without_credentials_offer_to_sign_in() {
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &work);
     settle(&mut harness, "the history", history_of(2));
+    // The remotes worked out and read: refused.
+    settle(&mut harness, "the refusal", |app| {
+        app.state.repos.first().is_some_and(|repo| {
+            !repo.forge.is_reading()
+                && matches!(
+                    repo.forge.found().problem,
+                    Some(ForgeProblem::SignIn { refused: true, .. })
+                )
+        })
+    });
     harness.get_by_label_contains("Pull requests").click();
     let host = fake.address();
     wait_for_label(
