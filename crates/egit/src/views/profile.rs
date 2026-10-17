@@ -12,7 +12,7 @@ use egui_table_kit::table::TableKit;
 
 use crate::app::{Action, AppState, ConfigChange};
 use crate::problem::Problem;
-use crate::tables::{ConfigRows, SnapshotTable};
+use crate::tables::{ConfigRows, ROW_HEIGHT, SnapshotTable, fitted};
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -505,12 +505,14 @@ pub(crate) fn config_table(
             .range(100.0..=f32::INFINITY)
             .remainder(true),
     ];
-    let shown = TableKit::new(id, &provider, &mut table.state)
-        .with_columns(columns)
-        .with_row_height(22.0)
-        .with_max_height(Some(height))
-        .with_striped(true)
-        .show(ui, |_, _, _, _| None);
+    let shown = fitted(ui, ROW_HEIGHT, |ui| {
+        TableKit::new(id, &provider, &mut table.state)
+            .with_columns(columns)
+            .with_row_height(ROW_HEIGHT)
+            .with_max_height(Some(height))
+            .with_striped(true)
+            .show(ui, |_, _, _, _| None)
+    });
     if let Err(error) = shown {
         ui.label(
             RichText::new(format!("The table couldn't be drawn: {error}"))

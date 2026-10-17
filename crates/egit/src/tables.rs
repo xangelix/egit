@@ -321,20 +321,23 @@ impl ChangesTable {
                 .remainder(true),
         ];
         let palette = Palette::of(ui.ctx());
-        let shown = TableKit::new(self.id.as_str(), &provider, &mut self.state)
-            .with_columns(columns)
-            .with_row_height(22.0)
-            .with_max_height(Some(height))
-            .with_striped(true)
-            .show_with_output(ui, |ui, cell, _, text_color| {
-                if cell.col_nr != FILE_COLUMN {
-                    return None;
-                }
-                let row = usize::try_from(cell.row_nr).ok()?;
-                let change = details.changes.get(row)?;
-                let lines = lines_of(counts, row);
-                Some(file_cell(ui, change, lines, text_color, palette))
-            });
+        let state = &mut self.state;
+        let shown = fitted(ui, ROW_HEIGHT, |ui| {
+            TableKit::new(self.id.as_str(), &provider, state)
+                .with_columns(columns)
+                .with_row_height(ROW_HEIGHT)
+                .with_max_height(Some(height))
+                .with_striped(true)
+                .show_with_output(ui, |ui, cell, _, text_color| {
+                    if cell.col_nr != FILE_COLUMN {
+                        return None;
+                    }
+                    let row = usize::try_from(cell.row_nr).ok()?;
+                    let change = details.changes.get(row)?;
+                    let lines = lines_of(counts, row);
+                    Some(file_cell(ui, change, lines, text_color, palette))
+                })
+        });
         match shown {
             Ok(output) => output
                 .events
@@ -350,6 +353,22 @@ impl ChangesTable {
             }
         }
     }
+}
+
+/// The row height of egit's tables.
+pub(crate) const ROW_HEIGHT: f32 = 22.0;
+
+/// Draws `add` (a table-kit table with rows `row_height` tall) with a row of widgets as tall
+/// as a cell: table-kit lays a cell's text out in a row `interact_size` tall from the cell's
+/// top, and the theme's is taller than a table's cells, which put text below their middle.
+/// (A cell is the row less the item spacing.) The custom cells here follow the same height.
+pub(crate) fn fitted<R>(ui: &mut Ui, row_height: f32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.scope(|ui| {
+        let cell = (row_height - ui.spacing().item_spacing.y).max(0.0);
+        ui.spacing_mut().interact_size.y = cell;
+        add(ui)
+    })
+    .inner
 }
 
 /// The files a commit changed: how, and which.
@@ -375,7 +394,7 @@ fn file_cell(
 ) -> Response {
     let label =
         |text: String, color| Label::new(RichText::new(text).color(color)).selectable(false);
-    // As tall as table-kit's own cells' rows, so the text lines up with theirs.
+    // As tall as table-kit's own cells' rows (a cell, in `fitted`), so the text lines up.
     let size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
     ui.allocate_ui_with_layout(size, Layout::right_to_left(Align::Center), |ui| {
         match lines {
