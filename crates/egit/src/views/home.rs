@@ -15,7 +15,7 @@ use crate::app::{Action, AppState};
 use crate::format::now;
 use crate::problem::{OpenProblem, Problem};
 use crate::settings::StoredPath;
-use crate::tables::{RecentRows, fitted};
+use crate::tables::RecentRows;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -213,19 +213,18 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
         let name = 200.0;
         let opened = 140.0;
         let location = (ui.available_width() - name - opened).max(160.0);
-        let output = fitted(ui, ROW_HEIGHT, |ui| {
-            TableKit::new("home-recent", &provider, &mut table.state)
-                .with_columns(vec![
-                    Column::new(name).range(120.0..=400.0),
-                    Column::new(location)
-                        .range(120.0..=f32::INFINITY)
-                        .remainder(true),
-                    Column::new(opened).range(80.0..=240.0),
-                ])
-                .with_row_height(ROW_HEIGHT)
-                .with_max_height(Some(height))
-                .show_with_output(ui, |_, _, _, _| None)
-        });
+        let output = TableKit::new("home-recent", &provider, &mut table.state)
+            .with_columns(vec![
+                Column::new(name).range(120.0..=400.0),
+                Column::new(location)
+                    .range(120.0..=f32::INFINITY)
+                    .remainder(true),
+                Column::new(opened).range(80.0..=240.0),
+            ])
+            .with_row_height(ROW_HEIGHT)
+            .with_cell_align(egui::Align::Center)
+            .with_max_height(Some(height))
+            .show_with_output(ui, |_, _, _, _| None);
         let output = match output {
             Ok(output) => output,
             Err(error) => {

@@ -30,7 +30,7 @@ use crate::history::{Objects, read_message};
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::staging::StageRequest;
-use crate::tables::{ROW_HEIGHT, elided_start, fitted};
+use crate::tables::{ROW_HEIGHT, elided_start};
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -459,27 +459,26 @@ fn list_ui(
     let palette = Palette::of(ui.ctx());
     let mut button_event = None;
     let table_id = list.state.id.to_string();
-    let shown = fitted(ui, ROW_HEIGHT, |ui| {
-        TableKit::new(table_id.as_str(), &provider, &mut list.state)
-            .with_columns(columns)
-            .with_row_height(ROW_HEIGHT)
-            .with_max_height(Some(height))
-            .with_striped(true)
-            .show_with_output(ui, |ui, cell, _, text_color| {
-                if cell.col_nr != FILE_COLUMN {
-                    return None;
-                }
-                let entry = provider.entry(usize::try_from(cell.row_nr).ok()?)?;
-                let (response, clicked) = file_cell(ui, entry, side, busy, text_color);
-                if clicked {
-                    button_event = Some(WorkEvent::Stage(StageRequest::Files {
-                        paths: paths(entry, side),
-                        direction: side.direction(),
-                    }));
-                }
-                Some(response)
-            })
-    });
+    let shown = TableKit::new(table_id.as_str(), &provider, &mut list.state)
+        .with_columns(columns)
+        .with_row_height(ROW_HEIGHT)
+        .with_cell_align(Align::Center)
+        .with_max_height(Some(height))
+        .with_striped(true)
+        .show_with_output(ui, |ui, cell, _, text_color| {
+            if cell.col_nr != FILE_COLUMN {
+                return None;
+            }
+            let entry = provider.entry(usize::try_from(cell.row_nr).ok()?)?;
+            let (response, clicked) = file_cell(ui, entry, side, busy, text_color);
+            if clicked {
+                button_event = Some(WorkEvent::Stage(StageRequest::Files {
+                    paths: paths(entry, side),
+                    direction: side.direction(),
+                }));
+            }
+            Some(response)
+        });
     match shown {
         Ok(output) => {
             if let Some(clicked) = output
@@ -515,7 +514,8 @@ fn file_cell(
         Side::Staged => (icon::MINUS, "Unstage"),
     };
     let mut clicked = false;
-    let room = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    // Across the cell's height, as table-kit centers its own cells' text.
+    let room = ui.available_size();
     let response = ui
         .allocate_ui_with_layout(room, Layout::right_to_left(Align::Center), |ui| {
             let button = ui
