@@ -37,6 +37,7 @@ mod progress;
 mod rebase;
 mod remote;
 mod repo;
+mod search;
 mod signatures;
 mod span;
 mod stage;
@@ -99,6 +100,7 @@ pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,
     trust_directory,
 };
+pub use search::{CommitFilter, find_commits, resolve_commit};
 pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use stage::{stage, unstage};
 pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stashes};

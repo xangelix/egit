@@ -247,6 +247,28 @@ impl ConfigSnapshot {
             })
     }
 
+    /// Whether every commit's trees are here: it isn't a partial clone, or its clones' filters
+    /// each leave out only blobs (`blob:none`, `blob:limit=…`), so walking trees fetches
+    /// nothing.
+    #[must_use]
+    pub fn has_every_tree(&self) -> bool {
+        if !self.is_partial_clone() {
+            return true;
+        }
+        let mut filters = self.entries().filter(|entry| {
+            let key = entry.key.as_bytes();
+            key.starts_with(b"remote.") && key.ends_with(b".partialclonefilter")
+        });
+        let mut any = false;
+        let blobs_only = filters.all(|entry| {
+            any = true;
+            entry
+                .value
+                .is_some_and(|filter| filter.starts_with(b"blob:"))
+        });
+        any && blobs_only
+    }
+
     fn entry_at<'s>(&'s self, raw: &RawEntry) -> ConfigEntry<'s> {
         ConfigEntry {
             scope: raw.scope,
