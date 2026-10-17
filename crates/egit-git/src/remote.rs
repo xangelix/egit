@@ -6,7 +6,7 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 
-use bstr::{BString, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _};
 
 use crate::cancel::CancelToken;
 use crate::error::GitError;
@@ -271,30 +271,107 @@ pub fn push(
     refspec.extend_from_slice(&options.branch);
     refspec.extend_from_slice(b":refs/heads/");
     refspec.extend_from_slice(&options.remote_branch);
-    let mut command = git
-        .write("push")
-        .args(["--porcelain", "--progress"])
-        .prompt_context(format!("Pushing to {}", options.remote))
-        .current_dir(repository.work_tree())
-        .progress(progress)
-        .cancel_token(cancel);
+    let mut flags = Vec::new();
     if options.set_upstream {
-        command = command.arg("--set-upstream");
+        flags.push("--set-upstream");
     }
     if options.force {
-        command = command.args(["--force-with-lease", "--force-if-includes"]);
+        flags.extend(["--force-with-lease", "--force-if-includes"]);
     }
-    let done = command
-        .arg("--")
-        .arg(OsStr::from_bytes(&options.remote))
-        .arg(OsStr::from_bytes(&refspec))
-        .output_unchecked()?;
-    let (refs, mut notes) = parse_porcelain(&done.stdout)?;
-    if refs.is_empty() && !done.status.success() {
-        return Err(GitError::failed("push", done.status, done.stderr));
+    let push = Push {
+        remote: options.remote.as_ref(),
+        refspec: refspec.as_bstr(),
+        flags: &flags,
+    };
+    push.run(git, repository, progress, cancel)
+}
+
+/// Pushes the tag `tag` to `remote` (`refs/tags/<tag>`, as it is here). A refused ref isn't
+/// an error: [`Pushed`] says why.
+///
+/// # Errors
+///
+/// When git fails before any ref is pushed, or is cancelled.
+pub fn push_tag(
+    git: &Git,
+    repository: &Repository,
+    remote: &BStr,
+    tag: &BStr,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<Pushed, GitError> {
+    let mut refspec = b"refs/tags/".to_vec();
+    refspec.extend_from_slice(tag);
+    refspec.push(b':');
+    refspec.extend_from_slice(b"refs/tags/");
+    refspec.extend_from_slice(tag);
+    let push = Push {
+        remote,
+        refspec: refspec.as_bstr(),
+        flags: &[],
+    };
+    push.run(git, repository, progress, cancel)
+}
+
+/// Deletes the branch `branch` (its short name there) on `remote` (pushing nothing to
+/// `refs/heads/<branch>`). A refused deletion isn't an error: [`Pushed`] says why.
+///
+/// # Errors
+///
+/// When git fails before any ref is pushed, or is cancelled.
+pub fn delete_remote_branch(
+    git: &Git,
+    repository: &Repository,
+    remote: &BStr,
+    branch: &BStr,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<Pushed, GitError> {
+    let mut refspec = b":refs/heads/".to_vec();
+    refspec.extend_from_slice(branch);
+    let push = Push {
+        remote,
+        refspec: refspec.as_bstr(),
+        flags: &[],
+    };
+    push.run(git, repository, progress, cancel)
+}
+
+/// One refspec pushed to a remote, with flags.
+struct Push<'a> {
+    remote: &'a BStr,
+    refspec: &'a BStr,
+    flags: &'a [&'a str],
+}
+
+impl Push<'_> {
+    /// Runs `push --porcelain`; a refused ref isn't an error.
+    fn run(
+        &self,
+        git: &Git,
+        repository: &Repository,
+        progress: &Progress,
+        cancel: &CancelToken,
+    ) -> Result<Pushed, GitError> {
+        let done = git
+            .write("push")
+            .args(["--porcelain", "--progress"])
+            .args(self.flags)
+            .prompt_context(format!("Pushing to {}", self.remote))
+            .current_dir(repository.work_tree())
+            .progress(progress)
+            .cancel_token(cancel)
+            .arg("--")
+            .arg(OsStr::from_bytes(self.remote))
+            .arg(OsStr::from_bytes(self.refspec))
+            .output_unchecked()?;
+        let (refs, mut notes) = parse_porcelain(&done.stdout)?;
+        if refs.is_empty() && !done.status.success() {
+            return Err(GitError::failed("push", done.status, done.stderr));
+        }
+        notes.extend(progress.report().notes);
+        Ok(Pushed { refs, notes })
     }
-    notes.extend(progress.report().notes);
-    Ok(Pushed { refs, notes })
 }
 
 /// Reads `push --porcelain`: `To <url>`, then a line per ref (`<flag>\t<from>:<to>\t<summary>`,

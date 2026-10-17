@@ -11,6 +11,7 @@
 
 pub mod askpass;
 mod batch;
+mod branch;
 mod cancel;
 mod command;
 mod commit;
@@ -22,6 +23,7 @@ mod env;
 mod error;
 mod git;
 mod history;
+mod integrate;
 mod lines;
 mod object_id;
 mod objects;
@@ -35,6 +37,7 @@ mod repo;
 mod signatures;
 mod span;
 mod stage;
+mod stash;
 mod status;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -42,6 +45,10 @@ mod tree;
 mod version;
 
 pub use batch::GitProcess;
+pub use branch::{
+    BadRefName, DeleteBranchError, SwitchError, SwitchTo, check_ref_name, create_branch,
+    create_tag, delete_branch, delete_tag, rename_branch, switch,
+};
 pub use cancel::CancelToken;
 pub use command::{Access, GitCommand, Streamed};
 pub use commit::{Commit, CommitParseError, Signature};
@@ -63,6 +70,7 @@ pub use history::{
     ChangeKind, CountedFile, FileChange, LineCounts, RefKind, Reference, TreeEntry, Walked,
     commit_changes, line_counts, list_references, walk_history, write_commit_graph,
 };
+pub use integrate::{Integrated, ResetMode, cherry_pick, merge, rebase, reset, revert};
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};
@@ -71,7 +79,8 @@ pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use progress::{Progress, ProgressReport};
 pub use remote::{
     CloneOptions, FetchOptions, PullMode, Pulled, PushFlag, PushOptions, Pushed, PushedRef,
-    abort_operation, clone, continue_operation, fetch, pull, push, remotes,
+    abort_operation, clone, continue_operation, delete_remote_branch, fetch, pull, push, push_tag,
+    remotes,
 };
 pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,
@@ -79,6 +88,7 @@ pub use repo::{
 };
 pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use stage::{stage, unstage};
+pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stashes};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
 pub use tree::{ignored_paths, tree_folders};
 pub use version::{GitVersion, VersionParseError};

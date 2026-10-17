@@ -206,6 +206,7 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     --force-if-includes`; each ref's `PushFlag` and git's reason for a refusal, other lines as
     notes; a refusal isn't an error), `remotes`, and `abort_operation` /
     `continue_operation` for a merge, rebase, am, cherry-pick, revert (bisect: `reset`).
+    `push_tag` and `delete_remote_branch` push one refspec the same way (`Push::run`).
     `tests/remote.rs` runs each against a bare repository through `file://` (and a clone
     cancelled while its remote, git's `ext::` transport running `sleep`, hasn't answered:
     git removes its folder).
@@ -229,6 +230,25 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     output of one's own. `tests/conflict.rs` resolves conflicts from each operation and continues it, and checks
     that taking one side everywhere is `merge-file --ours`/`--theirs` on 250 random cases
     (lines like markers, missing final newlines).
+  - `branch.rs` — `check_ref_name` (git's `check-ref-format` rules, so a dialog says what is
+    wrong at once: `BadRefName`); `switch` (`git switch --no-guess`) to a `SwitchTo`: a
+    branch, a remote branch through a new local one tracking it, a new branch at a commit, or a
+    commit detached; changes in the way are `SwitchError::WouldOverwrite` with their paths
+    (local or untracked, from git's message). `create_branch`, `rename_branch` (`--move`),
+    `delete_branch` (`DeleteBranchError::NotMerged` unless forced), `create_tag` (annotated
+    from a message on standard input, `--cleanup=whitespace`; lightweight `--no-sign`, as
+    `tag.gpgSign` would ask for a message), `delete_tag`.
+  - `integrate.rs` — commits brought into the current branch: `merge` (`--no-edit`),
+    `rebase`, `cherry_pick`, `revert` (`--no-edit`; a merge's against its first parent, by
+    `rev-list --parents`), each `Integrated::Done`, `Conflicts` (failed with the operation in
+    progress and `ls-files -u` not empty), or `Empty` (a pick that is "now empty", skipped);
+    `reset` (`ResetMode`: soft, mixed, hard).
+  - `stash.rs` — `stashes` (`stash list -z`, `%gd %H %ct %gs`: index, commit, time, git's
+    message), `stash_push` (a message, untracked files with `--include-untracked`; whether
+    anything was stashed, from `refs/stash` before and after, as `--quiet` says nothing),
+    `stash_apply` (and pop; `Integrated::Conflicts` keeps a popped stash) and `stash_drop`,
+    each refused (`StashError::Stale`) unless `stash@{n}` is still the stash listed.
+    `tests/actions.rs` runs all of these, and the pushes, against sandboxes.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
