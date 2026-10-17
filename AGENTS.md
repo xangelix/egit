@@ -29,6 +29,7 @@ it.
 | 15 | Patches | done; awaiting the owner's review |
 | 16 | Undo, and the reflog | done; awaiting the owner's review |
 | 17 | The sidebar, and the repository's plumbing | done; awaiting the owner's review |
+| 18 | Bisect, and rebasing merges | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -333,7 +334,7 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `info`'s subject), `current_patch` (`am --show-current-patch=diff`), `looks_like_patch`
     (`.patch`, `.diff`, `.mbox`, `.eml`).
   - `integrate.rs` — commits brought into the current branch: `merge` (`--no-edit`),
-    `rebase`, `cherry_pick`, `revert` (`--no-edit`; a merge's against its first parent, by
+    `rebase` (keeping merges, `--rebase-merges`, when asked), `cherry_pick`, `revert` (`--no-edit`; a merge's against its first parent, by
     `rev-list --parents`), each `Integrated::Done`, `Conflicts` (failed with the operation in
     progress and `ls-files -u` not empty), `Empty` (a pick that is "now empty", skipped), or
     `Stopped` (an operation left with nothing to resolve); `reset` (`ResetMode`: soft, mixed,
@@ -347,9 +348,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `tests/actions.rs` runs all of these, and the pushes, against sandboxes.
   - `rebase.rs` — interactive rebase. `rebase_range`: the commits from one up to `HEAD`
     (`merge-base --is-ancestor`, then `log -z --reverse <from>^..HEAD`, or all from a root),
-    oldest first, with authors and whole messages; refused (`RangeError`) when `HEAD` doesn't
-    reach it, the range holds a merge (rebasing would flatten it), or past `MAX_PLANNED`
-    (10,000). `rebase_interactive`: a plan of `Planned` commits (`Step`: pick, reword with a
+    oldest first, with authors and whole messages, merges marked (`RangeCommit::merge`,
+    `RebaseRange::merges`); refused (`RangeError`) when `HEAD` doesn't reach it, or past
+    `MAX_PLANNED` (10,000). `rebase_interactive`: a plan of `Planned` commits (`Step`: pick, reword with a
     message, squash, fixup, drop) checked (`RebaseError`: nothing to squash into, an empty
     message) and written as git's todo in a temporary file (`tempfile`) that the sequence
     editor copies in (`GIT_SEQUENCE_EDITOR=cp -- <file>`; `--no-autosquash
@@ -357,8 +358,26 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     squashed or fixed up into it, `exec printf … | git commit --amend --file=-` carrying its
     message (each line quoted for the shell), so the todo holds everything and a rebase
     continued after a conflict still rewords. Conflicts are `Integrated::Conflicts`, as
-    `integrate.rs` tells. `tests/rebase.rs` reads ranges and runs plans (reorder, reword,
-    squash, fixup, drop, the root, conflicts and continuing, a dirty work tree refused).
+    `integrate.rs` tells. `rebase_keeping_merges`: a range holding merges, in git's own
+    `--rebase-merges` todo, read first by a dry run (a sequence editor that copies the todo out
+    and fails: git gives up before anything moves, leaving no state, `ORIG_HEAD`, or reflog
+    entry; `core.abbrev` at full length, commands unabbreviated), the plan's drops and rewords
+    written into it (`with_plan`: `pick` lines dropped, `exec` amends after a reworded `pick`
+    or `merge -C`), then run with it; melding (`MeldWithMerges`), a dropped merge
+    (`DropMerge`), and a plan git's todo doesn't match (`Mismatch`) refused. `tests/rebase.rs`
+    reads ranges and runs plans (reorder, reword, squash, fixup, drop, the root, conflicts and
+    continuing, a dirty work tree refused, a range with a merge keeping it, a rebase onto a
+    branch keeping merges or flattening them).
+  - `bisect.rs` — `bisect_mark` (`git bisect <term> <commit>` in the bisection's terms, read
+    by `bisect terms`; `bisect start` first when none is under way; status 2, only skipped
+    commits left, isn't a failure). `bisection`: where one stands, from git's records rather
+    than its messages (which change between versions): the terms, `refs/bisect/` (the bad
+    commit, the good ones, those skipped), and `BisectLeft` worked out from them (needs a bad
+    or a good commit; `Testing` with how many candidates, counted by `rev-list --stdin
+    --count`, `steps` about their log; `Found` the first bad commit when it alone isn't
+    skipped among the candidates (listed when 1,024 or fewer); `Among` those it could be).
+    Stopped by `abort_operation` (`bisect reset`). `tests/bisect.rs` finds a first bad
+    commit, leaves a choice when skipping, and marks in a bisection's own terms.
   - `blame.rs` — `blame`: `git blame --incremental` (renames followed; lines moved within the
     file only with `Moves::Writing`, `-M`, which is far slower on a large file) at a commit or
     the work tree, streamed through `Lines`, each `BlameRun` (its
@@ -521,8 +540,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `WriteLock` (taken inside jobs, never on the interface thread).
   - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Repo(id)}`; `show`
     focuses or adds a tab; Home can't be closed; closing a repository's tab pushes `Closed`.
-  - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head, operations, and a stopped
-    `git am`'s progress) and the
+  - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head, operations, a stopped
+    `git am`'s progress, and a bisection's `Bisection`) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
     lands) and its stash list, worktrees, and submodules (`refresh_lists`: read at once, when
     refs change, and after each task), its
@@ -758,7 +777,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
     screen, then a screen below and above). Graph cells paint lines (cubic curves between
     lanes) and nodes (hollow for merges, ringed for `HEAD`); rows are buttons named by their
-    subject; ref badges (each its menu, a branch's double-click switching to it; in the details
+    subject; a bisection's refs as badges in its terms (bad, good, skipped; `bisect_badge`);
+    ref badges (each its menu, a branch's double-click switching to it; in the details
     too); a signed commit's seal by its verdict (good, doubtful, bad, or
     unchecked, its meaning on hover); a focusable area takes ↑ ↓ PgUp PgDn Home End. The message column
     is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
@@ -799,7 +819,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     the remote's notes, or a problem box), a refused push explained by its reason (behind:
     "Force push…" or Pull; a lease that failed: nothing forced, fetch first), and the banner
     of an operation in progress (a stopped `git am`'s "Applying patches stopped at 2 of 5:
-    subject" and Show the patch; Show the conflicts, Continue, Skip, Abort…; a bisect's Stop;
+    subject" and Show the patch; Show the conflicts, Continue, Skip, Abort…; a bisection's
+    state (a commit to mark bad or good; "About 3 more to test: 9 commits could be the first
+    bad one" with Good, Bad, Skip for the commit checked out; the first bad commit found, and
+    Show the commit; one among several) and Stop bisecting;
     the headline and what to do on lines of their own, the buttons in a row below).
     Each task's end in words (`ended`, `done_text`: "Switched to topic.", "Picked 1234abcd.",
     "… changes nothing here: skipped."); a refused switch and an unmerged delete lead to
@@ -827,10 +850,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     branch, `HEAD`, the configuration (its remotes read only when a menu needs them), the refs, whether a task runs or an operation is in progress,
     which disable what would change the branch, saying why): a commit's context menu (switch
     there detached, create a branch or tag there, merge it in, rebase onto it, cherry-pick,
-    revert, reset soft or mixed, hard after a dialog, a worktree there, copy a link to it on
+    revert, reset soft or mixed, hard after a dialog, a worktree there, its Bisect submenu (mark
+    it bad or good in the bisection's terms, starting one; skip it), copy a link to it on
     its forge; and in the row's menu, its name, subject, or "Save as a patch…"), a ref badge's
     (switch to a branch, a remote's through its local one tracking it, unless one of that
-    name exists; merge it in, rebase onto it, fast-forward the current branch to it, and a
+    name exists; merge it in, rebase onto it (or onto it keeping merges), fast-forward the
+    current branch to it, and a
     remote's local branch following it; a local branch's Pull (the current one as configured,
     another fast-forward only), Push (to its upstream, or the first-push dialog), and Set
     upstream; a worktree from it; rename or delete a branch, delete a remote's on its remote,
@@ -851,7 +876,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     marked), the selected one's message below (a code field when reworded); keys while no
     text field has the focus: ↑ ↓, Alt+↑ Alt+↓ to move, P R S F D. `plan` hands git the rows
     oldest first, or says why not (nothing changes, nothing to meld into, an empty message,
-    everything dropped); "Start rebase" runs it as a task.
+    everything dropped); "Start rebase" runs it as a task. A range holding merges (said
+    under the bar) keeps them in git's order: rows don't move, nothing melds, a merge (marked)
+    is picked or reworded, never dropped (`Kind::allowed`); its task keeps merges.
     `views/search.rs` — `HistorySearch`, the search bar over the commit table (⌘F, or the
     top bar's Search, which shows the table in place of a file or a tool): the kind, the
     query (searched once typing pauses 0.3 s, the history read whole, the previous search
@@ -991,7 +1018,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     cursors, focus rings, and 24-point targets. `src/tests/menus.rs` drives the menus' newer
     actions: pulling, pushing, fast-forwarding branches, upstreams set and forgotten, a name
     copied, a branch deleted here and on its remote, a patch saved, a worktree opened in a
-    tab, the graph narrowed and pinned. `src/tests/sidebar.rs` drives the sidebar: what it lists
+    tab, the graph narrowed and pinned. `src/tests/bisect.rs` drives a bisection from two
+    commits' menus and the banner to its first bad commit (shown, then stopped), and a branch
+    holding a merge rebased onto another keeping it, then in the editor (a commit dropped,
+    nothing moved or melded, the merge kept). `src/tests/sidebar.rs` drives the sidebar: what it lists
     and counts, folders and sections folded, the filter (Escape clears it), a branch's row
     selecting its commit and a stash's showing its changes, a branch hidden and shown again;
     a remote added (its name offered) and fetched, renamed, re-pointed for pushing, fetched
