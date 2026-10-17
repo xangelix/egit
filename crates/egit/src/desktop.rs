@@ -1,9 +1,16 @@
 //! Handing things to the desktop: a web page to the user's browser, through the desktop's
-//! opener (`xdg-open`, else `gio open`), off the interface thread.
+//! opener (`xdg-open`, else `gio open`), off the interface thread; and where a file is saved,
+//! asked in the desktop's save dialog.
 
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+use egit_git::ObjectId;
+use egui_async::Bind;
+
 use crate::jobs;
+use crate::problem::Problem;
+use crate::repo::RepoId;
 
 /// Where web pages go: the user's browser, or (for tests) a list of them.
 #[derive(Debug, Default)]
@@ -36,6 +43,81 @@ impl Opener {
             Some(recorded) => recorded.push(url),
             None => jobs::detached(move || open_web_page(&url)),
         }
+    }
+}
+
+/// What a file saved is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Saving {
+    /// A repository's commit's patch.
+    Patch { repo: RepoId, commit: ObjectId },
+}
+
+/// Where files are saved: chosen in the desktop's save dialog, one at a time, or (for tests)
+/// put in a folder without asking.
+#[derive(Debug)]
+pub(crate) struct Saver {
+    /// For tests: the folder files go into, without a dialog.
+    folder: Option<PathBuf>,
+    /// The dialog, while it is open (and its answer, until taken).
+    asking: Bind<Option<PathBuf>, Problem>,
+    /// What the file asked for is.
+    saving: Option<Saving>,
+    /// Where it goes, once known.
+    chosen: Option<(Saving, PathBuf)>,
+}
+
+impl Default for Saver {
+    fn default() -> Self {
+        Self {
+            folder: None,
+            asking: Bind::new(true),
+            saving: None,
+            chosen: None,
+        }
+    }
+}
+
+impl Saver {
+    /// A saver putting every file in `folder`, asking nothing.
+    #[cfg(test)]
+    pub(crate) fn into_folder(folder: PathBuf) -> Self {
+        Self {
+            folder: Some(folder),
+            ..Self::default()
+        }
+    }
+
+    /// Asks where the file `saving` is, offered as `name`, goes (unless the dialog is open
+    /// for another).
+    pub(crate) fn ask(&mut self, saving: Saving, title: &'static str, name: String) {
+        if self.asking.is_pending() {
+            return;
+        }
+        if let Some(folder) = &self.folder {
+            self.chosen = Some((saving, folder.join(name)));
+            return;
+        }
+        self.saving = Some(saving);
+        self.asking.request(async move {
+            let file = rfd::AsyncFileDialog::new()
+                .set_title(title)
+                .set_file_name(name)
+                .save_file()
+                .await;
+            Ok(file.map(|file| file.path().to_owned()))
+        });
+    }
+
+    /// The file asked for and where it goes, once chosen (`None` too when the dialog was
+    /// cancelled).
+    pub(crate) fn chosen(&mut self) -> Option<(Saving, PathBuf)> {
+        if let Some(Ok(Some(path))) = self.asking.take()
+            && let Some(saving) = self.saving.take()
+        {
+            self.chosen = Some((saving, path));
+        }
+        self.chosen.take()
     }
 }
 

@@ -58,6 +58,8 @@ pub(crate) struct History {
     refs: Refs,
     /// Whether the repository has a commit-graph file, once the walk has looked.
     commit_graph: Option<bool>,
+    /// What of the scope asked for it applied: the refs found.
+    scope: Scope,
     /// The walk, while it runs.
     loading: Option<Loading>,
     problem: Option<Problem>,
@@ -79,8 +81,13 @@ impl Drop for Loading {
 /// What a walk hands over as it goes.
 #[derive(Debug)]
 enum Piece {
-    /// The refs and whether there is a commit-graph file, before any row.
-    Start { refs: Refs, commit_graph: bool },
+    /// The refs, whether there is a commit-graph file, and the scope as it applied, before any
+    /// row.
+    Start {
+        refs: Refs,
+        commit_graph: bool,
+        scope: Scope,
+    },
     /// The next rows: their lanes and their commits' names.
     Rows {
         graph: Chunk,
@@ -92,11 +99,13 @@ enum Piece {
 }
 
 impl History {
-    /// Starts reading `repository`'s history; rows arrive as [`Self::poll`] takes them in.
+    /// Starts reading `repository`'s history (as much of it as `scope` shows); rows arrive as
+    /// [`Self::poll`] takes them in.
     pub(crate) fn load(
         git: &Git,
         repository: &Arc<Repository>,
         objects: &Objects,
+        scope: &Scope,
         ctx: &egui::Context,
     ) -> Self {
         let (sender, pieces) = mpsc::channel();
@@ -105,12 +114,19 @@ impl History {
             git.clone(),
             Arc::clone(repository),
             objects.clone(),
+            scope.clone(),
             cancel.clone(),
             ctx.clone(),
         );
         jobs::detached(move || {
-            let (git, repository, objects, cancel, ctx) = job;
-            let walked = walk(&git, &repository, &objects, &cancel, &sender, &ctx);
+            let (git, repository, objects, scope, cancel, ctx) = job;
+            let walking = Walking {
+                git: &git,
+                repository: &repository,
+                objects: &objects,
+                cancel: &cancel,
+            };
+            let walked = walk(&walking, &scope, &sender, &ctx);
             // When nobody listens any more, there is no one to tell.
             let _ = sender.send(Piece::Done(walked));
             ctx.request_repaint();
@@ -122,6 +138,7 @@ impl History {
             widest: 0,
             refs: Refs::default(),
             commit_graph: None,
+            scope: Scope::default(),
             loading: Some(Loading { pieces, cancel }),
             problem: None,
         }
@@ -134,9 +151,14 @@ impl History {
         };
         loop {
             match loading.pieces.try_recv() {
-                Ok(Piece::Start { refs, commit_graph }) => {
+                Ok(Piece::Start {
+                    refs,
+                    commit_graph,
+                    scope,
+                }) => {
                     self.refs = refs;
                     self.commit_graph = Some(commit_graph);
+                    self.scope = scope;
                 }
                 Ok(Piece::Rows { graph, ids, widest }) => {
                     let rows = u64::try_from(graph.len()).unwrap_or(0);
@@ -178,6 +200,11 @@ impl History {
     /// The refs pointing into it.
     pub(crate) const fn refs(&self) -> &Refs {
         &self.refs
+    }
+
+    /// What it shows: the refs whose history alone, and the branch pinned, as found.
+    pub(crate) const fn scope(&self) -> &Scope {
+        &self.scope
     }
 
     /// Whether the repository has a commit-graph file (`None` until the walk has looked).
@@ -330,17 +357,34 @@ fn locate(row: u64) -> Option<(usize, usize)> {
     ))
 }
 
-/// Walks the history, handing over the refs first, then the rows a chunk at a time. Its refs and
-/// the commits it starts from come from gitoxide where it reads them as git does.
-fn walk(
-    git: &Git,
-    repository: &Repository,
-    objects: &Objects,
-    cancel: &CancelToken,
-    pieces: &Sender<Piece>,
-    ctx: &egui::Context,
-) -> Result<(), Problem> {
-    let gix = objects.reopen(repository.work_tree());
+/// Which of a history is shown, and how: every ref's history, or some refs' alone (a branch
+/// soloed); and a branch kept in the leftmost lane (pinned).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Scope {
+    /// The refs (by full name) whose history alone is shown; none: every ref's.
+    pub(crate) only: Vec<BString>,
+    /// The branch (by full name) kept in the leftmost lane.
+    pub(crate) pinned: Option<BString>,
+}
+
+impl Scope {
+    /// Whether it shows every ref's history, nothing pinned.
+    pub(crate) const fn is_everything(&self) -> bool {
+        self.only.is_empty() && self.pinned.is_none()
+    }
+}
+
+/// What a walk works with.
+struct Walking<'a> {
+    git: &'a Git,
+    repository: &'a Repository,
+    objects: &'a Objects,
+    cancel: &'a CancelToken,
+}
+
+/// The repository's refs: gitoxide's where it reads them, else git's; and gitoxide's reader.
+fn read_refs(walking: &Walking<'_>) -> Result<(Vec<Reference>, Option<GixRepository>), Problem> {
+    let gix = walking.objects.reopen(walking.repository.work_tree());
     let read_by_gix = gix.as_ref().and_then(|gix| match gix.references() {
         Ok(refs) => Some(refs),
         Err(error) => {
@@ -350,16 +394,50 @@ fn walk(
     });
     let refs = match read_by_gix {
         Some(refs) => refs,
-        None => list_references(git, repository).map_err(|error| {
+        None => list_references(walking.git, walking.repository).map_err(|error| {
             Problem::git(
                 "The repository's branches and tags couldn't be read",
                 &error,
             )
         })?,
     };
+    Ok((refs, gix))
+}
+
+/// Walks the history, handing over the refs first, then the rows a chunk at a time. Its refs and
+/// the commits it starts from come from gitoxide where it reads them as git does; with
+/// `scope`, only some refs' commits, a branch pinned to the left (each as far as its refs are
+/// found: none found, everything).
+fn walk(
+    walking: &Walking<'_>,
+    scope: &Scope,
+    pieces: &Sender<Piece>,
+    ctx: &egui::Context,
+) -> Result<(), Problem> {
+    let (git, repository) = (walking.git, walking.repository);
+    let (refs, gix) = read_refs(walking)?;
+    let target = |name: &BString| {
+        refs.iter()
+            .find(|reference| reference.name == *name)
+            .map(|reference| reference.target)
+    };
+    let only: Vec<(BString, ObjectId)> = scope
+        .only
+        .iter()
+        .filter_map(|name| Some((name.clone(), target(name)?)))
+        .collect();
+    let pinned = scope
+        .pinned
+        .as_ref()
+        .and_then(|name| Some((name.clone(), target(name)?)));
+    let applied = Scope {
+        only: only.iter().map(|(name, _)| name.clone()).collect(),
+        pinned: pinned.as_ref().map(|(name, _)| name.clone()),
+    };
     let start = Piece::Start {
         refs: Refs::new(refs),
         commit_graph: repository.has_commit_graph(),
+        scope: applied,
     };
     if pieces.send(start).is_err() {
         return Ok(());
@@ -371,7 +449,7 @@ fn walk(
         ctx.request_repaint();
         sent
     };
-    let mut builder = GraphBuilder::new();
+    let mut builder = pinned.map_or_else(GraphBuilder::new, |(_, tip)| GraphBuilder::pinned(tip));
     let mut ids = Vec::with_capacity(capacity);
     let each = |id: ObjectId, parents: &[ObjectId]| {
         if let Some(graph) = builder.push(id, parents) {
@@ -383,7 +461,18 @@ fn walk(
         ids.extend_from_slice(id.as_bytes());
         ControlFlow::Continue(())
     };
-    let tips = gix.as_ref().and_then(|gix| gix.tips().ok());
+    let tips = if only.is_empty() {
+        gix.as_ref().and_then(|gix| gix.tips().ok())
+    } else {
+        let mut tips: Vec<ObjectId> = Vec::with_capacity(only.len());
+        for (_, tip) in only {
+            if !tips.contains(&tip) {
+                tips.push(tip);
+            }
+        }
+        Some(tips)
+    };
+    let cancel = walking.cancel;
     match tips {
         Some(tips) => walk_history_from(git, repository, tips, cancel, each),
         None => walk_history(git, repository, cancel, each),
@@ -418,6 +507,19 @@ impl Refs {
         self.0
             .iter()
             .any(|reference| reference.kind == RefKind::Branch && reference.short_name() == name)
+    }
+
+    /// Whether there is a ref called `name` (its full name).
+    pub(crate) fn has(&self, name: &BStr) -> bool {
+        self.0.iter().any(|reference| reference.name == name)
+    }
+
+    /// The remote branches, by their short names (`origin/main`).
+    pub(crate) fn remote_branches(&self) -> impl Iterator<Item = &BStr> {
+        self.0
+            .iter()
+            .filter(|reference| reference.kind == RefKind::RemoteBranch)
+            .map(Reference::short_name)
     }
 
     /// The refs pointing at `id`.
@@ -1070,27 +1172,50 @@ pub(crate) struct HistoryState {
     pub(crate) summaries: Summaries,
     pub(crate) signatures: Signatures,
     pub(crate) objects: Objects,
+    /// What of the history is shown, as asked.
+    scope: Scope,
 }
 
 impl HistoryState {
     /// Starts reading `repository`'s history.
     pub(crate) fn new(git: &Git, repository: &Arc<Repository>, ctx: &egui::Context) -> Self {
         let objects = Objects::default();
+        let scope = Scope::default();
         Self {
-            shown: History::load(git, repository, &objects, ctx),
+            shown: History::load(git, repository, &objects, &scope, ctx),
             next: None,
             replaced: false,
             restarted: false,
             summaries: Summaries::default(),
             signatures: Signatures::default(),
             objects,
+            scope,
+        }
+    }
+
+    /// What of the history is shown, as asked.
+    pub(crate) const fn scope(&self) -> &Scope {
+        &self.scope
+    }
+
+    /// Shows `scope` of the history: read again (the table kept until it's complete).
+    pub(crate) fn set_scope(
+        &mut self,
+        git: &Git,
+        repository: &Arc<Repository>,
+        scope: Scope,
+        ctx: &egui::Context,
+    ) {
+        if scope != self.scope {
+            self.scope = scope;
+            self.reload(git, repository, ctx);
         }
     }
 
     /// Reads the history again. The table keeps showing the current one until the new one is
     /// complete, unless the current one isn't complete either.
     pub(crate) fn reload(&mut self, git: &Git, repository: &Arc<Repository>, ctx: &egui::Context) {
-        let next = History::load(git, repository, &self.objects, ctx);
+        let next = History::load(git, repository, &self.objects, &self.scope, ctx);
         if self.shown.is_loading() || self.shown.rows() == 0 {
             self.shown = next;
             self.next = None;
@@ -1246,6 +1371,7 @@ mod tests {
             widest: 0,
             refs: Refs::default(),
             commit_graph: None,
+            scope: Scope::default(),
             loading: Some(Loading {
                 pieces,
                 cancel: CancelToken::new(),
@@ -1271,6 +1397,7 @@ mod tests {
             summaries: Summaries::default(),
             signatures: Signatures::default(),
             objects: Objects::default(),
+            scope: Scope::default(),
         }
     }
 
@@ -1351,6 +1478,7 @@ mod tests {
             widest: 0,
             refs: Refs::default(),
             commit_graph: None,
+            scope: Scope::default(),
             loading: Some(Loading {
                 pieces,
                 cancel: CancelToken::new(),

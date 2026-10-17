@@ -9,6 +9,7 @@
 //! doesn't take the lock (a fetch never touches the index), and is stopped when the user starts
 //! a task; its failures are kept apart and said quietly.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -17,13 +18,15 @@ use egit_forge::{
     Account, ForgeKind, ForgeRepository, NewPullRequest, Opened, create_pull_request,
 };
 use egit_git::{
-    CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError, FetchOptions, Git,
-    GitError, Integrated, MAX_PLANNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled,
-    PushOptions, Pushed, RangeError, RebaseError, RebaseRange, Repository, ResetMode, Stash,
-    StashError, Step, SwitchError, SwitchTo, abort_operation, cherry_pick, continue_operation,
-    create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag, fetch,
-    fetch_refspecs, merge, pull, push, push_tag, rebase, rebase_interactive, rebase_range,
-    rename_branch, reset, revert, set_config, stash_apply, stash_drop, stash_push, switch,
+    CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError, FetchOptions,
+    ForwardFrom, Forwarded, Git, GitError, Integrated, MAX_PLANNED, ObjectId, Operation, Planned,
+    Progress, PullMode, Pulled, PushOptions, Pushed, RangeError, RebaseError, RebaseRange,
+    Repository, ResetMode, Stash, StashError, Step, SwitchError, SwitchTo, WorktreeFrom,
+    abort_operation, add_worktree, cherry_pick, continue_operation, create_branch, create_tag,
+    delete_branch, delete_remote_branch, delete_tag, fast_forward_branch, fast_forward_current,
+    fetch, fetch_refspecs, format_patch, merge, pull, push, push_tag, rebase, rebase_interactive,
+    rebase_range, rename_branch, reset, revert, set_config, set_upstream, stash_apply, stash_drop,
+    stash_push, switch,
 };
 use egui_async::Bind;
 
@@ -129,6 +132,65 @@ pub(crate) enum Task {
     },
     /// Open a pull request on a forge.
     CreatePullRequest(Box<PullRequestToOpen>),
+    /// Fast-forward the current branch to a ref (its full name), `shown` its name for people.
+    FastForward {
+        to: BString,
+        shown: String,
+    },
+    /// Fast-forward a branch that isn't checked out (its short name).
+    FastForwardBranch {
+        branch: BString,
+        from: ForwardSource,
+        shown: String,
+    },
+    /// Set a branch's upstream (a remote-tracking branch's short name), or forget it.
+    SetUpstream {
+        branch: BString,
+        upstream: Option<BString>,
+    },
+    /// Delete a branch here, then its remote's (`force`: even if it isn't merged here).
+    DeleteBranchEverywhere {
+        name: BString,
+        remote: BString,
+        remote_branch: BString,
+        force: bool,
+    },
+    /// Add a work tree at `path` checking out `from`; `open`: show it in a tab once made.
+    AddWorktree {
+        path: PathBuf,
+        from: WorktreeSource,
+        open: bool,
+    },
+    /// Save a commit's patch at `path`.
+    SavePatch {
+        commit: ObjectId,
+        path: PathBuf,
+    },
+}
+
+/// Where a branch that isn't checked out fast-forwards from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ForwardSource {
+    /// A remote's branch (its name there): pulling, without a merge.
+    Remote { remote: BString, branch: BString },
+    /// A ref here (its full name).
+    Here(BString),
+}
+
+/// What a new work tree checks out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WorktreeSource {
+    /// A local branch (its short name).
+    Branch(BString),
+    /// A new branch at a ref or commit (its full name, or the commit's); `track`: a remote's
+    /// branch it follows.
+    NewBranch {
+        name: BString,
+        at: BString,
+        track: bool,
+    },
+    /// A commit, without a branch.
+    Detached(ObjectId),
 }
 
 /// A pull request to open, and the repository it goes into.
@@ -143,7 +205,14 @@ impl Task {
     pub(crate) fn doing(&self) -> &'static str {
         match self {
             Self::Fetch => "Fetching",
-            Self::Pull(_) | Self::PullAndRemember { .. } => "Pulling",
+            Self::FastForward { .. }
+            | Self::FastForwardBranch {
+                from: ForwardSource::Here(_),
+                ..
+            } => "Fast-forwarding",
+            Self::Pull(_) | Self::PullAndRemember { .. } | Self::FastForwardBranch { .. } => {
+                "Pulling"
+            }
             Self::Push(_) | Self::PushTag { .. } => "Pushing",
             Self::Abort(_) => "Aborting",
             Self::Continue(_) => "Continuing",
@@ -151,9 +220,10 @@ impl Task {
             Self::StashAndSwitch(_) | Self::Stash { .. } => "Stashing",
             Self::CreateBranch { .. } => "Making the branch",
             Self::RenameBranch { .. } => "Renaming",
-            Self::DeleteBranch { .. } | Self::DeleteRemoteBranch { .. } | Self::DeleteTag(_) => {
-                "Deleting"
-            }
+            Self::DeleteBranch { .. }
+            | Self::DeleteRemoteBranch { .. }
+            | Self::DeleteTag(_)
+            | Self::DeleteBranchEverywhere { .. } => "Deleting",
             Self::Merge { .. } => "Merging",
             Self::Rebase { .. } | Self::InteractiveRebase { .. } => "Rebasing",
             Self::DropCommit(_) => "Dropping the commit",
@@ -177,6 +247,9 @@ impl Task {
                 ForgeKind::GitHub => "Opening the pull request",
                 ForgeKind::GitLab => "Opening the merge request",
             },
+            Self::SetUpstream { .. } => "Setting the upstream",
+            Self::AddWorktree { .. } => "Making the worktree",
+            Self::SavePatch { .. } => "Saving the patch",
         }
     }
 }
@@ -206,6 +279,8 @@ pub(crate) enum Outcome {
     NotMerged,
     /// A pull request opened.
     Opened(Opened),
+    /// A fast-forward: done, there already, or refused as it would take a merge.
+    Forwarded(Forwarded),
 }
 
 /// A repository's exchanges with its remotes.
@@ -352,14 +427,17 @@ fn run(
         | Task::PullAndRemember { .. }
         | Task::Push(_)
         | Task::PushTag { .. }
-        | Task::DeleteRemoteBranch { .. } => remote(git, repository, task, progress, cancel),
+        | Task::DeleteRemoteBranch { .. }
+        | Task::FastForwardBranch { .. }
+        | Task::DeleteBranchEverywhere { .. } => remote(git, repository, task, progress, cancel),
         Task::Abort(_)
         | Task::Continue(_)
         | Task::Merge { .. }
         | Task::Rebase { .. }
         | Task::CherryPick(_)
         | Task::Revert(_)
-        | Task::Reset(..) => history(git, repository, task, cancel),
+        | Task::Reset(..)
+        | Task::FastForward { .. } => history(git, repository, task, cancel),
         Task::InteractiveRebase { .. } | Task::DropCommit(_) | Task::SquashIntoParent(_) => {
             rewrite(git, repository, task, cancel)
         }
@@ -369,7 +447,9 @@ fn run(
         | Task::RenameBranch { .. }
         | Task::DeleteBranch { .. }
         | Task::CreateTag { .. }
-        | Task::DeleteTag(_) => references(git, repository, task, cancel),
+        | Task::DeleteTag(_)
+        | Task::SetUpstream { .. } => references(git, repository, task, cancel),
+        Task::AddWorktree { .. } | Task::SavePatch { .. } => places(git, repository, task, cancel),
         Task::Stash { .. } | Task::ApplyStash { .. } | Task::DropStash(_) => {
             stashing(git, repository, task, cancel)
         }
@@ -513,6 +593,42 @@ fn remote(
                 .map(Outcome::Pushed)
                 .or_else(failed("The branch couldn't be deleted on the remote"))
         }
+        Task::FastForwardBranch { branch, from, .. } => {
+            let from = match from {
+                ForwardSource::Remote { remote, branch } => ForwardFrom::Remote {
+                    remote: remote.as_ref(),
+                    branch: branch.as_ref(),
+                },
+                ForwardSource::Here(name) => ForwardFrom::Here(name.as_ref()),
+            };
+            fast_forward_branch(git, repository, branch.as_ref(), from, progress, cancel)
+                .map(Outcome::Forwarded)
+                .or_else(failed("The branch couldn't be fast-forwarded"))
+        }
+        Task::DeleteBranchEverywhere {
+            name,
+            remote,
+            remote_branch,
+            force,
+        } => {
+            match delete_branch(git, repository, name.as_ref(), *force, cancel) {
+                Ok(()) => {}
+                Err(DeleteBranchError::NotMerged) => return Ok(Outcome::NotMerged),
+                Err(DeleteBranchError::Git(error)) => {
+                    return failed("The branch couldn't be deleted")(error);
+                }
+            }
+            let (remote, branch) = (remote.as_ref(), remote_branch.as_ref());
+            delete_remote_branch(git, repository, remote, branch, progress, cancel)
+                .map(|pushed| {
+                    if pushed.succeeded() {
+                        Outcome::Done
+                    } else {
+                        Outcome::Pushed(pushed)
+                    }
+                })
+                .or_else(failed("The branch was deleted here, but not on the remote"))
+        }
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),
     }
@@ -547,6 +663,9 @@ fn history(
         Task::Reset(commit, mode) => reset(git, repository, *commit, *mode, cancel)
             .map(|()| Outcome::Done)
             .or_else(failed("Resetting failed")),
+        Task::FastForward { to, .. } => fast_forward_current(git, repository, to.as_ref(), cancel)
+            .map(Outcome::Forwarded)
+            .or_else(failed("The branch couldn't be fast-forwarded")),
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),
     }
@@ -695,6 +814,56 @@ fn references(
         Task::DeleteTag(name) => delete_tag(git, repository, name.as_ref(), cancel)
             .map(|()| Outcome::Done)
             .or_else(failed("The tag couldn't be deleted")),
+        Task::SetUpstream { branch, upstream } => set_upstream(
+            git,
+            repository,
+            branch.as_ref(),
+            upstream.as_ref().map(AsRef::as_ref),
+            cancel,
+        )
+        .map(|()| Outcome::Done)
+        .or_else(failed("The upstream couldn't be set")),
+        // `run` sends the others elsewhere.
+        _ => Ok(Outcome::Done),
+    }
+}
+
+/// Places of the repository's outside it: a new work tree, a patch saved.
+fn places(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
+    match task {
+        Task::AddWorktree { path, from, .. } => {
+            let from = match from {
+                WorktreeSource::Branch(branch) => WorktreeFrom::Branch(branch.as_ref()),
+                WorktreeSource::NewBranch { name, at, track } => WorktreeFrom::NewBranch {
+                    name: name.as_ref(),
+                    at: at.as_ref(),
+                    track: *track,
+                },
+                WorktreeSource::Detached(commit) => WorktreeFrom::Detached(*commit),
+            };
+            add_worktree(git, repository, path, from, cancel)
+                .map(|()| Outcome::Done)
+                .or_else(failed("The worktree couldn't be made"))
+        }
+        Task::SavePatch { commit, path } => {
+            let patch = match format_patch(git, repository, *commit, cancel) {
+                Ok(patch) => patch,
+                Err(error) => return failed("The patch couldn't be made")(error),
+            };
+            std::fs::write(path, patch)
+                .map(|()| Outcome::Done)
+                .map_err(|error| {
+                    Problem::new(
+                        "The patch couldn't be saved",
+                        format!("{}: {error}.", path.display()),
+                    )
+                })
+        }
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),
     }

@@ -7,12 +7,13 @@
 //! every row, which a graph, never sorted or filtered, doesn't need.)
 
 use std::ops::Range;
+use std::path::Path;
 use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
 use egit_git::{
     CancelToken, Committed, ConfigSnapshot, FileChange, Git, Head, ObjectId, Operation, RefKind,
-    Reference, Repository, SignatureCheck, Stash, Status, Verdict,
+    Reference, Repository, SignatureCheck, Stash, Status, Verdict, patch_file_name,
 };
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
@@ -40,8 +41,8 @@ use crate::fonts;
 use crate::forge::{Badge, RepoForge, request_noun, request_number};
 use crate::format::{count, date_time};
 use crate::history::{
-    ChangeCounts, CommitDetails, History, HistoryState, Objects, Refs, Signatures, Summaries,
-    read_change_counts, read_details,
+    ChangeCounts, CommitDetails, History, HistoryState, Objects, Refs, Scope, Signatures,
+    Summaries, read_change_counts, read_details,
 };
 use crate::problem::Problem;
 use crate::repo::RepoId;
@@ -125,6 +126,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) stashes: &'a [Stash],
     /// Its remotes on GitHub and GitLab, and their requests.
     pub(crate) forge: &'a RepoForge,
+    /// The user's home folder, shown as `~`.
+    pub(crate) home: Option<&'a Path>,
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -560,6 +563,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         tasks,
         stashes,
         forge,
+        home,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -578,24 +582,28 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         config,
         busy: tasks.is_busy(),
         forge,
+        scope: history.scope().clone(),
+        home,
     };
     // Before the first commit, the work tree is all there is to look at.
     if history.shown.rows() == 0 && !history.shown.is_loading() {
         view.work_selected = true;
     }
 
+    let mut pane = TaskPane {
+        id,
+        work_tree: repository.work_tree(),
+        home,
+        head,
+        operations,
+        config,
+        stashes,
+        tasks: &mut *tasks,
+        actions: &mut *actions,
+    };
     egui::Panel::top(Id::new(("history-bar", id)))
         .frame(Frame::new().inner_margin(Margin::symmetric(12, 8)))
         .show(ui, |ui| {
-            let mut pane = TaskPane {
-                id,
-                head,
-                operations,
-                config,
-                stashes,
-                tasks: &mut *tasks,
-                actions: &mut *actions,
-            };
             top_bar(
                 ui,
                 &shared,
@@ -610,21 +618,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
                 view.select_work();
             }
         });
-    dialogs(
-        ui.ctx(),
-        &shared,
-        &history.objects,
-        view,
-        &mut TaskPane {
-            id,
-            head,
-            operations,
-            config,
-            stashes,
-            tasks: &mut *tasks,
-            actions: &mut *actions,
-        },
-    );
+    dialogs(ui.ctx(), &shared, &history.objects, view, &mut pane);
 
     let no_commits = history.shown.rows() == 0;
     if no_commits && work_status.as_ref().is_none_or(|status| status.is_empty()) {
@@ -756,6 +750,10 @@ pub(super) struct Shared<'a> {
     pub(super) busy: bool,
     /// Its remotes on GitHub and GitLab, and their requests.
     pub(super) forge: &'a RepoForge,
+    /// What of the history is shown, as asked.
+    scope: Scope,
+    /// The user's home folder, shown as `~`.
+    pub(super) home: Option<&'a Path>,
 }
 
 impl Shared<'_> {
@@ -769,6 +767,9 @@ impl Shared<'_> {
             busy: self.busy,
             operation: self.operation.is_some(),
             forge: self.forge,
+            scope: &self.scope,
+            work_tree: self.repository.work_tree(),
+            home: self.home,
         }
     }
 
@@ -852,6 +853,9 @@ fn top_bar(
         tasks::bar(ui, &mut view.tasks, task_pane);
     });
     let actions = &mut *task_pane.actions;
+    if !history.shown.scope().is_everything() {
+        scope_line(ui, shared, history.shown.scope(), actions);
+    }
     for problem in [history.shown.problem(), history.summaries.problem.as_ref()]
         .into_iter()
         .flatten()
@@ -902,6 +906,62 @@ fn search_button(ui: &mut Ui, view: &mut HistoryView) {
             view.open_search();
         }
     }
+}
+
+/// What of the history is shown, when not all of it as it comes: the branches it is narrowed
+/// to (and showing every branch again), the branch pinned to the left (and unpinning it). In a
+/// `Ui` of its own: it comes and goes.
+fn scope_line(ui: &mut Ui, shared: &Shared<'_>, applied: &Scope, actions: &mut Vec<Action>) {
+    let short = |name: &bstr::BString| {
+        let name = name.as_slice();
+        name.strip_prefix(b"refs/heads/")
+            .or_else(|| name.strip_prefix(b"refs/remotes/"))
+            .unwrap_or(name)
+            .to_str_lossy()
+            .into_owned()
+    };
+    let palette = shared.palette;
+    let builder = egui::UiBuilder::new().id(Id::new(("history-scope", shared.id)));
+    ui.scope_builder(builder, |ui| {
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            if !applied.only.is_empty() {
+                let names: Vec<String> = applied.only.iter().map(short).collect();
+                ui.label(
+                    RichText::new(format!(
+                        "{}  Showing only {}",
+                        icon::FUNNEL,
+                        names.join(", ")
+                    ))
+                    .color(palette.muted),
+                );
+                if widgets::secondary(ui, true, "Show every branch").clicked() {
+                    let scope = Scope {
+                        only: Vec::new(),
+                        ..shared.scope.clone()
+                    };
+                    actions.push(Action::Scope(shared.id, scope));
+                }
+            }
+            if let Some(pinned) = &applied.pinned {
+                ui.label(
+                    RichText::new(format!(
+                        "{}  {} pinned to the left",
+                        icon::PUSH_PIN,
+                        short(pinned)
+                    ))
+                    .color(palette.muted),
+                );
+                if widgets::secondary(ui, true, "Unpin").clicked() {
+                    let scope = Scope {
+                        pinned: None,
+                        ..shared.scope.clone()
+                    };
+                    actions.push(Action::Scope(shared.id, scope));
+                }
+            }
+        });
+    });
 }
 
 /// The pull (or merge) requests' button, when a remote is on GitHub or GitLab: how many are
@@ -1132,6 +1192,12 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
             view.tool = Some(Tool::Rebase(RebaseView::new(shared, from, reword)));
         }
         Ask::Open(url) => actions.push(Action::OpenUrl(url)),
+        Ask::Scope(scope) => actions.push(Action::Scope(shared.id, scope)),
+        Ask::SavePatch { commit, name } => actions.push(Action::SavePatch {
+            repo: shared.id,
+            commit,
+            name,
+        }),
         Ask::PullRequest(selected) => view.show_pull_request(selected),
         Ask::CreatePullRequest {
             branch,
@@ -1328,6 +1394,17 @@ impl TableDelegate for CommitRows<'_> {
                 && ui.button("Copy subject").clicked()
             {
                 ui.ctx().copy_text(summary.subject.to_string());
+                ui.close();
+            }
+            if ui.button("Save as a patch…").clicked() {
+                let subject = summaries.peek(&id).map_or_else(
+                    || id.abbreviated(ID_DIGITS).to_string(),
+                    |summary| summary.subject.to_string(),
+                );
+                *asked = Some(Ask::SavePatch {
+                    commit: id,
+                    name: patch_file_name(&subject),
+                });
                 ui.close();
             }
         });

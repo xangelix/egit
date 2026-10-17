@@ -1,7 +1,8 @@
 //! The history at a large repository's scale, measured: how soon the first rows show, how long
 //! the whole history takes, and how long frames take while jumping all over it and scrolling;
 //! then searching it (messages, authors, a path, a name): how soon the first commit is found,
-//! how long it takes, and the memory it holds while it runs and after.
+//! how long it takes, and the memory it holds while it runs and after; and how soon it is shown
+//! narrowed to the current branch and pinned, then whole again.
 //!
 //! Not run by default, as it needs a large repository (Linux's, say) and a release build:
 //!
@@ -30,7 +31,7 @@ use egui_kittest::Harness;
 
 use super::screens::{rendering, screens};
 use crate::app::{Action, EgitApp};
-use crate::history::Names;
+use crate::history::{Names, Scope};
 use crate::search::{self, Asked, SearchKind};
 use crate::settings::Settings;
 use crate::views::prompts::Prompts;
@@ -187,6 +188,40 @@ fn a_large_history_opens_at_once_and_scrolls_within_a_frame() {
     }
     let names = harness.state().state.repos[0].history.shown.names();
     searches(&repo, &names);
+    scoped(&mut harness, &repo);
+}
+
+/// The history narrowed to the current branch and pinned, then every branch's again: how soon
+/// each read again takes over.
+fn scoped(harness: &mut Harness<'_, EgitApp>, repo: &std::path::Path) {
+    let git = Git::new(GitOptions::default()).unwrap();
+    let branch = git
+        .read("symbolic-ref")
+        .arg("HEAD")
+        .current_dir(repo)
+        .output()
+        .unwrap()
+        .stdout;
+    let branch = bstr::BString::from(branch.trim_ascii());
+    for (what, scope) in [
+        (
+            "only the current branch, pinned",
+            Scope {
+                only: vec![branch.clone()],
+                pinned: Some(branch),
+            },
+        ),
+        ("every branch again", Scope::default()),
+    ] {
+        let started = Instant::now();
+        harness.state_mut().state.repos[0].set_scope(&git, scope);
+        harness.step();
+        step_until(harness, Duration::from_secs(600), |app| {
+            !app.state.repos[0].history.is_loading()
+        });
+        let rows = harness.state().state.repos[0].history.shown.rows();
+        println!("{what}: {rows} rows after {:?}", started.elapsed());
+    }
 }
 
 /// Searches the history, each kind in turn, printing how soon the first commit was found, how

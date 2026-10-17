@@ -114,6 +114,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                         tasks: self.tasks,
                         stashes: self.stashes.ok_ref().map_or(&[], |stashes| &**stashes),
                         forge: self.forge,
+                        home: self.home,
                         actions: self.actions,
                     },
                 );

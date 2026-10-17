@@ -24,7 +24,7 @@ use super::screens::{
     wait_for_label,
 };
 use crate::app::EgitApp;
-use crate::history::{History, Objects};
+use crate::history::{History, Objects, Scope};
 use crate::search::{self, Asked, Found, SearchKind};
 use crate::theme::icon;
 
@@ -265,7 +265,13 @@ fn messages_and_authors_read_here_are_those_git_finds() {
     let git = sandbox.git();
     let repository = Arc::new(Repository::discover(git, &repo).unwrap());
     let ctx = egui::Context::default();
-    let mut history = History::load(git, &repository, &Objects::default(), &ctx);
+    let mut history = History::load(
+        git,
+        &repository,
+        &Objects::default(),
+        &Scope::default(),
+        &ctx,
+    );
     let started = Instant::now();
     while history.is_loading() {
         assert!(

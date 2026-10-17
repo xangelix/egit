@@ -1,11 +1,15 @@
 //! The questions a repository's tasks ask, one at a time in a modal: how to bring diverged
 //! branches together, forcing a push, a branch's first push, giving up an operation; a new
-//! branch's or tag's name, a branch's new name; and, before anything that loses work, what it
-//! loses (deleting a branch or a remote's, a tag, a stash; a hard reset; stashing changes in
-//! the way of a switch).
+//! branch's or tag's name, a branch's new name, a branch's upstream, where a new worktree goes;
+//! and, before anything that loses work, what it loses (deleting a branch, here or on its
+//! remote too, or a remote's, a tag, a stash; a hard reset; stashing changes in the way of a
+//! switch).
 //!
 //! Each dialog keeps what is typed into it in its variant, and ends by starting a task or by
 //! being closed.
+
+use std::fmt::Write as _;
+use std::path::{Path, PathBuf};
 
 use bstr::{BString, ByteSlice as _};
 use egit_git::{
@@ -15,9 +19,12 @@ use egui::{Id, Key, Modal, RichText, TextEdit, Ui};
 
 use super::history::ID_DIGITS;
 use super::tasks::TaskPane;
-use crate::tasks::Task;
+use crate::tasks::{Task, WorktreeSource};
 use crate::theme::Palette;
 use crate::widgets::{self, muted};
+
+/// The most remote branches the upstream dialog offers at once.
+const UPSTREAMS_OFFERED: usize = 8;
 
 /// A question asked before (or after) a task.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,8 +45,28 @@ pub(crate) enum Dialog {
     },
     /// A branch's new name.
     RenameBranch { old: BString, name: String },
-    /// Whether to delete a branch (`unmerged`: git said its commits are nowhere else).
-    DeleteBranch { name: BString, unmerged: bool },
+    /// Whether to delete a branch (`unmerged`: git said its commits are nowhere else), and with
+    /// `remote`, its remote's too (the remote, its name there).
+    DeleteBranch {
+        name: BString,
+        unmerged: bool,
+        remote: Option<(BString, BString)>,
+    },
+    /// A branch's upstream: one of `choices` (remote branches' short names), typed; or none.
+    SetUpstream {
+        branch: BString,
+        upstream: String,
+        had: Option<String>,
+        choices: Vec<String>,
+    },
+    /// Where a new worktree goes, as typed (a relative path is beside the repository), what it
+    /// checks out, and a new branch's name; `open`: show it once made.
+    AddWorktree {
+        from: WorktreeAsked,
+        path: String,
+        name: String,
+        open: bool,
+    },
     /// Whether to delete a remote's branch.
     DeleteRemoteBranch { remote: BString, branch: BString },
     /// A new tag's name at a commit, and a message (which makes it annotated).
@@ -64,6 +91,17 @@ pub(crate) enum Dialog {
     Stash { message: String, untracked: bool },
     /// Whether to drop a stash.
     DropStash(Stash),
+}
+
+/// What a new worktree checks out, as a menu asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WorktreeAsked {
+    /// A local branch.
+    Branch(BString),
+    /// A remote's branch (its full and short names), through a new branch following it.
+    RemoteBranch { full: BString, short: BString },
+    /// A commit: on a new branch, or without one.
+    Commit(ObjectId),
 }
 
 /// How a dialog was answered.
@@ -115,7 +153,23 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
         Dialog::Abort(operation) => abort(ui, *operation),
         Dialog::CreateBranch { at, name, switch } => create_branch(ui, *at, name, switch),
         Dialog::RenameBranch { old, name } => rename_branch(ui, old, name),
-        Dialog::DeleteBranch { name, unmerged } => delete_branch(ui, name, *unmerged),
+        Dialog::DeleteBranch {
+            name,
+            unmerged,
+            remote,
+        } => delete_branch(ui, name, *unmerged, remote.as_ref()),
+        Dialog::SetUpstream {
+            branch,
+            upstream,
+            had,
+            choices,
+        } => set_upstream(ui, branch, upstream, had.as_deref(), choices),
+        Dialog::AddWorktree {
+            from,
+            path,
+            name,
+            open,
+        } => add_worktree(ui, pane, from, path, name, open),
         Dialog::DeleteRemoteBranch { remote, branch } => delete_remote_branch(ui, remote, branch),
         Dialog::CreateTag { at, name, message } => create_tag(ui, *at, name, message),
         Dialog::DeleteTag(name) => confirm(
@@ -389,10 +443,15 @@ fn rename_branch(ui: &mut Ui, old: &BString, name: &mut String) -> Option<Answer
     buttons(ui, "Rename", ready, go)
 }
 
-/// Whether to delete a branch.
-fn delete_branch(ui: &mut Ui, name: &BString, unmerged: bool) -> Option<Answer> {
+/// Whether to delete a branch, and its remote's with `remote` (the remote, its name there).
+fn delete_branch(
+    ui: &mut Ui,
+    name: &BString,
+    unmerged: bool,
+    remote: Option<&(BString, BString)>,
+) -> Option<Answer> {
     let name_shown = name.to_str_lossy();
-    let said = if unmerged {
+    let mut said = if unmerged {
         format!(
             "{name_shown} has commits no other branch has: deleting it loses them (git keeps \
              them in its reflog for a while)."
@@ -400,13 +459,194 @@ fn delete_branch(ui: &mut Ui, name: &BString, unmerged: bool) -> Option<Answer> 
     } else {
         "The branch goes; its commits stay where other branches have them.".to_owned()
     };
+    let question = match remote {
+        Some((remote, branch)) => {
+            let remote = remote.to_str_lossy();
+            let _ = write!(
+                said,
+                " On {remote}, {} goes too, for everyone using it.",
+                branch.to_str_lossy()
+            );
+            format!(
+                "Delete {name_shown} and {remote}/{}?",
+                branch.to_str_lossy()
+            )
+        }
+        None => format!("Delete {name_shown}?"),
+    };
     let yes = if unmerged { "Delete anyway" } else { "Delete" };
-    confirm(ui, &format!("Delete {name_shown}?"), &said, yes, || {
-        Task::DeleteBranch {
+    confirm(ui, &question, &said, yes, || match remote {
+        Some((remote, remote_branch)) => Task::DeleteBranchEverywhere {
+            name: name.clone(),
+            remote: remote.clone(),
+            remote_branch: remote_branch.clone(),
+            force: unmerged,
+        },
+        None => Task::DeleteBranch {
             name: name.clone(),
             force: unmerged,
-        }
+        },
     })
+}
+
+/// A branch's upstream: typed (the remote branches holding what is typed offered to pick), or
+/// none.
+fn set_upstream(
+    ui: &mut Ui,
+    branch: &BString,
+    upstream: &mut String,
+    had: Option<&str>,
+    choices: &[String],
+) -> Option<Answer> {
+    let branch_shown = branch.to_str_lossy();
+    title(ui, &format!("Set {branch_shown}'s upstream"));
+    says(
+        ui,
+        "The remote branch it pulls from and pushes to by default, and is compared with.",
+    );
+    ui.add_space(8.0);
+    let entered = name_field(ui, "Upstream", upstream);
+    let typed = upstream.trim().to_owned();
+    let known = choices.contains(&typed);
+    let offered: Vec<&String> = choices
+        .iter()
+        .filter(|choice| choice.contains(typed.as_str()) && **choice != typed)
+        .take(UPSTREAMS_OFFERED)
+        .collect();
+    let mut picked = None;
+    if !offered.is_empty() {
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            for choice in offered {
+                if ui.small_button(choice.as_str()).clicked() {
+                    picked = Some(choice.clone());
+                }
+            }
+        });
+    }
+    if let Some(picked) = picked {
+        *upstream = picked;
+    }
+    if !typed.is_empty() && !known {
+        let palette = Palette::of(ui.ctx());
+        ui.label(
+            RichText::new("Not a remote branch here: fetch, or push the branch first.")
+                .color(palette.warn),
+        );
+    }
+    ui.add_space(12.0);
+    let set = |upstream: Option<&str>| Task::SetUpstream {
+        branch: branch.clone(),
+        upstream: upstream.map(BString::from),
+    };
+    if entered && known {
+        return Some(Answer::Run(set(Some(&typed))));
+    }
+    let mut answer = None;
+    widgets::buttons_row(ui, |ui| {
+        if widgets::primary(ui, known, "Set upstream").clicked() {
+            answer = Some(Answer::Run(set(Some(upstream.trim()))));
+        }
+        if let Some(had) = had
+            && widgets::secondary(ui, true, &format!("Forget {had}"))
+                .on_hover_text("Leave the branch without an upstream")
+                .clicked()
+        {
+            answer = Some(Answer::Run(set(None)));
+        }
+        if widgets::secondary(ui, true, "Cancel").clicked() {
+            answer = Some(Answer::Closed);
+        }
+    });
+    answer
+}
+
+/// Where a new worktree goes (and a new branch's name); what it checks out.
+fn add_worktree(
+    ui: &mut Ui,
+    pane: &TaskPane<'_>,
+    from: &WorktreeAsked,
+    path: &mut String,
+    name: &mut String,
+    open: &mut bool,
+) -> Option<Answer> {
+    let (what, said) = match from {
+        WorktreeAsked::Branch(branch) => (
+            branch.to_str_lossy().into_owned(),
+            "The branch is checked out there, as in another clone sharing this one's history."
+                .to_owned(),
+        ),
+        WorktreeAsked::RemoteBranch { short, .. } => (
+            short.to_str_lossy().into_owned(),
+            "A new branch following it is checked out there.".to_owned(),
+        ),
+        WorktreeAsked::Commit(commit) => (
+            commit.abbreviated(ID_DIGITS).to_string(),
+            "On a new branch, or without one if it has no name.".to_owned(),
+        ),
+    };
+    title(ui, &format!("Create a worktree from {what}"));
+    says(ui, &said);
+    ui.add_space(8.0);
+    let label = ui.label(muted(ui, "Folder (a new or empty one)"));
+    ui.add(TextEdit::singleline(path).desired_width(f32::INFINITY))
+        .labelled_by(label.id);
+    let target = worktree_path(path, pane.work_tree, pane.home);
+    let needs_name = !matches!(from, WorktreeAsked::Branch(_));
+    let mut ready = target.is_some();
+    if needs_name {
+        ui.add_space(8.0);
+        let optional = matches!(from, WorktreeAsked::Commit(_));
+        let label = if optional {
+            "New branch (none: without a branch)"
+        } else {
+            "New branch"
+        };
+        name_field(ui, label, name);
+        let named = name_problem(ui, name);
+        ready &= named || (optional && name.trim().is_empty());
+    }
+    ui.add_space(4.0);
+    ui.checkbox(open, "Open it once made");
+    ui.add_space(12.0);
+    let go = || {
+        let name = name.trim();
+        let from = match from {
+            WorktreeAsked::Branch(branch) => WorktreeSource::Branch(branch.clone()),
+            WorktreeAsked::RemoteBranch { full, .. } => WorktreeSource::NewBranch {
+                name: name.into(),
+                at: full.clone(),
+                track: true,
+            },
+            WorktreeAsked::Commit(commit) if name.is_empty() => WorktreeSource::Detached(*commit),
+            WorktreeAsked::Commit(commit) => WorktreeSource::NewBranch {
+                name: name.into(),
+                at: commit.to_string().into(),
+                track: false,
+            },
+        };
+        Task::AddWorktree {
+            path: target.clone().unwrap_or_default(),
+            from,
+            open: *open,
+        }
+    };
+    buttons(ui, "Create worktree", ready, go)
+}
+
+/// Where a worktree typed as `typed` goes: `~` is the home folder, and a relative path is
+/// beside the repository's work tree.
+pub(super) fn worktree_path(typed: &str, work_tree: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let typed = typed.trim();
+    if typed.is_empty() {
+        return None;
+    }
+    let path = super::home::expand_home(typed, home);
+    if path.is_absolute() {
+        Some(path)
+    } else {
+        Some(work_tree.parent().unwrap_or(work_tree).join(path))
+    }
 }
 
 /// Whether to delete a remote's branch.

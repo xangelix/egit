@@ -10,7 +10,7 @@ use egit_git::{
 use egui_async::Bind;
 
 use crate::forge::RepoForge;
-use crate::history::HistoryState;
+use crate::history::{HistoryState, Scope};
 use crate::jobs::{self, WriteLock};
 use crate::problem::Problem;
 use crate::staging::{self, StageRequest};
@@ -232,8 +232,10 @@ impl RepoTab {
         let (finished, fetch_wait) = self.tasks.poll(git, &self.repository, has_remotes, now);
         if finished {
             // Refs and operations follow through the watcher too; the work tree may have
-            // changed under a pull, an abort, or a continue.
+            // changed under a pull, an abort, or a continue; and the configuration under a
+            // first push or a new upstream, which menus read at once.
             self.refresh_status(git);
+            self.refresh_config(git);
             self.refresh_stashes(git);
             self.work_tree.refresh_now();
         }
@@ -314,6 +316,12 @@ impl RepoTab {
         self.refresh_stashes(git);
         self.work_tree.refresh_now();
         self.history.reload(git, &self.repository, &self.waker);
+    }
+
+    /// Shows `scope` of the history (read again).
+    pub(crate) fn set_scope(&mut self, git: &Git, scope: Scope) {
+        self.history
+            .set_scope(git, &self.repository, scope, &self.waker);
     }
 
     /// Writes a commit-graph file, so walks of the history start at once.

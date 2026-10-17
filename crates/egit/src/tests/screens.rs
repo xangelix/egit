@@ -133,7 +133,7 @@ pub(super) fn wait_for_label(harness: &mut Harness<'_, EgitApp>, label: &str) {
 
 /// Steps until the button labelled `label` can be pressed (a job holding it back is done),
 /// then presses it.
-fn click_when_enabled(harness: &mut Harness<'_, EgitApp>, label: &str) {
+pub(super) fn click_when_enabled(harness: &mut Harness<'_, EgitApp>, label: &str) {
     for _ in 0..2_000 {
         harness.step();
         if harness
@@ -172,7 +172,7 @@ pub(super) fn history_shown(app: &mut EgitApp) -> bool {
 }
 
 /// Whether the first repository's history shows `rows` commits, their summaries read.
-fn history_of(rows: u64) -> impl Fn(&mut EgitApp) -> bool {
+pub(super) fn history_of(rows: u64) -> impl Fn(&mut EgitApp) -> bool {
     move |app| {
         history_shown(app)
             && app
@@ -918,7 +918,7 @@ fn the_work_tree_is_staged_by_file_by_line_and_by_hunk() {
 }
 
 /// Types `text` into the field of `role` labelled `label`.
-fn type_into(harness: &mut Harness<'_, EgitApp>, role: Role, label: &str, text: &str) {
+pub(super) fn type_into(harness: &mut Harness<'_, EgitApp>, role: Role, label: &str, text: &str) {
     let field = harness.get_by_role_and_label(role, label);
     field.focus();
     field.type_text(text);
@@ -1083,7 +1083,7 @@ fn signed_commits_show_whether_their_signatures_hold() {
 
 /// A bare repository with a commit on `main`, a colleague's clone of it, and mine (the one
 /// egit opens), both by plain git.
-fn shared_remote(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
+pub(super) fn shared_remote(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
     let bare = sandbox.path("origin.git");
     sandbox
         .run(
@@ -1115,7 +1115,7 @@ fn shared_remote(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
 }
 
 /// The colleague commits `file` and pushes it.
-fn colleague_pushes(sandbox: &Sandbox, colleague: &Path, file: &str, contents: &str) {
+pub(super) fn colleague_pushes(sandbox: &Sandbox, colleague: &Path, file: &str, contents: &str) {
     sandbox
         .run(colleague, "pull", &["--quiet", "--rebase"])
         .unwrap();
@@ -1470,7 +1470,7 @@ fn double_click(harness: &mut Harness<'_, EgitApp>, label: &str) {
 }
 
 /// Right-clicks the control labelled `label`, then clicks `item` in the menu it opens.
-fn menu_item(harness: &mut Harness<'_, EgitApp>, label: &str, item: &str) {
+pub(super) fn menu_item(harness: &mut Harness<'_, EgitApp>, label: &str, item: &str) {
     harness.get_by_label(label).click_secondary();
     wait_for_label(harness, item);
     harness.get_by_label(item).click();

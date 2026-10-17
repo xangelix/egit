@@ -1,21 +1,27 @@
-//! What can be done from the commit table: a commit's context menu (switch to it, branch or tag
-//! it, bring it into the current branch, reset to it), a ref badge's (switch to a branch, merge
-//! or rebase onto it, rename or delete it; push or delete a tag), double-clicking a branch to
-//! switch to it, and the stash menu.
+//! What can be done from the commit table: a commit's context menu (switch to it, branch, tag,
+//! or make a worktree from it, bring it into the current branch, reset to it), a ref badge's
+//! (switch to a branch, merge or rebase onto it, fast-forward; pull, push, or set the upstream of
+//! a branch; make a worktree from it; rename or delete it, here or on its remote or both; copy
+//! its name or link; pin it to the left, or show only some branches; push or delete a tag),
+//! double-clicking a branch to switch to it, and the stash menu.
 //!
 //! Each choice asks for a task, or a dialog first ([`Ask`]); the history view carries it out.
 
+use std::path::Path;
+
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_forge::ForgeRepository;
-use egit_git::{ConfigSnapshot, ObjectId, RefKind, Reference, ResetMode, Stash, SwitchTo};
+use egit_git::{
+    ConfigSnapshot, ObjectId, PullMode, PushOptions, RefKind, Reference, ResetMode, Stash, SwitchTo,
+};
 use egui::{Response, Ui};
 
-use super::dialogs::Dialog;
+use super::dialogs::{Dialog, WorktreeAsked};
 use super::history::ID_DIGITS;
 use crate::forge::{RepoForge, request_noun, request_number};
 use crate::format;
-use crate::history::Refs;
-use crate::tasks::{Task, remote_names, upstream_of};
+use crate::history::{Refs, Scope};
+use crate::tasks::{ForwardSource, Task, remote_names, upstream_of};
 use crate::widgets::muted;
 
 /// What a menu asked for.
@@ -32,6 +38,13 @@ pub(super) enum Ask {
     Open(String),
     /// The pull requests, one selected (its repository's place in the forge's, its number).
     PullRequest(Option<(usize, u32)>),
+    /// This much of the history shown.
+    Scope(Scope),
+    /// A commit's patch saved, under a name asked for in the desktop's dialog (`name`, offered).
+    SavePatch {
+        commit: ObjectId,
+        name: String,
+    },
     /// The dialog opening a pull request from `branch`, pushed to `remote`'s `head_branch`,
     /// which is `head`.
     CreatePullRequest {
@@ -57,6 +70,12 @@ pub(super) struct Menus<'a> {
     pub(super) operation: bool,
     /// Its remotes on GitHub and GitLab, and their requests.
     pub(super) forge: &'a RepoForge,
+    /// What of the history is shown, as asked: the branches soloed, the one pinned.
+    pub(super) scope: &'a Scope,
+    /// The repository's work tree (new worktrees go beside it).
+    pub(super) work_tree: &'a Path,
+    /// The user's home folder, shown as `~`.
+    pub(super) home: Option<&'a Path>,
 }
 
 impl Menus<'_> {
@@ -96,6 +115,40 @@ impl Menus<'_> {
     /// The remote a remote-tracking branch's short name belongs to, and its name there.
     fn split_remote<'n>(&self, name: &'n BStr) -> Option<(&'n BStr, &'n BStr)> {
         split_remote(&self.remotes(), name)
+    }
+
+    /// A local branch's upstream: its remote, and its name there.
+    fn upstream(&self, branch: &BStr) -> Option<(String, String)> {
+        upstream_of(self.config?, &branch.to_str_lossy())
+    }
+
+    /// The local branch following a remote branch (of the same name), if one does.
+    fn local_of<'n>(&self, remote_branch: &'n BStr) -> Option<&'n BStr> {
+        let (remote, branch) = self.split_remote(remote_branch)?;
+        let (its_remote, its_branch) = self.upstream(branch)?;
+        (its_remote.as_bytes() == remote.as_bytes() && its_branch.as_bytes() == branch.as_bytes())
+            .then_some(branch)
+    }
+
+    /// Where a new worktree named for `suffix` goes by default: beside the work tree, its
+    /// folder's name and `suffix`.
+    fn worktree_path(&self, suffix: &str) -> String {
+        let folder = self.work_tree.file_name().map_or_else(
+            || "worktree".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let suffix: String = suffix
+            .chars()
+            .map(|c| {
+                if c == '/' || c.is_whitespace() {
+                    '-'
+                } else {
+                    c
+                }
+            })
+            .collect();
+        let parent = self.work_tree.parent().unwrap_or(self.work_tree);
+        format::display_path(&parent.join(format!("{folder}-{suffix}")), self.home)
     }
 
     /// Where switching to `reference` goes: a local branch; a remote branch through the local
@@ -176,6 +229,14 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             message: String::new(),
         }));
     }
+    if item(ui, "Create a worktree here…", menus.idle()) {
+        ask(Ask::Dialog(Dialog::AddWorktree {
+            from: WorktreeAsked::Commit(id),
+            path: menus.worktree_path(&id.abbreviated(ID_DIGITS).to_string()),
+            name: String::new(),
+            open: true,
+        }));
+    }
     ui.separator();
     let shown = id.abbreviated(ID_DIGITS).to_string();
     let what = BString::from(id.to_string());
@@ -208,12 +269,12 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
     });
     if let Some(repository) = menus.forge.repositories.first() {
         ui.separator();
-        if item(
-            ui,
-            &format!("Open on {}", repository.host().kind().name()),
-            Ok(()),
-        ) {
+        let forge = repository.host().kind().name();
+        if item(ui, &format!("Open on {forge}"), Ok(())) {
             ask(Ask::Open(repository.commit_url(id)));
+        }
+        if item(ui, &format!("Copy link to this commit on {forge}"), Ok(())) {
+            ui.ctx().copy_text(repository.commit_url(id));
         }
     }
 }
@@ -292,9 +353,20 @@ pub(super) fn ref_menu(
                     shown: name.clone().into_owned(),
                 }));
             }
+            forward_items(ui, menus, reference, is_current, &mut ask);
+            if reference.kind == RefKind::Branch {
+                ui.separator();
+                remote_items(ui, menus, short, is_current, &mut ask);
+            }
             pull_request_items(ui, menus, reference, &mut ask);
             ui.separator();
+            worktree_item(ui, menus, reference, is_current, &mut ask);
+            ui.separator();
             branch_items(ui, menus, reference, is_current, &mut ask);
+            ui.separator();
+            copy_items(ui, menus, reference);
+            ui.separator();
+            graph_items(ui, menus, reference, &mut ask);
         }
         RefKind::Tag => {
             let busy = menus.idle();
@@ -408,6 +480,26 @@ fn branch_items(
                 branch: branch.to_owned(),
             }));
         }
+        if let Some(local) = menus.local_of(short)
+            && let Some((remote, branch)) = menus.split_remote(short)
+        {
+            let allowed = if menus.branch == Some(local) {
+                Err("Its branch here is the current one")
+            } else {
+                busy
+            };
+            if item(
+                ui,
+                &format!("Delete {} and {name}…", local.to_str_lossy()),
+                allowed,
+            ) {
+                ask(Ask::Dialog(Dialog::DeleteBranch {
+                    name: local.to_owned(),
+                    unmerged: false,
+                    remote: Some((remote.to_owned(), branch.to_owned())),
+                }));
+            }
+        }
         return;
     }
     if item(ui, &format!("Rename {name}…"), busy) {
@@ -425,7 +517,297 @@ fn branch_items(
         ask(Ask::Dialog(Dialog::DeleteBranch {
             name: short.to_owned(),
             unmerged: false,
+            remote: None,
         }));
+    }
+    if let Some((remote, branch)) = menus.upstream(short)
+        && menus.refs.has(
+            format!("refs/remotes/{remote}/{branch}")
+                .as_bytes()
+                .as_bstr(),
+        )
+        && item(
+            ui,
+            &format!("Delete {name} and {remote}/{branch}…"),
+            deletable,
+        )
+    {
+        ask(Ask::Dialog(Dialog::DeleteBranch {
+            name: short.to_owned(),
+            unmerged: false,
+            remote: Some((remote.into(), branch.into())),
+        }));
+    }
+}
+
+/// Fast-forwarding the current branch to this one; and a remote branch's local branch to it.
+fn forward_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    reference: &Reference,
+    is_current: bool,
+    ask: &mut impl FnMut(Ask),
+) {
+    let short = reference.short_name();
+    let name = short.to_str_lossy().into_owned();
+    if !is_current
+        && item(
+            ui,
+            &format!("Fast-forward {} to {name}", menus.current()),
+            menus.can_change(),
+        )
+    {
+        ask(Ask::Task(Task::FastForward {
+            to: reference.name.clone(),
+            shown: name.clone(),
+        }));
+    }
+    if reference.kind == RefKind::RemoteBranch
+        && let Some(local) = menus.local_of(short)
+        && menus.branch != Some(local)
+        && item(
+            ui,
+            &format!("Fast-forward {} to {name}", local.to_str_lossy()),
+            menus.idle(),
+        )
+    {
+        ask(Ask::Task(Task::FastForwardBranch {
+            branch: local.to_owned(),
+            from: ForwardSource::Here(reference.name.clone()),
+            shown: name,
+        }));
+    }
+}
+
+/// A local branch's exchanges with its upstream: pulling (the current branch as configured,
+/// another by fast-forward only), pushing (where it has never gone: asked first), and setting
+/// the upstream.
+fn remote_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    branch: &BStr,
+    is_current: bool,
+    ask: &mut impl FnMut(Ask),
+) {
+    let name = branch.to_str_lossy().into_owned();
+    let upstream = menus.upstream(branch);
+    let no_upstream = Err("It has no upstream: set one, or push it");
+    if is_current {
+        let allowed = if upstream.is_some() {
+            menus.can_change()
+        } else {
+            no_upstream
+        };
+        if item(ui, "Pull", allowed) {
+            ask(Ask::Task(Task::Pull(PullMode::AsConfigured)));
+        }
+    } else {
+        let allowed = if upstream.is_some() {
+            menus.idle()
+        } else {
+            no_upstream
+        };
+        if item(ui, &format!("Pull {name} (fast-forward only)"), allowed)
+            && let Some((remote, remote_branch)) = &upstream
+        {
+            ask(Ask::Task(Task::FastForwardBranch {
+                branch: branch.to_owned(),
+                from: ForwardSource::Remote {
+                    remote: remote.as_str().into(),
+                    branch: remote_branch.as_str().into(),
+                },
+                shown: format!("{remote}/{remote_branch}"),
+            }));
+        }
+    }
+    let remotes = menus.remotes();
+    if let Some((remote, remote_branch)) = &upstream {
+        if item(
+            ui,
+            &format!("Push {name} to {remote}/{remote_branch}"),
+            menus.idle(),
+        ) {
+            ask(Ask::Task(Task::Push(PushOptions {
+                remote: remote.as_str().into(),
+                branch: branch.to_owned(),
+                remote_branch: remote_branch.as_str().into(),
+                set_upstream: false,
+                force: false,
+            })));
+        }
+    } else {
+        let allowed = if remotes.is_empty() {
+            Err("The repository has no remote")
+        } else {
+            menus.idle()
+        };
+        if item(ui, &format!("Push {name}…"), allowed) {
+            let remote = remotes
+                .iter()
+                .find(|remote| *remote == "origin")
+                .or_else(|| remotes.first())
+                .cloned()
+                .unwrap_or_default();
+            ask(Ask::Dialog(Dialog::FirstPush(PushOptions {
+                remote: remote.into(),
+                branch: branch.to_owned(),
+                remote_branch: branch.to_owned(),
+                set_upstream: true,
+                force: false,
+            })));
+        }
+    }
+    if item(ui, "Set upstream…", menus.idle()) {
+        let had = upstream.map(|(remote, branch)| format!("{remote}/{branch}"));
+        let choices: Vec<String> = menus
+            .refs
+            .remote_branches()
+            .map(|name| name.to_str_lossy().into_owned())
+            .collect();
+        // Offered first: where it is, or its namesake on the first remote.
+        let namesake = remotes
+            .first()
+            .map(|remote| format!("{remote}/{name}"))
+            .filter(|namesake| choices.contains(namesake));
+        ask(Ask::Dialog(Dialog::SetUpstream {
+            branch: branch.to_owned(),
+            upstream: had.clone().or(namesake).unwrap_or_default(),
+            had,
+            choices,
+        }));
+    }
+}
+
+/// A worktree checking out a local branch (not the current one), or a remote's through a new
+/// branch following it.
+fn worktree_item(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    reference: &Reference,
+    is_current: bool,
+    ask: &mut impl FnMut(Ask),
+) {
+    let short = reference.short_name();
+    let name = short.to_str_lossy();
+    let allowed = if is_current {
+        Err("It is checked out here")
+    } else {
+        menus.idle()
+    };
+    if !item(ui, &format!("Create a worktree from {name}…"), allowed) {
+        return;
+    }
+    let (from, branch) = match reference.kind {
+        RefKind::RemoteBranch => {
+            let local = menus
+                .split_remote(short)
+                .map_or(short, |(_, branch)| branch);
+            (
+                WorktreeAsked::RemoteBranch {
+                    full: reference.name.clone(),
+                    short: short.to_owned(),
+                },
+                local.to_str_lossy().into_owned(),
+            )
+        }
+        _ => (WorktreeAsked::Branch(short.to_owned()), String::new()),
+    };
+    let suffix = if branch.is_empty() {
+        &name
+    } else {
+        branch.as_str()
+    };
+    ask(Ask::Dialog(Dialog::AddWorktree {
+        path: menus.worktree_path(suffix),
+        from,
+        name: branch,
+        open: true,
+    }));
+}
+
+/// Copying a branch's name, and a link to it on its forge (where its remote is GitHub or
+/// GitLab: a local branch's upstream's).
+fn copy_items(ui: &mut Ui, menus: &Menus<'_>, reference: &Reference) {
+    let short = reference.short_name();
+    if item(ui, "Copy branch name", Ok(())) {
+        ui.ctx().copy_text(short.to_str_lossy().into_owned());
+    }
+    let on_remote = match reference.kind {
+        RefKind::RemoteBranch => menus
+            .split_remote(short)
+            .map(|(remote, branch)| (remote.to_owned(), branch.to_str_lossy().into_owned())),
+        _ => menus
+            .upstream(short)
+            .map(|(remote, branch)| (BString::from(remote), branch)),
+    };
+    if let Some((remote, branch)) = on_remote
+        && let Some(repository) = menus.forge.repository_of(remote.as_bstr())
+        && item(
+            ui,
+            &format!(
+                "Copy link to {branch} on {}",
+                repository.host().kind().name()
+            ),
+            Ok(()),
+        )
+    {
+        ui.ctx().copy_text(repository.branch_url(&branch));
+    }
+}
+
+/// The graph: this branch pinned to the left (or not any more), only some branches' history
+/// shown (this one alone, too, or not), or every branch's again.
+fn graph_items(ui: &mut Ui, menus: &Menus<'_>, reference: &Reference, ask: &mut impl FnMut(Ask)) {
+    let scope = menus.scope;
+    let full = &reference.name;
+    let name = reference.short_name().to_str_lossy();
+    let mut asked = |scope: Scope| ask(Ask::Scope(scope));
+    if scope.pinned.as_ref() == Some(full) {
+        if item(ui, &format!("Unpin {name}"), Ok(())) {
+            asked(Scope {
+                pinned: None,
+                ..scope.clone()
+            });
+        }
+    } else if item(ui, &format!("Pin {name} to the left"), Ok(())) {
+        asked(Scope {
+            pinned: Some(full.clone()),
+            ..scope.clone()
+        });
+    }
+    if scope.only.is_empty() {
+        if item(ui, &format!("Show only {name}"), Ok(())) {
+            asked(Scope {
+                only: vec![full.clone()],
+                ..scope.clone()
+            });
+        }
+    } else if scope.only.contains(full) {
+        if item(ui, &format!("Hide {name}"), Ok(())) {
+            let only = scope
+                .only
+                .iter()
+                .filter(|shown| *shown != full)
+                .cloned()
+                .collect();
+            asked(Scope {
+                only,
+                ..scope.clone()
+            });
+        }
+    } else if item(ui, &format!("Show {name} too"), Ok(())) {
+        let mut only = scope.only.clone();
+        only.push(full.clone());
+        asked(Scope {
+            only,
+            ..scope.clone()
+        });
+    }
+    if !scope.only.is_empty() && item(ui, "Show every branch", Ok(())) {
+        asked(Scope {
+            only: Vec::new(),
+            ..scope.clone()
+        });
     }
 }
 

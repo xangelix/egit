@@ -4,11 +4,12 @@
 //! and the banner of an operation git stopped in the middle of.
 
 use std::fmt::Write as _;
+use std::path::Path;
 
 use bstr::{BString, ByteSlice as _};
 use egit_git::{
-    ConfigSnapshot, Head, Integrated, Operation, PullMode, Pulled, PushFlag, PushOptions, Pushed,
-    Stash, SwitchTo, Tracking,
+    ConfigSnapshot, Forwarded, Head, Integrated, Operation, PullMode, Pulled, PushFlag,
+    PushOptions, Pushed, Stash, SwitchTo, Tracking,
 };
 use egui::{Align, Id, Layout, RichText, TextStyle, Ui, UiBuilder};
 
@@ -19,7 +20,7 @@ use crate::app::Action;
 use crate::forge::{request_noun, request_number};
 use crate::problem::Problem;
 use crate::repo::RepoId;
-use crate::tasks::{Outcome, Task, Tasks, has_remotes, remote_names, upstream_of};
+use crate::tasks::{ForwardSource, Outcome, Task, Tasks, has_remotes, remote_names, upstream_of};
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 use crate::{fonts, format};
@@ -31,11 +32,17 @@ pub(crate) struct TasksView {
     pub(super) dialog: Option<Dialog>,
     /// The task whose outcome was taken in (dismissed, or turned into a dialog).
     seen: u64,
+    /// The task whose outcome was followed up (a new worktree opened).
+    followed: u64,
 }
 
 /// What the task parts work with while they are drawn.
 pub(crate) struct TaskPane<'a> {
     pub(crate) id: RepoId,
+    /// The repository's work tree (new worktrees go beside it).
+    pub(crate) work_tree: &'a Path,
+    /// The user's home folder, shown as `~`.
+    pub(crate) home: Option<&'a Path>,
     pub(crate) head: Option<&'a Head>,
     pub(crate) operations: &'a [Operation],
     pub(crate) config: Option<&'a ConfigSnapshot>,
@@ -283,11 +290,27 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
             dismiss = true;
         }
         Some(Ok(Outcome::NotMerged)) => {
-            if let Some(Task::DeleteBranch { name, .. }) = &pane.tasks.task {
-                view.dialog = Some(Dialog::DeleteBranch {
-                    name: name.clone(),
-                    unmerged: true,
-                });
+            match &pane.tasks.task {
+                Some(Task::DeleteBranch { name, .. }) => {
+                    view.dialog = Some(Dialog::DeleteBranch {
+                        name: name.clone(),
+                        unmerged: true,
+                        remote: None,
+                    });
+                }
+                Some(Task::DeleteBranchEverywhere {
+                    name,
+                    remote,
+                    remote_branch,
+                    ..
+                }) => {
+                    view.dialog = Some(Dialog::DeleteBranch {
+                        name: name.clone(),
+                        unmerged: true,
+                        remote: Some((remote.clone(), remote_branch.clone())),
+                    });
+                }
+                _ => {}
             }
             dismiss = true;
         }
@@ -295,11 +318,12 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
             refused(ui, view, pane, &pushed, &mut dismiss);
         }
         Some(Ok(outcome)) => {
-            let text = ended(pane.tasks.task.as_ref(), &outcome);
-            let color = if outcome == Outcome::Cancelled {
-                palette.muted
-            } else {
-                palette.ok
+            follow_up(view, pane, &outcome);
+            let text = ended(pane.tasks.task.as_ref(), &outcome, pane.home);
+            let color = match outcome {
+                Outcome::Cancelled => palette.muted,
+                Outcome::Forwarded(Forwarded::NotFastForward) => palette.warn,
+                _ => palette.ok,
             };
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(text).color(color));
@@ -317,8 +341,25 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     }
 }
 
+/// What a task that went through leads to, once: a new worktree opened in a tab.
+fn follow_up(view: &mut TasksView, pane: &mut TaskPane<'_>, outcome: &Outcome) {
+    if view.followed == pane.tasks.started {
+        return;
+    }
+    view.followed = pane.tasks.started;
+    if let (
+        Some(Task::AddWorktree {
+            path, open: true, ..
+        }),
+        Outcome::Done,
+    ) = (&pane.tasks.task, outcome)
+    {
+        pane.actions.push(Action::Open(path.clone()));
+    }
+}
+
 /// How `task` ended, in words.
-fn ended(task: Option<&Task>, outcome: &Outcome) -> String {
+fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String {
     const CONFLICTS: &str = "resolve the conflicts, stage them, then Continue.";
     let Some(task) = task else {
         return "Done.".to_owned();
@@ -358,7 +399,35 @@ fn ended(task: Option<&Task>, outcome: &Outcome) -> String {
                 commit.abbreviated(ID_DIGITS)
             )
         }
+        (task, Outcome::Forwarded(forwarded)) => forwarded_text(task, *forwarded),
+        (Task::AddWorktree { path, .. }, _) => {
+            format!("Made a worktree at {}.", format::display_path(path, home))
+        }
+        (Task::SavePatch { commit, path }, _) => format!(
+            "Saved {}'s patch to {}.",
+            commit.abbreviated(ID_DIGITS),
+            format::display_path(path, home)
+        ),
         (task, _) => done_text(task),
+    }
+}
+
+/// How a fast-forward went, in words.
+fn forwarded_text(task: &Task, forwarded: Forwarded) -> String {
+    let (branch, to) = match task {
+        Task::FastForward { shown, .. } => ("The branch".to_owned(), shown.clone()),
+        Task::FastForwardBranch { branch, shown, .. } => {
+            (branch.to_str_lossy().into_owned(), shown.clone())
+        }
+        _ => return "Done.".to_owned(),
+    };
+    match forwarded {
+        Forwarded::Moved => format!("Fast-forwarded to {to}."),
+        Forwarded::AlreadyThere => format!("{branch} is at {to} already."),
+        Forwarded::NotFastForward => format!(
+            "{branch} has commits {to} hasn't: nothing moved. Merge or rebase to bring them \
+             together."
+        ),
     }
 }
 
@@ -426,6 +495,17 @@ fn done_text(task: &Task) -> String {
             "Squashed {} into its parent.",
             commit.abbreviated(ID_DIGITS)
         ),
+        Task::SetUpstream {
+            branch,
+            upstream: Some(upstream),
+        } => format!("{} now follows {}.", short(branch), short(upstream)),
+        Task::SetUpstream {
+            branch,
+            upstream: None,
+        } => format!("{} follows no upstream now.", short(branch)),
+        Task::DeleteBranchEverywhere { name, remote, .. } => {
+            format!("Deleted {} here and on {}.", short(name), short(remote))
+        }
         _ => "Done.".to_owned(),
     }
 }
@@ -502,25 +582,45 @@ fn refused(
         other => format!("The remote refused the push: {other}."),
     };
     let problem = Problem::new("The push was refused", explanation);
-    let target = pane.push_target().or_else(|| {
-        pane.tasks.task.as_ref().and_then(|task| match task {
-            Task::Push(options) => Some(options.clone()),
-            _ => None,
-        })
+    // The branch pushed: the current one, or another from its menu.
+    let target = pane.tasks.task.as_ref().and_then(|task| match task {
+        Task::Push(options) => Some(options.clone()),
+        _ => None,
     });
+    let current = target
+        .as_ref()
+        .is_some_and(|target| pane.branch().is_some_and(|branch| target.branch == branch));
     widgets::problem_box(ui, &problem, |ui| {
-        if behind {
-            if let Some(target) = &target
-                && widgets::secondary(ui, true, "Force push…").clicked()
-            {
+        if behind && let Some(target) = &target {
+            if widgets::secondary(ui, true, "Force push…").clicked() {
                 view.dialog = Some(Dialog::ForcePush(PushOptions {
                     force: true,
                     ..target.clone()
                 }));
                 *dismiss = true;
             }
-            if widgets::primary(ui, true, "Pull").clicked() {
-                pane.start(Task::Pull(PullMode::AsConfigured));
+            let pull = if current {
+                "Pull".to_owned()
+            } else {
+                format!("Pull {} (fast-forward only)", target.branch.to_str_lossy())
+            };
+            if widgets::primary(ui, true, &pull).clicked() {
+                pane.start(if current {
+                    Task::Pull(PullMode::AsConfigured)
+                } else {
+                    Task::FastForwardBranch {
+                        branch: target.branch.clone(),
+                        from: ForwardSource::Remote {
+                            remote: target.remote.clone(),
+                            branch: target.remote_branch.clone(),
+                        },
+                        shown: format!(
+                            "{}/{}",
+                            target.remote.to_str_lossy(),
+                            target.remote_branch.to_str_lossy()
+                        ),
+                    }
+                });
                 *dismiss = true;
             }
         }

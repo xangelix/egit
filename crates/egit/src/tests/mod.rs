@@ -2,6 +2,7 @@
 
 mod audit;
 mod corpus;
+mod menus;
 mod scale;
 mod screens;
 mod search;

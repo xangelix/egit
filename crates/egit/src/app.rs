@@ -9,15 +9,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, NewCommit, Repository,
+    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, NewCommit, ObjectId, Repository,
     add_config_value, set_config, trust_directory, unset_config, unset_config_value,
 };
 use egui::{CentralPanel, Frame, Panel, Ui};
 use egui_async::Bind;
 
-use crate::desktop::Opener;
+use crate::desktop::{Opener, Saver, Saving};
 use crate::fonts::Fallbacks;
 use crate::format::now;
+use crate::history::Scope;
 use crate::jobs::{self, WriteLock};
 use crate::problem::{OpenProblem, Problem};
 use crate::repo::{RepoId, RepoTab};
@@ -69,6 +70,8 @@ pub(crate) struct AppState {
     focused: bool,
     /// Where web pages go.
     pub(crate) opener: Opener,
+    /// Where files are saved.
+    pub(crate) saver: Saver,
 }
 
 /// A repository being opened.
@@ -137,6 +140,14 @@ pub(crate) enum Action {
     RefreshPullRequests(RepoId),
     /// Open a web page in the user's browser.
     OpenUrl(String),
+    /// Show this much of a repository's history.
+    Scope(RepoId, Scope),
+    /// Save a repository's commit's patch, asking where (`name` offered).
+    SavePatch {
+        repo: RepoId,
+        commit: ObjectId,
+        name: String,
+    },
 }
 
 impl EgitApp {
@@ -232,6 +243,7 @@ impl EgitApp {
             next_repo: 0,
             focused: true,
             opener: Opener::default(),
+            saver: Saver::default(),
             fonts: Fallbacks::default(),
         };
         match git {
@@ -328,6 +340,18 @@ impl EgitApp {
                 }
             }
             Action::OpenUrl(url) => state.opener.open(url),
+            Action::Scope(id, scope) => {
+                if let Some(git) = state.git()
+                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
+                {
+                    repo.set_scope(&git, scope);
+                }
+            }
+            Action::SavePatch { repo, commit, name } => {
+                state
+                    .saver
+                    .ask(Saving::Patch { repo, commit }, "Save the patch", name);
+            }
         }
     }
 
@@ -412,6 +436,10 @@ impl AppState {
             }
         }
         self.take_clone();
+        if let Some((Saving::Patch { repo, commit }, path)) = self.saver.chosen() {
+            self.actions
+                .push(Action::Task(repo, Task::SavePatch { commit, path }));
+        }
         if let Some(trusted) = self.home.trusting.take() {
             match trusted {
                 Ok(path) => self.actions.push(Action::Open(path)),
