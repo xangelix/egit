@@ -182,7 +182,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     (`reset` would otherwise unstage everything).
   - `tree.rs` — for watching a work tree's folders: `tree_folders` (a commit's folders,
     `ls-tree -r -d`) and `ignored_paths` (`check-ignore -z --stdin`, which exits 1 when none
-    is; folders end with `/` so folder-only patterns match them).
+    is; folders end with `/` so folder-only patterns match them); and `tree_entry`, one path's
+    entry at a commit (`ls-tree -z --full-tree`, a literal pathspec), or none.
   - `committing.rs` — `create_commit`: `git commit --file=- --cleanup=whitespace` (a line
     starting with `#` is kept), `NewCommit`'s amend, sign-off, and signing (`-S`,
     `--no-gpg-sign`, or the configuration's choice); a passphrase is asked through askpass,

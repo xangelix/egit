@@ -97,5 +97,5 @@ pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use stage::{stage, unstage};
 pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stashes};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
-pub use tree::{ignored_paths, tree_folders};
+pub use tree::{ignored_paths, tree_entry, tree_folders};
 pub use version::{GitVersion, VersionParseError};

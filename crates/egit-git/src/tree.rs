@@ -1,13 +1,65 @@
-//! The folders a work tree's files are in, for watching them: a commit's folders, and which of
-//! some paths git ignores.
+//! A commit's tree: what it holds at a path, and its folders; and which of some paths git
+//! ignores (for watching a work tree's folders).
+
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt as _;
 
 use bstr::{BStr, BString, ByteSlice as _};
 
 use crate::cancel::CancelToken;
 use crate::error::GitError;
 use crate::git::Git;
+use crate::history::TreeEntry;
 use crate::object_id::ObjectId;
 use crate::repo::Repository;
+
+/// What `commit`'s tree holds at `path` (from its top): `None` when nothing (`ls-tree` of that
+/// one path, taken literally).
+///
+/// # Errors
+///
+/// When git fails, is cancelled, or prints something that isn't a tree's entry.
+pub fn tree_entry(
+    git: &Git,
+    repository: &Repository,
+    commit: ObjectId,
+    path: &BStr,
+    cancel: &CancelToken,
+) -> Result<Option<TreeEntry>, GitError> {
+    let listed = git
+        .read("ls-tree")
+        .args(["-z", "--full-tree"])
+        .arg(commit.to_string())
+        .arg("--")
+        .arg(OsStr::from_bytes(path))
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()?;
+    parse_entry(&listed.stdout, path)
+}
+
+/// The entry for exactly `path` in `ls-tree -z` (`<mode> <type> <object>\t<path>`).
+fn parse_entry(listed: &[u8], path: &BStr) -> Result<Option<TreeEntry>, GitError> {
+    let unexpected = || GitError::unexpected("ls-tree", "a tree's entry");
+    for record in listed.split_str(b"\0").filter(|record| !record.is_empty()) {
+        let (fields, listed_path) = record.split_once_str(b"\t").ok_or_else(unexpected)?;
+        if listed_path != path.as_bytes() {
+            continue;
+        }
+        let mut fields = fields.split_str(b" ");
+        let mode = fields
+            .next()
+            .and_then(|mode| u32::from_str_radix(mode.to_str().ok()?, 8).ok())
+            .ok_or_else(unexpected)?;
+        let id = fields
+            .nth(1)
+            .and_then(ObjectId::from_hex)
+            .ok_or_else(unexpected)?;
+        return Ok(Some(TreeEntry { mode, id }));
+    }
+    Ok(None)
+}
 
 /// Every folder in `commit`'s tree, at any depth, from the top of the work tree
 /// (`ls-tree -r -d`).
@@ -80,5 +132,27 @@ pub fn ignored_paths(
             checked.status,
             checked.stderr,
         )),
+    }
+}
+
+#[cfg(test)]
+// The relaxations `clippy.toml` gives `#[test]` functions, for this module's helpers.
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_entry_at_exactly_the_path() {
+        let id = "a".repeat(40);
+        let listed = format!("100755 blob {id}\tbin/tool\0040000 tree {id}\tbin/tool/x\0");
+        let entry = parse_entry(listed.as_bytes(), BStr::new("bin/tool"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.mode, 0o100_755);
+        assert_eq!(entry.id, ObjectId::from_hex(id.as_bytes()).unwrap());
+        assert_eq!(
+            parse_entry(listed.as_bytes(), BStr::new("bin")).unwrap(),
+            None
+        );
     }
 }
