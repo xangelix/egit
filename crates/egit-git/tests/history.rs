@@ -18,7 +18,7 @@ use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, ChangeKind, Commit, LineCounts, ObjectId, ObjectKind, ObjectReader, RefKind,
     Repository, commit_changes, commits_between, line_counts, list_references, walk_history,
-    write_commit_graph,
+    walk_history_from, write_commit_graph,
 };
 
 fn sandbox() -> Sandbox {
@@ -49,6 +49,47 @@ fn branchy(sandbox: &Sandbox) -> std::path::PathBuf {
         )
         .unwrap();
     repo
+}
+
+/// The commits `rev-list --no-walk=unsorted --exclude=refs/stash --all` lists, as
+/// `walk_history_from` takes them.
+fn tips(sandbox: &Sandbox, repo: &Path) -> Vec<ObjectId> {
+    let listed = sandbox
+        .run(
+            repo,
+            "rev-list",
+            &["--no-walk=unsorted", "--exclude=refs/stash", "--all"],
+        )
+        .unwrap();
+    listed
+        .stdout
+        .split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| ObjectId::from_hex(line).unwrap())
+        .collect()
+}
+
+/// The walk from `tips`, as `walk` gives it.
+fn walk_from(
+    sandbox: &Sandbox,
+    repo: &Path,
+    tips: Vec<ObjectId>,
+) -> Vec<(ObjectId, Vec<ObjectId>)> {
+    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let mut commits = Vec::new();
+    let walked = walk_history_from(
+        sandbox.git(),
+        &repository,
+        tips,
+        &CancelToken::new(),
+        |id, parents| {
+            commits.push((id, parents.to_vec()));
+            ControlFlow::Continue(())
+        },
+    )
+    .unwrap();
+    assert_eq!(walked.commits, u64::try_from(commits.len()).unwrap());
+    commits
 }
 
 fn walk(sandbox: &Sandbox, repo: &Path) -> Vec<(ObjectId, Vec<ObjectId>)> {
@@ -483,6 +524,27 @@ fn with_a_commit_graph_walks_what_all_reaches_from_fewer_tips() {
             assert!(position[id] < position[parent], "a parent came first");
         }
     }
+    // From the tips listed beforehand, the same walk.
+    assert_eq!(walk_from(&sandbox, &repo, tips(&sandbox, &repo)), commits);
+}
+
+#[test]
+fn walks_from_the_tips_it_is_given() {
+    let sandbox = sandbox();
+    let repo = branchy(&sandbox);
+    assert_eq!(
+        walk_from(&sandbox, &repo, tips(&sandbox, &repo)),
+        walk(&sandbox, &repo)
+    );
+    assert_eq!(walk_from(&sandbox, &repo, Vec::new()).len(), 0);
+    // From `topic` alone: E, D, B, A.
+    let topic = walk_from(&sandbox, &repo, vec![rev(&sandbox, &repo, "topic")]);
+    let expected: Vec<ObjectId> = ["topic", "topic~1", "topic~2", "topic~3"]
+        .into_iter()
+        .map(|name| rev(&sandbox, &repo, name))
+        .collect();
+    let walked: Vec<ObjectId> = topic.iter().map(|(id, _)| *id).collect();
+    assert_eq!(walked, expected);
 }
 
 /// How many trees a repository holds.

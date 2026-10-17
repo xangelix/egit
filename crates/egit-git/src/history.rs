@@ -45,6 +45,67 @@ pub fn walk_history(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
+    each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
+) -> Result<Walked, GitError> {
+    let start = if repository.has_commit_graph() {
+        let listed = git
+            .read("rev-list")
+            .args(["--no-walk=unsorted", "--exclude=refs/stash", "--all"])
+            .current_dir(repository.work_tree())
+            .cancel_token(cancel)
+            .output()?
+            .stdout;
+        let tips: Vec<ObjectId> = listed
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                ObjectId::from_hex(line)
+                    .ok_or_else(|| GitError::unexpected("rev-list", "a commit's name"))
+            })
+            .collect::<Result<_, _>>()?;
+        Start::Tips(reduced(git, repository, tips, cancel)?)
+    } else {
+        Start::All
+    };
+    walk_from(git, repository, start, cancel, each)
+}
+
+/// [`walk_history`] from `tips`, the commits `git rev-list --no-walk=unsorted
+/// --exclude=refs/stash --all` lists (in its order), already known: they are reduced as
+/// `walk_history` reduces its own.
+///
+/// # Errors
+///
+/// As [`walk_history`]'s.
+pub fn walk_history_from(
+    git: &Git,
+    repository: &Repository,
+    tips: Vec<ObjectId>,
+    cancel: &CancelToken,
+    each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
+) -> Result<Walked, GitError> {
+    let tips = if repository.has_commit_graph() {
+        reduced(git, repository, tips, cancel)?
+    } else {
+        tips
+    };
+    walk_from(git, repository, Start::Tips(tips), cancel, each)
+}
+
+/// Where a walk starts.
+enum Start {
+    /// From `--exclude=refs/stash --all`.
+    All,
+    /// From these commits, in order.
+    Tips(Vec<ObjectId>),
+}
+
+/// The topological walk itself, from `start`.
+fn walk_from(
+    git: &Git,
+    repository: &Repository,
+    start: Start,
+    cancel: &CancelToken,
     mut each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
 ) -> Result<Walked, GitError> {
     let mut lines = Lines::default();
@@ -78,15 +139,22 @@ pub fn walk_history(
         .args(["--topo-order", "--parents"])
         .current_dir(repository.work_tree())
         .cancel_token(cancel);
-    let walk = match independent_tips(git, repository, cancel)? {
-        Some(tips) if tips.is_empty() => {
+    let walk = match start {
+        Start::Tips(tips) if tips.is_empty() => {
             return Ok(Walked {
                 commits: 0,
                 stopped: false,
             });
         }
-        Some(tips) => walk.arg("--stdin").stdin(tips),
-        None => walk.args(["--exclude=refs/stash", "--all"]),
+        Start::Tips(tips) => {
+            let mut names = Vec::with_capacity(tips.len().saturating_mul(41));
+            for tip in &tips {
+                names.extend_from_slice(tip.to_string().as_bytes());
+                names.push(b'\n');
+            }
+            walk.arg("--stdin").stdin(names)
+        }
+        Start::All => walk.args(["--exclude=refs/stash", "--all"]),
     };
     walk.stream(|chunk| lines.feed(chunk, &mut handle))?;
     if let Some(line) = malformed {
@@ -98,38 +166,34 @@ pub fn walk_history(
     Ok(Walked { commits, stopped })
 }
 
-/// The commits `--exclude=refs/stash --all` starts from, less those another of them reaches, one
-/// name a line; `None` when walking from `--all` costs no more (without a commit-graph, or with
-/// more tips than [`MAX_REDUCED_TIPS`]).
-fn independent_tips(
+/// `tips` less those another of them reaches (`merge-base --independent`); all of them when
+/// fewer than two, or more than [`MAX_REDUCED_TIPS`] (walking them all costs no more than
+/// reducing them).
+fn reduced(
     git: &Git,
     repository: &Repository,
+    tips: Vec<ObjectId>,
     cancel: &CancelToken,
-) -> Result<Option<Vec<u8>>, GitError> {
-    if !repository.has_commit_graph() {
-        return Ok(None);
+) -> Result<Vec<ObjectId>, GitError> {
+    if tips.len() < 2 || tips.len() > MAX_REDUCED_TIPS {
+        return Ok(tips);
     }
-    let listed = git
-        .read("rev-list")
-        .args(["--no-walk=unsorted", "--exclude=refs/stash", "--all"])
+    let reduced = git
+        .read("merge-base")
+        .arg("--independent")
+        .args(tips.iter().map(ToString::to_string))
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()?
         .stdout;
-    let tips: Vec<&[u8]> = listed.lines().filter(|line| !line.is_empty()).collect();
-    if tips.len() > MAX_REDUCED_TIPS {
-        return Ok(None);
-    }
-    if tips.len() < 2 {
-        return Ok(Some(listed));
-    }
-    git.read("merge-base")
-        .arg("--independent")
-        .args(tips.iter().map(|tip| tip.to_os_str_lossy()))
-        .current_dir(repository.work_tree())
-        .cancel_token(cancel)
-        .output()
-        .map(|reduced| Some(reduced.stdout))
+    reduced
+        .lines()
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            ObjectId::from_hex(line)
+                .ok_or_else(|| GitError::unexpected("merge-base", "a commit's name"))
+        })
+        .collect()
 }
 
 /// What a ref names.
