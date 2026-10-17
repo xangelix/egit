@@ -135,6 +135,17 @@ pub(super) struct FileView {
     cancel: CancelToken,
     /// The merge editor, for a work tree's file in conflict.
     merge: Option<MergeView>,
+    /// What its bar asked to see of the file instead: its blame, or its history.
+    pub(super) wanted: Option<FileWanted>,
+}
+
+/// Another way of looking at a file, asked from its bar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum FileWanted {
+    /// Its blame at a commit (`None`: the work tree).
+    Blame { at: Option<ObjectId>, path: BString },
+    /// The commits that changed it.
+    History(BString),
 }
 
 impl FileView {
@@ -187,6 +198,7 @@ impl FileView {
             file_grid,
             cancel: CancelToken::new(),
             merge: None,
+            wanted: None,
         };
         match &file.source {
             // A conflict's diff isn't one egit reads: it is merged instead.
@@ -295,6 +307,28 @@ impl FileView {
             Source::Commit { change, .. } => change.path.as_ref(),
             Source::WorkTree(work) => work.path.as_ref(),
         }
+    }
+
+    /// Where its blame is: the commit it shows (or, deleted there, its parent); the work tree
+    /// for a work tree's file (or `HEAD`, deleted there).
+    fn blame_target(&self, shared: &Shared<'_>) -> FileWanted {
+        let path = self.path().to_owned();
+        let at = match &self.source {
+            Source::Commit {
+                commit,
+                parent,
+                change,
+            } => {
+                if change.kind == ChangeKind::Deleted {
+                    *parent
+                } else {
+                    Some(*commit)
+                }
+            }
+            Source::WorkTree(work) if work.change == "Deleted" => shared.head_commit(),
+            Source::WorkTree(_) => None,
+        };
+        FileWanted::Blame { at, path }
     }
 
     /// The work tree's file it shows, if it shows one.
@@ -410,6 +444,18 @@ fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bo
                 if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
                 {
                     *open = false;
+                }
+                if widgets::secondary(ui, true, "Blame")
+                    .on_hover_text("Which commit each of its lines came from")
+                    .clicked()
+                {
+                    file.wanted = Some(file.blame_target(shared));
+                }
+                if widgets::secondary(ui, true, "File history")
+                    .on_hover_text("Every commit that changed it")
+                    .clicked()
+                {
+                    file.wanted = Some(FileWanted::History(file.path().to_owned()));
                 }
                 ui.add_space(8.0);
                 let (change, from) = match &file.source {
@@ -622,7 +668,7 @@ fn read_content(
 }
 
 /// A placeholder in place of what can't be shown as text.
-fn placeholder(ui: &mut Ui, text: String) {
+pub(super) fn placeholder(ui: &mut Ui, text: String) {
     Frame::new()
         .inner_margin(Margin::same(16))
         .show(ui, |ui| ui.label(muted(ui, text)));

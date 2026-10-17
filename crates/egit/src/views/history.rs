@@ -26,7 +26,9 @@ use egui_table_kit::layout::{
 };
 
 use super::actions::{self, Ask, Menus};
-use super::file::{self, FileView, WorkFile};
+use super::blame::{self, BlameEvent, BlameView};
+use super::file::{self, FileView, FileWanted, WorkFile};
+use super::file_history::{self, FileHistoryView};
 use super::rebase::{self, RebaseEvent, RebaseView};
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
@@ -147,8 +149,16 @@ pub(crate) struct HistoryView {
     tasks: TasksView,
     /// What a menu in the details asked for, carried out once the panels are drawn.
     asked: Option<Ask>,
-    /// The interactive rebase editor, in place of the commit table.
-    rebase: Option<RebaseView>,
+    /// A tool in place of the commit table: the rebase editor, a blame, a file's history.
+    tool: Option<Tool>,
+}
+
+/// What can take the commit table's place, besides a changed file.
+#[derive(Debug)]
+enum Tool {
+    Rebase(RebaseView),
+    Blame(BlameView),
+    FileHistory(FileHistoryView),
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -233,7 +243,7 @@ impl HistoryView {
             work: WorkPanel::new(repo),
             tasks: TasksView::default(),
             asked: None,
-            rebase: None,
+            tool: None,
         }
     }
 
@@ -245,7 +255,29 @@ impl HistoryView {
     /// Where on screen the place before cell `cell` of line `line` was drawn, in the view shown.
     #[cfg(test)]
     pub(crate) fn file_spot(&self, line: u32, cell: u32) -> Option<egui::Pos2> {
-        self.file.as_ref()?.spot(line, cell)
+        match (&self.file, &self.tool) {
+            (Some(file), _) => file.spot(line, cell),
+            (None, Some(Tool::Blame(blame))) => blame.spot(line, cell),
+            _ => None,
+        }
+    }
+
+    /// Whether a blame is shown, and done.
+    #[cfg(test)]
+    pub(crate) fn blame_done(&self) -> Option<bool> {
+        match &self.tool {
+            Some(Tool::Blame(blame)) => Some(blame.done()),
+            _ => None,
+        }
+    }
+
+    /// The file history's diff shown, as lines it adds and removes (`None` until it is read).
+    #[cfg(test)]
+    pub(crate) fn file_history_diff(&mut self) -> Option<(u32, u32)> {
+        match &mut self.tool {
+            Some(Tool::FileHistory(history)) => history.diff_changed(),
+            _ => None,
+        }
     }
 
     /// The file being looked at: its path, and whether its contents are shown yet.
@@ -325,6 +357,17 @@ impl HistoryView {
     }
 
     /// Shows the working tree's changes beside the history.
+    /// Opens a file's blame or history in the commit table's place.
+    fn open_tool(&mut self, shared: &Shared<'_>, objects: &Objects, wanted: FileWanted) {
+        self.file = None;
+        self.tool = Some(match wanted {
+            FileWanted::Blame { at, path } => {
+                Tool::Blame(BlameView::new(shared, objects, at, path))
+            }
+            FileWanted::History(path) => Tool::FileHistory(FileHistoryView::new(shared, path)),
+        });
+    }
+
     fn select_work(&mut self) {
         self.work_selected = true;
         if self.file.as_ref().is_some_and(|file| file.work().is_none()) {
@@ -593,23 +636,15 @@ fn panels(
     egui::CentralPanel::default()
         .frame(Frame::new())
         .show(ui, |ui| match &mut view.file {
-            _ if view.rebase.is_some() => {
-                let event = view
-                    .rebase
-                    .as_mut()
-                    .and_then(|rebase| rebase::show(ui, shared, rebase));
-                match event {
-                    Some(RebaseEvent::Start(task)) => {
-                        actions.push(Action::Task(shared.id, task));
-                        view.rebase = None;
-                    }
-                    Some(RebaseEvent::Close) => view.rebase = None,
-                    None => {}
-                }
-            }
+            _ if view.tool.is_some() => tool(ui, shared, history, view, actions),
             Some(file) => {
-                if !file::show(ui, shared, &history.objects, file, actions) {
+                let open = file::show(ui, shared, &history.objects, file, actions);
+                let wanted = file.wanted.take();
+                if !open {
                     view.file = None;
+                }
+                if let Some(wanted) = wanted {
+                    view.open_tool(shared, &history.objects, wanted);
                 }
             }
             None if no_commits => {
@@ -653,6 +688,11 @@ impl Shared<'_> {
             busy: self.busy,
             operation: self.operation.is_some(),
         }
+    }
+
+    /// The commit `HEAD` is at, once read.
+    pub(super) const fn head_commit(&self) -> Option<ObjectId> {
+        self.head.commit
     }
 
     /// The branch `HEAD` is on, by its short name.
@@ -874,6 +914,47 @@ fn commit_table(
     }
 }
 
+/// The tool in the commit table's place, and what it asks.
+fn tool(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    view: &mut HistoryView,
+    actions: &mut Vec<Action>,
+) {
+    let asked = match &mut view.tool {
+        Some(Tool::Rebase(rebase)) => match rebase::show(ui, shared, rebase) {
+            Some(RebaseEvent::Start(task)) => {
+                actions.push(Action::Task(shared.id, task));
+                Some(BlameEvent::Close)
+            }
+            Some(RebaseEvent::Close) => Some(BlameEvent::Close),
+            None => None,
+        },
+        Some(Tool::Blame(blame)) => blame::show(ui, shared, blame),
+        Some(Tool::FileHistory(found)) => file_history::show(ui, shared, found),
+        None => None,
+    };
+    match asked {
+        Some(BlameEvent::Close) => view.tool = None,
+        Some(BlameEvent::ShowCommit(id)) => {
+            view.tool = None;
+            let near = view.selected.map_or(0, |selected| selected.row);
+            if let Some(row) = history.shown.row_of(&id, near) {
+                view.select(&history.shown, row, Some(Align::Center));
+            }
+        }
+        Some(BlameEvent::Blame { at, path }) => {
+            view.open_tool(
+                shared,
+                &history.objects,
+                FileWanted::Blame { at: Some(at), path },
+            );
+        }
+        None => {}
+    }
+}
+
 /// Does what a menu asked: starts its task, asks its dialog's question first, or opens the
 /// rebase editor.
 fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &mut Vec<Action>) {
@@ -882,7 +963,7 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
         Ask::Dialog(dialog) => view.tasks.dialog = Some(dialog),
         Ask::Rebase { from, reword } => {
             view.file = None;
-            view.rebase = Some(RebaseView::new(shared, from, reword));
+            view.tool = Some(Tool::Rebase(RebaseView::new(shared, from, reword)));
         }
     }
 }

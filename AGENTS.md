@@ -438,6 +438,14 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     numbered as the resolved file will be, `<`/`|`/`>` in the gutter, the current side's lines
     through the old parser and the incoming side's through the new; `start` and `conflict_at`
     map conflicts and lines. `Shown` draws it with its selected conflict's headers stronger.
+  - `blame.rs` — `start_blame`: `blame` in a detached job, its runs handed over in batches
+    (every 256 runs or 50 ms) into a `Blaming`'s `BlameState` (each line's commit and whether
+    a run starts there, the commits found, their time span) that the view reads each frame,
+    so the first lines show before git is done; `read_blamed_file` (`tree_entry`, then
+    `read_file`; or the work tree's file). `BlameSource`: the file (highlighted) as a
+    `GridSource`, the gutter labelling each run's first line (`1a2b3c4 Ada Lovelace  3y`, 26
+    cells) beside its number; the selected line's commit's lines marked, uncommitted ones as
+    incoming, the rest shaded by how new their commit is among those found.
   - `tasks.rs` — `Tasks`, what the user asks of a repository: one `Task` the user
     asked for at a time (fetch `--all --prune`, pull as configured or by merge or rebase,
     push a branch or a tag, delete a remote's branch, abort or continue an operation,
@@ -547,6 +555,16 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     text field has the focus: ↑ ↓, Alt+↑ Alt+↓ to move, P R S F D. `plan` hands git the rows
     oldest first, or says why not (nothing changes, nothing to meld into, an empty message,
     everything dropped); "Start rebase" runs it as a task.
+    `views/blame.rs` — `BlameView`, and `views/file_history.rs` — `FileHistoryView`: a
+    `FileView`'s "Blame" and "File history" (`FileWanted`; a deleted file is blamed as its
+    parent had it) open them in the commit table's place, each a `Tool` of the history view
+    as the rebase editor is (one at a time; Escape or "History" goes back). The blame: "Blame
+    <path> at 1234abcd" (or "in the work tree"), "Blaming… 1,200 of 5,000 lines" while git
+    works; a line selected shows its commit below, with "Show the commit" (selected in the
+    history) and "Blame before this commit" (its `previous` commit and path). The history:
+    `file_log`'s commits as they are found, newest first (`show_rows`; a rename's row says
+    "from <old path>"), ↑ ↓; the selected one's diff of the file below (`read_diff`, a pure
+    rename said so), "Show the commit", and "Blame it here".
     `views/clone.rs` — Home's clone card (`CloneView`): the address, the folder it goes into
     (typed, `~` the home folder and a relative path inside it, or picked: `PickCloneFolder`;
     `Settings::clone_folder`, the last clone's, at first), the folder's name (`name_from_url`,

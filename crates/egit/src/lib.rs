@@ -17,6 +17,7 @@
 //! - `worktree` — a repository's working tree: its status, kept current.
 
 mod app;
+mod blame;
 mod diff;
 mod fonts;
 mod format;

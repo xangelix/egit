@@ -1794,6 +1794,109 @@ fn history_is_rewritten_in_the_rebase_editor() {
 }
 
 #[test]
+fn a_file_is_blamed_and_its_history_followed() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    let block = |name: &str| {
+        (1..=3).fold(String::new(), |mut block, n| {
+            let _ = writeln!(block, "{name} line {n}");
+            block
+        })
+    };
+    sandbox
+        .commit_file(&repo, "notes", &block("alpha"), "Write")
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "notes", &format!("{}added\n", block("alpha")), "Add")
+        .unwrap();
+    sandbox.run(&repo, "mv", &["notes", "doc"]).unwrap();
+    sandbox
+        .run(&repo, "commit", &["--quiet", "--message", "Rename"])
+        .unwrap();
+    sandbox
+        .commit_file(
+            &repo,
+            "doc",
+            &format!("{}added\nmoved on\n", block("alpha")),
+            "Move on",
+        )
+        .unwrap();
+    let short = |name: &str| {
+        let shown = sandbox
+            .run(&repo, "rev-parse", &["--short=8", name])
+            .unwrap();
+        String::from_utf8(shown.stdout).unwrap().trim().to_owned()
+    };
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_of(4));
+
+    // The last commit's file, blamed there: each line's commit, across the rename.
+    harness
+        .get_by_role_and_label(Role::Button, "Move on")
+        .click();
+    settle(&mut harness, "the commit's files", |app| {
+        let view = &mut app.state.repos[0].history_view;
+        view.details_shown() && view.counts_shown()
+    });
+    harness.get_by_role_and_label(Role::Button, "doc").click();
+    settle(&mut harness, "the file", |app| {
+        app.state.repos[0].history_view.file_shown() == Some(("doc".to_owned(), true))
+    });
+    harness.get_by_label("Blame").click();
+    wait_for_label(&mut harness, &format!("at {}", short("HEAD")));
+    settle(&mut harness, "the blame", |app| {
+        app.state.repos[0].history_view.blame_done() == Some(true)
+    });
+    harness.run_steps(2);
+    render(&mut harness, "blame");
+
+    // The line `Add` added: its commit, and the way to it.
+    drag(&mut harness, (3, 0), (3, 3));
+    wait_for_label(&mut harness, "Blame before this commit");
+    render(&mut harness, "blame-line");
+    harness.get_by_label("Show the commit").click();
+    wait_for_label(&mut harness, &short("HEAD~2"));
+
+    // Its history: four commits, the rename's diff.
+    harness
+        .get_by_role_and_label(Role::Button, "Move on")
+        .click();
+    settle(&mut harness, "the commit's files", |app| {
+        let view = &mut app.state.repos[0].history_view;
+        view.details_shown() && view.counts_shown()
+    });
+    harness.get_by_role_and_label(Role::Button, "doc").click();
+    wait_for_label(&mut harness, "File history");
+    harness.get_by_label("File history").click();
+    // Its commits as they are found (the history's bar says "4 commits" too).
+    wait_for_label(&mut harness, "History of");
+    for _ in 0..2_000 {
+        harness.step();
+        if harness
+            .query_by_role_and_label(Role::Button, "Rename")
+            .is_some()
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness
+        .get_by_role_and_label(Role::Button, "Rename")
+        .click();
+    wait_for_label(&mut harness, "egit tests · from notes");
+    wait_for_label(&mut harness, "Renamed from notes; its text unchanged.");
+    // ↓ to the commit before, which changed the file's text.
+    harness.key_press(egui::Key::ArrowDown);
+    settle(&mut harness, "the earlier commit's diff", |app| {
+        app.state.repos[0].history_view.file_history_diff() == Some((1, 0))
+    });
+    harness.run_steps(4);
+    render(&mut harness, "file-history");
+}
+
+#[test]
 fn whole_file_shows_all_of_the_file_and_back() {
     let sandbox = Sandbox::new().unwrap();
     let repo = sandbox.init("repo").unwrap();
