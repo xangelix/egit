@@ -278,6 +278,56 @@ pub fn set_config(
         .map(drop)
 }
 
+/// Adds `value` to `key`'s values in `target` (a key that may have several), unless it has it.
+///
+/// # Errors
+///
+/// When git refuses the key or can't write the file.
+pub fn add_config_value(
+    git: &Git,
+    target: ConfigTarget<'_>,
+    key: &str,
+    value: &str,
+) -> Result<(), GitError> {
+    let has = config_command(git, target)
+        .args(["--fixed-value", "--get", key, value])
+        .output_unchecked()?;
+    if has.status.success() {
+        return Ok(());
+    }
+    config_command(git, target)
+        .args(["--add", key, value])
+        .output()
+        .map(drop)
+}
+
+/// Removes `value` (exactly) from `key`'s values in `target`, leaving its others. Removing a
+/// value that isn't there succeeds.
+///
+/// # Errors
+///
+/// When git refuses the key or can't write the file.
+pub fn unset_config_value(
+    git: &Git,
+    target: ConfigTarget<'_>,
+    key: &str,
+    value: &str,
+) -> Result<(), GitError> {
+    let completed = config_command(git, target)
+        .args(["--fixed-value", "--unset-all", key, value])
+        .output_unchecked()?;
+    // Exit code 5: there was nothing to remove.
+    if completed.status.success() || completed.status.code() == Some(5) {
+        Ok(())
+    } else {
+        Err(GitError::failed(
+            "config",
+            completed.status,
+            completed.stderr,
+        ))
+    }
+}
+
 /// Removes every value of `key` from `target`. Removing a key that isn't there succeeds.
 ///
 /// # Errors

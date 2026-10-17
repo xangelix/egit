@@ -8,8 +8,8 @@ use std::fs;
 use bstr::BStr;
 use egit_git::testing::Sandbox;
 use egit_git::{
-    ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, SigningFormat, set_config,
-    unset_config,
+    ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, SigningFormat,
+    add_config_value, set_config, unset_config, unset_config_value,
 };
 
 fn sandbox() -> Sandbox {
@@ -244,4 +244,41 @@ fn bytes_that_arent_utf8_survive() {
         snapshot.get("egit.raw").unwrap().value,
         Some(BStr::new(b"caf\xe9"))
     );
+}
+
+#[test]
+fn one_value_of_many_is_added_and_removed() {
+    let sandbox = sandbox();
+    let values = || -> Vec<String> {
+        let snapshot = ConfigSnapshot::read(sandbox.git(), ConfigPlace::User).unwrap();
+        snapshot
+            .get_all("egit.githubHost")
+            .map(|entry| entry.text().to_string())
+            .collect()
+    };
+    for host in [
+        "ghe.example.com",
+        "a.example",
+        "ghe.example.com",
+        "b.example",
+    ] {
+        add_config_value(sandbox.git(), ConfigTarget::Global, "egit.githubHost", host).unwrap();
+    }
+    assert_eq!(values(), ["ghe.example.com", "a.example", "b.example"]);
+    // A value that looks like a pattern is still only itself.
+    unset_config_value(
+        sandbox.git(),
+        ConfigTarget::Global,
+        "egit.githubHost",
+        "a.exampl.",
+    )
+    .unwrap();
+    unset_config_value(
+        sandbox.git(),
+        ConfigTarget::Global,
+        "egit.githubHost",
+        "a.example",
+    )
+    .unwrap();
+    assert_eq!(values(), ["ghe.example.com", "b.example"]);
 }

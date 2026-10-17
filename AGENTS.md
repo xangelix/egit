@@ -114,7 +114,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     last value (git's rule), keys compare like git's (section and name in any case, subsection
     exactly); `is_partial_clone` (a promisor remote or a clone's filter). `set_config`
     (`--replace-all`) and `unset_config` (`--unset-all`; exit 5 is fine) write `--global` from
-    `/` or `--local` in a work tree.
+    `/` or `--local` in a work tree; `add_config_value` and `unset_config_value` add and remove
+    one value of a key that has several (`--fixed-value`: a value is never a pattern).
   - `profile.rs` — `Profile` over a snapshot: identity, `Signing` (format, key, defaults,
     program — `gpg.program` and `gpg.openpgp.program` are one setting, the later wins —,
     allowed signers), credential helpers (an empty value resets the list), pull and push

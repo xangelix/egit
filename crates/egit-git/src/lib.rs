@@ -58,7 +58,8 @@ pub use command::{Access, GitCommand, SecretOutput, Streamed};
 pub use commit::{Commit, CommitParseError, Signature};
 pub use committing::{Committed, NewCommit, create_commit};
 pub use config::{
-    ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, set_config, unset_config,
+    ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, add_config_value,
+    set_config, unset_config, unset_config_value,
 };
 pub use conflict::{
     ConflictLines, ConflictSides, IncomingCommit, Merge, MergedText, Pick, Piece, Resolution,
