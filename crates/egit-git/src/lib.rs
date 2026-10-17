@@ -32,6 +32,7 @@ mod patch;
 mod process;
 mod profile;
 mod progress;
+mod rebase;
 mod remote;
 mod repo;
 mod signatures;
@@ -77,6 +78,10 @@ pub use output::{Completed, Stderr};
 pub use patch::{Direction, LinesError, apply_lines, write_index_content};
 pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use progress::{Progress, ProgressReport};
+pub use rebase::{
+    MAX_PLANNED, Planned, RangeCommit, RangeError, RebaseError, RebaseRange, Step,
+    rebase_interactive, rebase_range,
+};
 pub use remote::{
     CloneOptions, FetchOptions, PullMode, Pulled, PushFlag, PushOptions, Pushed, PushedRef,
     abort_operation, clone, continue_operation, delete_remote_branch, fetch, pull, push, push_tag,

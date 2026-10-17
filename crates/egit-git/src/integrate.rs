@@ -168,7 +168,7 @@ fn parents(
 
 /// What `done` means: a failure that left an operation stopped at conflicts is
 /// [`Integrated::Conflicts`].
-fn stopped(
+pub(crate) fn stopped(
     git: &Git,
     repository: &Repository,
     done: Result<(), GitError>,

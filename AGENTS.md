@@ -250,6 +250,20 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `stash_apply` (and pop; `Integrated::Conflicts` keeps a popped stash) and `stash_drop`,
     each refused (`StashError::Stale`) unless `stash@{n}` is still the stash listed.
     `tests/actions.rs` runs all of these, and the pushes, against sandboxes.
+  - `rebase.rs` — interactive rebase. `rebase_range`: the commits from one up to `HEAD`
+    (`merge-base --is-ancestor`, then `log -z --reverse <from>^..HEAD`, or all from a root),
+    oldest first, with authors and whole messages; refused (`RangeError`) when `HEAD` doesn't
+    reach it, the range holds a merge (rebasing would flatten it), or past `MAX_PLANNED`
+    (10,000). `rebase_interactive`: a plan of `Planned` commits (`Step`: pick, reword with a
+    message, squash, fixup, drop) checked (`RebaseError`: nothing to squash into, an empty
+    message) and written as git's todo in a temporary file (`tempfile`) that the sequence
+    editor copies in (`GIT_SEQUENCE_EDITOR=cp -- <file>`; `--no-autosquash
+    --no-update-refs`, `--root` from the root); a reword is a pick, then, after the commits
+    squashed or fixed up into it, `exec printf … | git commit --amend --file=-` carrying its
+    message (each line quoted for the shell), so the todo holds everything and a rebase
+    continued after a conflict still rewords. Conflicts are `Integrated::Conflicts`, as
+    `integrate.rs` tells. `tests/rebase.rs` reads ranges and runs plans (reorder, reword,
+    squash, fixup, drop, the root, conflicts and continuing, a dirty work tree refused).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
