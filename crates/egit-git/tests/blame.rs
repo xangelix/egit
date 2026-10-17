@@ -1,5 +1,5 @@
 //! Blame and a file's history against sandboxed repositories: lines attributed across a rename
-//! and a move within the file, uncommitted lines, and the commits that changed a file
+//! and a move within the file (to the commit that wrote them, or moved them), uncommitted lines, and the commits that changed a file
 //! followed through its rename.
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
@@ -17,7 +17,7 @@ use std::path::Path;
 use bstr::BStr;
 use egit_git::testing::Sandbox;
 use egit_git::{
-    BlameCommit, BlameRun, CancelToken, FileCommit, ObjectId, Repository, blame, file_log,
+    BlameCommit, BlameRun, CancelToken, FileCommit, Moves, ObjectId, Repository, blame, file_log,
 };
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -26,7 +26,13 @@ fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
 }
 
 /// Each line's commit summary (`None` for uncommitted lines), in the file's order.
-fn summaries(sandbox: &Sandbox, repo: &Path, at: Option<ObjectId>, path: &str) -> Vec<String> {
+fn summaries(
+    sandbox: &Sandbox,
+    repo: &Path,
+    at: Option<ObjectId>,
+    path: &str,
+    moves: Moves,
+) -> Vec<String> {
     let repository = Repository::discover(sandbox.git(), repo).unwrap();
     let mut commits: Vec<BlameCommit> = Vec::new();
     let mut runs: Vec<BlameRun> = Vec::new();
@@ -35,6 +41,7 @@ fn summaries(sandbox: &Sandbox, repo: &Path, at: Option<ObjectId>, path: &str) -
         &repository,
         at,
         BStr::new(path),
+        moves,
         &CancelToken::new(),
         |found, run| {
             commits = found.to_vec();
@@ -108,13 +115,17 @@ fn lines_are_blamed_across_a_rename_and_a_move() {
     let sandbox = Sandbox::new().unwrap();
     let repo = history(&sandbox);
     let head = rev(&sandbox, &repo, "HEAD");
-    let shown = summaries(&sandbox, &repo, Some(head), "doc");
+    let shown = summaries(&sandbox, &repo, Some(head), "doc", Moves::Writing);
     assert_eq!(shown.len(), 9);
     // The beta block and the moved alpha block still come from the first commit; the line
     // added before the rename from its commit.
     assert_eq!(&shown[..4], ["Write"; 4]);
     assert_eq!(shown[4], "Add");
     assert_eq!(&shown[5..], ["Write"; 4]);
+    // As git blames by default, the moved block is the moving commit's.
+    let shown = summaries(&sandbox, &repo, Some(head), "doc", Moves::Moving);
+    assert_eq!(shown[4], "Add");
+    assert_eq!(&shown[5..], ["Move"; 4]);
 }
 
 #[test]
@@ -124,7 +135,7 @@ fn the_work_tree_s_uncommitted_lines_are_said_so() {
     let mut doc = std::fs::read_to_string(repo.join("doc")).unwrap();
     doc.push_str("not yet\n");
     std::fs::write(repo.join("doc"), doc).unwrap();
-    let shown = summaries(&sandbox, &repo, None, "doc");
+    let shown = summaries(&sandbox, &repo, None, "doc", Moves::Moving);
     assert_eq!(shown.last().map(String::as_str), Some("(uncommitted)"));
     assert_eq!(shown[4], "Add");
 }

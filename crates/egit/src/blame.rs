@@ -11,7 +11,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use bstr::{BStr, BString};
-use egit_git::{BlameCommit, BlameRun, CancelToken, Git, ObjectId, Repository, blame, tree_entry};
+use egit_git::{
+    BlameCommit, BlameRun, CancelToken, Git, Moves, ObjectId, Repository, blame, tree_entry,
+};
 use egit_text::{Measure, Text};
 use egui::Color32;
 use parking_lot::Mutex;
@@ -137,6 +139,7 @@ pub(crate) fn start_blame(
     repository: Arc<Repository>,
     at: Option<ObjectId>,
     path: BString,
+    moves: Moves,
     cancel: CancelToken,
 ) -> Arc<Blaming> {
     let blaming = Arc::new(Blaming::default());
@@ -151,6 +154,7 @@ pub(crate) fn start_blame(
             &repository,
             at,
             path.as_ref(),
+            moves,
             &cancel,
             |found, run| {
                 commits.extend_from_slice(found.get(commits.len()..).unwrap_or_default());

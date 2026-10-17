@@ -1851,6 +1851,12 @@ fn a_file_is_blamed_and_its_history_followed() {
     });
     harness.run_steps(2);
     render(&mut harness, "blame");
+    // Following moved lines blames it again.
+    harness.get_by_label("Follow moved lines").click();
+    harness.run_steps(2);
+    settle(&mut harness, "the blame again", |app| {
+        app.state.repos[0].history_view.blame_done() == Some(true)
+    });
 
     // The line `Add` added: its commit, and the way to it.
     drag(&mut harness, (3, 0), (3, 3));

@@ -51,10 +51,22 @@ pub struct BlameRun {
     pub original: u32,
 }
 
+/// Whose a line moved within the file is.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Moves {
+    /// The commit that moved it (git's default).
+    #[default]
+    Moving,
+    /// The commit that wrote it, wherever it was then (`-M`). Far slower on a large file: git
+    /// looks for each line's earlier place in every older version of the whole file (100,000
+    /// lines rewritten by 100 commits: 80 s, against 0.9 s).
+    Writing,
+}
+
 /// Blames the file at `path` as `at` has it (`None`: as the work tree has it).
 ///
 /// Each run of lines is handed over as git finds it, with the commits found so far
-/// (`commits[run.commit]` is its commit). Lines moved within the file are followed (`-M`).
+/// (`commits[run.commit]` is its commit). `moves` says whose lines moved within the file are.
 ///
 /// # Errors
 ///
@@ -65,14 +77,18 @@ pub fn blame(
     repository: &Repository,
     at: Option<ObjectId>,
     path: &BStr,
+    moves: Moves,
     cancel: &CancelToken,
     mut found: impl FnMut(&[BlameCommit], BlameRun),
 ) -> Result<(), GitError> {
     let mut command = git
         .read("blame")
-        .args(["--incremental", "-M"])
+        .arg("--incremental")
         .current_dir(repository.work_tree())
         .cancel_token(cancel);
+    if moves == Moves::Writing {
+        command = command.arg("-M");
+    }
     if let Some(at) = at {
         command = command.arg(at.to_string());
     }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use bstr::{BString, ByteSlice as _};
-use egit_git::{CancelToken, ObjectId};
+use egit_git::{CancelToken, Moves, ObjectId};
 use egui::{Frame, Key, Margin, Modifiers, RichText, Ui};
 use egui_async::Bind;
 
@@ -26,6 +26,8 @@ pub(super) struct BlameView {
     path: BString,
     /// The commit blamed at (`None`: the work tree).
     at: Option<ObjectId>,
+    /// Whose lines moved within the file are.
+    moves: Moves,
     content: Bind<Arc<FileContent>, Problem>,
     blaming: Arc<Blaming>,
     grid: TextGrid,
@@ -56,37 +58,45 @@ impl BlameView {
         at: Option<ObjectId>,
         path: BString,
     ) -> Self {
-        let cancel = CancelToken::new();
         let mut content = Bind::new(true);
-        let blaming = shared.git.map_or_else(
-            || Arc::new(Blaming::default()),
-            |git| {
-                content.request(read_blamed_file(
-                    git.clone(),
-                    Arc::clone(shared.repository),
-                    objects.clone(),
-                    at,
-                    path.clone(),
-                ));
-                start_blame(
-                    git.clone(),
-                    Arc::clone(shared.repository),
-                    at,
-                    path.clone(),
-                    cancel.clone(),
-                )
-            },
-        );
+        if let Some(git) = shared.git {
+            content.request(read_blamed_file(
+                git.clone(),
+                Arc::clone(shared.repository),
+                objects.clone(),
+                at,
+                path.clone(),
+            ));
+        }
         let mut grid = TextGrid::new(("blame", shared.id));
         grid.set_wrap(false);
-        Self {
+        let mut view = Self {
             path,
             at,
+            moves: Moves::default(),
             content,
-            blaming,
+            blaming: Arc::default(),
             grid,
-            cancel,
-        }
+            cancel: CancelToken::new(),
+        };
+        view.restart(shared);
+        view
+    }
+
+    /// Blames the file (again), stopping the blame before.
+    fn restart(&mut self, shared: &Shared<'_>) {
+        self.cancel.cancel();
+        self.cancel = CancelToken::new();
+        self.blaming = shared.git.map_or_else(Arc::default, |git| {
+            start_blame(
+                git.clone(),
+                Arc::clone(shared.repository),
+                self.at,
+                self.path.clone(),
+                self.moves,
+                self.cancel.clone(),
+            )
+        });
     }
 
     /// Where on screen the place before cell `cell` of line `line` was drawn.
@@ -175,6 +185,7 @@ fn content(ui: &mut Ui, view: &mut BlameView, selected: Option<u32>) {
 /// The bar: back, which file at which commit, and how far the blame has got.
 fn bar(ui: &mut Ui, shared: &Shared<'_>, view: &mut BlameView, done: bool) -> Option<BlameEvent> {
     let mut event = None;
+    let mut restart = false;
     let found = view.blaming.state.lock().found;
     let lines = match view.content.read_as_ref() {
         Some(Ok(content)) => match &**content {
@@ -203,6 +214,23 @@ fn bar(ui: &mut Ui, shared: &Shared<'_>, view: &mut BlameView, done: bool) -> Op
                     |at| format!("at {}", at.abbreviated(ID_DIGITS)),
                 );
                 ui.label(muted(ui, at));
+                ui.add_space(8.0);
+                let mut follow = view.moves == Moves::Writing;
+                if ui
+                    .checkbox(&mut follow, "Follow moved lines")
+                    .on_hover_text(
+                        "A line moved within the file is the commit's that wrote it, not the \
+                         one that moved it. Slower on a large file.",
+                    )
+                    .changed()
+                {
+                    view.moves = if follow {
+                        Moves::Writing
+                    } else {
+                        Moves::Moving
+                    };
+                    restart = true;
+                }
                 if let Some(problem) = problem {
                     ui.label(
                         RichText::new(format!("{}  {problem}", icon::WARNING_CIRCLE))
@@ -220,6 +248,9 @@ fn bar(ui: &mut Ui, shared: &Shared<'_>, view: &mut BlameView, done: bool) -> Op
                 }
             });
         });
+    if restart {
+        view.restart(shared);
+    }
     event
 }
 

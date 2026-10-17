@@ -47,7 +47,7 @@ mod tree;
 mod version;
 
 pub use batch::GitProcess;
-pub use blame::{BlameCommit, BlameRun, FileCommit, blame, file_log};
+pub use blame::{BlameCommit, BlameRun, FileCommit, Moves, blame, file_log};
 pub use branch::{
     BadRefName, DeleteBranchError, SwitchError, SwitchTo, check_ref_name, create_branch,
     create_tag, delete_branch, delete_tag, rename_branch, switch,

@@ -267,15 +267,16 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     continued after a conflict still rewords. Conflicts are `Integrated::Conflicts`, as
     `integrate.rs` tells. `tests/rebase.rs` reads ranges and runs plans (reorder, reword,
     squash, fixup, drop, the root, conflicts and continuing, a dirty work tree refused).
-  - `blame.rs` — `blame`: `git blame --incremental -M` (moved lines followed; renames are
-    by default) at a commit or the work tree, streamed through `Lines`, each `BlameRun` (its
+  - `blame.rs` — `blame`: `git blame --incremental` (renames followed; lines moved within the
+    file only with `Moves::Writing`, `-M`, which is far slower on a large file) at a commit or
+    the work tree, streamed through `Lines`, each `BlameRun` (its
     lines here, from 0, and there) handed over as git finds it with the commits so far
     (`BlameCommit`: author, time, summary, `boundary`, `previous` commit and path; a commit's
     details come once, found again by a sorted index; uncommitted lines share a commit without
     a name). `file_log`: `git log --follow -M --name-status -z`, records split on `%x1e` as
     they stream, each `FileCommit` (first parent, author, time, subject, git's status letter,
     its path there and a rename's old one). `tests/blame.rs` blames across a rename and a move
-    and the work tree, and follows a rename's history.
+    (either way) and the work tree, and follows a rename's history.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
@@ -559,9 +560,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `FileView`'s "Blame" and "File history" (`FileWanted`; a deleted file is blamed as its
     parent had it) open them in the commit table's place, each a `Tool` of the history view
     as the rebase editor is (one at a time; Escape or "History" goes back). The blame: "Blame
-    <path> at 1234abcd" (or "in the work tree"), "Blaming… 1,200 of 5,000 lines" while git
-    works; a line selected shows its commit below, with "Show the commit" (selected in the
-    history) and "Blame before this commit" (its `previous` commit and path). The history:
+    <path> at 1234abcd" (or "in the work tree"), "Follow moved lines" (`Moves`, blamed
+    again), "Blaming… 1,200 of 5,000 lines" while git works; a line selected shows its
+    commit below, with "Show the commit" (selected in the history) and "Blame before this
+    commit" (its `previous` commit and path). The history:
     `file_log`'s commits as they are found, newest first (`show_rows`; a rename's row says
     "from <old path>"), ↑ ↓; the selected one's diff of the file below (`read_diff`, a pure
     rename said so), "Show the commit", and "Blame it here".
