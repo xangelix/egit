@@ -38,6 +38,7 @@ mod process;
 mod profile;
 mod progress;
 mod rebase;
+mod reflog;
 mod remote;
 mod repo;
 mod search;
@@ -61,7 +62,7 @@ pub use batch::GitProcess;
 pub use blame::{BlameCommit, BlameRun, FileCommit, Moves, blame, file_log};
 pub use branch::{
     BadRefName, DeleteBranchError, SwitchError, SwitchTo, check_ref_name, create_branch,
-    create_tag, delete_branch, delete_tag, rename_branch, set_upstream, switch,
+    create_tag, delete_branch, delete_tag, move_branch, rename_branch, set_upstream, switch,
 };
 pub use cancel::CancelToken;
 pub use command::{Access, GitCommand, SecretOutput, Streamed};
@@ -102,19 +103,20 @@ pub use rebase::{
     MAX_PLANNED, Planned, RangeCommit, RangeError, RebaseError, RebaseRange, Step,
     rebase_interactive, rebase_range,
 };
+pub use reflog::{ReflogEntry, create_ref, delete_ref, ref_target, reflog};
 pub use remote::{
     CloneOptions, FetchOptions, PullMode, Pulled, PushFlag, PushOptions, Pushed, PushedRef,
     abort_operation, clone, continue_operation, delete_remote_branch, fetch, fetch_refspecs, pull,
     push, push_tag, remote_urls, remotes, skip_operation,
 };
 pub use repo::{
-    BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,
-    trust_directory,
+    BranchHead, CommitSummary, DiscoverError, Head, HeadRef, Operation, Repository, Tracking,
+    Upstream, trust_directory,
 };
 pub use search::{CommitFilter, find_commits, resolve_commit};
 pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use stage::{stage, unstage};
-pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stashes};
+pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stash_store, stashes};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
 pub use tree::{ignored_paths, tree_entry, tree_folders};
 pub use version::{GitVersion, VersionParseError};

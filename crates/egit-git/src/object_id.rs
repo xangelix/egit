@@ -48,6 +48,15 @@ impl ObjectFormat {
             Self::Sha256 => 64,
         }
     }
+
+    /// The name of no object (all zeros), which git takes for "it doesn't exist".
+    #[must_use]
+    pub const fn zero(self) -> ObjectId {
+        match self {
+            Self::Sha1 => ObjectId::Sha1([0; 20]),
+            Self::Sha256 => ObjectId::Sha256([0; 32]),
+        }
+    }
 }
 
 impl fmt::Display for ObjectFormat {

@@ -194,6 +194,49 @@ impl Repository {
         }
     }
 
+    /// Where `HEAD` is, and nothing else [`Self::head`] works out (the upstream, how far
+    /// ahead): two quick reads, for checking it before and after something moves it.
+    ///
+    /// # Errors
+    ///
+    /// When git fails or prints something unexpected.
+    pub fn head_ref(&self, git: &Git) -> Result<HeadRef, GitError> {
+        let symbolic = git
+            .read("symbolic-ref")
+            .args(["--quiet", "HEAD"])
+            .current_dir(&self.work_tree)
+            .output_unchecked()?;
+        let reference = match symbolic.status.code() {
+            Some(0) => Some(BString::from(symbolic.stdout.trim_ascii_end())),
+            Some(1) => None,
+            _ => {
+                return Err(GitError::failed(
+                    "symbolic-ref",
+                    symbolic.status,
+                    symbolic.stderr,
+                ));
+            }
+        };
+        let resolved = git
+            .read("rev-parse")
+            .args(["--verify", "--quiet", "HEAD"])
+            .current_dir(&self.work_tree)
+            .output_unchecked()?;
+        let commit = if resolved.status.success() {
+            Some(
+                ObjectId::from_hex(resolved.stdout.trim_ascii())
+                    .ok_or_else(|| GitError::unexpected("rev-parse", "a commit's name"))?,
+            )
+        } else {
+            // A branch without commits yet.
+            None
+        };
+        if reference.is_none() && commit.is_none() {
+            return Err(GitError::unexpected("rev-parse", "HEAD's commit"));
+        }
+        Ok(HeadRef { reference, commit })
+    }
+
     fn branch_head(&self, git: &Git, reference: BString) -> Result<BranchHead, GitError> {
         let name = BString::from(
             reference
@@ -331,6 +374,28 @@ pub enum Head {
     Branch(BranchHead),
     /// Detached, at a commit.
     Detached(CommitSummary),
+}
+
+/// Where `HEAD` is, briefly ([`Repository::head_ref`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeadRef {
+    /// The branch's full name (`refs/heads/main`); `None` when detached.
+    pub reference: Option<BString>,
+    /// Its commit; `None` until the branch's first.
+    pub commit: Option<ObjectId>,
+}
+
+impl HeadRef {
+    /// The branch's short name (`main`), when on one.
+    #[must_use]
+    pub fn branch(&self) -> Option<&BStr> {
+        self.reference.as_ref().map(|reference| {
+            reference
+                .strip_prefix(b"refs/heads/")
+                .unwrap_or(reference.as_slice())
+                .as_bstr()
+        })
+    }
 }
 
 /// The branch `HEAD` is on.

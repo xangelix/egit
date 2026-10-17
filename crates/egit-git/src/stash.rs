@@ -199,6 +199,28 @@ pub fn stash_drop(
     Ok(())
 }
 
+/// Puts the stash `commit` back on the stash list, as the latest, with `message` (`git stash
+/// store`): a dropped stash brought back (its commit is still there until git prunes it).
+///
+/// # Errors
+///
+/// When `commit` isn't a stash git has, or git fails or is cancelled.
+pub fn stash_store(
+    git: &Git,
+    repository: &Repository,
+    commit: ObjectId,
+    message: &str,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    git.write("stash")
+        .args(["store", "--quiet", "--message", message])
+        .arg(commit.to_string())
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .map(drop)
+}
+
 /// Whether `stash` is still where it was listed.
 fn still(
     git: &Git,

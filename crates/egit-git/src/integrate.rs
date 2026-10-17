@@ -253,6 +253,9 @@ pub enum ResetMode {
     Mixed,
     /// Nothing: the index and the work tree become the commit's (uncommitted changes are lost).
     Hard,
+    /// The uncommitted changes, unless a file they touch differs between the two commits (then
+    /// nothing moves): `--keep`, for taking an action back without losing work.
+    Keep,
 }
 
 /// Moves the current branch (or `HEAD`) to `commit` (`git reset`), keeping what `mode` says.
@@ -271,6 +274,7 @@ pub fn reset(
         ResetMode::Soft => "--soft",
         ResetMode::Mixed => "--mixed",
         ResetMode::Hard => "--hard",
+        ResetMode::Keep => "--keep",
     };
     git.write("reset")
         .args(["--quiet", mode])

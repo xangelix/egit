@@ -232,6 +232,29 @@ pub fn rename_branch(
         .map(drop)
 }
 
+/// Moves the branch `name` (its short name) to `commit` (`git branch --force`), whatever it
+/// held: never a branch checked out anywhere (git refuses).
+///
+/// # Errors
+///
+/// When it is checked out, or git fails or is cancelled.
+pub fn move_branch(
+    git: &Git,
+    repository: &Repository,
+    name: &BStr,
+    commit: ObjectId,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    git.write("branch")
+        .args(["--quiet", "--force"])
+        .arg(OsStr::from_bytes(name))
+        .arg(commit.to_string())
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .map(drop)
+}
+
 /// Sets `branch`'s upstream, where it pulls from and pushes to by default.
 ///
 /// `upstream` is a remote-tracking branch's short name, such as `origin/main` (`git branch
