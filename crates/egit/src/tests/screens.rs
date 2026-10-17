@@ -1227,6 +1227,8 @@ fn a_pull_stopped_at_conflicts_is_shown_and_aborted() {
     );
     harness.get_by_label("Show the conflicts").click();
     wait_for_label(&mut harness, "Conflict");
+    // The fetched commit shown too: the history is read again after the pull.
+    settle(&mut harness, "the fetched history", history_of(3));
     render(&mut harness, "sync-conflicts");
 
     harness.get_by_label("Abort…").click();
