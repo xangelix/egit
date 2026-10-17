@@ -17,7 +17,7 @@ use super::screens::{
     open_path, profile_loaded, render, settle, shared_remote, type_into, wait_for_label,
 };
 use crate::app::EgitApp;
-use crate::desktop::Saver;
+use crate::desktop::FileDialogs;
 use crate::theme::icon;
 
 fn badge(name: &str) -> String {
@@ -38,6 +38,18 @@ fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> Option<ObjectId> {
 fn config(sandbox: &Sandbox, repo: &Path, key: &str) -> Option<String> {
     let out = sandbox.run(repo, "config", &["--get", key]).ok()?;
     Some(String::from_utf8(out.stdout).unwrap().trim().to_owned())
+}
+
+/// Whether the history shows `name`'s commit as it is now, and the configuration is read: a
+/// count of rows wouldn't do (the background fetch may bring a colleague's commit in).
+fn shown(sandbox: &Sandbox, repo: &Path, name: &str) -> impl Fn(&mut EgitApp) -> bool {
+    let id = rev(sandbox, repo, name).unwrap();
+    move |app| {
+        let repo = &mut app.state.repos[0];
+        !repo.config.is_pending()
+            && !repo.history.is_loading()
+            && repo.history.shown.row_of(&id, 0).is_some()
+    }
 }
 
 /// Whether the last frame copied `text`.
@@ -146,10 +158,11 @@ fn upstreams_are_set_names_copied_and_branches_deleted_everywhere() {
         )
         .unwrap();
     sandbox.run(&mine, "switch", &["--quiet", "main"]).unwrap();
-    settle(&mut harness, "the pushed branch read", |app| {
-        let repo = &mut app.state.repos[0];
-        !repo.config.is_pending() && repo.history.shown.rows() == 2 && !repo.history.is_loading()
-    });
+    settle(
+        &mut harness,
+        "the pushed branch read",
+        shown(&sandbox, &mine, "loner"),
+    );
 
     // Its upstream changed, then forgotten.
     menu_item(&mut harness, &badge("loner"), "Set upstream…");
@@ -188,10 +201,11 @@ fn upstreams_are_set_names_copied_and_branches_deleted_everywhere() {
     sandbox.run(&mine, "switch", &["--quiet", "loner"]).unwrap();
     sandbox.commit_file(&mine, "three", "x\n", "three").unwrap();
     sandbox.run(&mine, "switch", &["--quiet", "main"]).unwrap();
-    settle(&mut harness, "the commit and the upstream read", |app| {
-        let repo = &mut app.state.repos[0];
-        !repo.config.is_pending() && repo.history.shown.rows() == 3 && !repo.history.is_loading()
-    });
+    settle(
+        &mut harness,
+        "the commit and the upstream read",
+        shown(&sandbox, &mine, "loner"),
+    );
     menu_item(
         &mut harness,
         &badge("loner"),
@@ -217,7 +231,7 @@ fn worktrees_patches_and_the_graph_s_scope_come_from_the_menus() {
     let mut harness = harness(&sandbox);
     let patches = sandbox.path("patches");
     std::fs::create_dir(&patches).unwrap();
-    harness.state_mut().state.saver = Saver::into_folder(patches.clone());
+    harness.state_mut().state.files = FileDialogs::in_folder(patches.clone());
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &repo);
     settle(&mut harness, "the history", history_shown);

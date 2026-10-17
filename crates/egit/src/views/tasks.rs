@@ -8,8 +8,8 @@ use std::path::Path;
 
 use bstr::{BString, ByteSlice as _};
 use egit_git::{
-    ConfigSnapshot, Forwarded, Head, Integrated, Operation, PullMode, Pulled, PushFlag,
-    PushOptions, Pushed, Stash, SwitchTo, Tracking,
+    ApplyAs, Changes, ConfigSnapshot, Forwarded, Head, Integrated, MailboxProgress, Operation,
+    PullMode, Pulled, PushFlag, PushOptions, Pushed, Stash, SwitchTo, Tracking,
 };
 use egui::{Align, Id, Layout, RichText, TextStyle, Ui, UiBuilder};
 
@@ -45,6 +45,8 @@ pub(crate) struct TaskPane<'a> {
     pub(crate) home: Option<&'a Path>,
     pub(crate) head: Option<&'a Head>,
     pub(crate) operations: &'a [Operation],
+    /// How far a `git am` stopped part-way got.
+    pub(crate) applying: Option<&'a MailboxProgress>,
     pub(crate) config: Option<&'a ConfigSnapshot>,
     /// The stashes, the latest first.
     pub(crate) stashes: &'a [Stash],
@@ -57,6 +59,8 @@ pub(crate) struct TaskPane<'a> {
 pub(crate) enum TaskEvent {
     /// Show the working tree (its conflicts).
     ShowWorkTree,
+    /// Show the patch a stopped `git am` is at.
+    ShowPatch,
 }
 
 impl TaskPane<'_> {
@@ -318,11 +322,13 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
             refused(ui, view, pane, &pushed, &mut dismiss);
         }
         Some(Ok(outcome)) => {
-            follow_up(view, pane, &outcome);
+            follow_up(ui, view, pane, &outcome);
             let text = ended(pane.tasks.task.as_ref(), &outcome, pane.home);
             let color = match outcome {
                 Outcome::Cancelled => palette.muted,
-                Outcome::Forwarded(Forwarded::NotFastForward) => palette.warn,
+                Outcome::Forwarded(Forwarded::NotFastForward)
+                | Outcome::Integrated(Integrated::Conflicts | Integrated::Stopped)
+                | Outcome::Pulled(Pulled::Conflicts) => palette.warn,
                 _ => palette.ok,
             };
             ui.horizontal_wrapped(|ui| {
@@ -341,20 +347,22 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     }
 }
 
-/// What a task that went through leads to, once: a new worktree opened in a tab.
-fn follow_up(view: &mut TasksView, pane: &mut TaskPane<'_>, outcome: &Outcome) {
+/// What a task that went through leads to, once: a new worktree opened in a tab, a patch
+/// copied.
+fn follow_up(ui: &Ui, view: &mut TasksView, pane: &mut TaskPane<'_>, outcome: &Outcome) {
     if view.followed == pane.tasks.started {
         return;
     }
     view.followed = pane.tasks.started;
-    if let (
-        Some(Task::AddWorktree {
-            path, open: true, ..
-        }),
-        Outcome::Done,
-    ) = (&pane.tasks.task, outcome)
-    {
-        pane.actions.push(Action::Open(path.clone()));
+    match (&pane.tasks.task, outcome) {
+        (
+            Some(Task::AddWorktree {
+                path, open: true, ..
+            }),
+            Outcome::Done,
+        ) => pane.actions.push(Action::Open(path.clone())),
+        (_, Outcome::Copied(text)) => ui.ctx().copy_text(text.clone()),
+        _ => {}
     }
 }
 
@@ -400,6 +408,36 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
             )
         }
         (task, Outcome::Forwarded(forwarded)) => forwarded_text(task, *forwarded),
+        (_, Outcome::Integrated(Integrated::Stopped)) => "A patch doesn't apply here: apply it \
+             by hand (see Show the patch) and Continue, Skip it, or Abort."
+            .to_owned(),
+        (Task::ApplyPatch { how, commits, .. }, Outcome::Integrated(_)) => match how {
+            ApplyAs::Commits { .. } if *commits == 1 => "Applied 1 commit.".to_owned(),
+            ApplyAs::Commits { .. } => format!("Applied {commits} commits."),
+            ApplyAs::Changes { staged: true } => "Applied the changes, staged.".to_owned(),
+            ApplyAs::Changes { staged: false } => {
+                "Applied the changes to the work tree.".to_owned()
+            }
+        },
+        (Task::Skip(_), Outcome::Integrated(_)) => "Skipped it, and carried on: done.".to_owned(),
+        (Task::CopyPatch(commit), Outcome::Copied(_)) => {
+            format!("Copied {}'s patch.", commit.abbreviated(ID_DIGITS))
+        }
+        (Task::CopyChanges(Changes::Staged), Outcome::Copied(_)) => {
+            "Copied the staged changes as a patch.".to_owned()
+        }
+        (_, Outcome::Copied(_)) => "Copied every change as a patch.".to_owned(),
+        (Task::SavePatches { folder, .. }, Outcome::SavedPatches(saved)) => {
+            let patches = if *saved == 1 {
+                "1 patch".to_owned()
+            } else {
+                format!("{saved} patches")
+            };
+            format!("Saved {patches} to {}.", format::display_path(folder, home))
+        }
+        (Task::SaveChanges { path, .. }, _) => {
+            format!("Saved the patch to {}.", format::display_path(path, home))
+        }
         (Task::AddWorktree { path, .. }, _) => {
             format!("Made a worktree at {}.", format::display_path(path, home))
         }
@@ -650,7 +688,20 @@ fn operation_banner(
     let &operation = pane.operations.first()?;
     let palette = Palette::of(ui.ctx());
     let busy = pane.tasks.is_busy();
-    let what = operation_name(operation);
+    let headline = match (operation, pane.applying) {
+        (Operation::ApplyMailbox, Some(progress)) => format!(
+            "{}  Applying patches stopped at {} of {}: {}",
+            icon::WARNING,
+            progress.next,
+            progress.last,
+            progress.subject
+        ),
+        _ => format!(
+            "{}  {} is in progress.",
+            icon::WARNING,
+            operation_name(operation)
+        ),
+    };
     let mut event = None;
     egui::Frame::new()
         .fill(palette.warn.gamma_multiply(0.12))
@@ -659,28 +710,46 @@ fn operation_banner(
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    RichText::new(format!("{}  {what} is in progress.", icon::WARNING))
-                        .color(palette.warn)
-                        .strong(),
-                );
-                if operation == Operation::Bisect {
+            fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
+            ui.add(egui::Label::new(RichText::new(headline).color(palette.warn).strong()).wrap());
+            if operation == Operation::Bisect {
+                ui.horizontal_wrapped(|ui| {
                     ui.label("Mark commits good or bad in a terminal, or stop.");
                     if widgets::secondary(ui, !busy, "Stop bisecting").clicked() {
                         pane.start(Task::Abort(operation));
                     }
-                    return;
-                }
-                ui.label(
+                });
+                return;
+            }
+            ui.add(
+                egui::Label::new(if operation == Operation::ApplyMailbox {
+                    "Resolve its conflicts (the files marked Conflict) and stage them, or apply \
+                     the patch by hand; then Continue. Or Skip the patch, or Abort to go back \
+                     to how things were."
+                } else {
                     "Resolve the conflicts (the files marked Conflict), stage them, then \
-                     Continue; or Abort to go back to how things were.",
-                );
+                     Continue; or Abort to go back to how things were."
+                })
+                .wrap(),
+            );
+            ui.horizontal_wrapped(|ui| {
+                if operation == Operation::ApplyMailbox
+                    && widgets::secondary(ui, true, "Show the patch").clicked()
+                {
+                    event = Some(TaskEvent::ShowPatch);
+                }
                 if widgets::secondary(ui, true, "Show the conflicts").clicked() {
                     event = Some(TaskEvent::ShowWorkTree);
                 }
                 if widgets::primary(ui, !busy, "Continue").clicked() {
                     pane.start(Task::Continue(operation));
+                }
+                if operation != Operation::Merge
+                    && widgets::secondary(ui, !busy, "Skip")
+                        .on_hover_text("Drop the commit (or patch) it stopped at, and carry on")
+                        .clicked()
+                {
+                    pane.start(Task::Skip(operation));
                 }
                 if widgets::secondary(ui, !busy, "Abort…").clicked() {
                     view.dialog = Some(Dialog::Abort(operation));

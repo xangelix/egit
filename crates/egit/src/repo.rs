@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, NewCommit, ObjectId, Operation,
-    Repository, Stash, create_commit, stashes, write_commit_graph,
+    CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, MailboxProgress, NewCommit,
+    ObjectId, Operation, Repository, Stash, create_commit, stashes, write_commit_graph,
 };
 use egui_async::Bind;
 
@@ -28,6 +28,8 @@ pub(crate) type RepoId = u64;
 pub(crate) struct Status {
     pub(crate) head: Head,
     pub(crate) operations: Vec<Operation>,
+    /// How far a `git am` stopped part-way got.
+    pub(crate) applying: Option<MailboxProgress>,
 }
 
 /// The parts of a repository's tab.
@@ -355,10 +357,16 @@ impl RepoTab {
             let head = repository
                 .head(&git)
                 .map_err(|error| Problem::git("Where HEAD points couldn't be read", &error))?;
-            let operations = repository.operations().map_err(|error| {
+            let unreadable = |error: std::io::Error| {
                 Problem::new("The repository's state couldn't be read", error.to_string())
-            })?;
-            Ok(Status { head, operations })
+            };
+            let operations = repository.operations().map_err(unreadable)?;
+            let applying = repository.mailbox_progress().map_err(unreadable)?;
+            Ok(Status {
+                head,
+                operations,
+                applying,
+            })
         }));
     }
 

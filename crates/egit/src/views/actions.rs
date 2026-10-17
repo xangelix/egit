@@ -12,7 +12,8 @@ use std::path::Path;
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_forge::ForgeRepository;
 use egit_git::{
-    ConfigSnapshot, ObjectId, PullMode, PushOptions, RefKind, Reference, ResetMode, Stash, SwitchTo,
+    Changes, ConfigSnapshot, ObjectId, PullMode, PushOptions, RefKind, Reference, ResetMode, Stash,
+    SwitchTo, patch_file_name,
 };
 use egui::{Response, Ui};
 
@@ -45,6 +46,16 @@ pub(super) enum Ask {
         commit: ObjectId,
         name: String,
     },
+    /// The commits from one up to `HEAD` saved as patches, in a folder asked for.
+    SavePatches {
+        from: ObjectId,
+    },
+    /// Uncommitted changes saved as a patch, under a name asked for.
+    SaveChanges(Changes),
+    /// Patches to apply, chosen in the desktop's dialog.
+    ApplyFiles,
+    /// A patch to apply, pasted.
+    Paste,
     /// The dialog opening a pull request from `branch`, pushed to `remote`'s `head_branch`,
     /// which is `head`.
     CreatePullRequest {
@@ -822,6 +833,88 @@ pub(super) fn ref_double_clicked(menus: &Menus<'_>, reference: &Reference) -> Op
     menus
         .switch_to(reference)
         .map(|to| Ask::Task(Task::Switch(to)))
+}
+
+/// A commit's patches: saved, copied, or saved with the commits after it up to `HEAD`.
+pub(super) fn patch_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    id: ObjectId,
+    subject: Option<&str>,
+    asked: &mut Option<Ask>,
+) {
+    if item(ui, "Save as a patch…", menus.idle()) {
+        let subject = subject.map_or_else(|| id.abbreviated(ID_DIGITS).to_string(), str::to_owned);
+        *asked = Some(Ask::SavePatch {
+            commit: id,
+            name: patch_file_name(&subject),
+        });
+    }
+    if item(ui, "Copy as a patch", menus.idle()) {
+        *asked = Some(Ask::Task(Task::CopyPatch(id)));
+    }
+    if item(ui, "Save this and later commits as patches…", menus.idle()) {
+        *asked = Some(Ask::SavePatches { from: id });
+    }
+}
+
+/// What the work tree holds, for the patches menu: whether anything is staged, whether any
+/// tracked file changed, and whether there is a commit yet.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct WorkChanges {
+    pub(super) staged: bool,
+    pub(super) tracked: bool,
+    pub(super) has_commit: bool,
+}
+
+/// The patches menu, beside the commit count: patches to apply (from files, or pasted), and the
+/// uncommitted changes as a patch (copied, or saved), staged or all.
+pub(super) fn patches_menu(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    changes: WorkChanges,
+    asked: &mut Option<Ask>,
+) -> Response {
+    ui.menu_button(format!("{}  Patches", crate::theme::icon::GIT_DIFF), |ui| {
+        ui.set_min_width(300.0);
+        let applying = if menus.operation {
+            Err("Finish or abort the operation in progress first")
+        } else {
+            menus.idle()
+        };
+        if item(ui, "Apply patches from files…", applying) {
+            *asked = Some(Ask::ApplyFiles);
+        }
+        if item(ui, "Paste a patch to apply…", applying) {
+            *asked = Some(Ask::Paste);
+        }
+        ui.separator();
+        let staged = if changes.staged {
+            menus.idle()
+        } else {
+            Err("Nothing is staged")
+        };
+        let all = if !changes.has_commit {
+            Err("There is no commit to compare with yet")
+        } else if changes.tracked {
+            menus.idle()
+        } else {
+            Err("No tracked file changed (new files aren't in it until staged)")
+        };
+        if item(ui, "Copy the staged changes as a patch", staged) {
+            *asked = Some(Ask::Task(Task::CopyChanges(Changes::Staged)));
+        }
+        if item(ui, "Copy every change as a patch", all) {
+            *asked = Some(Ask::Task(Task::CopyChanges(Changes::All)));
+        }
+        if item(ui, "Save the staged changes as a patch…", staged) {
+            *asked = Some(Ask::SaveChanges(Changes::Staged));
+        }
+        if item(ui, "Save every change as a patch…", all) {
+            *asked = Some(Ask::SaveChanges(Changes::All));
+        }
+    })
+    .response
 }
 
 /// The stash menu, under `button`: stashing the work tree's changes, and each stash to apply,

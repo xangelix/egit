@@ -18,15 +18,15 @@ use egit_forge::{
     Account, ForgeKind, ForgeRepository, NewPullRequest, Opened, create_pull_request,
 };
 use egit_git::{
-    CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError, FetchOptions,
-    ForwardFrom, Forwarded, Git, GitError, Integrated, MAX_PLANNED, ObjectId, Operation, Planned,
-    Progress, PullMode, Pulled, PushOptions, Pushed, RangeError, RebaseError, RebaseRange,
-    Repository, ResetMode, Stash, StashError, Step, SwitchError, SwitchTo, WorktreeFrom,
-    abort_operation, add_worktree, cherry_pick, continue_operation, create_branch, create_tag,
-    delete_branch, delete_remote_branch, delete_tag, fast_forward_branch, fast_forward_current,
-    fetch, fetch_refspecs, format_patch, merge, pull, push, push_tag, rebase, rebase_interactive,
-    rebase_range, rename_branch, reset, revert, set_config, set_upstream, stash_apply, stash_drop,
-    stash_push, switch,
+    ApplyAs, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError,
+    FetchOptions, ForwardFrom, Forwarded, Git, GitError, Integrated, MAX_PLANNED, ObjectId,
+    Operation, Planned, Progress, PullMode, Pulled, PushOptions, Pushed, RangeError, RebaseError,
+    RebaseRange, Repository, ResetMode, Stash, StashError, Step, SwitchError, SwitchTo,
+    WorktreeFrom, abort_operation, add_worktree, apply_patch, changes_patch, cherry_pick,
+    continue_operation, create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
+    fast_forward_branch, fast_forward_current, fetch, fetch_refspecs, format_patch, format_patches,
+    merge, pull, push, push_tag, rebase, rebase_interactive, rebase_range, rename_branch, reset,
+    revert, set_config, set_upstream, skip_operation, stash_apply, stash_drop, stash_push, switch,
 };
 use egui_async::Bind;
 
@@ -166,6 +166,39 @@ pub(crate) enum Task {
         commit: ObjectId,
         path: PathBuf,
     },
+    /// Apply a patch to the current branch, as commits or changes; `commits`: how many it
+    /// holds (for the words).
+    ApplyPatch {
+        patch: Patch,
+        how: ApplyAs,
+        commits: usize,
+    },
+    /// Skip what an operation stopped at, and carry on.
+    Skip(Operation),
+    /// Copy a commit's patch.
+    CopyPatch(ObjectId),
+    /// Save the commits from one up to `HEAD` as patches in `folder`.
+    SavePatches {
+        from: ObjectId,
+        folder: PathBuf,
+    },
+    /// Copy uncommitted changes as a patch.
+    CopyChanges(Changes),
+    /// Save uncommitted changes as a patch at `path`.
+    SaveChanges {
+        changes: Changes,
+        path: PathBuf,
+    },
+}
+
+/// A patch's bytes, shared (never copied with the task), shown by their length.
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct Patch(pub(crate) Arc<[u8]>);
+
+impl std::fmt::Debug for Patch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Patch({} bytes)", self.0.len())
+    }
 }
 
 /// Where a branch that isn't checked out fast-forwards from.
@@ -249,7 +282,11 @@ impl Task {
             },
             Self::SetUpstream { .. } => "Setting the upstream",
             Self::AddWorktree { .. } => "Making the worktree",
-            Self::SavePatch { .. } => "Saving the patch",
+            Self::SavePatch { .. } | Self::SaveChanges { .. } => "Saving the patch",
+            Self::ApplyPatch { .. } => "Applying the patch",
+            Self::Skip(_) => "Skipping",
+            Self::CopyPatch(_) | Self::CopyChanges(_) => "Making the patch",
+            Self::SavePatches { .. } => "Saving the patches",
         }
     }
 }
@@ -281,6 +318,10 @@ pub(crate) enum Outcome {
     Opened(Opened),
     /// A fast-forward: done, there already, or refused as it would take a merge.
     Forwarded(Forwarded),
+    /// A patch made, to copy (its text).
+    Copied(String),
+    /// Patches saved: how many.
+    SavedPatches(usize),
 }
 
 /// A repository's exchanges with its remotes.
@@ -437,7 +478,9 @@ fn run(
         | Task::CherryPick(_)
         | Task::Revert(_)
         | Task::Reset(..)
-        | Task::FastForward { .. } => history(git, repository, task, cancel),
+        | Task::FastForward { .. }
+        | Task::ApplyPatch { .. }
+        | Task::Skip(_) => history(git, repository, task, cancel),
         Task::InteractiveRebase { .. } | Task::DropCommit(_) | Task::SquashIntoParent(_) => {
             rewrite(git, repository, task, cancel)
         }
@@ -449,7 +492,12 @@ fn run(
         | Task::CreateTag { .. }
         | Task::DeleteTag(_)
         | Task::SetUpstream { .. } => references(git, repository, task, cancel),
-        Task::AddWorktree { .. } | Task::SavePatch { .. } => places(git, repository, task, cancel),
+        Task::AddWorktree { .. }
+        | Task::SavePatch { .. }
+        | Task::CopyPatch(_)
+        | Task::SavePatches { .. }
+        | Task::CopyChanges(_)
+        | Task::SaveChanges { .. } => places(git, repository, task, cancel),
         Task::Stash { .. } | Task::ApplyStash { .. } | Task::DropStash(_) => {
             stashing(git, repository, task, cancel)
         }
@@ -666,6 +714,12 @@ fn history(
         Task::FastForward { to, .. } => fast_forward_current(git, repository, to.as_ref(), cancel)
             .map(Outcome::Forwarded)
             .or_else(failed("The branch couldn't be fast-forwarded")),
+        Task::ApplyPatch { patch, how, .. } => apply_patch(git, repository, &patch.0, *how, cancel)
+            .map(Outcome::Integrated)
+            .or_else(failed("The patch couldn't be applied")),
+        Task::Skip(operation) => skip_operation(git, repository, *operation, cancel)
+            .map(Outcome::Integrated)
+            .or_else(failed("It couldn't be skipped")),
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),
     }
@@ -855,14 +909,27 @@ fn places(
                 Ok(patch) => patch,
                 Err(error) => return failed("The patch couldn't be made")(error),
             };
-            std::fs::write(path, patch)
-                .map(|()| Outcome::Done)
-                .map_err(|error| {
-                    Problem::new(
-                        "The patch couldn't be saved",
-                        format!("{}: {error}.", path.display()),
-                    )
-                })
+            write_patch(path, &patch)
+        }
+        Task::SaveChanges { changes, path } => {
+            let patch = match changes_patch(git, repository, *changes, cancel) {
+                Ok(patch) => patch,
+                Err(error) => return failed("The patch couldn't be made")(error),
+            };
+            write_patch(path, &patch)
+        }
+        Task::CopyPatch(commit) => match format_patch(git, repository, *commit, cancel) {
+            Ok(patch) => copied(patch),
+            Err(error) => failed("The patch couldn't be made")(error),
+        },
+        Task::CopyChanges(changes) => match changes_patch(git, repository, *changes, cancel) {
+            Ok(patch) => copied(patch),
+            Err(error) => failed("The patch couldn't be made")(error),
+        },
+        Task::SavePatches { from, folder } => {
+            format_patches(git, repository, *from, folder, cancel)
+                .map(|written| Outcome::SavedPatches(written.len()))
+                .or_else(failed("The patches couldn't be saved"))
         }
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),
@@ -901,6 +968,34 @@ fn stashing(
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),
     }
+}
+
+/// Writes a patch to `path`.
+fn write_patch(path: &std::path::Path, bytes: &[u8]) -> Result<Outcome, Problem> {
+    std::fs::write(path, bytes)
+        .map(|()| Outcome::Done)
+        .map_err(|error| {
+            Problem::new(
+                "The patch couldn't be saved",
+                format!("{}: {error}.", path.display()),
+            )
+        })
+}
+
+/// A patch to copy, if it is text (a binary file's is: git encodes it).
+fn copied(patch: Vec<u8>) -> Result<Outcome, Problem> {
+    if patch.is_empty() {
+        return Err(Problem::new(
+            "There is nothing to copy",
+            "No changes: the patch would be empty.",
+        ));
+    }
+    String::from_utf8(patch).map(Outcome::Copied).map_err(|_| {
+        Problem::new(
+            "The patch can't be copied",
+            "It holds text that isn't UTF-8, which the clipboard can't take: save it instead.",
+        )
+    })
 }
 
 /// The remotes a configuration names (`remote.<name>.url`), in order.

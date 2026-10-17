@@ -110,6 +110,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                             .and_then(egit_git::ConfigEntry::bool)
                             .unwrap_or(false),
                         operations: status.map_or(&[], |status| status.operations.as_slice()),
+                        applying: status.and_then(|status| status.applying.as_ref()),
                         config,
                         tasks: self.tasks,
                         stashes: self.stashes.ok_ref().map_or(&[], |stashes| &**stashes),

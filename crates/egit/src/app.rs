@@ -9,13 +9,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, NewCommit, ObjectId, Repository,
+    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, NewCommit, Repository,
     add_config_value, set_config, trust_directory, unset_config, unset_config_value,
 };
 use egui::{CentralPanel, Frame, Panel, Ui};
 use egui_async::Bind;
 
-use crate::desktop::{Opener, Saver, Saving};
+use crate::desktop::{FileDialogs, FileQuestion, Opener};
 use crate::fonts::Fallbacks;
 use crate::format::now;
 use crate::history::Scope;
@@ -70,8 +70,8 @@ pub(crate) struct AppState {
     focused: bool,
     /// Where web pages go.
     pub(crate) opener: Opener,
-    /// Where files are saved.
-    pub(crate) saver: Saver,
+    /// The desktop's file dialogs.
+    pub(crate) files: FileDialogs,
 }
 
 /// A repository being opened.
@@ -142,12 +142,14 @@ pub(crate) enum Action {
     OpenUrl(String),
     /// Show this much of a repository's history.
     Scope(RepoId, Scope),
-    /// Save a repository's commit's patch, asking where (`name` offered).
-    SavePatch {
-        repo: RepoId,
-        commit: ObjectId,
+    /// Ask the desktop's file dialog `question` (`title` on it; `name`, a file offered).
+    AskFiles {
+        question: FileQuestion,
+        title: &'static str,
         name: String,
     },
+    /// Show patches to apply to a repository, read from files.
+    OpenPatches(RepoId, Vec<PathBuf>),
 }
 
 impl EgitApp {
@@ -243,7 +245,7 @@ impl EgitApp {
             next_repo: 0,
             focused: true,
             opener: Opener::default(),
-            saver: Saver::default(),
+            files: FileDialogs::default(),
             fonts: Fallbacks::default(),
         };
         match git {
@@ -347,10 +349,15 @@ impl EgitApp {
                     repo.set_scope(&git, scope);
                 }
             }
-            Action::SavePatch { repo, commit, name } => {
-                state
-                    .saver
-                    .ask(Saving::Patch { repo, commit }, "Save the patch", name);
+            Action::AskFiles {
+                question,
+                title,
+                name,
+            } => state.files.ask(question, title, name),
+            Action::OpenPatches(id, files) => {
+                if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
+                    repo.history_view.show_patches(files);
+                }
             }
         }
     }
@@ -436,9 +443,8 @@ impl AppState {
             }
         }
         self.take_clone();
-        if let Some((Saving::Patch { repo, commit }, path)) = self.saver.chosen() {
-            self.actions
-                .push(Action::Task(repo, Task::SavePatch { commit, path }));
+        if let Some((question, chosen)) = self.files.answered() {
+            self.answered(question, chosen);
         }
         if let Some(trusted) = self.home.trusting.take() {
             match trusted {
@@ -458,6 +464,38 @@ impl AppState {
                     }
                 }
                 Err(problem) => self.profile.problem = Some(problem),
+            }
+        }
+    }
+
+    /// Acts on a file dialog's answer: saves there, or shows the patches chosen.
+    fn answered(&mut self, question: FileQuestion, mut chosen: Vec<PathBuf>) {
+        let first = chosen.first().cloned().unwrap_or_default();
+        match question {
+            FileQuestion::SavePatch { repo, commit } => self.actions.push(Action::Task(
+                repo,
+                Task::SavePatch {
+                    commit,
+                    path: first,
+                },
+            )),
+            FileQuestion::SavePatches { repo, from } => self.actions.push(Action::Task(
+                repo,
+                Task::SavePatches {
+                    from,
+                    folder: first,
+                },
+            )),
+            FileQuestion::SaveChanges { repo, changes } => self.actions.push(Action::Task(
+                repo,
+                Task::SaveChanges {
+                    changes,
+                    path: first,
+                },
+            )),
+            FileQuestion::ApplyPatches { repo } => {
+                chosen.dedup();
+                self.actions.push(Action::OpenPatches(repo, chosen));
             }
         }
     }

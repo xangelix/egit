@@ -7,13 +7,14 @@
 //! every row, which a graph, never sorted or filtered, doesn't need.)
 
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
 use egit_git::{
-    CancelToken, Committed, ConfigSnapshot, FileChange, Git, Head, ObjectId, Operation, RefKind,
-    Reference, Repository, SignatureCheck, Stash, Status, Verdict, patch_file_name,
+    CancelToken, Changes, Committed, ConfigSnapshot, FileChange, Git, Head, MailboxProgress,
+    ObjectId, Operation, RefKind, Reference, Repository, SignatureCheck, Stash, Status, Verdict,
+    looks_like_patch,
 };
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
@@ -30,6 +31,7 @@ use super::actions::{self, Ask, Menus};
 use super::blame::{self, BlameEvent, BlameView};
 use super::file::{self, FileView, FileWanted, WorkFile};
 use super::file_history::{self, FileHistoryView};
+use super::patch::{self, PatchEvent, PatchSource, PatchView};
 use super::pull_form::{self, PullRequestForm};
 use super::pulls::{self, PullRequestEvent, PullRequestView};
 use super::rebase::{self, RebaseEvent, RebaseView};
@@ -37,6 +39,7 @@ use super::search::{self, HistorySearch};
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
+use crate::desktop::FileQuestion;
 use crate::fonts;
 use crate::forge::{Badge, RepoForge, request_noun, request_number};
 use crate::format::{count, date_time};
@@ -118,6 +121,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) sign_by_default: bool,
     /// The operations git stopped in the middle of (a merge, a rebase, …).
     pub(crate) operations: &'a [Operation],
+    /// How far a `git am` stopped part-way got.
+    pub(crate) applying: Option<&'a MailboxProgress>,
     /// The repository's configuration, once read.
     pub(crate) config: Option<&'a ConfigSnapshot>,
     /// What the user asked of the repository: fetching, switching, stashing, ….
@@ -159,8 +164,10 @@ pub(crate) struct HistoryView {
     /// What a menu in the details asked for, carried out once the panels are drawn.
     asked: Option<Ask>,
     /// A tool in place of the commit table: the rebase editor, a blame, a file's history, the
-    /// pull requests.
+    /// pull requests, patches to apply.
     tool: Option<Tool>,
+    /// The repository it shows.
+    repo: RepoId,
     /// The dialog opening a pull request, while it is open.
     pull_form: Option<PullRequestForm>,
     /// The search bar over the commit table, and what it found.
@@ -174,6 +181,7 @@ enum Tool {
     Blame(BlameView),
     FileHistory(FileHistoryView),
     PullRequests(PullRequestView),
+    Patch(PatchView),
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -243,6 +251,7 @@ struct Selected {
 impl HistoryView {
     pub(crate) fn new(repo: RepoId) -> Self {
         Self {
+            repo,
             selected: None,
             scroll_to: None,
             visible: 0..0,
@@ -424,6 +433,17 @@ impl HistoryView {
         self.tool = Some(Tool::PullRequests(PullRequestView::new(selected)));
     }
 
+    /// Shows the patches in `files`, to apply, in the commit table's place.
+    pub(crate) fn show_patches(&mut self, files: Vec<PathBuf>) {
+        self.show_patch(PatchSource::Files(files));
+    }
+
+    /// Shows a patch (`source`'s) in the commit table's place.
+    fn show_patch(&mut self, source: PatchSource) {
+        self.file = None;
+        self.tool = Some(Tool::Patch(PatchView::new(source, self.repo)));
+    }
+
     /// Opens the search bar, over the commit table.
     fn open_search(&mut self) {
         self.file = None;
@@ -559,6 +579,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         commits_made,
         sign_by_default,
         operations,
+        applying,
         config,
         tasks,
         stashes,
@@ -589,6 +610,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
     if history.shown.rows() == 0 && !history.shown.is_loading() {
         view.work_selected = true;
     }
+    dropped_patches(ui, id, view);
 
     let mut pane = TaskPane {
         id,
@@ -596,6 +618,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         home,
         head,
         operations,
+        applying,
         config,
         stashes,
         tasks: &mut *tasks,
@@ -614,8 +637,10 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
                 &mut pane,
             );
             tasks::outcome(ui, &mut view.tasks, &mut pane);
-            if tasks::banner(ui, &mut view.tasks, &mut pane) == Some(TaskEvent::ShowWorkTree) {
-                view.select_work();
+            match tasks::banner(ui, &mut view.tasks, &mut pane) {
+                Some(TaskEvent::ShowWorkTree) => view.select_work(),
+                Some(TaskEvent::ShowPatch) => view.show_patch(PatchSource::Stopped),
+                None => {}
             }
         });
     dialogs(ui.ctx(), &shared, &history.objects, view, &mut pane);
@@ -639,6 +664,46 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         sign_by_default,
     };
     panels(ui, &shared, history, view, work, actions, no_commits);
+}
+
+/// Patch files dropped on the window, shown to apply (others are left alone); a hint while
+/// files are dragged over it.
+fn dropped_patches(ui: &Ui, id: RepoId, view: &mut HistoryView) {
+    let (hovering, dropped) = ui.ctx().input(|input| {
+        let dropped: Vec<PathBuf> = input
+            .raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path().to_path_buf())
+            .filter(|path| looks_like_patch(BStr::new(path.as_os_str().as_encoded_bytes())))
+            .collect();
+        (!input.raw.hovered_files.is_empty(), dropped)
+    });
+    if !dropped.is_empty() {
+        view.show_patches(dropped);
+    }
+    if hovering {
+        let palette = Palette::of(ui.ctx());
+        egui::Area::new(Id::new(("drop-patches", id)))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ui.ctx(), |ui| {
+                Frame::new()
+                    .fill(palette.surface)
+                    .stroke(Stroke::new(1.0, palette.accent))
+                    .corner_radius(CornerRadius::same(8))
+                    .inner_margin(Margin::same(16))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "{}  Drop patches to look at them, then apply them",
+                                icon::GIT_DIFF
+                            ))
+                            .strong(),
+                        );
+                    });
+            });
+    }
 }
 
 /// The dialogs a task asks, and the one opening a pull request.
@@ -838,6 +903,20 @@ fn top_bar(
         let has_changes = shared.work_status.is_some_and(|status| !status.is_empty());
         let menus = shared.menus(history.shown.refs());
         actions::stash_menu(ui, &menus, task_pane.stashes, has_changes, &mut asked);
+        let changes = shared
+            .work_status
+            .map_or_else(actions::WorkChanges::default, |status| {
+                actions::WorkChanges {
+                    staged: status
+                        .entries()
+                        .any(|entry| entry.staged() != egit_git::Change::Unmodified),
+                    tracked: status
+                        .entries()
+                        .any(|entry| entry.kind != egit_git::EntryKind::Untracked),
+                    has_commit: shared.head_commit().is_some(),
+                }
+            });
+        actions::patches_menu(ui, &menus, changes, &mut asked);
         if let Some(asked) = asked {
             carry_out(asked, shared, view, task_pane.actions);
         }
@@ -1137,6 +1216,14 @@ fn tool(
             None => None,
         },
         Some(Tool::Blame(blame)) => blame::show(ui, shared, blame),
+        Some(Tool::Patch(patch)) => match patch::show(ui, shared, patch) {
+            Some(PatchEvent::Apply(task)) => {
+                actions.push(Action::Task(shared.id, task));
+                Some(BlameEvent::Close)
+            }
+            Some(PatchEvent::Close) => Some(BlameEvent::Close),
+            None => None,
+        },
         Some(Tool::FileHistory(found)) => file_history::show(ui, shared, found),
         Some(Tool::PullRequests(pulls)) => match pulls::show(ui, shared, history, pulls) {
             Some(PullRequestEvent::Close) => Some(BlameEvent::Close),
@@ -1193,11 +1280,39 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
         }
         Ask::Open(url) => actions.push(Action::OpenUrl(url)),
         Ask::Scope(scope) => actions.push(Action::Scope(shared.id, scope)),
-        Ask::SavePatch { commit, name } => actions.push(Action::SavePatch {
-            repo: shared.id,
-            commit,
+        Ask::SavePatch { commit, name } => actions.push(Action::AskFiles {
+            question: FileQuestion::SavePatch {
+                repo: shared.id,
+                commit,
+            },
+            title: "Save the patch",
             name,
         }),
+        Ask::SavePatches { from } => actions.push(Action::AskFiles {
+            question: FileQuestion::SavePatches {
+                repo: shared.id,
+                from,
+            },
+            title: "Save the patches in",
+            name: String::new(),
+        }),
+        Ask::SaveChanges(changes) => actions.push(Action::AskFiles {
+            question: FileQuestion::SaveChanges {
+                repo: shared.id,
+                changes,
+            },
+            title: "Save the patch",
+            name: match changes {
+                Changes::Staged => "staged.patch".to_owned(),
+                Changes::All => "changes.patch".to_owned(),
+            },
+        }),
+        Ask::ApplyFiles => actions.push(Action::AskFiles {
+            question: FileQuestion::ApplyPatches { repo: shared.id },
+            title: "Apply patches",
+            name: String::new(),
+        }),
+        Ask::Paste => view.show_patch(PatchSource::Pasted),
         Ask::PullRequest(selected) => view.show_pull_request(selected),
         Ask::CreatePullRequest {
             branch,
@@ -1396,17 +1511,11 @@ impl TableDelegate for CommitRows<'_> {
                 ui.ctx().copy_text(summary.subject.to_string());
                 ui.close();
             }
-            if ui.button("Save as a patch…").clicked() {
-                let subject = summaries.peek(&id).map_or_else(
-                    || id.abbreviated(ID_DIGITS).to_string(),
-                    |summary| summary.subject.to_string(),
-                );
-                *asked = Some(Ask::SavePatch {
-                    commit: id,
-                    name: patch_file_name(&subject),
-                });
-                ui.close();
-            }
+            ui.separator();
+            let subject = summaries
+                .peek(&id)
+                .map(|summary| summary.subject.to_string());
+            actions::patch_items(ui, &menus, id, subject.as_deref(), asked);
         });
     }
 

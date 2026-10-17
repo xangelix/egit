@@ -1,11 +1,11 @@
 //! Handing things to the desktop: a web page to the user's browser, through the desktop's
-//! opener (`xdg-open`, else `gio open`), off the interface thread; and where a file is saved,
-//! asked in the desktop's save dialog.
+//! opener (`xdg-open`, else `gio open`), off the interface thread; and the desktop's file
+//! dialogs: where a file is saved, a folder, the files to open.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-use egit_git::ObjectId;
+use egit_git::{Changes, ObjectId};
 use egui_async::Bind;
 
 use crate::jobs;
@@ -46,79 +46,130 @@ impl Opener {
     }
 }
 
-/// What a file saved is.
+/// What the desktop's file dialog is asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Saving {
-    /// A repository's commit's patch.
-    Patch { repo: RepoId, commit: ObjectId },
+pub(crate) enum FileQuestion {
+    /// Where a repository's commit's patch goes (a file).
+    SavePatch { repo: RepoId, commit: ObjectId },
+    /// Where a repository's commits from one up to `HEAD` go as patches (a folder).
+    SavePatches { repo: RepoId, from: ObjectId },
+    /// Where a repository's uncommitted changes go as a patch (a file).
+    SaveChanges { repo: RepoId, changes: Changes },
+    /// Which patches to apply to a repository (files).
+    ApplyPatches { repo: RepoId },
 }
 
-/// Where files are saved: chosen in the desktop's save dialog, one at a time, or (for tests)
-/// put in a folder without asking.
+/// The desktop's file dialogs (`rfd`, one at a time): where a file is saved, a folder, the
+/// files to open; or (for tests) a folder answering every question without asking.
 #[derive(Debug)]
-pub(crate) struct Saver {
-    /// For tests: the folder files go into, without a dialog.
+pub(crate) struct FileDialogs {
+    /// For tests: the folder that answers (files saved in it, its patches opened).
     folder: Option<PathBuf>,
     /// The dialog, while it is open (and its answer, until taken).
-    asking: Bind<Option<PathBuf>, Problem>,
-    /// What the file asked for is.
-    saving: Option<Saving>,
-    /// Where it goes, once known.
-    chosen: Option<(Saving, PathBuf)>,
+    asking: Bind<Vec<PathBuf>, Problem>,
+    /// What it was asked for.
+    question: Option<FileQuestion>,
+    /// The answer, once known.
+    answered: Option<(FileQuestion, Vec<PathBuf>)>,
 }
 
-impl Default for Saver {
+impl Default for FileDialogs {
     fn default() -> Self {
         Self {
             folder: None,
             asking: Bind::new(true),
-            saving: None,
-            chosen: None,
+            question: None,
+            answered: None,
         }
     }
 }
 
-impl Saver {
-    /// A saver putting every file in `folder`, asking nothing.
+impl FileDialogs {
+    /// Dialogs answered by `folder`, asking nothing: files are saved in it, patches opened from
+    /// it (each it holds, by name).
     #[cfg(test)]
-    pub(crate) fn into_folder(folder: PathBuf) -> Self {
+    pub(crate) fn in_folder(folder: PathBuf) -> Self {
         Self {
             folder: Some(folder),
             ..Self::default()
         }
     }
 
-    /// Asks where the file `saving` is, offered as `name`, goes (unless the dialog is open
-    /// for another).
-    pub(crate) fn ask(&mut self, saving: Saving, title: &'static str, name: String) {
+    /// Asks `question` (`title` on the dialog; `name`, a file offered), unless a dialog is
+    /// open already.
+    pub(crate) fn ask(&mut self, question: FileQuestion, title: &'static str, name: String) {
         if self.asking.is_pending() {
             return;
         }
         if let Some(folder) = &self.folder {
-            self.chosen = Some((saving, folder.join(name)));
+            let answer = match question {
+                FileQuestion::SavePatch { .. } | FileQuestion::SaveChanges { .. } => {
+                    vec![folder.join(name)]
+                }
+                FileQuestion::SavePatches { .. } => vec![folder.clone()],
+                FileQuestion::ApplyPatches { .. } => patches_in(folder),
+            };
+            self.answered = Some((question, answer));
             return;
         }
-        self.saving = Some(saving);
+        self.question = Some(question);
         self.asking.request(async move {
-            let file = rfd::AsyncFileDialog::new()
-                .set_title(title)
-                .set_file_name(name)
-                .save_file()
-                .await;
-            Ok(file.map(|file| file.path().to_owned()))
+            let dialog = rfd::AsyncFileDialog::new().set_title(title);
+            let chosen = match question {
+                FileQuestion::SavePatch { .. } | FileQuestion::SaveChanges { .. } => dialog
+                    .set_file_name(name)
+                    .save_file()
+                    .await
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+                FileQuestion::SavePatches { .. } => {
+                    dialog.pick_folder().await.into_iter().collect()
+                }
+                FileQuestion::ApplyPatches { .. } => dialog
+                    .add_filter("Patches", &["patch", "diff", "mbox", "eml"])
+                    .add_filter("Any file", &["*"])
+                    .pick_files()
+                    .await
+                    .unwrap_or_default(),
+            };
+            Ok(chosen.iter().map(|file| file.path().to_owned()).collect())
         });
     }
 
-    /// The file asked for and where it goes, once chosen (`None` too when the dialog was
-    /// cancelled).
-    pub(crate) fn chosen(&mut self) -> Option<(Saving, PathBuf)> {
-        if let Some(Ok(Some(path))) = self.asking.take()
-            && let Some(saving) = self.saving.take()
+    /// The question answered and its answer, once given (none when the dialog was cancelled).
+    pub(crate) fn answered(&mut self) -> Option<(FileQuestion, Vec<PathBuf>)> {
+        if let Some(Ok(chosen)) = self.asking.take()
+            && let Some(question) = self.question.take()
+            && !chosen.is_empty()
         {
-            self.chosen = Some((saving, path));
+            self.answered = Some((question, chosen));
         }
-        self.chosen.take()
+        self.answered.take()
     }
+}
+
+/// The patches a test's folder holds, by name.
+#[cfg(test)]
+fn patches_in(folder: &std::path::Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| {
+                    egit_git::looks_like_patch(bstr::BStr::new(path.as_os_str().as_encoded_bytes()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
+/// The patches a folder holds: only tests answer from a folder.
+#[cfg(not(test))]
+const fn patches_in(_folder: &std::path::Path) -> Vec<PathBuf> {
+    Vec::new()
 }
 
 /// Whether `url` is a web page egit may hand to the browser: HTTPS, or plain HTTP to the

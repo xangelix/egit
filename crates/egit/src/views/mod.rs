@@ -9,6 +9,7 @@ mod file_history;
 pub(crate) mod history;
 pub(crate) mod home;
 mod merge;
+mod patch;
 pub(crate) mod profile;
 pub(crate) mod prompts;
 mod pull_form;
