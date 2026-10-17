@@ -17,7 +17,8 @@ it.
 | 3 | Text grid and read-only diff viewer | done |
 | 4 | Working tree, staging, signed commits | done |
 | 5 | Clone, pull, push | done; checks against GitHub left to the owner |
-| 6 | The merge editor | done; awaiting the owner's review |
+| 6 | The merge editor | done |
+| 7 | The graph's actions: branches, commits brought in, tags, stashes | in progress |
 
 ## Toolchain & commands
 
