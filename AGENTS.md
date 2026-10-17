@@ -417,7 +417,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     interface change. Every rendered screen first passes `src/tests/audit.rs` (after eshine's):
     no egui id clashes, no text or control drawn partly over another on the same layer,
     nothing moving while idle, and every control named in words or numbers (link a field to
-    its visible label with `labelled_by`). Not yet audited, as eshine does: hover response,
+    its visible label with `labelled_by`). `wait_for_label` lets what it found lay out two
+    more frames (a window's first frame only sizes it: clicks there are lost); a wait that
+    times out saves `timed-out.png`. Not yet audited, as eshine does: hover response,
     cursors, focus rings, and 24-point targets. `src/tests/scale.rs` and `src/tests/corpus.rs`
     are the opt-in measurements (see Scale and Text corpus above).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.

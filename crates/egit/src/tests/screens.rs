@@ -79,6 +79,16 @@ fn render(harness: &mut Harness<'_, EgitApp>, name: &str) {
     image.save(screens().join(format!("{name}.png"))).unwrap();
 }
 
+/// Fails the test, saving the screen it stopped at (`timed-out.png`) where it can.
+fn gave_up(harness: &mut Harness<'_, EgitApp>, why: &str) -> ! {
+    if rendering()
+        && let Ok(image) = harness.render()
+    {
+        let _saved = image.save(screens().join("timed-out.png"));
+    }
+    panic!("{why}");
+}
+
 /// Steps the application until `done` holds (jobs finish on their own threads).
 fn settle(harness: &mut Harness<'_, EgitApp>, what: &str, done: impl Fn(&mut EgitApp) -> bool) {
     for _ in 0..2_000 {
@@ -90,19 +100,21 @@ fn settle(harness: &mut Harness<'_, EgitApp>, what: &str, done: impl Fn(&mut Egi
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("timed out waiting for {what}");
+    gave_up(harness, &format!("timed out waiting for {what}"));
 }
 
 /// Steps until something labelled `label` is shown (a job's result, say), or panics.
 fn wait_for_label(harness: &mut Harness<'_, EgitApp>, label: &str) {
     for _ in 0..2_000 {
         harness.step();
-        if harness.query_by_label(label).is_some() {
+        if harness.query_all_by_label(label).next().is_some() {
+            // A window's first frame only sizes it (its controls don't respond yet).
+            harness.run_steps(2);
             return;
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("timed out waiting for {label:?}");
+    gave_up(harness, &format!("timed out waiting for {label:?}"));
 }
 
 /// Steps until the button labelled `label` can be pressed (a job holding it back is done),
@@ -119,7 +131,10 @@ fn click_when_enabled(harness: &mut Harness<'_, EgitApp>, label: &str) {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("timed out waiting for {label:?} to be enabled");
+    gave_up(
+        harness,
+        &format!("timed out waiting for {label:?} to be enabled"),
+    );
 }
 
 fn profile_loaded(app: &mut EgitApp) -> bool {
@@ -867,7 +882,8 @@ fn the_work_tree_is_staged_by_file_by_line_and_by_hunk() {
         staged(&sandbox).contains("+LINE 25")
     });
 
-    // And everything back.
+    // And everything back, once the lists show it all staged (the staged list moves up).
+    wait_for_label(&mut harness, "Nothing to stage.");
     click_when_enabled(&mut harness, "Unstage all");
     settle(&mut harness, "everything unstaged", |_| {
         staged(&sandbox).is_empty()
