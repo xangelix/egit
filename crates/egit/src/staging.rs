@@ -3,10 +3,9 @@
 //! its diff was read), or a conflict's resolution (refused when its sides changed since they
 //! were read).
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
-use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Arc;
+
+use bstr::ByteSlice as _;
 
 use bstr::{BStr, BString};
 use egit_git::{
@@ -214,8 +213,21 @@ fn resolve(
 
 /// The mode a file not yet tracked gets: executable or not, as the work tree has it.
 fn work_tree_mode(repository: &Repository, path: &[u8]) -> u32 {
-    let file = repository.work_tree().join(OsStr::from_bytes(path));
-    let executable =
-        std::fs::metadata(file).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0);
-    if executable { 0o100_755 } else { 0o100_644 }
+    if executable(&repository.work_tree().join(path.to_os_str_lossy())) {
+        0o100_755
+    } else {
+        0o100_644
+    }
+}
+
+#[cfg(unix)]
+fn executable(file: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::metadata(file).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+}
+
+/// Windows keeps no executable bit: git there adds a new file as not executable.
+#[cfg(not(unix))]
+const fn executable(_file: &std::path::Path) -> bool {
+    false
 }

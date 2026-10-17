@@ -1,6 +1,6 @@
 //! Handing things to the desktop: a web page to the user's browser, through the desktop's
-//! opener (`xdg-open`, else `gio open`), off the interface thread; and the desktop's file
-//! dialogs: where a file is saved, a folder, the files to open.
+//! opener (`xdg-open`, else `gio open`; macOS's `open`; Windows' URL handler), off the interface
+//! thread; and the desktop's file dialogs: where a file is saved, a folder, the files to open.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -188,9 +188,20 @@ pub(crate) fn is_web_page(url: &str) -> bool {
     safe && (url.starts_with("https://") || loopback)
 }
 
+/// The programs that open a web page in the user's browser, in turn: macOS's `open`, Windows'
+/// URL handler (as `start` would, without a shell reading the address), or the desktop's
+/// opener elsewhere.
+const OPENERS: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+    &[("open", &[])]
+} else if cfg!(windows) {
+    &[("rundll32", &["url.dll,FileProtocolHandler"])]
+} else {
+    &[("xdg-open", &[]), ("gio", &["open"])]
+};
+
 /// Opens `url` in the user's browser; a failure is logged (the desktop has no opener).
 fn open_web_page(url: &str) {
-    for (program, args) in [("xdg-open", &[][..]), ("gio", &["open"][..])] {
+    for &(program, args) in OPENERS {
         let opened = Command::new(program)
             .args(args)
             .arg(url)

@@ -3,7 +3,8 @@
 //! [`note_text`]); a job looks for a system font that has it; the font is added to both
 //! families as a fallback, once.
 //!
-//! Fonts are looked for in the XDG font directories, CJK families first, then monospace ones,
+//! Fonts are looked for in the system's font directories (XDG's; macOS's and Windows' own), CJK
+//! families first, then monospace ones,
 //! then regular weights; in a collection, the face covering the most is kept, preferring a
 //! monospace face and the user's language (`LANG`: Japanese, Korean, simplified or traditional
 //! Chinese). A face must have outlines for the glyphs (egui can't draw colour bitmaps). Files are
@@ -257,7 +258,7 @@ fn cjk_language() -> &'static str {
     }
 }
 
-/// Every font file in the XDG font directories, best candidates first.
+/// Every font file in the system's font directories, best candidates first.
 fn candidates() -> Vec<PathBuf> {
     let mut files = Vec::new();
     let mut seen = HashSet::new();
@@ -268,8 +269,33 @@ fn candidates() -> Vec<PathBuf> {
     files
 }
 
+/// Where macOS installs fonts: the system's, everyone's, and the user's.
+#[cfg(target_os = "macos")]
+fn font_dirs() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    [
+        PathBuf::from("/System/Library/Fonts"),
+        PathBuf::from("/Library/Fonts"),
+    ]
+    .into_iter()
+    .chain(home.map(|home| home.join("Library/Fonts")))
+    .collect()
+}
+
+/// Where Windows installs fonts: the system's (`%WINDIR%\Fonts`) and the user's.
+#[cfg(windows)]
+fn font_dirs() -> Vec<PathBuf> {
+    let windows =
+        std::env::var_os("WINDIR").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    std::iter::once(windows.join("Fonts"))
+        .chain(local.map(|local| local.join(r"Microsoft\Windows\Fonts")))
+        .collect()
+}
+
 /// Where fonts are installed: `$XDG_DATA_HOME/fonts`, `~/.fonts`, and each of
 /// `$XDG_DATA_DIRS`' `fonts`.
+#[cfg(not(any(target_os = "macos", windows)))]
 fn font_dirs() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let data_home = std::env::var_os("XDG_DATA_HOME")
@@ -345,12 +371,29 @@ fn rank(path: &Path) -> u8 {
     ]
     .iter()
     .any(|style| name.contains(style));
-    let family: u8 = if ["cjk", "han", "wqy", "droidsansfallback", "sarasa"]
-        .iter()
-        .any(|cjk| name.contains(cjk))
+    // CJK families: free ones, then macOS's and Windows'.
+    let family: u8 = if [
+        "cjk",
+        "han",
+        "wqy",
+        "droidsansfallback",
+        "sarasa",
+        "pingfang",
+        "hiragino",
+        "msyh",
+        "msjh",
+        "yugoth",
+        "meiryo",
+        "malgun",
+    ]
+    .iter()
+    .any(|cjk| name.contains(cjk))
     {
         0
-    } else if name.contains("mono") {
+    } else if ["mono", "menlo", "consola"]
+        .iter()
+        .any(|mono| name.contains(mono))
+    {
         1
     } else if name.starts_with("noto") || name.starts_with("dejavu") {
         2

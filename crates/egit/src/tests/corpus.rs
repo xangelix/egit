@@ -952,7 +952,12 @@ fn on_forge(sandbox: &Sandbox, fake: &FakeForge) -> std::path::PathBuf {
         .unwrap();
     let store = sandbox.path("credentials");
     std::fs::write(&store, format!("http://ada:t0ken@{}\n", fake.address())).unwrap();
-    let helper = format!("store --file={}", store.display());
+    // Through git's shell, which takes `/` between folders everywhere (and a backslash as an
+    // escape).
+    let helper = format!(
+        "store --file={}",
+        store.display().to_string().replace('\\', "/")
+    );
     sandbox
         .run(&repo, "config", &["credential.helper", &helper])
         .unwrap();

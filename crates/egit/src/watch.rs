@@ -1,9 +1,11 @@
 //! Noticing what changes repositories and the user's configuration behind egit's back: a commit
 //! or checkout in a terminal, a fetch, an edited configuration file.
 //!
-//! inotify watches (through `notify`) cover git directories, configuration files, and a work
-//! tree's folders, each folder on its own ([`TreeWatcher`]: only those git has files in, so a
-//! build's output or downloaded dependencies cost no watch). What changed accumulates as
+//! Watches (through `notify`: inotify on Linux, `FSEvents` on macOS, `ReadDirectoryChangesW` on
+//! Windows) cover git directories, configuration files, and a work tree: on Linux each of its
+//! folders on its own ([`TreeWatcher`]: only those git has files in, so a build's output or
+//! downloaded dependencies cost no watch, as inotify's watches are one a folder and limited);
+//! where one watch of a whole tree is cheap (macOS, Windows), the tree at once. What changed accumulates as
 //! [`Changes`] and is handed over once nothing has changed for [`SETTLE`], so a command that
 //! writes many files causes one refresh. Reads change nothing: egit's own
 //! (`--no-optional-locks`) never trigger a refresh, and access events are ignored.
@@ -218,21 +220,28 @@ impl Watcher {
     }
 }
 
-/// Watches a work tree's folders, each on its own (never their subfolders), reporting
-/// [`Changes::WORK_TREE`].
+/// Watches a work tree, reporting [`Changes::WORK_TREE`]: on Linux its folders each on its own
+/// (never their subfolders), elsewhere the whole tree in one watch.
 ///
 /// Which folders is up to its owner ([`Self::watch`]): those git has files in, so a build's
 /// output or downloaded dependencies cost no watch. Folders created meanwhile are noted for the
 /// owner to consider ([`Self::take_created`]), and a folder removed loses its watch.
 pub(crate) struct TreeWatcher {
+    work_tree: PathBuf,
     watches: Mutex<TreeWatches>,
     events: Arc<Mutex<TreeEvents>>,
 }
+
+/// Whether one watch takes in a whole tree here (`FSEvents`, `ReadDirectoryChangesW`), so a work
+/// tree is watched at once rather than folder by folder (inotify's watches are one a folder).
+const WHOLE_TREE: bool = cfg!(any(target_os = "macos", windows));
 
 /// The watcher and the folders it watches.
 struct TreeWatches {
     watcher: RecommendedWatcher,
     folders: HashSet<PathBuf>,
+    /// Whether the whole work tree is watched ([`WHOLE_TREE`]).
+    whole: bool,
 }
 
 /// What the watcher's events left for its owner.
@@ -246,10 +255,11 @@ struct TreeEvents {
 }
 
 impl TreeWatcher {
-    /// A watcher for the work tree whose git directory is `git_dir` (its changes are left to the
+    /// A watcher for `work_tree`, whose git directory is `git_dir` (its changes are left to the
     /// repository's own watcher), watching nothing yet; `wake` is called when something
     /// changed, to have [`Self::take`] called after [`SETTLE`].
     pub(crate) fn new(
+        work_tree: PathBuf,
         git_dir: PathBuf,
         wake: impl Fn(Duration) + Send + 'static,
     ) -> notify::Result<Self> {
@@ -286,9 +296,11 @@ impl TreeWatcher {
             wake(SETTLE);
         })?;
         Ok(Self {
+            work_tree,
             watches: Mutex::new(TreeWatches {
                 watcher,
                 folders: HashSet::new(),
+                whole: false,
             }),
             events,
         })
@@ -307,7 +319,17 @@ impl TreeWatcher {
         let TreeWatches {
             watcher,
             folders: watched,
+            whole,
         } = &mut *state;
+        if WHOLE_TREE {
+            if !*whole {
+                watcher.watch(&self.work_tree, RecursiveMode::Recursive)?;
+                *whole = true;
+            }
+            // Each of them is in the tree watched.
+            *watched = folders;
+            return Ok(());
+        }
         watched.retain(|folder| !removed.contains(folder));
         let gone: Vec<PathBuf> = watched.difference(&folders).cloned().collect();
         for folder in gone {

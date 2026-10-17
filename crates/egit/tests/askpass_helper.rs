@@ -5,7 +5,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -18,7 +17,7 @@ fn the_executable_answers_git_as_its_askpass_helper() {
     let sandbox = Sandbox::new().unwrap();
     let base = sandbox.path("askpass");
     fs::create_dir(&base).unwrap();
-    fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+    egit_git::testing::set_mode(&base, 0o700).unwrap();
     let (server, prompts) =
         AskpassServer::start_in(&base, Path::new(env!("CARGO_BIN_EXE_egit")), || {}).unwrap();
     let git = sandbox.git_with(server.environment()).unwrap();
@@ -96,7 +95,7 @@ fn a_signing_keys_passphrase_is_asked_through_the_window() {
 
     let base = sandbox.path("askpass");
     fs::create_dir(&base).unwrap();
-    fs::set_permissions(&base, fs::Permissions::from_mode(0o700)).unwrap();
+    egit_git::testing::set_mode(&base, 0o700).unwrap();
     let (server, prompts) =
         AskpassServer::start_in(&base, Path::new(env!("CARGO_BIN_EXE_egit")), || {}).unwrap();
     let git = sandbox.git_with(server.environment()).unwrap();

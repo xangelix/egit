@@ -15,7 +15,6 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::fmt::Write as _;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1721,7 +1720,7 @@ fn submodule_row(
         .shared
         .repository
         .work_tree()
-        .join(std::ffi::OsStr::from_bytes(&submodule.path));
+        .join(submodule.path.to_path_lossy());
     let response = response.on_hover_text(
         submodule
             .url

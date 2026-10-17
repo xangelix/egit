@@ -4,9 +4,9 @@
 //! Stored by eframe (`~/.local/share/egit/app.ron`). Paths are kept as text when they are
 //! UTF-8 and as bytes otherwise, so every path the system allows survives.
 
-use std::ffi::OsString;
-use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::path::{Path, PathBuf};
+
+use bstr::{ByteSlice as _, ByteVec as _};
 
 use serde::{Deserialize, Serialize};
 
@@ -58,7 +58,8 @@ impl StoredPath {
     pub(crate) fn to_path(&self) -> PathBuf {
         match self {
             Self::Text(text) => PathBuf::from(text),
-            Self::Bytes(bytes) => PathBuf::from(OsString::from_vec(bytes.clone())),
+            // Byte for byte where paths are bytes (Unix); elsewhere as near as UTF-8 comes.
+            Self::Bytes(bytes) => bytes.to_path_lossy().into_owned(),
         }
     }
 }
@@ -66,7 +67,7 @@ impl StoredPath {
 impl From<&Path> for StoredPath {
     fn from(path: &Path) -> Self {
         path.to_str().map_or_else(
-            || Self::Bytes(path.as_os_str().as_bytes().to_vec()),
+            || Self::Bytes(<Vec<u8>>::from_path_lossy(path).into_owned()),
             |text| Self::Text(text.to_owned()),
         )
     }
@@ -138,8 +139,12 @@ mod tests {
         assert_eq!(settings.recent[0].path.to_path(), PathBuf::from("/repo29"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn paths_that_arent_utf8_survive() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
         let path = PathBuf::from(OsString::from_vec(b"/caf\xe9".to_vec()));
         let stored = StoredPath::from(path.as_path());
         assert!(matches!(stored, StoredPath::Bytes(_)));

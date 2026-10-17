@@ -262,11 +262,7 @@ fn signing_in_asks_the_user_and_has_the_helper_keep_what_worked() {
         "#!/bin/sh\ncase \"$1\" in Username*) echo ada ;; *) echo t0ken ;; esac\n",
     )
     .unwrap();
-    std::fs::set_permissions(
-        &askpass,
-        std::os::unix::fs::PermissionsExt::from_mode(0o700),
-    )
-    .unwrap();
+    egit_git::testing::set_mode(&askpass, 0o700).unwrap();
     let git = sandbox
         .git_with([("GIT_ASKPASS", askpass.as_os_str())])
         .unwrap();

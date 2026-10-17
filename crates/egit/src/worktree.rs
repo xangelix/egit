@@ -13,11 +13,11 @@
 //! every [`UNWATCHED_READS`] instead.
 
 use std::collections::{HashSet, VecDeque};
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use bstr::ByteSlice as _;
 
 use bstr::{BStr, BString};
 use egit_git::{CancelToken, Git, ObjectId, Repository, Status, ignored_paths, tree_folders};
@@ -197,9 +197,13 @@ impl WorkTree {
     /// Makes the work tree's watcher (it watches nothing until the next read).
     fn start_watching(&mut self) {
         let waker = self.waker.clone();
-        match TreeWatcher::new(self.repository.git_dir().to_owned(), move |delay| {
-            waker.request_repaint_after(delay);
-        }) {
+        match TreeWatcher::new(
+            self.repository.work_tree().to_owned(),
+            self.repository.git_dir().to_owned(),
+            move |delay| {
+                waker.request_repaint_after(delay);
+            },
+        ) {
             Ok(watcher) => self.watcher = Some(Arc::new(watcher)),
             Err(error) => *self.problem.lock() = Some(watch_problem(&error)),
         }
@@ -248,11 +252,11 @@ fn folders(
         folders.extend(
             listed
                 .iter()
-                .map(|folder| root.join(OsStr::from_bytes(folder))),
+                .map(|folder| root.join(folder.to_os_str_lossy())),
         );
     }
     for entry in status.entries() {
-        for parent in Path::new(OsStr::from_bytes(entry.path)).ancestors().skip(1) {
+        for parent in entry.path.to_path_lossy().ancestors().skip(1) {
             // Once one is in, so are those above it.
             if parent.as_os_str().is_empty() || !folders.insert(root.join(parent)) {
                 break;
@@ -264,13 +268,7 @@ fn folders(
         let relative: Vec<BString> = created
             .iter()
             .map(|folder| {
-                let mut path = BString::from(
-                    folder
-                        .strip_prefix(root)
-                        .unwrap_or(folder)
-                        .as_os_str()
-                        .as_bytes(),
-                );
+                let mut path = egit_git::git_path(folder.strip_prefix(root).unwrap_or(folder));
                 path.push(b'/');
                 path
             })

@@ -51,6 +51,10 @@ tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "std"] }
 zeroize.workspace = true
 
+# FSEvents, which macOS's watches need.
+[target.'cfg(target_os = "macos")'.dependencies]
+notify = { workspace = true, features = ["macos_fsevent"] }
+
 [dev-dependencies]
 egit-forge = { workspace = true, features = ["testing"] }
 egit-git = { workspace = true, features = ["testing"] }

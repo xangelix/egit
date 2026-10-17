@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
-use std::os::unix::ffi::OsStrExt as _;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1085,9 +1084,7 @@ pub(crate) async fn read_work_tree_file(
     path: BString,
 ) -> Result<Arc<FileContent>, Problem> {
     jobs::blocking(move || {
-        let file = repository
-            .work_tree()
-            .join(std::ffi::OsStr::from_bytes(&path));
+        let file = repository.work_tree().join(path.to_path_lossy());
         let bytes = std::fs::read(&file).map_err(|error| {
             Problem::new(
                 "The file couldn't be read",

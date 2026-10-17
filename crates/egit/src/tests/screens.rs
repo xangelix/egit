@@ -362,7 +362,7 @@ fn harness_with_prompts(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
     let home = sandbox.home().to_owned();
     let base = sandbox.path("askpass");
     std::fs::create_dir(&base).unwrap();
-    std::fs::set_permissions(&base, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    egit_git::testing::set_mode(&base, 0o700).unwrap();
     let builder = Harness::builder().with_size([1180.0, 800.0]);
     let builder = if rendering() { builder.wgpu() } else { builder };
     builder.build_eframe(move |creation| {
@@ -1007,7 +1007,7 @@ fn staged_changes_are_committed_and_amended_from_the_form() {
     let hook = repo.join(".git/hooks/commit-msg");
     std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
     std::fs::write(&hook, "#!/bin/sh\necho 'rejected: say why'\nexit 1\n").unwrap();
-    std::fs::set_permissions(&hook, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    egit_git::testing::set_mode(&hook, 0o755).unwrap();
     std::fs::write(repo.join("notes"), "four\n").unwrap();
     wait_for_label(&mut harness, "Stage notes");
     harness.get_by_label("Stage all").click();
@@ -2271,7 +2271,12 @@ fn forge_clone(
         .unwrap();
     let store = sandbox.path("credentials");
     std::fs::write(&store, format!("http://ada:{token}@{}\n", fake.address())).unwrap();
-    let helper = format!("store --file={}", store.display());
+    // Through git's shell, which takes `/` between folders everywhere (and a backslash as an
+    // escape).
+    let helper = format!(
+        "store --file={}",
+        store.display().to_string().replace('\\', "/")
+    );
     sandbox
         .run(&work, "config", &["credential.helper", &helper])
         .unwrap();
