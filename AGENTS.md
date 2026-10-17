@@ -200,7 +200,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     --force-if-includes`; each ref's `PushFlag` and git's reason for a refusal, other lines as
     notes; a refusal isn't an error), `remotes`, and `abort_operation` /
     `continue_operation` for a merge, rebase, am, cherry-pick, revert (bisect: `reset`).
-    `tests/remote.rs` runs each against a bare repository through `file://`.
+    `tests/remote.rs` runs each against a bare repository through `file://` (and a clone
+    cancelled while its remote, git's `ext::` transport running `sleep`, hasn't answered:
+    git removes its folder).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).

@@ -11,6 +11,7 @@
 )]
 
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use egit_git::testing::Sandbox;
 use egit_git::{
@@ -147,6 +148,54 @@ fn clones_reporting_progress_whole_or_partial() {
         &cancel,
     );
     assert!(matches!(cancelled, Err(GitError::Cancelled { .. })));
+}
+
+#[test]
+fn a_clone_cancelled_midway_leaves_nothing_behind() {
+    let sandbox = Sandbox::new().unwrap();
+    let (bare, _) = origin(&sandbox);
+    // The remote answers only after a long pause (git's `ext::` transport runs a command as
+    // the remote): the clone is cancelled while it waits, its folder already made.
+    sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "protocol.ext.allow", "always"],
+        )
+        .unwrap();
+    let url = format!(
+        "ext::sh -c sleep% 60;% exec% {}% upload-pack% {}",
+        sandbox.git().program().display(),
+        bare.display()
+    );
+    let destination = sandbox.path("halfway");
+    let cancel = CancelToken::new();
+    let cancelling = {
+        let (cancel, destination) = (cancel.clone(), destination.clone());
+        std::thread::spawn(move || {
+            while !destination.join(".git").exists() {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            cancel.cancel();
+        })
+    };
+    let started = Instant::now();
+    let cancelled = clone(
+        sandbox.git(),
+        &url,
+        &destination,
+        CloneOptions::default(),
+        &Progress::new(),
+        &cancel,
+    );
+    cancelling.join().unwrap();
+    assert!(
+        matches!(cancelled, Err(GitError::Cancelled { .. })),
+        "{cancelled:?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(30));
+    assert!(!destination.exists(), "git left {}", destination.display());
 }
 
 #[test]
