@@ -31,6 +31,7 @@ it.
 | 17 | The sidebar, and the repository's plumbing | done; awaiting the owner's review |
 | 18 | Bisect, and rebasing merges | done; awaiting the owner's review |
 | 19 | Polish: preferences, a command palette and shortcuts, the accessibility audit | done; awaiting the owner's review |
+| 20 | macOS and Windows | done; linted for both from Linux, CI's runs left to the owner |
 
 ## Toolchain & commands
 
@@ -47,6 +48,11 @@ it.
   `EGIT_TEST_GIT=$PWD/target/git/2.43.0/bin/git cargo test --workspace` runs every test against
   it. Do this after touching anything that runs git (CI does it in `ubuntu:24.04`).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
+- Other platforms: `scripts/check-platforms.sh` lints every target for Windows
+  (`x86_64-pc-windows-gnu`, mingw-w64's gcc for the C dependencies) and macOS
+  (`aarch64-apple-darwin`, zig's `cc` carrying Apple's libc headers) from Linux; nothing is
+  linked or run there. Do this after touching anything behind a `cfg` of a platform. CI tests
+  on both (the platforms job).
 - Text corpus: `cargo test -p egit --release --lib -- --ignored --nocapture --test-threads=1
   corpus` draws the text grid through the roadmap's worst cases (1M lines of code, plain and
   highlighted, a 10 MB line wrapped and not, CJK and emoji, resizing wrapped at line 900k),
@@ -89,8 +95,13 @@ it.
 
 ## Supported platforms
 
-Linux only for now. The floor is Ubuntu 24.04 LTS: glibc 2.39 and git 2.43.0. Never use a git
-feature newer than 2.43.0 without a fallback, and check its release notes when unsure.
+Linux first: the floor is Ubuntu 24.04 LTS, glibc 2.39 and git 2.43.0. Never use a git feature
+newer than 2.43.0 without a fallback, and check its release notes when unsure. macOS (11 or
+newer) and Windows (10 or newer, with Git for Windows) too, since phase 20: what differs lives
+behind `cfg`s in a few places (git's processes, the askpass transport, a watch of the work
+tree, font folders, the browser opener); bytes git prints become paths through bstr's
+`to_path_lossy`/`to_os_str_lossy` (byte for byte on Unix, UTF-8 on Windows, as Git for Windows
+writes paths), never `OsStrExt`.
 
 ## Rules for running git
 
@@ -105,15 +116,17 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
 - Reads pass `--no-optional-locks`, so a background refresh never takes `index.lock` from the
   user's own git. Commands that write go through the repository's single write queue.
 - Never SIGKILL git: cancellation is SIGTERM to its process group, which lets git remove its
-  lock files.
+  lock files (on Windows, which has no SIGTERM, Git for Windows' own way: `ExitProcess` run in
+  each process, so git's exit handlers remove them).
 - A command about one repository runs in its work tree (`current_dir`); one that must not see
-  any repository (the user's global configuration) runs in `/`, never in egit's own working
-  directory, which may be inside some repository.
+  any repository (the user's global configuration) runs in `/` (on Windows the system drive's
+  root: `outside_repositories`), never in egit's own working directory, which may be inside
+  some repository.
 
 ## Repository layout
 
 - `crates/egit-git` — the git binary: running it, and parsing what it prints. No egui.
-  - `git.rs` — `Git`: the executable (found on `PATH` or given), its version checked against
+  - `git.rs` — `Git`: the executable (found on `PATH` (`git.exe` on Windows) or given), its version checked against
     `GitVersion::MINIMUM` (`version.rs`), and the environment every git process gets
     (`env.rs`: repository variables (`git rev-parse --local-env-vars`) removed, `LC_MESSAGES=C`
     with the character set kept, no pager, editor `:`, `GIT_TERMINAL_PROMPT=0`, no `GPG_TTY`).
@@ -130,9 +143,18 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     replacing the last (git rewrites them with `\r`): the phase, done and total, the transfer
     (`1.20 MiB | 2.30 MiB/s`), whether the remote is doing it (`remote: `), and the other
     lines as notes (the latest fifty).
-  - `process.rs` — the crate's only `unsafe`: `setsid` in `pre_exec` (no controlling
-    terminal; git leads its process group). The leader is waited for with `waitid(WNOWAIT)`
-    so a cancel can't signal a reused id; `cancel.rs` holds the running groups under one lock.
+  - `process.rs` — git leading a group of its own, stopped and waited on safely, per platform
+    (with the askpass's `getpeereid`, the crate's only `unsafe`). `process/unix.rs`: `setsid`
+    in `pre_exec` (no controlling terminal; git leads its process group), SIGTERM to the
+    group, the leader waited for with `waitid(WNOWAIT)` so a cancel can't signal a reused id.
+    `process/windows.rs`: a new process group without a console window
+    (`CREATE_NEW_PROCESS_GROUP`, `CREATE_NO_WINDOW`); stopped as Git for Windows' `kill` stops
+    a process, a thread running kernel32's `ExitProcess` injected into each (its exit
+    handlers run: git's remove its lock files), the processes git started first (found by
+    their parents in a Toolhelp snapshot, each born after its parent so a reused id can't
+    pass), terminated only where a thread can't be injected (another architecture); git's id
+    stays reserved while egit holds its `Child`. `cancel.rs` holds the running groups under
+    one lock.
   - `error.rs` — `GitError`, with `Failure` (exit status + stderr tail, `message()`).
   - `object_id.rs` — `ObjectId` (SHA-1 or SHA-256, by length; never assume 40 digits) and
     `ObjectFormat` (`zero`, the name of no object).
@@ -160,10 +182,15 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     makes `egit-<uid>/<pid>-<nonce>/` (0700, ownership checked) under `$XDG_RUNTIME_DIR` or
     the temporary directory, holding a Unix socket and `egit-askpass`, a link to egit's
     executable; `environment()` sets `GIT_ASKPASS`, `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`,
-    the socket, and a random token. Started under that name, egit is the helper
-    (`run_helper`). Connections must come from the same uid (`SO_PEERCRED`) and carry the
-    token; fields are bounded (`protocol.rs`); answers are zeroized. Its accept loop polls the
-    listener and an eventfd, so stopping never depends on the socket's path. `Prompt`s
+    the socket, and a random token (`getrandom`). Started under that name, egit is the helper
+    (`run_helper`). Connections must come from the same uid (`SO_PEERCRED`; `getpeereid` on
+    macOS) and carry the token; fields are bounded (`protocol.rs`); answers are zeroized. Its
+    accept loop polls the listener and a socket pair of its own, so stopping never depends on
+    the socket's path. Each platform's part: `askpass/unix.rs`; `askpass/windows.rs`, where
+    the standard library has no local sockets: a port on the loopback address that the token
+    alone lets a helper into, `egit-<user>` under the user's temporary directory, the helper
+    `egit-askpass.exe` a hard link (or a copy on another volume), and a file held open without
+    sharing marking a server alive (another egit sweeps directories whose file it can remove). `Prompt`s
     (`PromptKind`: visible, secret, yes/no, confirm, notice) are answered, refused, or dropped
     (refused); `is_abandoned` notices an asker that went away. `GitCommand::prompt_context`
     labels a command's prompts; `non_interactive` makes them fail at once (and
@@ -228,7 +255,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `tree.rs` — for watching a work tree's folders: `tree_folders` (a commit's folders,
     `ls-tree -r -d`) and `ignored_paths` (`check-ignore -z --stdin`, which exits 1 when none
     is; folders end with `/` so folder-only patterns match them); and `tree_entry`, one path's
-    entry at a commit (`ls-tree -z --full-tree`, a literal pathspec), or none.
+    entry at a commit (`ls-tree -z --full-tree`, a literal pathspec), or none. `git_path`: a
+    path relative to a work tree as git writes it (`/` between folders, on Windows too).
   - `committing.rs` — `create_commit`: `git commit --file=- --cleanup=whitespace` (a line
     starting with `#` is kept), `NewCommit`'s amend, sign-off, and signing (`-S`,
     `--no-gpg-sign`, or the configuration's choice); a passphrase is asked through askpass,
@@ -420,7 +448,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     blobs), a series applied (signed off, its author kept; stopped at a conflict with its
     progress and patch, skipped, aborted; stopped where a patch doesn't apply at all), a diff
     applied as changes (staged or not, conflicting), and a stopped cherry-pick skipped.
-  - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
+  - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test;
+    `set_mode` (a script's permission bits, where files have them).
 - `crates/egit-forge` — forges' web APIs: GitHub's (github.com, Enterprise Server) and GitLab's
   (gitlab.com, self-managed); no egui. egit's only network connections of its own (git makes
   every other).
@@ -529,8 +558,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   GIT_CONFIG_KEY_0=url.$HOME/egui-table-kit.insteadOf
   GIT_CONFIG_VALUE_0=https://github.com/xangelix/egui-table-kit CARGO_NET_GIT_FETCH_WITH_CLI=true
   cargo fetch`), `egui-async` 0.7 (stay on 0.36 until `egui_tiles` and `egui-phosphor` move).
-  - `main.rs` — started as `egit-askpass` it is the askpass helper (`run_helper`); otherwise
-    `lib.rs`'s `run`: `-h`/`-V`, paths to open, `EGIT_LOG` logging, the runtime, the window.
+  - `main.rs` — started as `egit-askpass` it is the askpass helper (`run_helper`; on Windows
+    in any case, `.exe` or not); otherwise `lib.rs`'s `run`: `-h`/`-V`, paths to open,
+    `EGIT_LOG` logging, the runtime, the window (no console window behind it on Windows,
+    but in a debug build).
   - `app.rs` — `EgitApp { tabs, state }`. Views never change `AppState` directly: they push
     `Action`s, applied after the frame (`apply_actions`); `AppState::poll` (each frame's
     start) turns finished jobs into state or actions. Git is detected by a job
@@ -624,8 +655,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `resolve_commit`. What git finds gets its row from a `RowIndex` (each row's name's first
     four bytes beside the row, sorted: 8 bytes a row), built by the first search that needs
     it and kept, shared, until the history is replaced.
-  - `watch.rs` — inotify (`notify`) on git directories, configuration files, and a work tree's
-    folders, never a work tree recursively: a repository's git dir and common dir
+  - `watch.rs` — watches (`notify`: inotify; `FSEvents` on macOS, `ReadDirectoryChangesW` on
+    Windows) on git directories, configuration files, and a work tree: on Linux its folders,
+    never a work tree recursively (inotify's watches are one a folder, and limited); on macOS
+    and Windows, where one watch takes in a whole tree, the work tree at once (`WHOLE_TREE`;
+    the folders asked for are in it). Linux's: a repository's git dir and common dir
     (non-recursive) and `refs/` (recursive);
     the user's configuration files through their folders (editors replace files). Paths are
     sorted into `Changes` (refs, state, config, index; `*.lock`, objects, logs ignored), access
@@ -782,7 +816,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `fork_head` (`refs/pull/12/head` into `pr/12`, `refs/merge-requests/12/head` into
     `mr/12`).
   - `desktop.rs` — `Opener`, and `is_web_page` (HTTPS, or HTTP to the loopback address;
-    nothing that could pass for an option): `xdg-open`, else `gio open`, in a job.
+    nothing that could pass for an option): `xdg-open`, else `gio open` (macOS's `open`;
+    Windows' `rundll32 url.dll,FileProtocolHandler`, no shell reading the address), in a job.
     `FileDialogs`: the desktop's file dialogs (`rfd`, one at a time) for a `FileQuestion`:
     where a patch or the changes go (a file), where a series goes (a folder), which patches to
     apply (files, patches first); for tests a folder answering them all (`in_folder`).
@@ -790,7 +825,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     patches (`Action::OpenPatches`).
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
-    looks once per character, in a job, through the XDG font directories (CJK families, then
+    looks once per character, in a job, through the system's font directories (XDG's; macOS's
+    and Windows' own; CJK families, theirs too, then
     monospace, then regular weights; in a collection the face covering most, monospace and in
     the user's `LANG` first; outlines required, so no colour bitmaps) and adds what it finds as
     lowest-priority fallbacks to both families. Kept fonts are leaked once into `'static`
@@ -1090,7 +1126,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     and `src/tests/corpus.rs` are the opt-in measurements (see Scale and Text corpus above).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
 - `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older
-  releases don't compile as C23).
+  releases don't compile as C23). `scripts/check-platforms.sh` — lints for Windows and macOS
+  from Linux (see Toolchain & commands).
 
 ## Conventions
 
@@ -1128,5 +1165,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
 
 ## CI
 
-GitHub Actions (`.github/workflows/ci.yml`). Every action is used at its latest major version,
-and Dependabot keeps them there (`.github/dependabot.yml`).
+GitHub Actions (`.github/workflows/ci.yml`): formatting, lints, and docs; the tests on the
+latest Ubuntu (screens rendered, every signer required) and in `ubuntu:24.04` with its git
+2.43; macOS and Windows each linted and tested (the platforms job); and the supply chain.
+Every action is used at its latest major version, and Dependabot keeps them there
+(`.github/dependabot.yml`).

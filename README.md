@@ -11,8 +11,9 @@ It is early work: see [the roadmap](docs/ROADMAP.md).
 
 ## Requirements
 
-- Linux (Ubuntu 24.04 LTS or newer, or an equivalent distribution)
-- git 2.43.0 or newer
+- Linux (Ubuntu 24.04 LTS or newer, or an equivalent distribution); macOS 11 or newer; or
+  Windows 10 or newer. Linux is egit's home; macOS and Windows are built and tested by CI.
+- git 2.43.0 or newer (on Windows, Git for Windows)
 
 ## Building
 
