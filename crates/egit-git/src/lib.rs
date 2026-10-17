@@ -16,6 +16,7 @@ mod command;
 mod commit;
 mod committing;
 mod config;
+mod conflict;
 mod diff;
 mod env;
 mod error;
@@ -47,6 +48,10 @@ pub use commit::{Commit, CommitParseError, Signature};
 pub use committing::{Committed, NewCommit, create_commit};
 pub use config::{
     ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, set_config, unset_config,
+};
+pub use conflict::{
+    ConflictLines, ConflictSides, IncomingCommit, Merge, MergedText, Pick, Piece, Resolution,
+    ResolveError, WholeOnly, conflict_sides, incoming_commit, merge_sides, resolve_conflict,
 };
 pub use diff::{
     DiffLine, DiffLineKind, DiffOptions, FileDiff, Uncommitted, WHOLE_FILE, file_diff,

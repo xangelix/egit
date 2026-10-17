@@ -205,6 +205,25 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `tests/remote.rs` runs each against a bare repository through `file://` (and a clone
     cancelled while its remote, git's `ext::` transport running `sleep`, hasn't answered:
     git removes its folder).
+  - `conflict.rs` — a file in conflict. `conflict_sides`: its `ConflictSides` from
+    `ls-files -u` (stage 1 the base, 2 current, 3 incoming; a side missing where it deleted
+    the file; `merged_mode`). `merge_sides`: two texts merged as `git merge` merges them
+    (`merge-file --object-id --zdiff3`, `--diff-algorithm=histogram` from git 2.44: ort's
+    diff; 2.43 merges with Myers), the sides read first through `cat-file` for binary contents
+    (`Merge::WholeOnly`, with deleted sides, links, and submodules), a last line without a
+    newline, and the longest run of a marker character starting a line, so the markers asked
+    for are longer than any line of the file can pass for; `MergedText` is git's output and
+    `Piece`s (ranges into it), and `resolve`/`picked` take each conflict's `Pick` (a side,
+    the base, both in either order, or text), a last line keeping its missing newline. An
+    add/add conflict merges from the empty blob (written first). `resolve_conflict`: a
+    `Resolution` (content, a side, or deletion) saved if `ls-files -u` still shows the same
+    sides: `hash-object -w --no-filters`, a stage-0 entry through `update-index --index-info`
+    (it replaces the stages), and `checkout-index --force` writing the work tree through the
+    filters; deletion is `git rm --force`. `incoming_commit`: the commit merged, picked,
+    reverted, or replayed (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`).
+    `tests/conflict.rs` resolves conflicts from each operation and continues it, and checks
+    that taking one side everywhere is `merge-file --ours`/`--theirs` on 250 random cases
+    (lines like markers, missing final newlines).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
