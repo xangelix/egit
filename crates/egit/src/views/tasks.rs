@@ -1,16 +1,19 @@
 //! A repository's tasks, as the history shows them: the branch, its upstream and how they
 //! compare, Fetch, Pull, and Push (what the running task is doing, with Cancel); how the last
-//! one ended, in words a person can act on; the dialogs it may lead to (diverged branches,
-//! forcing a push, a branch's first push, giving up an operation); and the banner of an
-//! operation git stopped in the middle of.
+//! one ended, in words a person can act on (or the dialog it leads to: `views/dialogs.rs`);
+//! and the banner of an operation git stopped in the middle of.
 
 use std::fmt::Write as _;
 
-use bstr::ByteSlice as _;
+use bstr::{BString, ByteSlice as _};
 use egit_git::{
-    ConfigSnapshot, Head, Operation, PullMode, Pulled, PushFlag, PushOptions, Pushed, Tracking,
+    ConfigSnapshot, Head, Integrated, Operation, PullMode, Pulled, PushFlag, PushOptions, Pushed,
+    Stash, SwitchTo, Tracking,
 };
-use egui::{Align, Id, Layout, Modal, RichText, TextStyle, Ui, UiBuilder};
+use egui::{Align, Id, Layout, RichText, TextStyle, Ui, UiBuilder};
+
+use super::dialogs::{self, Dialog};
+use super::history::ID_DIGITS;
 
 use crate::app::Action;
 use crate::problem::Problem;
@@ -23,24 +26,10 @@ use crate::{fonts, format};
 /// What the task parts remember between frames.
 #[derive(Debug, Default)]
 pub(crate) struct TasksView {
-    dialog: Option<Dialog>,
+    /// The question asked, if any.
+    pub(super) dialog: Option<Dialog>,
     /// The task whose outcome was taken in (dismissed, or turned into a dialog).
     seen: u64,
-    /// The diverged-branches dialog's "remember" box.
-    remember: bool,
-}
-
-/// A question the task parts are asking.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum Dialog {
-    /// How to bring diverged branches together.
-    Diverged,
-    /// Whether to replace the remote's branch.
-    ForcePush(PushOptions),
-    /// Where a branch without an upstream goes.
-    FirstPush(PushOptions),
-    /// Whether to give up an operation.
-    Abort(Operation),
 }
 
 /// What the task parts work with while they are drawn.
@@ -49,6 +38,8 @@ pub(crate) struct TaskPane<'a> {
     pub(crate) head: Option<&'a Head>,
     pub(crate) operations: &'a [Operation],
     pub(crate) config: Option<&'a ConfigSnapshot>,
+    /// The stashes, the latest first.
+    pub(crate) stashes: &'a [Stash],
     pub(crate) tasks: &'a mut Tasks,
     pub(crate) actions: &'a mut Vec<Action>,
 }
@@ -62,7 +53,7 @@ pub(crate) enum TaskEvent {
 
 impl TaskPane<'_> {
     /// The current branch's name, when on one.
-    fn branch(&self) -> Option<String> {
+    pub(super) fn branch(&self) -> Option<String> {
         match self.head? {
             Head::Branch(branch) => Some(branch.name.to_string()),
             Head::Detached(_) => None,
@@ -82,11 +73,24 @@ impl TaskPane<'_> {
         })
     }
 
-    fn remotes(&self) -> Vec<String> {
+    /// The remotes configured, in order.
+    pub(super) fn remotes(&self) -> Vec<String> {
         self.config.map(remote_names).unwrap_or_default()
     }
 
-    fn start(&mut self, task: Task) {
+    /// The current branch's upstream, by its short name.
+    pub(super) fn upstream(&self) -> Option<String> {
+        match self.head? {
+            Head::Branch(branch) => branch
+                .upstream
+                .as_ref()
+                .map(|upstream| upstream.name.to_str_lossy().into_owned()),
+            Head::Detached(_) => None,
+        }
+    }
+
+    /// Starts `task`.
+    pub(super) fn start(&mut self, task: Task) {
         self.actions.push(Action::Task(self.id, task));
     }
 }
@@ -262,29 +266,37 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
             });
         }
         Some(Ok(Outcome::Pulled(Pulled::Diverged))) => {
-            view.dialog = Some(Dialog::Diverged);
-            view.remember = false;
+            view.dialog = Some(Dialog::Diverged { remember: false });
+            dismiss = true;
+        }
+        Some(Ok(Outcome::WouldOverwrite { paths, untracked })) => {
+            if let Some(Task::Switch(to)) = &pane.tasks.task {
+                view.dialog = Some(Dialog::StashAndSwitch {
+                    to: to.clone(),
+                    paths,
+                    untracked,
+                });
+            }
+            dismiss = true;
+        }
+        Some(Ok(Outcome::NotMerged)) => {
+            if let Some(Task::DeleteBranch { name, .. }) = &pane.tasks.task {
+                view.dialog = Some(Dialog::DeleteBranch {
+                    name: name.clone(),
+                    unmerged: true,
+                });
+            }
             dismiss = true;
         }
         Some(Ok(Outcome::Pushed(pushed))) if !pushed.succeeded() => {
             refused(ui, view, pane, &pushed, &mut dismiss);
         }
         Some(Ok(outcome)) => {
-            let (text, color) = match &outcome {
-                Outcome::Cancelled => ("Cancelled.".to_owned(), palette.muted),
-                Outcome::Fetched => ("Fetched.".to_owned(), palette.ok),
-                Outcome::Pulled(Pulled::Updated) => ("Pulled.".to_owned(), palette.ok),
-                Outcome::Pulled(_) => (
-                    "The pull stopped at conflicts: resolve them, stage them, then Continue."
-                        .to_owned(),
-                    palette.ok,
-                ),
-                Outcome::Pushed(pushed) => (pushed_text(pushed), palette.ok),
-                Outcome::Aborted => (
-                    "Aborted: everything is as it was before.".to_owned(),
-                    palette.ok,
-                ),
-                Outcome::Continued => ("Carried on.".to_owned(), palette.ok),
+            let text = ended(pane.tasks.task.as_ref(), &outcome);
+            let color = if outcome == Outcome::Cancelled {
+                palette.muted
+            } else {
+                palette.ok
             };
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(text).color(color));
@@ -302,18 +314,108 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     }
 }
 
+/// How `task` ended, in words.
+fn ended(task: Option<&Task>, outcome: &Outcome) -> String {
+    const CONFLICTS: &str = "resolve the conflicts, stage them, then Continue.";
+    let Some(task) = task else {
+        return "Done.".to_owned();
+    };
+    match (task, outcome) {
+        (_, Outcome::Cancelled) => "Cancelled.".to_owned(),
+        (_, Outcome::Fetched) => "Fetched.".to_owned(),
+        (_, Outcome::Pulled(Pulled::Updated)) => "Pulled.".to_owned(),
+        (_, Outcome::Pulled(_)) => format!("The pull stopped at conflicts: {CONFLICTS}"),
+        (_, Outcome::Pushed(pushed)) => pushed_text(pushed),
+        (_, Outcome::Aborted) => "Aborted: everything is as it was before.".to_owned(),
+        (_, Outcome::Continued) => "Carried on.".to_owned(),
+        (_, Outcome::Stashed(true)) => "Stashed your changes.".to_owned(),
+        (_, Outcome::Stashed(false)) => "There were no changes to stash.".to_owned(),
+        (Task::ApplyStash { stash, .. }, Outcome::Integrated(Integrated::Conflicts)) => format!(
+            "Applying stash@{{{}}} conflicts: resolve the files marked Conflict, then stage \
+             them (a popped stash is kept).",
+            stash.index
+        ),
+        (task, Outcome::Integrated(Integrated::Conflicts)) => {
+            format!("{} stopped at conflicts: {CONFLICTS}", task.doing())
+        }
+        (
+            Task::CherryPick(commit) | Task::Revert(commit),
+            Outcome::Integrated(Integrated::Empty),
+        ) => {
+            format!(
+                "{} changes nothing here (its changes are in already): skipped.",
+                commit.abbreviated(ID_DIGITS)
+            )
+        }
+        (task, _) => done_text(task),
+    }
+}
+
+/// What a task that went through did.
+fn done_text(task: &Task) -> String {
+    let short = |name: &BString| name.to_str_lossy().into_owned();
+    match task {
+        Task::Switch(to) | Task::StashAndSwitch(to) => {
+            let stashed = if matches!(task, Task::StashAndSwitch(_)) {
+                "Stashed your changes, and switched"
+            } else {
+                "Switched"
+            };
+            match to {
+                SwitchTo::Branch(name) => format!("{stashed} to {}.", short(name)),
+                SwitchTo::Track {
+                    remote_branch,
+                    local,
+                } => format!(
+                    "{stashed} to {}, tracking {}.",
+                    short(local),
+                    short(remote_branch)
+                ),
+                SwitchTo::NewBranch { name, .. } => {
+                    format!("Made {}; {} to it.", short(name), stashed.to_lowercase())
+                }
+                SwitchTo::Detached(at) => format!(
+                    "{stashed} to {}, without a branch.",
+                    at.abbreviated(ID_DIGITS)
+                ),
+            }
+        }
+        Task::CreateBranch { name, .. } => format!("Made {}.", short(name)),
+        Task::RenameBranch { old, new } => format!("Renamed {} to {}.", short(old), short(new)),
+        Task::DeleteBranch { name, .. } => format!("Deleted {}.", short(name)),
+        Task::Merge { shown, .. } => format!("Merged {shown}."),
+        Task::Rebase { shown, .. } => format!("Rebased onto {shown}."),
+        Task::CherryPick(commit) => format!("Picked {}.", commit.abbreviated(ID_DIGITS)),
+        Task::Revert(commit) => format!("Reverted {}.", commit.abbreviated(ID_DIGITS)),
+        Task::Reset(commit, _) => format!("Reset to {}.", commit.abbreviated(ID_DIGITS)),
+        Task::CreateTag { name, at, .. } => {
+            format!("Tagged {} as {}.", at.abbreviated(ID_DIGITS), short(name))
+        }
+        Task::DeleteTag(name) => format!("Deleted the tag {}.", short(name)),
+        Task::ApplyStash { stash, pop } => format!(
+            "{} stash@{{{}}}.",
+            if *pop { "Popped" } else { "Applied" },
+            stash.index
+        ),
+        Task::DropStash(stash) => format!("Dropped stash@{{{}}}.", stash.index),
+        _ => "Done.".to_owned(),
+    }
+}
+
 /// What a push that went through did.
 fn pushed_text(pushed: &Pushed) -> String {
     let Some(first) = pushed.refs.first() else {
         return "Pushed.".to_owned();
     };
-    let to = first
-        .to
+    let to = first.to.as_slice();
+    let to = to
         .strip_prefix(b"refs/heads/")
-        .unwrap_or(&first.to)
+        .or_else(|| to.strip_prefix(b"refs/tags/"))
+        .unwrap_or(to)
         .to_str_lossy()
         .into_owned();
     match first.flag {
+        PushFlag::Deleted => format!("{to} was deleted on the remote."),
         PushFlag::UpToDate => format!("{to} was already up to date."),
         PushFlag::New => format!("Pushed: {to} is new on the remote."),
         PushFlag::Forced => format!("Force pushed: {to} replaced."),
@@ -461,7 +563,7 @@ fn operation_banner(
 }
 
 /// An operation, as a sentence starts with it.
-const fn operation_name(operation: Operation) -> &'static str {
+pub(super) const fn operation_name(operation: Operation) -> &'static str {
     match operation {
         Operation::Merge => "A merge",
         Operation::Rebase => "A rebase",
@@ -474,196 +576,5 @@ const fn operation_name(operation: Operation) -> &'static str {
 
 /// The dialog asked, if any.
 pub(crate) fn dialogs(ctx: &egui::Context, view: &mut TasksView, pane: &mut TaskPane<'_>) {
-    let Some(dialog) = view.dialog.clone() else {
-        return;
-    };
-    let palette = Palette::of(ctx);
-    let frame = egui::Frame::new()
-        .fill(palette.surface)
-        .stroke(egui::Stroke::new(1.0, palette.border))
-        .corner_radius(egui::CornerRadius::same(12))
-        .inner_margin(egui::Margin::same(20));
-    let mut close = false;
-    let shown = Modal::new(Id::new(("task-dialog", pane.id)))
-        .frame(frame)
-        .show(ctx, |ui| {
-            ui.set_width(480.0);
-            match dialog {
-                Dialog::Diverged => diverged(ui, view, pane, &mut close),
-                Dialog::ForcePush(options) => force_push(ui, pane, &options, &mut close),
-                Dialog::FirstPush(options) => first_push(ui, view, pane, options, &mut close),
-                Dialog::Abort(operation) => abort(ui, pane, operation, &mut close),
-            }
-        });
-    if close || shown.should_close() {
-        view.dialog = None;
-    }
-}
-
-/// A dialog's title.
-fn title(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(18.0).strong());
-    ui.add_space(8.0);
-}
-
-/// How to bring diverged branches together.
-fn diverged(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>, close: &mut bool) {
-    let upstream = match pane.head {
-        Some(Head::Branch(branch)) => branch
-            .upstream
-            .as_ref()
-            .map(|upstream| upstream.name.to_str_lossy().into_owned()),
-        _ => None,
-    }
-    .unwrap_or_else(|| "its upstream".to_owned());
-    title(ui, "The branches have diverged");
-    ui.add(
-        egui::Label::new(format!(
-            "Your branch and {upstream} each have commits the other hasn't. Bring them together \
-             by putting your commits after theirs (rebase), or by joining both in a merge commit."
-        ))
-        .wrap(),
-    );
-    ui.add_space(8.0);
-    ui.checkbox(
-        &mut view.remember,
-        "Remember this for the repository (pull.rebase)",
-    );
-    ui.add_space(8.0);
-    widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, true, "Rebase").clicked() {
-            let task = if view.remember {
-                Task::PullAndRemember { rebase: true }
-            } else {
-                Task::Pull(PullMode::Rebase)
-            };
-            pane.start(task);
-            *close = true;
-        }
-        if widgets::secondary(ui, true, "Merge").clicked() {
-            let task = if view.remember {
-                Task::PullAndRemember { rebase: false }
-            } else {
-                Task::Pull(PullMode::Merge)
-            };
-            pane.start(task);
-            *close = true;
-        }
-        if widgets::secondary(ui, true, "Cancel").clicked() {
-            *close = true;
-        }
-    });
-}
-
-/// Whether to replace the remote's branch.
-fn force_push(ui: &mut Ui, pane: &mut TaskPane<'_>, options: &PushOptions, close: &mut bool) {
-    title(
-        ui,
-        &format!(
-            "Force push to {}/{}?",
-            options.remote.to_str_lossy(),
-            options.remote_branch.to_str_lossy()
-        ),
-    );
-    ui.add(
-        egui::Label::new(
-            "This replaces the remote's branch with yours: its commits that yours hasn't go from \
-             it. egit forces only if the remote is still where you last fetched it, and that is \
-             in your branch; otherwise nothing is pushed.",
-        )
-        .wrap(),
-    );
-    ui.add_space(12.0);
-    widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, true, "Force push").clicked() {
-            pane.start(Task::Push(options.clone()));
-            *close = true;
-        }
-        if widgets::secondary(ui, true, "Cancel").clicked() {
-            *close = true;
-        }
-    });
-}
-
-/// Where a branch without an upstream goes: which remote, under what name.
-fn first_push(
-    ui: &mut Ui,
-    view: &mut TasksView,
-    pane: &mut TaskPane<'_>,
-    mut options: PushOptions,
-    close: &mut bool,
-) {
-    title(
-        ui,
-        &format!("Push {} for the first time", options.branch.to_str_lossy()),
-    );
-    let remotes = pane.remotes();
-    let mut remote = options.remote.to_str_lossy().into_owned();
-    let mut name = options.remote_branch.to_str_lossy().into_owned();
-    egui::Grid::new("first-push")
-        .num_columns(2)
-        .spacing([12.0, 8.0])
-        .show(ui, |ui| {
-            let remote_label = ui.label(muted(ui, "Remote"));
-            egui::ComboBox::from_id_salt("first-push-remote")
-                .selected_text(&remote)
-                .show_ui(ui, |ui| {
-                    for choice in &remotes {
-                        ui.selectable_value(&mut remote, choice.clone(), choice);
-                    }
-                })
-                .response
-                .labelled_by(remote_label.id);
-            ui.end_row();
-            let name_label = ui.label(muted(ui, "As"));
-            ui.add_sized([240.0, 20.0], egui::TextEdit::singleline(&mut name))
-                .labelled_by(name_label.id);
-            ui.end_row();
-        });
-    ui.add_space(8.0);
-    ui.label(muted(
-        ui,
-        "It becomes the branch's upstream: later pushes and pulls go there.",
-    ));
-    options.remote = remote.into();
-    options.remote_branch = name.trim().to_owned().into();
-    ui.add_space(12.0);
-    let ready = !options.remote.is_empty() && !options.remote_branch.is_empty();
-    widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, ready, "Push").clicked() {
-            pane.start(Task::Push(options.clone()));
-            *close = true;
-        }
-        if widgets::secondary(ui, true, "Cancel").clicked() {
-            *close = true;
-        }
-    });
-    if !*close {
-        view.dialog = Some(Dialog::FirstPush(options));
-    }
-}
-
-/// Whether to give up an operation.
-fn abort(ui: &mut Ui, pane: &mut TaskPane<'_>, operation: Operation, close: &mut bool) {
-    title(
-        ui,
-        &format!("Abort {}?", operation_name(operation).to_lowercase()),
-    );
-    ui.add(
-        egui::Label::new(
-            "Your branch and files go back to how they were before it began: the conflicts \
-             resolved so far are lost.",
-        )
-        .wrap(),
-    );
-    ui.add_space(12.0);
-    widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, true, "Abort").clicked() {
-            pane.start(Task::Abort(operation));
-            *close = true;
-        }
-        if widgets::secondary(ui, true, "Keep going").clicked() {
-            *close = true;
-        }
-    });
+    dialogs::show(ctx, &mut view.dialog, pane);
 }

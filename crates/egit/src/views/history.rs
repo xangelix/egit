@@ -12,7 +12,7 @@ use std::sync::Arc;
 use bstr::{BStr, ByteSlice as _};
 use egit_git::{
     CancelToken, Committed, ConfigSnapshot, FileChange, Git, Head, ObjectId, Operation, RefKind,
-    Reference, Repository, SignatureCheck, Status, Verdict,
+    Reference, Repository, SignatureCheck, Stash, Status, Verdict,
 };
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
@@ -25,6 +25,7 @@ use egui_table_kit::layout::{
     CellInfo, Column, HeaderCellInfo, HeaderRow, PrefetchInfo, Table, TableDelegate, TableState,
 };
 
+use super::actions::{self, Ask, Menus};
 use super::file::{self, FileView, WorkFile};
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
@@ -32,13 +33,13 @@ use crate::app::Action;
 use crate::fonts;
 use crate::format::{count, date_time};
 use crate::history::{
-    ChangeCounts, CommitDetails, History, HistoryState, Objects, Signatures, Summaries,
+    ChangeCounts, CommitDetails, History, HistoryState, Objects, Refs, Signatures, Summaries,
     read_change_counts, read_details,
 };
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::tables::ChangesTable;
-use crate::tasks::Tasks;
+use crate::tasks::{Tasks, remote_names};
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 use crate::worktree::WorkTree;
@@ -111,8 +112,10 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) operations: &'a [Operation],
     /// The repository's configuration, once read.
     pub(crate) config: Option<&'a ConfigSnapshot>,
-    /// Fetching, pulling, and pushing.
+    /// What the user asked of the repository: fetching, switching, stashing, ….
     pub(crate) tasks: &'a mut Tasks,
+    /// The stashes, once read, the latest first.
+    pub(crate) stashes: &'a [Stash],
     pub(crate) actions: &'a mut Vec<Action>,
 }
 
@@ -141,6 +144,8 @@ pub(crate) struct HistoryView {
     work_selected: bool,
     work: WorkPanel,
     tasks: TasksView,
+    /// What a menu in the details asked for, carried out once the panels are drawn.
+    asked: Option<Ask>,
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -224,6 +229,7 @@ impl HistoryView {
             work_selected: false,
             work: WorkPanel::new(repo),
             tasks: TasksView::default(),
+            asked: None,
         }
     }
 
@@ -444,6 +450,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         operations,
         config,
         tasks,
+        stashes,
         actions,
     } = pane;
     if std::mem::take(&mut history.replaced) {
@@ -459,6 +466,8 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         partial_clone,
         work_status: work_status.as_ref(),
         operation: operations.first().copied(),
+        remotes: config.map(remote_names).unwrap_or_default(),
+        busy: tasks.is_busy(),
     };
     // Before the first commit, the work tree is all there is to look at.
     if history.shown.rows() == 0 && !history.shown.is_loading() {
@@ -473,6 +482,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
                 head,
                 operations,
                 config,
+                stashes,
                 tasks: &mut *tasks,
                 actions: &mut *actions,
             };
@@ -498,6 +508,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
             head,
             operations,
             config,
+            stashes,
             tasks: &mut *tasks,
             actions: &mut *actions,
         },
@@ -570,6 +581,9 @@ fn panels(
                 details(ui, shared, history, view);
             }
         });
+    if let Some(asked) = view.asked.take() {
+        carry_out(asked, shared.id, view, actions);
+    }
 
     view.close_unselected_file();
     egui::CentralPanel::default()
@@ -588,7 +602,7 @@ fn panels(
                     ));
                 });
             }
-            None => commit_table(ui, shared, history, view),
+            None => commit_table(ui, shared, history, view, actions),
         });
 }
 
@@ -604,9 +618,25 @@ pub(super) struct Shared<'a> {
     pub(super) work_status: Option<&'a Arc<Status>>,
     /// The operation git stopped in the middle of, if any (it names a conflict's sides).
     pub(super) operation: Option<Operation>,
+    /// The remotes configured, in order.
+    pub(super) remotes: Vec<String>,
+    /// Whether a task is running.
+    pub(super) busy: bool,
 }
 
 impl Shared<'_> {
+    /// What the menus need to know.
+    pub(super) fn menus<'b>(&'b self, refs: &'b Refs) -> Menus<'b> {
+        Menus {
+            branch: self.branch(),
+            head: self.head.commit,
+            remotes: &self.remotes,
+            refs,
+            busy: self.busy,
+            operation: self.operation.is_some(),
+        }
+    }
+
     /// The branch `HEAD` is on, by its short name.
     pub(super) fn branch(&self) -> Option<&BStr> {
         let reference = self.head.reference?;
@@ -663,8 +693,15 @@ fn top_bar(
             format!("{} commits", count(rows))
         };
         ui.label(RichText::new(commits).strong());
-        // What comes and goes follows the summary's button: ids are counted in order, and a
-        // click pressed on one id and released on another is lost.
+        let mut asked = None;
+        let has_changes = shared.work_status.is_some_and(|status| !status.is_empty());
+        let menus = shared.menus(history.shown.refs());
+        actions::stash_menu(ui, &menus, task_pane.stashes, has_changes, &mut asked);
+        if let Some(asked) = asked {
+            carry_out(asked, shared.id, view, task_pane.actions);
+        }
+        // What comes and goes follows the buttons: ids are counted in order, and a click
+        // pressed on one id and released on another is lost.
         work_tree_summary(ui, work_tree, view, palette);
         if history.is_loading() {
             ui.spinner();
@@ -759,6 +796,7 @@ fn commit_table(
     shared: &Shared<'_>,
     history: &mut HistoryState,
     view: &mut HistoryView,
+    actions: &mut Vec<Action>,
 ) {
     let keys = ui.id().with("commit-keys");
     let area = ui.interact(
@@ -805,11 +843,24 @@ fn commit_table(
         objects,
         view,
         clicked: None,
+        asked: None,
     };
     table.show(ui, &mut rows);
+    let asked = rows.asked.take();
     if let Some(row) = rows.clicked {
         view.select(shown, row, None);
         ui.memory_mut(|memory| memory.request_focus(keys));
+    }
+    if let Some(asked) = asked {
+        carry_out(asked, shared.id, view, actions);
+    }
+}
+
+/// Does what a menu asked: starts its task, or asks its dialog's question first.
+fn carry_out(asked: Ask, id: RepoId, view: &mut HistoryView, actions: &mut Vec<Action>) {
+    match asked {
+        Ask::Task(task) => actions.push(Action::Task(id, task)),
+        Ask::Dialog(dialog) => view.tasks.dialog = Some(dialog),
     }
 }
 
@@ -895,6 +946,8 @@ struct CommitRows<'a> {
     view: &'a mut HistoryView,
     /// The row clicked this frame.
     clicked: Option<u64>,
+    /// What a menu (or a double-clicked branch) asked for this frame.
+    asked: Option<Ask>,
 }
 
 impl TableDelegate for CommitRows<'_> {
@@ -975,7 +1028,11 @@ impl TableDelegate for CommitRows<'_> {
             );
             WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, name)
         });
+        let menus = self.shared.menus(self.history.refs());
+        let asked = &mut self.asked;
         response.context_menu(|ui| {
+            actions::commit_menu(ui, &menus, id, asked);
+            ui.separator();
             if ui.button("Copy commit name").clicked() {
                 ui.ctx().copy_text(id.to_string());
                 ui.close();
@@ -999,12 +1056,11 @@ impl TableDelegate for CommitRows<'_> {
         }
         ui.add_space(GRAPH_MARGIN);
         if cell.col_nr == 1 {
-            badges(
-                ui,
-                self.history.refs().at(&id),
-                &self.shared.head,
-                self.shared.palette,
-            );
+            let menus = self.shared.menus(self.history.refs());
+            let refs = self.history.refs().at(&id);
+            if badges(ui, refs, &menus, self.shared.palette, &mut self.asked) {
+                self.clicked = Some(cell.row_nr);
+            }
         }
         if cell.col_nr == 4 {
             let name = id.abbreviated(ID_DIGITS).to_string();
@@ -1175,10 +1231,21 @@ fn curve(from: Pos2, to: Pos2, stroke: Stroke) -> CubicBezierShape {
     )
 }
 
-/// The refs at a commit, as badges: branches, then remote branches, then tags.
-fn badges(ui: &mut Ui, refs: &[Reference], head: &HeadAt<'_>, palette: Palette) {
+/// The refs at a commit, as badges: branches, then remote branches, then tags. Each has its
+/// menu (on a right-click), and a branch switches to it on a double-click; returns whether a
+/// badge was clicked (which selects its row).
+fn badges(
+    ui: &mut Ui,
+    refs: &[Reference],
+    menus: &Menus<'_>,
+    palette: Palette,
+    asked: &mut Option<Ask>,
+) -> bool {
+    let mut clicked = false;
     for reference in refs.iter().take(MAX_BADGES) {
-        let checked_out = head.reference == Some(reference.name.as_bstr());
+        let checked_out = menus.branch.is_some()
+            && reference.kind == RefKind::Branch
+            && menus.branch == Some(reference.short_name());
         let (glyph, color) = match reference.kind {
             RefKind::Branch => (icon::GIT_BRANCH, palette.accent),
             RefKind::RemoteBranch => (icon::CLOUD, palette.muted),
@@ -1191,7 +1258,7 @@ fn badges(ui: &mut Ui, refs: &[Reference], head: &HeadAt<'_>, palette: Palette) 
             (color.gamma_multiply(0.16), palette.text)
         };
         let label = format!("{glyph} {}", reference.short_name().to_str_lossy());
-        Frame::new()
+        let badge = Frame::new()
             .fill(fill)
             .stroke(Stroke::new(1.0, color.gamma_multiply(0.7)))
             .corner_radius(CornerRadius::same(4))
@@ -1199,13 +1266,25 @@ fn badges(ui: &mut Ui, refs: &[Reference], head: &HeadAt<'_>, palette: Palette) 
             .show(ui, |ui| {
                 let text = RichText::new(label).size(12.0).color(text);
                 ui.add(
-                    Label::new(if checked_out { text.strong() } else { text }).selectable(false),
-                );
-            });
+                    Label::new(if checked_out { text.strong() } else { text })
+                        .selectable(false)
+                        .sense(Sense::click()),
+                )
+            })
+            .inner;
+        if badge.double_clicked() {
+            if let Some(switch) = actions::ref_double_clicked(menus, reference) {
+                *asked = Some(switch);
+            }
+        } else if badge.clicked() {
+            clicked = true;
+        }
+        badge.context_menu(|ui| actions::ref_menu(ui, menus, reference, asked));
     }
     if let Some(more) = refs.len().checked_sub(MAX_BADGES).filter(|more| *more > 0) {
         ui.add(Label::new(muted(ui, format!("+{more}"))).selectable(false));
     }
+    clicked
 }
 
 /// The working tree's changes: what isn't staged and what is.
@@ -1288,9 +1367,10 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
             go_to = commit_info(
                 ui,
                 &shown,
-                history.shown.refs().at(&shown.id),
+                history.shown.refs(),
                 check,
                 shared,
+                &mut view.asked,
             );
         });
     ui.add_space(8.0);
@@ -1350,15 +1430,18 @@ fn files_heading(
     });
 }
 
-/// The commit's message, names, people, and refs; returns a parent the user chose to go to.
+/// The commit's message, names, people, and refs (`all` holds them; their menus' answer goes
+/// to `asked`); returns a parent the user chose to go to.
 fn commit_info(
     ui: &mut Ui,
     details: &CommitDetails,
-    refs: &[Reference],
+    all: &Refs,
     check: Option<&SignatureCheck>,
     shared: &Shared<'_>,
+    asked: &mut Option<Ask>,
 ) -> Option<ObjectId> {
     let commit = &details.commit;
+    let refs = all.at(&details.id);
     let mut go_to = None;
     ui.add(
         Label::new(
@@ -1429,7 +1512,8 @@ fn commit_info(
             }
             if !refs.is_empty() {
                 ui.label(muted(ui, "Refs"));
-                ui.horizontal_wrapped(|ui| badges(ui, refs, &shared.head, shared.palette));
+                let menus = shared.menus(all);
+                ui.horizontal_wrapped(|ui| badges(ui, refs, &menus, shared.palette, asked));
                 ui.end_row();
             }
         });

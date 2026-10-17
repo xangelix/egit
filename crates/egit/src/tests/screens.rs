@@ -79,12 +79,19 @@ fn render(harness: &mut Harness<'_, EgitApp>, name: &str) {
     image.save(screens().join(format!("{name}.png"))).unwrap();
 }
 
-/// Fails the test, saving the screen it stopped at (`timed-out.png`) where it can.
+/// Fails the test, saving the screen it stopped at (`timed-out-<test>.png`) where it can.
 fn gave_up(harness: &mut Harness<'_, EgitApp>, why: &str) -> ! {
     if rendering()
         && let Ok(image) = harness.render()
     {
-        let _saved = image.save(screens().join("timed-out.png"));
+        let thread = std::thread::current();
+        let test = thread
+            .name()
+            .unwrap_or("test")
+            .rsplit("::")
+            .next()
+            .unwrap_or("test");
+        let _saved = image.save(screens().join(format!("timed-out-{test}.png")));
     }
     panic!("{why}");
 }
@@ -1431,6 +1438,253 @@ fn conflicts_are_resolved_in_the_merge_editor() {
     wait_for_label(&mut harness, "Carried on.");
     let parents = sandbox.run(&repo, "log", &["-1", "--format=%P"]).unwrap();
     assert_eq!(parents.stdout.split(|&byte| byte == b' ').count(), 2);
+}
+
+/// Double-clicks the control labelled `label`: both clicks in one frame (each of the harness's
+/// frames is a quarter of a second: two apart are no double-click).
+fn double_click(harness: &mut Harness<'_, EgitApp>, label: &str) {
+    harness.get_by_label(label).hover();
+    harness.step();
+    let at = harness.get_by_label(label).rect().center();
+    for pressed in [true, false, true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    harness.step();
+}
+
+/// Right-clicks the control labelled `label`, then clicks `item` in the menu it opens.
+fn menu_item(harness: &mut Harness<'_, EgitApp>, label: &str, item: &str) {
+    harness.get_by_label(label).click_secondary();
+    wait_for_label(harness, item);
+    harness.get_by_label(item).click();
+}
+
+/// `main` with `f` changed twice, and `other` from the first commit adding `g`.
+fn two_branches(sandbox: &Sandbox) -> PathBuf {
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "f", "one\n", "One").unwrap();
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--create", "other"])
+        .unwrap();
+    sandbox.commit_file(&repo, "g", "other\n", "Other").unwrap();
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    sandbox.commit_file(&repo, "f", "two\n", "Two").unwrap();
+    repo
+}
+
+/// The branches in `repo`.
+fn branch_names(sandbox: &Sandbox, repo: &Path) -> String {
+    let listed = sandbox
+        .run(repo, "branch", &["--format=%(refname:short)"])
+        .unwrap();
+    String::from_utf8(listed.stdout).unwrap()
+}
+
+#[test]
+fn branches_are_switched_to_made_and_deleted_from_the_graph() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = two_branches(&sandbox);
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    let badge = |name: &str| format!("{} {name}", icon::GIT_BRANCH);
+    let on = |name: &str| format!("{}  {name} (not pushed yet)", icon::GIT_BRANCH);
+    wait_for_label(&mut harness, &on("main"));
+
+    // A branch's menu switches to it; double-clicking another switches back.
+    harness.get_by_label(&badge("other")).click_secondary();
+    wait_for_label(&mut harness, "Switch to other");
+    render(&mut harness, "branch-menu");
+    harness.get_by_label("Switch to other").click();
+    wait_for_label(&mut harness, "Switched to other.");
+    wait_for_label(&mut harness, &on("other"));
+    double_click(&mut harness, &badge("main"));
+    wait_for_label(&mut harness, &on("main"));
+
+    // A file in the way is stashed first, once asked.
+    std::fs::write(repo.join("g"), "untracked\n").unwrap();
+    menu_item(&mut harness, &badge("other"), "Switch to other");
+    wait_for_label(&mut harness, "Your changes are in the way");
+    render(&mut harness, "stash-and-switch");
+    harness.get_by_label("Stash and switch").click();
+    wait_for_label(&mut harness, "Stashed your changes, and switched to other.");
+    wait_for_label(&mut harness, &format!("{}  Stashes · 1", icon::ARCHIVE));
+
+    // A branch made at a commit, and switched to.
+    harness
+        .get_by_role_and_label(Role::Button, "One")
+        .click_secondary();
+    wait_for_label(&mut harness, "Create a branch here…");
+    harness.get_by_label("Create a branch here…").click();
+    wait_for_label(&mut harness, "Switch to it");
+    type_into(&mut harness, Role::TextInput, "Name", "feature");
+    render(&mut harness, "create-branch");
+    harness.get_by_label("Create").click();
+    wait_for_label(&mut harness, "Made feature; switched to it.");
+    wait_for_label(&mut harness, &on("feature"));
+
+    // Deleting a branch whose commit is nowhere else asks again, saying so.
+    menu_item(&mut harness, &badge("other"), "Delete other…");
+    wait_for_label(&mut harness, "Delete other?");
+    harness.get_by_label("Delete").click();
+    wait_for_label(&mut harness, "Delete anyway");
+    harness.get_by_label("Delete anyway").click();
+    wait_for_label(&mut harness, "Deleted other.");
+    assert_eq!(branch_names(&sandbox, &repo), "feature\nmain\n");
+}
+
+#[test]
+fn commits_are_picked_reverted_tagged_reset_and_merged_from_the_graph() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = two_branches(&sandbox);
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    let row = |subject: &str| (Role::Button, subject.to_owned());
+    let right_click = |harness: &mut Harness<'_, EgitApp>, (role, subject): (Role, String)| {
+        harness
+            .get_by_role_and_label(role, &subject)
+            .click_secondary();
+    };
+    let subject = |name: &str| {
+        let shown = sandbox
+            .run(&repo, "log", &["-1", "--format=%s", name])
+            .unwrap();
+        String::from_utf8(shown.stdout).unwrap().trim().to_owned()
+    };
+    let abbreviated = |name: &str| {
+        let shown = sandbox
+            .run(&repo, "rev-parse", &["--short=8", name])
+            .unwrap();
+        String::from_utf8(shown.stdout).unwrap().trim().to_owned()
+    };
+
+    right_click(&mut harness, row("Other"));
+    wait_for_label(&mut harness, "Cherry-pick onto main");
+    render(&mut harness, "commit-menu");
+    harness.get_by_label("Cherry-pick onto main").click();
+    wait_for_label(&mut harness, &format!("Picked {}.", abbreviated("other")));
+    assert_eq!(subject("HEAD"), "Other");
+    // Rows move as the history is read again: a click is aimed once they are still.
+    settle(&mut harness, "the picked commit shown", history_of(4));
+
+    let two = abbreviated("HEAD~1");
+    right_click(&mut harness, row("Two"));
+    wait_for_label(&mut harness, "Revert in main");
+    harness.get_by_label("Revert in main").click();
+    wait_for_label(&mut harness, &format!("Reverted {two}."));
+    assert_eq!(subject("HEAD"), "Revert \"Two\"");
+    settle(&mut harness, "the revert shown", history_of(5));
+
+    // An annotated tag.
+    let one = abbreviated("main~3");
+    right_click(&mut harness, row("One"));
+    wait_for_label(&mut harness, "Create a tag here…");
+    harness.get_by_label("Create a tag here…").click();
+    wait_for_label(&mut harness, &format!("Tag {one}"));
+    type_into(&mut harness, Role::TextInput, "Name", "v1");
+    let message = "Message (makes it an annotated tag, with its author and date)";
+    type_into(&mut harness, Role::MultilineTextInput, message, "The first");
+    harness.get_by_label("Create tag").click();
+    wait_for_label(&mut harness, &format!("Tagged {one} as v1."));
+    wait_for_label(&mut harness, &format!("{} v1", icon::TAG));
+    let kind = sandbox.run(&repo, "cat-file", &["-t", "v1"]).unwrap();
+    assert_eq!(kind.stdout.trim_ascii(), b"tag");
+
+    // Back to the first commit, the changes discarded once confirmed.
+    std::fs::write(repo.join("f"), "uncommitted\n").unwrap();
+    right_click(&mut harness, row("One"));
+    // egui names a submenu's button with its arrow.
+    let reset = "Reset main to this commit ⏵";
+    wait_for_label(&mut harness, reset);
+    harness.get_by_label(reset).click();
+    wait_for_label(&mut harness, "Hard: discard the changes…");
+    harness.get_by_label("Hard: discard the changes…").click();
+    wait_for_label(
+        &mut harness,
+        &format!("Reset main to {one}, discarding your changes?"),
+    );
+    render(&mut harness, "hard-reset");
+    harness.get_by_label("Reset").click();
+    wait_for_label(&mut harness, &format!("Reset to {one}."));
+    assert_eq!(std::fs::read_to_string(repo.join("f")).unwrap(), "one\n");
+    // `One` and `other`'s commit are all `main`, `other`, and `v1` reach now.
+    settle(&mut harness, "the history after the reset", history_of(2));
+
+    // `other` merged in: a fast-forward from here.
+    menu_item(
+        &mut harness,
+        &format!("{} other", icon::GIT_BRANCH),
+        "Merge other into main",
+    );
+    wait_for_label(&mut harness, "Merged other.");
+    assert_eq!(subject("HEAD"), "Other");
+}
+
+#[test]
+fn changes_are_stashed_popped_and_dropped() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = two_branches(&sandbox);
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    let stash = |count: usize| match count {
+        0 => format!("{}  Stash", icon::ARCHIVE),
+        count => format!("{}  Stashes · {count}", icon::ARCHIVE),
+    };
+
+    std::fs::write(repo.join("f"), "changed\n").unwrap();
+    wait_for_label(&mut harness, &uncommitted(1));
+    harness.get_by_label(&stash(0)).click();
+    // Enabled once the work tree's status says there are changes.
+    click_when_enabled(&mut harness, "Stash the changes…");
+    wait_for_label(&mut harness, "Stash your changes");
+    type_into(
+        &mut harness,
+        Role::TextInput,
+        "Message (optional)",
+        "Half done",
+    );
+    harness.get_by_label("Stash").click();
+    wait_for_label(&mut harness, "Stashed your changes.");
+    wait_for_label(&mut harness, &stash(1));
+    assert_eq!(std::fs::read_to_string(repo.join("f")).unwrap(), "two\n");
+
+    harness.get_by_label(&stash(1)).click();
+    wait_for_label(&mut harness, "On main: Half done");
+    render(&mut harness, "stash-menu");
+    harness.get_by_label("Pop").click();
+    wait_for_label(&mut harness, "Popped stash@{0}.");
+    wait_for_label(&mut harness, &stash(0));
+    assert_eq!(
+        std::fs::read_to_string(repo.join("f")).unwrap(),
+        "changed\n"
+    );
+
+    // Stashed again, then dropped once confirmed.
+    harness.get_by_label(&stash(0)).click();
+    // Enabled once the work tree's status says there are changes.
+    click_when_enabled(&mut harness, "Stash the changes…");
+    wait_for_label(&mut harness, "Stash your changes");
+    harness.get_by_label("Stash").click();
+    wait_for_label(&mut harness, &stash(1));
+    harness.get_by_label(&stash(1)).click();
+    wait_for_label(&mut harness, "Drop…");
+    harness.get_by_label("Drop…").click();
+    wait_for_label(&mut harness, "Drop stash@{0}?");
+    harness.get_by_label("Drop").click();
+    wait_for_label(&mut harness, "Dropped stash@{0}.");
+    wait_for_label(&mut harness, &stash(0));
+    let listed = sandbox.run(&repo, "stash", &["list"]).unwrap();
+    assert_eq!(listed.stdout, b"");
 }
 
 #[test]

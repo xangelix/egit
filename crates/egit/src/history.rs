@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
-use bstr::{BString, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
     CancelToken, Commit, CountedFile, FileChange, Git, GitError, LineCounts, Object, ObjectFormat,
     ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, SignatureCheck, TreeEntry,
@@ -295,6 +295,13 @@ impl Refs {
                 .then_with(|| a.name.cmp(&b.name))
         });
         Self(references)
+    }
+
+    /// Whether there is a local branch called `name` (its short name).
+    pub(crate) fn has_branch(&self, name: &BStr) -> bool {
+        self.0
+            .iter()
+            .any(|reference| reference.kind == RefKind::Branch && reference.short_name() == name)
     }
 
     /// The refs pointing at `id`.

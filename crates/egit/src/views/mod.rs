@@ -1,6 +1,8 @@
 //! What the tabs show, and the status bar.
 
+mod actions;
 pub(crate) mod clone;
+mod dialogs;
 mod file;
 pub(crate) mod history;
 pub(crate) mod home;

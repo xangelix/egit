@@ -5,7 +5,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bstr::ByteSlice as _;
-use egit_git::{Committed, ConfigSnapshot, Git, Head, Operation, Repository, Tracking};
+use egit_git::{Committed, ConfigSnapshot, Git, Head, Operation, Repository, Stash, Tracking};
 use egui::{Color32, Grid, RichText, Ui, WidgetText};
 use egui_async::Bind;
 use egui_tiles::{TileId, Tiles, UiResponse};
@@ -51,6 +51,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         committing: &mut repo.committing,
         commits_made: repo.commits_made,
         tasks: &mut repo.tasks,
+        stashes: &mut repo.stashes,
         writing_commit_graph: &mut repo.writing_commit_graph,
         home: home_dir.as_deref(),
         actions,
@@ -74,6 +75,7 @@ struct Panels<'a> {
     committing: &'a mut Bind<Committed, Problem>,
     commits_made: u64,
     tasks: &'a mut Tasks,
+    stashes: &'a mut Bind<Arc<[Stash]>, Problem>,
     writing_commit_graph: &'a mut Bind<(), Problem>,
     home: Option<&'a Path>,
     actions: &'a mut Vec<Action>,
@@ -107,6 +109,7 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
                         operations: status.map_or(&[], |status| status.operations.as_slice()),
                         config,
                         tasks: self.tasks,
+                        stashes: self.stashes.ok_ref().map_or(&[], |stashes| &**stashes),
                         actions: self.actions,
                     },
                 );

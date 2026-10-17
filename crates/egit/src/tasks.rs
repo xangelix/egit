@@ -1,5 +1,7 @@
 //! What the user asks of a repository, as jobs: exchanges with its remotes (fetching, also in
-//! the background every few minutes; pulling; pushing), and giving up or carrying on an
+//! the background every few minutes; pulling; pushing a branch or a tag; deleting a remote's
+//! branch), switching and changing branches and tags, bringing commits in (merging, rebasing,
+//! cherry-picking, reverting) and resetting, stashing, and giving up or carrying on an
 //! operation git stopped in the middle of.
 //!
 //! One task the user asked for runs at a time, under the repository's `WriteLock`, its progress
@@ -10,11 +12,14 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use bstr::{BStr, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
-    CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, FetchOptions, Git, GitError, Operation,
-    Progress, PullMode, Pulled, PushOptions, Pushed, Repository, abort_operation,
-    continue_operation, fetch, pull, push, set_config,
+    CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError, FetchOptions, Git,
+    GitError, Integrated, ObjectId, Operation, Progress, PullMode, Pulled, PushOptions, Pushed,
+    Repository, ResetMode, Stash, StashError, SwitchError, SwitchTo, abort_operation, cherry_pick,
+    continue_operation, create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
+    fetch, merge, pull, push, push_tag, rebase, rename_branch, reset, revert, set_config,
+    stash_apply, stash_drop, stash_push, switch,
 };
 use egui_async::Bind;
 
@@ -39,6 +44,66 @@ pub(crate) enum Task {
     PullAndRemember {
         rebase: bool,
     },
+    /// Switch the work tree to a branch or a commit.
+    Switch(SwitchTo),
+    /// Stash the work tree's changes (untracked files too), then switch.
+    StashAndSwitch(SwitchTo),
+    /// Make a branch at a commit, without switching to it.
+    CreateBranch {
+        name: BString,
+        at: ObjectId,
+    },
+    RenameBranch {
+        old: BString,
+        new: BString,
+    },
+    /// Delete a local branch (`force`: even if it isn't merged).
+    DeleteBranch {
+        name: BString,
+        force: bool,
+    },
+    /// Delete a branch on a remote (its short name there).
+    DeleteRemoteBranch {
+        remote: BString,
+        branch: BString,
+    },
+    /// Merge into the current branch: `what` is a full ref name or a commit's, `shown` its
+    /// name for people.
+    Merge {
+        what: BString,
+        shown: String,
+    },
+    /// Rebase the current branch onto a ref or commit.
+    Rebase {
+        onto: BString,
+        shown: String,
+    },
+    CherryPick(ObjectId),
+    Revert(ObjectId),
+    /// Reset the current branch to a commit.
+    Reset(ObjectId, ResetMode),
+    /// Tag a commit: annotated with a message, or lightweight.
+    CreateTag {
+        name: BString,
+        at: ObjectId,
+        message: Option<String>,
+    },
+    DeleteTag(BString),
+    PushTag {
+        remote: BString,
+        tag: BString,
+    },
+    /// Stash the work tree's changes.
+    Stash {
+        message: String,
+        untracked: bool,
+    },
+    /// Apply a stash (`pop`: then drop it).
+    ApplyStash {
+        stash: Stash,
+        pop: bool,
+    },
+    DropStash(Stash),
 }
 
 impl Task {
@@ -47,9 +112,25 @@ impl Task {
         match self {
             Self::Fetch => "Fetching",
             Self::Pull(_) | Self::PullAndRemember { .. } => "Pulling",
-            Self::Push(_) => "Pushing",
+            Self::Push(_) | Self::PushTag { .. } => "Pushing",
             Self::Abort(_) => "Aborting",
             Self::Continue(_) => "Continuing",
+            Self::Switch(_) => "Switching",
+            Self::StashAndSwitch(_) | Self::Stash { .. } => "Stashing",
+            Self::CreateBranch { .. } => "Making the branch",
+            Self::RenameBranch { .. } => "Renaming",
+            Self::DeleteBranch { .. } | Self::DeleteRemoteBranch { .. } | Self::DeleteTag(_) => {
+                "Deleting"
+            }
+            Self::Merge { .. } => "Merging",
+            Self::Rebase { .. } => "Rebasing",
+            Self::CherryPick(_) => "Cherry-picking",
+            Self::Revert(_) => "Reverting",
+            Self::Reset(..) => "Resetting",
+            Self::CreateTag { .. } => "Tagging",
+            Self::ApplyStash { pop: false, .. } => "Applying the stash",
+            Self::ApplyStash { pop: true, .. } => "Popping the stash",
+            Self::DropStash(_) => "Dropping the stash",
         }
     }
 }
@@ -64,6 +145,19 @@ pub(crate) enum Outcome {
     Pushed(Pushed),
     Aborted,
     Continued,
+    /// Done, as the task says.
+    Done,
+    /// Commits brought in (or a stash applied): done, stopped at conflicts, or empty.
+    Integrated(Integrated),
+    /// Stashed, if there was anything to stash.
+    Stashed(bool),
+    /// A switch refused: these changes in the work tree are in the way.
+    WouldOverwrite {
+        paths: Vec<BString>,
+        untracked: bool,
+    },
+    /// A branch not deleted: it isn't merged.
+    NotMerged,
 }
 
 /// A repository's exchanges with its remotes.
@@ -193,13 +287,49 @@ fn run(
     progress: &Progress,
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
-    // A cancelled task isn't a failure: the user asked for it.
-    let failed = |title: &'static str| {
-        move |error: GitError| match error {
-            GitError::Cancelled { .. } => Ok(Outcome::Cancelled),
-            error => Err(Problem::git(title, &error)),
+    match task {
+        Task::Fetch
+        | Task::Pull(_)
+        | Task::PullAndRemember { .. }
+        | Task::Push(_)
+        | Task::PushTag { .. }
+        | Task::DeleteRemoteBranch { .. } => remote(git, repository, task, progress, cancel),
+        Task::Abort(_)
+        | Task::Continue(_)
+        | Task::Merge { .. }
+        | Task::Rebase { .. }
+        | Task::CherryPick(_)
+        | Task::Revert(_)
+        | Task::Reset(..) => history(git, repository, task, cancel),
+        Task::Switch(_)
+        | Task::StashAndSwitch(_)
+        | Task::CreateBranch { .. }
+        | Task::RenameBranch { .. }
+        | Task::DeleteBranch { .. }
+        | Task::CreateTag { .. }
+        | Task::DeleteTag(_) => references(git, repository, task, cancel),
+        Task::Stash { .. } | Task::ApplyStash { .. } | Task::DropStash(_) => {
+            stashing(git, repository, task, cancel)
         }
-    };
+    }
+}
+
+/// What a failure is: a cancelled task isn't one (the user asked for it).
+fn failed(title: &'static str) -> impl Fn(GitError) -> Result<Outcome, Problem> {
+    move |error| match error {
+        GitError::Cancelled { .. } => Ok(Outcome::Cancelled),
+        error => Err(Problem::git(title, &error)),
+    }
+}
+
+/// Exchanges with a remote.
+fn remote(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
     match task {
         Task::Fetch => {
             let options = FetchOptions {
@@ -235,12 +365,163 @@ fn run(
         Task::Push(options) => push(git, repository, options, progress, cancel)
             .map(Outcome::Pushed)
             .or_else(failed("Pushing failed")),
+        Task::PushTag { remote, tag } => push_tag(
+            git,
+            repository,
+            remote.as_ref(),
+            tag.as_ref(),
+            progress,
+            cancel,
+        )
+        .map(Outcome::Pushed)
+        .or_else(failed("The tag couldn't be pushed")),
+        Task::DeleteRemoteBranch { remote, branch } => {
+            let (remote, branch) = (remote.as_ref(), branch.as_ref());
+            delete_remote_branch(git, repository, remote, branch, progress, cancel)
+                .map(Outcome::Pushed)
+                .or_else(failed("The branch couldn't be deleted on the remote"))
+        }
+        // `run` sends the others elsewhere.
+        _ => Ok(Outcome::Done),
+    }
+}
+
+/// Changes to the current branch's history, and an operation's end.
+fn history(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
+    match task {
         Task::Abort(operation) => abort_operation(git, repository, *operation, cancel)
             .map(|()| Outcome::Aborted)
             .or_else(failed("It couldn't be aborted")),
         Task::Continue(operation) => continue_operation(git, repository, *operation, cancel)
             .map(|()| Outcome::Continued)
             .or_else(failed("It couldn't carry on")),
+        Task::Merge { what, .. } => merge(git, repository, what.as_ref(), cancel)
+            .map(Outcome::Integrated)
+            .or_else(failed("Merging failed")),
+        Task::Rebase { onto, .. } => rebase(git, repository, onto.as_ref(), cancel)
+            .map(Outcome::Integrated)
+            .or_else(failed("Rebasing failed")),
+        Task::CherryPick(commit) => cherry_pick(git, repository, *commit, cancel)
+            .map(Outcome::Integrated)
+            .or_else(failed("Cherry-picking failed")),
+        Task::Revert(commit) => revert(git, repository, *commit, cancel)
+            .map(Outcome::Integrated)
+            .or_else(failed("Reverting failed")),
+        Task::Reset(commit, mode) => reset(git, repository, *commit, *mode, cancel)
+            .map(|()| Outcome::Done)
+            .or_else(failed("Resetting failed")),
+        // `run` sends the others elsewhere.
+        _ => Ok(Outcome::Done),
+    }
+}
+
+/// Switching, and changes to branches and tags.
+fn references(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
+    let switched = |to: &SwitchTo| match switch(git, repository, to, cancel) {
+        Ok(()) => Ok(Outcome::Done),
+        Err(SwitchError::WouldOverwrite { paths, untracked }) => {
+            Ok(Outcome::WouldOverwrite { paths, untracked })
+        }
+        Err(SwitchError::Git(error)) => failed("Switching failed")(error),
+    };
+    match task {
+        Task::Switch(to) => switched(to),
+        Task::StashAndSwitch(to) => {
+            let stashed = stash_push(git, repository, "Before switching", true, cancel)
+                .map(Outcome::Stashed)
+                .or_else(failed("Your changes couldn't be stashed"))?;
+            if stashed == Outcome::Cancelled {
+                return Ok(stashed);
+            }
+            switched(to).map_err(|problem| {
+                Problem::new(
+                    problem.title.clone(),
+                    format!(
+                        "{} Your changes are in the stash list (the latest stash): apply it \
+                         once you are ready.",
+                        problem.detail
+                    ),
+                )
+            })
+        }
+        Task::CreateBranch { name, at } => {
+            create_branch(git, repository, name.as_ref(), *at, cancel)
+                .map(|()| Outcome::Done)
+                .or_else(failed("The branch couldn't be made"))
+        }
+        Task::RenameBranch { old, new } => {
+            rename_branch(git, repository, old.as_ref(), new.as_ref(), cancel)
+                .map(|()| Outcome::Done)
+                .or_else(failed("The branch couldn't be renamed"))
+        }
+        Task::DeleteBranch { name, force } => {
+            match delete_branch(git, repository, name.as_ref(), *force, cancel) {
+                Ok(()) => Ok(Outcome::Done),
+                Err(DeleteBranchError::NotMerged) => Ok(Outcome::NotMerged),
+                Err(DeleteBranchError::Git(error)) => {
+                    failed("The branch couldn't be deleted")(error)
+                }
+            }
+        }
+        Task::CreateTag { name, at, message } => create_tag(
+            git,
+            repository,
+            name.as_ref(),
+            *at,
+            message.as_deref(),
+            cancel,
+        )
+        .map(|()| Outcome::Done)
+        .or_else(failed("The tag couldn't be made")),
+        Task::DeleteTag(name) => delete_tag(git, repository, name.as_ref(), cancel)
+            .map(|()| Outcome::Done)
+            .or_else(failed("The tag couldn't be deleted")),
+        // `run` sends the others elsewhere.
+        _ => Ok(Outcome::Done),
+    }
+}
+
+/// Stashing, and a stash applied or dropped.
+fn stashing(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
+    let stale = |title: &'static str| {
+        move |error| match error {
+            StashError::Stale => Err(Problem::new(
+                title,
+                "The stash list changed since it was read (another stash was made or \
+                 dropped). Look at it again.",
+            )),
+            StashError::Git(error) => failed(title)(error),
+        }
+    };
+    match task {
+        Task::Stash { message, untracked } => {
+            stash_push(git, repository, message, *untracked, cancel)
+                .map(Outcome::Stashed)
+                .or_else(failed("Your changes couldn't be stashed"))
+        }
+        Task::ApplyStash { stash, pop } => stash_apply(git, repository, stash, *pop, cancel)
+            .map(Outcome::Integrated)
+            .or_else(stale("The stash couldn't be applied")),
+        Task::DropStash(stash) => stash_drop(git, repository, stash, cancel)
+            .map(|()| Outcome::Done)
+            .or_else(stale("The stash couldn't be dropped")),
+        // `run` sends the others elsewhere.
+        _ => Ok(Outcome::Done),
     }
 }
 

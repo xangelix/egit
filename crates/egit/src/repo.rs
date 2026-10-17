@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use egit_git::{
     CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, NewCommit, ObjectId, Operation,
-    Repository, create_commit, write_commit_graph,
+    Repository, Stash, create_commit, stashes, write_commit_graph,
 };
 use egui_async::Bind;
 
@@ -48,6 +48,8 @@ pub(crate) struct RepoTab {
     pub(crate) title: String,
     pub(crate) status: Bind<Status, Problem>,
     pub(crate) config: Bind<Arc<ConfigSnapshot>, Problem>,
+    /// The stashes, the latest first.
+    pub(crate) stashes: Bind<Arc<[Stash]>, Problem>,
     pub(crate) config_table: SnapshotTable,
     pub(crate) history: HistoryState,
     pub(crate) history_view: HistoryView,
@@ -95,6 +97,7 @@ impl RepoTab {
             title,
             status: Bind::new(true),
             config: Bind::new(true),
+            stashes: Bind::new(true),
             config_table: SnapshotTable::new(format!("repo-config-{id}")),
             writing_commit_graph: Bind::new(true),
             staging: Bind::new(true),
@@ -117,6 +120,7 @@ impl RepoTab {
         };
         tab.refresh_status(git);
         tab.refresh_config(git);
+        tab.refresh_stashes(git);
         tab
     }
 
@@ -192,6 +196,8 @@ impl RepoTab {
                 }
                 if changes.intersects(Changes::REFS) {
                     self.history.reload(git, &self.repository, &self.waker);
+                    // `refs/stash` is a ref.
+                    self.refresh_stashes(git);
                 }
                 if changes.intersects(Changes::CONFIG) {
                     self.refresh_config(git);
@@ -218,6 +224,7 @@ impl RepoTab {
             // Refs and operations follow through the watcher too; the work tree may have
             // changed under a pull, an abort, or a continue.
             self.refresh_status(git);
+            self.refresh_stashes(git);
             self.work_tree.refresh_now();
         }
         [wait, tree_wait, Some(fetch_wait)]
@@ -251,6 +258,7 @@ impl RepoTab {
     pub(crate) fn refresh(&mut self, git: &Git) {
         self.refresh_status(git);
         self.refresh_config(git);
+        self.refresh_stashes(git);
         self.work_tree.refresh_now();
         self.history.reload(git, &self.repository, &self.waker);
     }
@@ -270,6 +278,16 @@ impl RepoTab {
     }
 
     /// Reads where `HEAD` points and what is in progress.
+    /// Reads the stash list again (what is shown stays until it lands).
+    pub(crate) fn refresh_stashes(&mut self, git: &Git) {
+        let (git, repository) = (git.clone(), Arc::clone(&self.repository));
+        self.stashes.request(jobs::blocking(move || {
+            stashes(&git, &repository, &CancelToken::new())
+                .map(Into::into)
+                .map_err(|error| Problem::git("The stashes couldn't be read", &error))
+        }));
+    }
+
     pub(crate) fn refresh_status(&mut self, git: &Git) {
         let (git, repository) = (git.clone(), Arc::clone(&self.repository));
         self.status.request(jobs::blocking(move || {

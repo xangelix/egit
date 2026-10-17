@@ -301,7 +301,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     focuses or adds a tab; Home can't be closed; closing a repository's tab pushes `Closed`.
   - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head + operations) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
-    lands), its `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph),
+    lands) and its stash list (read at once, when refs change, and after each task), its
+    `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph),
     its own tiles (`RepoPanel::{History, Overview, Configuration}`), and its `Watcher`
     (`follow_changes`: refs or operation state changed → status read again, refs → history
     read again; config → config; the index, refs, state, or a file → the `WorkTree`'s
@@ -312,6 +313,7 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     the refs and whether a commit-graph exists, then each completed `egit-graph` chunk with
     its commits' names packed (20 bytes each), then the end. `id(row)`, `row_of(id, near)` (a
     scan from `near`; no id→row index is kept), `Refs::at(id)` (sorted, binary search).
+    `Refs::has_branch` (a local branch by name, for switching to a remote's).
     `Objects`: one shared `cat-file` per repository, restarted after a failure.
     `Summaries`: subject, author, preformatted date, read as rows come into view (at most 512
     a read, one read at a time), about 4,096 kept, least recently drawn forgotten first; each
@@ -411,11 +413,17 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     map conflicts and lines. `Shown` draws it with its selected conflict's headers stronger.
   - `tasks.rs` — `Tasks`, what the user asks of a repository: one `Task` the user
     asked for at a time (fetch `--all --prune`, pull as configured or by merge or rebase,
-    push, abort or continue an operation, or remember `pull.rebase` then pull;
-    `Action::Task`), under the `WriteLock`, its `Progress` shown and `CancelToken` stopped
-    by `Action::CancelTask` (`Outcome::Cancelled`, not a failure); and a background fetch every 5 minutes (the first 10 s after
-    opening; only with a remote): non-interactive, without the lock, stopped when the user
-    starts a task, its failure kept apart (`background_problem`). `remote_names`,
+    push a branch or a tag, delete a remote's branch, abort or continue an operation,
+    remember `pull.rebase` then pull; switch, stash then switch, create, rename, or delete a
+    branch, tag or delete a tag; merge, rebase onto, cherry-pick, revert, reset; stash, apply
+    or pop or drop a stash; `Action::Task`), run by `run` through four groups (remotes,
+    history, references, stashes), under the `WriteLock`, its `Progress` shown and
+    `CancelToken` stopped by `Action::CancelTask` (`Outcome::Cancelled`, not a failure).
+    Besides git's results, an `Outcome` can be `Done`, `Integrated` (done, conflicts, empty),
+    `Stashed` (whether anything was), `WouldOverwrite` (a switch refused, with the paths), or
+    `NotMerged` (a delete refused). And a background fetch every 5 minutes (the first 10 s
+    after opening; only with a remote): non-interactive, without the lock, stopped when the
+    user starts a task, its failure kept apart (`background_problem`). `remote_names`,
     `has_remotes` (a scan, nothing allocated), and `upstream_of` read the configuration.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
@@ -433,7 +441,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
     screen, then a screen below and above). Graph cells paint lines (cubic curves between
     lanes) and nodes (hollow for merges, ringed for `HEAD`); rows are buttons named by their
-    subject; ref badges; a signed commit's seal by its verdict (good, doubtful, bad, or
+    subject; ref badges (each its menu, a branch's double-click switching to it; in the details
+    too); a signed commit's seal by its verdict (good, doubtful, bad, or
     unchecked, its meaning on hover); a focusable area takes ↑ ↓ PgUp PgDn Home End. The message column
     is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
     selection and the top row's commit in place when a re-read takes over. Details: message,
@@ -473,10 +482,30 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     the remote's notes, or a problem box), a refused push explained by its reason (behind:
     "Force push…" or Pull; a lease that failed: nothing forced, fetch first), and the banner
     of an operation in progress (Show the conflicts, Continue, Abort…; a bisect's Stop).
-    Modal dialogs: diverged branches (Rebase or Merge, optionally remembered as
-    `pull.rebase`), a force push's confirmation (`--force-with-lease --force-if-includes`),
-    a branch's first push (remote and name; `--set-upstream`), and an abort's. Its parts draw
-    in `Ui`s with ids of their own (`own_ids`): what the row drew before them comes and goes.
+    Each task's end in words (`ended`, `done_text`: "Switched to topic.", "Picked 1234abcd.",
+    "… changes nothing here: skipped."); a refused switch and an unmerged delete lead to
+    their dialogs instead. Its parts draw in `Ui`s with ids of their own (`own_ids`): what the
+    row drew before them comes and goes.
+    `views/dialogs.rs` — the `Dialog` asked (`TasksView::dialog`), one at a time in a modal,
+    what is typed kept in its variant, ending by starting a task or closing: diverged
+    branches (Rebase or Merge, optionally remembered as `pull.rebase`), a force push's
+    confirmation (`--force-with-lease --force-if-includes`), a branch's first push (remote and
+    name; `--set-upstream`), an abort; a new branch's name (and "Switch to it"), a branch's new
+    name, a tag's name and message (annotated with one), each checked by `check_ref_name` as
+    it is typed (Enter confirms); and what is lost before deleting a branch (again, saying
+    so, when it isn't merged), a remote's branch, a tag, or a stash, before a hard reset, and
+    before stashing the changes in a switch's way. The stash dialog: a message, and
+    untracked files too.
+    `views/actions.rs` — what the commit table offers (`Menus`, from `Shared::menus`: the
+    branch, `HEAD`, the remotes, the refs, whether a task runs or an operation is in progress,
+    which disable what would change the branch, saying why): a commit's context menu (switch
+    there detached, create a branch or tag there, merge it in, rebase onto it, cherry-pick,
+    revert, reset soft or mixed, hard after a dialog), a ref badge's (switch to a branch, a
+    remote's through its local one tracking it, unless one of that name exists; merge it in,
+    rebase onto it; rename or delete a branch, delete a remote's on its remote; push or delete
+    a tag), a branch badge double-clicked (switch), and the stash menu beside the commit count
+    ("Stash the changes…", and each stash with Apply, Pop, Drop…). Each asks a task or a
+    dialog (`Ask`), carried out by the history view (`carry_out`).
     `views/clone.rs` — Home's clone card (`CloneView`): the address, the folder it goes into
     (typed, `~` the home folder and a relative path inside it, or picked: `PickCloneFolder`;
     `Settings::clone_folder`, the last clone's, at first), the folder's name (`name_from_url`,
@@ -517,7 +546,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     nothing moving while idle, and every control named in words or numbers (link a field to
     its visible label with `labelled_by`). `wait_for_label` lets what it found lay out two
     more frames (a window's first frame only sizes it: clicks there are lost); a wait that
-    times out saves `timed-out.png`. Not yet audited, as eshine does: hover response,
+    times out saves `timed-out-<test>.png`; `menu_item` right-clicks and picks, and
+    `double_click` puts both clicks in one frame (the harness's frames are a quarter second
+    apart). After an action, wait for the history's rows to settle before aiming a click at
+    one: a re-read moves them. Not yet audited, as eshine does: hover response,
     cursors, focus rings, and 24-point targets. `src/tests/scale.rs` and `src/tests/corpus.rs`
     are the opt-in measurements (see Scale and Text corpus above).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
