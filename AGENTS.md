@@ -26,6 +26,7 @@ it.
 | 12 | gitoxide as a read accelerator | done; awaiting the owner's review |
 | 13 | Searching the history | done; awaiting the owner's review |
 | 14 | The menus' remaining actions | done; awaiting the owner's review |
+| 15 | Patches | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -244,7 +245,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     reaches it, `insteadOf` applied: `ls-remote --get-url`), `fetch_refspecs` (just those
     refspecs, no tags: a pull request's `refs/pull/<n>/head`, a lone branch), and
     `abort_operation` /
-    `continue_operation` for a merge, rebase, am, cherry-pick, revert (bisect: `reset`).
+    `continue_operation` for a merge, rebase, am, cherry-pick, revert (bisect: `reset`);
+    `skip_operation` (`--skip` of a rebase, am, cherry-pick, revert: `Integrated` as it then
+    ended, done or stopped again).
     `push_tag` and `delete_remote_branch` push one refspec the same way (`Push::run`).
     `tests/remote.rs` runs each against a bare repository through `file://` (and a clone
     cancelled while its remote, git's `ext::` transport running `sleep`, hasn't answered:
@@ -287,12 +290,28 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     branch at a ref or commit, `--track` for a remote's, or a commit `--detach`) into a folder.
   - `format_patch.rs` — `format_patch` (`format-patch -1 --stdout --default-prefix`: `a/` and
     `b/` whatever `diff.noprefix` says), `patch_file_name` (as git names one: `0001-` and the
-    subject's letters, 64 bytes at most).
+    subject's letters, 64 bytes at most); `format_patches` (the commits from one, in `HEAD`'s
+    history, up to `HEAD` into a folder, `--root` from the first; at most `MAX_PLANNED`);
+    `changes_patch` (`Changes::Staged`, `git diff --cached`, or `All`, `git diff HEAD`:
+    `--binary`, prefixes, no external diff or textconv, from the top).
+  - `applying.rs` — patches to apply. `patch_kind`: a `Mailbox` (an mbox's `From ` line, or
+    mail headers with a `Subject:`) or a `Diff`, or not a patch. `summarize_patch`, read
+    without applying: a mailbox's commits (`mailsplit` into a temporary folder, `mailinfo`
+    each: subject, author, date; the first `MAX_SUMMARIZED`), the files (`apply --numstat -z`,
+    summed per file; `--summary` for added and deleted; renames), and `Applies` from `apply
+    --check`, then `--check --3way` (merging, with or without conflicts; not, git's reason;
+    a series unchecked, its commits building on each other). `apply_patch` as `ApplyAs`:
+    commits (`am --3way`, `--signoff`) or changes (`apply`, `--3way` when staged), ending
+    `Integrated::Done`, `Conflicts`, or `Stopped` (an `am` left at a patch that doesn't apply,
+    nothing to resolve). `Repository::mailbox_progress` (`rebase-apply/next`, `last`, and
+    `info`'s subject), `current_patch` (`am --show-current-patch=diff`), `looks_like_patch`
+    (`.patch`, `.diff`, `.mbox`, `.eml`).
   - `integrate.rs` — commits brought into the current branch: `merge` (`--no-edit`),
     `rebase`, `cherry_pick`, `revert` (`--no-edit`; a merge's against its first parent, by
     `rev-list --parents`), each `Integrated::Done`, `Conflicts` (failed with the operation in
-    progress and `ls-files -u` not empty), or `Empty` (a pick that is "now empty", skipped);
-    `reset` (`ResetMode`: soft, mixed, hard).
+    progress and `ls-files -u` not empty), `Empty` (a pick that is "now empty", skipped), or
+    `Stopped` (an operation left with nothing to resolve); `reset` (`ResetMode`: soft, mixed,
+    hard).
   - `stash.rs` — `stashes` (`stash list -z`, `%gd %H %ct %gs`: index, commit, time, git's
     message), `stash_push` (a message, untracked files with `--include-untracked`; whether
     anything was stashed, from `refs/stash` before and after, as `--quiet` says nothing),
@@ -340,7 +359,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     starting with `-` names nothing). `tests/search.rs` runs each against a sandbox;
     `tests/branches.rs` fast-forwards (moved, there already, refused when diverged or checked
     out), upstreams, worktrees (each way, a branch in use refused), and a patch `git am`
-    applies elsewhere (the first commit's too).
+    applies elsewhere (the first commit's too); `tests/patches.rs` series saved, changes as a
+    patch (binary too), summaries and checks (cleanly, merging with conflicts, not without the
+    blobs), a series applied (signed off, its author kept; stopped at a conflict with its
+    progress and patch, skipped, aborted; stopped where a patch doesn't apply at all), a diff
+    applied as changes (staged or not, conflicting), and a stopped cherry-pick skipped.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-forge` — forges' web APIs: GitHub's (github.com, Enterprise Server) and GitLab's
   (gitlab.com, self-managed); no egui. egit's only network connections of its own (git makes
@@ -462,7 +485,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `WriteLock` (taken inside jobs, never on the interface thread).
   - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Repo(id)}`; `show`
     focuses or adds a tab; Home can't be closed; closing a repository's tab pushes `Closed`.
-  - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head + operations) and the
+  - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head, operations, and a stopped
+    `git am`'s progress) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
     lands) and its stash list (read at once, when refs change, and after each task), its
     `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph),
@@ -625,7 +649,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `FastForwardBranch` another from a remote or a ref here: `Outcome::Forwarded`),
     `SetUpstream`, `DeleteBranchEverywhere` (here, then on the remote; refused here as not
     merged: `NotMerged`, nothing deleted), `AddWorktree`, `SavePatch` (`format_patch`, the
-    file written in the job). A forge's tasks run with the tab's accounts:
+    file written in the job). Patches: `ApplyPatch` (its bytes shared, `Patch`), `Skip`,
+    `CopyPatch` and `CopyChanges` (`Outcome::Copied`, its text, copied as the outcome is first
+    shown; refused when empty or not UTF-8), `SavePatches` (`Outcome::SavedPatches`),
+    `SaveChanges`. A forge's tasks run with the tab's accounts:
     `CheckOutPullRequest` (`fetch_refspecs` of its refspec, then a switch; changes in the way
     lead to stash-and-switch, as a switch's do) and `CreatePullRequest` (`Outcome::Opened`).
   - `forge.rs` — `RepoForge`, a tab's forge side: `configured` (whenever new configuration
@@ -646,10 +673,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `fork_head` (`refs/pull/12/head` into `pr/12`, `refs/merge-requests/12/head` into
     `mr/12`).
   - `desktop.rs` — `Opener`, and `is_web_page` (HTTPS, or HTTP to the loopback address;
-    nothing that could pass for an option): `xdg-open`, else `gio open`, in a job. `Saver`:
-    where a file goes, asked in the desktop's save dialog (`rfd`, one at a time), or for
-    tests a folder (`into_folder`); `Action::SavePatch` asks, and `AppState::poll` turns the
-    answer into the task.
+    nothing that could pass for an option): `xdg-open`, else `gio open`, in a job.
+    `FileDialogs`: the desktop's file dialogs (`rfd`, one at a time) for a `FileQuestion`:
+    where a patch or the changes go (a file), where a series goes (a folder), which patches to
+    apply (files, patches first); for tests a folder answering them all (`in_folder`).
+    `Action::AskFiles` asks, and `AppState::poll` turns the answer into a task, or shows the
+    patches (`Action::OpenPatches`).
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the XDG font directories (CJK families, then
@@ -706,7 +735,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     runs, its progress and Cancel. Under it the last task's outcome until dismissed (a line,
     the remote's notes, or a problem box), a refused push explained by its reason (behind:
     "Force push…" or Pull; a lease that failed: nothing forced, fetch first), and the banner
-    of an operation in progress (Show the conflicts, Continue, Abort…; a bisect's Stop).
+    of an operation in progress (a stopped `git am`'s "Applying patches stopped at 2 of 5:
+    subject" and Show the patch; Show the conflicts, Continue, Skip, Abort…; a bisect's Stop;
+    the headline and what to do on lines of their own, the buttons in a row below).
     Each task's end in words (`ended`, `done_text`: "Switched to topic.", "Picked 1234abcd.",
     "… changes nothing here: skipped."); a refused switch and an unmerged delete lead to
     their dialogs instead. Its parts draw in `Ui`s with ids of their own (`own_ids`): what the
@@ -762,6 +793,17 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     find, from the selection on, is selected as it comes; each step selects one, centred.
     Found rows take `Palette::found` behind them. A history read again is searched again
     (`follow`), the selection kept.
+    `views/patch.rs` — `PatchView`, patches looked at before they are applied, a `Tool` in the
+    commit table's place: from files (the Patches menu's dialog, or dropped on the window:
+    `looks_like_patch`, a hint while dragging), pasted (read once typing pauses), or the
+    patch a stopped `git am` is at (to look at only). What they hold ("3 commits by mail,
+    changing 2 files"), whether they apply here, in words and a colour, a mailbox's commits
+    and the files with their lines, how (as commits, signed off or not; as changes, staged
+    or not), "Apply to <branch>" (disabled, saying why, while a task or an operation runs, or
+    when git can't apply it), and the patch itself below, highlighted (`Plain`, a `.patch`).
+    The Patches menu (`actions::patches_menu`, beside the stash menu): apply from files,
+    paste, and the staged or every change copied or saved as a patch; a commit's row menu:
+    Save as a patch, Copy as a patch, Save this and later commits as patches.
     `views/blame.rs` — `BlameView`, and `views/file_history.rs` — `FileHistoryView`: a
     `FileView`'s "Blame" and "File history" (`FileWanted`; a deleted file is blamed as its
     parent had it) open them in the commit table's place, each a `Tool` of the history view
@@ -850,7 +892,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     cursors, focus rings, and 24-point targets. `src/tests/menus.rs` drives the menus' newer
     actions: pulling, pushing, fast-forwarding branches, upstreams set and forgotten, a name
     copied, a branch deleted here and on its remote, a patch saved, a worktree opened in a
-    tab, the graph narrowed and pinned. `src/tests/search.rs` drives the search bar
+    tab, the graph narrowed and pinned. `src/tests/patches.rs` drives patches: a series looked
+    at and applied signed off, a conflicting one stopped (its progress, its patch, Skip,
+    Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
+    series saved. `src/tests/search.rs` drives the search bar
     (by message, author, path, and name; both themes) and holds egit's own reading of messages
     and authors to what `find_commits` finds on 300 assorted commits. `src/tests/scale.rs`
     and `src/tests/corpus.rs` are the opt-in measurements (see Scale and Text corpus above).
