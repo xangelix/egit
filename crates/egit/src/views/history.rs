@@ -36,7 +36,7 @@ use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
 use crate::fonts;
-use crate::forge::{Badge, RepoForge};
+use crate::forge::{Badge, RepoForge, request_noun, request_number};
 use crate::format::{count, date_time};
 use crate::history::{
     ChangeCounts, CommitDetails, History, HistoryState, Objects, Refs, Signatures, Summaries,
@@ -122,7 +122,7 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) tasks: &'a mut Tasks,
     /// The stashes, once read, the latest first.
     pub(crate) stashes: &'a [Stash],
-    /// Its remotes on GitHub, and their pull requests.
+    /// Its remotes on GitHub and GitLab, and their requests.
     pub(crate) forge: &'a RepoForge,
     pub(crate) actions: &'a mut Vec<Action>,
 }
@@ -733,7 +733,7 @@ pub(super) struct Shared<'a> {
     pub(super) config: Option<&'a ConfigSnapshot>,
     /// Whether a task is running.
     pub(super) busy: bool,
-    /// Its remotes on GitHub, and their pull requests.
+    /// Its remotes on GitHub and GitLab, and their requests.
     pub(super) forge: &'a RepoForge,
 }
 
@@ -864,27 +864,30 @@ fn top_bar(
     }
 }
 
-/// The pull requests' button, when a remote is on GitHub: how many are open, and whether
-/// any checks failed.
+/// The pull (or merge) requests' button, when a remote is on GitHub or GitLab: how many are
+/// open.
 fn pull_requests_button(ui: &mut Ui, shared: &Shared<'_>, view: &mut HistoryView) {
     if shared.forge.repositories.is_empty() {
         return;
     }
     let open = shared.forge.found().pulls.len();
+    let nouns = shared.forge.nouns();
     let text = match open {
-        0 => "Pull requests".to_owned(),
-        1 => "1 pull request".to_owned(),
-        open => format!(
-            "{} pull requests",
-            count(u64::try_from(open).unwrap_or(u64::MAX))
-        ),
+        0 => {
+            let mut letters = nouns.chars();
+            letters.next().map_or_else(String::new, |first| {
+                first.to_uppercase().chain(letters).collect()
+            })
+        }
+        1 => format!("1 {}", nouns.trim_end_matches('s')),
+        open => format!("{} {nouns}", count(u64::try_from(open).unwrap_or(u64::MAX))),
     };
     let showing = matches!(view.tool, Some(Tool::PullRequests(_)));
     ui.add_space(8.0);
     let label = RichText::new(format!("{}  {text}", icon::GIT_PULL_REQUEST));
     if ui
         .add(egui::Button::selectable(showing, label))
-        .on_hover_text("The open pull requests on GitHub")
+        .on_hover_text(format!("The open {nouns}"))
         .clicked()
     {
         if showing {
@@ -1532,7 +1535,12 @@ fn pull_badges(
     let palette = shared.palette;
     for (_, badge) in pulls.iter().take(MAX_BADGES) {
         let (_, color, meaning) = pulls::check_look(badge.checks, palette);
-        let label = format!("{} #{}", icon::GIT_PULL_REQUEST, badge.number);
+        let kind = shared.forge.kind_of(badge.repository);
+        let label = format!(
+            "{} {}",
+            icon::GIT_PULL_REQUEST,
+            request_number(kind, badge.number)
+        );
         let response = Frame::new()
             .fill(color.gamma_multiply(0.16))
             .stroke(Stroke::new(1.0, color.gamma_multiply(0.7)))
@@ -1557,12 +1565,15 @@ fn pull_badges(
             *asked = Some(Ask::PullRequest(Some(selected)));
         }
         response.context_menu(|ui| {
-            if ui.button("Show the pull request").clicked() {
+            if ui
+                .button(format!("Show the {}", request_noun(kind)))
+                .clicked()
+            {
                 *asked = Some(Ask::PullRequest(Some(selected)));
                 ui.close();
             }
             if let Some(repository) = shared.forge.repositories.get(badge.repository)
-                && ui.button("Open on GitHub").clicked()
+                && ui.button(format!("Open on {}", kind.name())).clicked()
             {
                 *asked = Some(Ask::Open(repository.pull_request_url(badge.number)));
                 ui.close();

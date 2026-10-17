@@ -16,6 +16,7 @@ use super::dialogs::{self, Dialog};
 use super::history::ID_DIGITS;
 
 use crate::app::Action;
+use crate::forge::{request_noun, request_number};
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::tasks::{Outcome, Task, Tasks, has_remotes, remote_names, upstream_of};
@@ -332,7 +333,14 @@ fn ended(task: Option<&Task>, outcome: &Outcome) -> String {
         (_, Outcome::Continued) => "Carried on.".to_owned(),
         (_, Outcome::Stashed(true)) => "Stashed your changes.".to_owned(),
         (_, Outcome::Stashed(false)) => "There were no changes to stash.".to_owned(),
-        (_, Outcome::Opened(opened)) => format!("Opened pull request #{}.", opened.number),
+        (Task::CreatePullRequest(open), Outcome::Opened(opened)) => {
+            let kind = open.repository.host().kind();
+            format!(
+                "Opened {} {}.",
+                request_noun(kind),
+                request_number(kind, opened.number)
+            )
+        }
         (Task::ApplyStash { stash, .. }, Outcome::Integrated(Integrated::Conflicts)) => format!(
             "Applying stash@{{{}}} conflicts: resolve the files marked Conflict, then stage \
              them (a popped stash is kept).",
@@ -401,12 +409,17 @@ fn done_text(task: &Task) -> String {
             stash.index
         ),
         Task::DropStash(stash) => format!("Dropped stash@{{{}}}.", stash.index),
-        Task::CheckOutPullRequest { number, to, .. } => match to {
-            SwitchTo::Branch(name) | SwitchTo::Track { local: name, .. } => {
-                format!("Checked out pull request #{number} as {}.", short(name))
+        Task::CheckOutPullRequest {
+            kind, number, to, ..
+        } => {
+            let named = format!("{} {}", request_noun(*kind), request_number(*kind, *number));
+            match to {
+                SwitchTo::Branch(name) | SwitchTo::Track { local: name, .. } => {
+                    format!("Checked out {named} as {}.", short(name))
+                }
+                _ => format!("Checked out {named}."),
             }
-            _ => format!("Checked out pull request #{number}."),
-        },
+        }
         Task::InteractiveRebase { .. } => "Rebased: the branch is rewritten.".to_owned(),
         Task::DropCommit(commit) => format!("Dropped {}.", commit.abbreviated(ID_DIGITS)),
         Task::SquashIntoParent(commit) => format!(

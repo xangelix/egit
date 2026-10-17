@@ -1,0 +1,89 @@
+//! The forges' APIs, each call sent to its repository's forge: GitHub's pull requests or
+//! GitLab's merge requests, alike to the caller.
+
+use egit_git::CancelToken;
+
+use crate::account::Account;
+use crate::error::ForgeError;
+use crate::host::ForgeKind;
+use crate::model::{NewPullRequest, Opened, PullRequestDetails, PullRequestPage, RepositoryInfo};
+use crate::repository::ForgeRepository;
+use crate::{github, gitlab};
+
+/// Reads `repository`'s open pull (or merge) requests, the most recently updated first, a page
+/// at a time (each handed to `found` as it lands), up to `limit` of them.
+///
+/// # Errors
+///
+/// Any of [`ForgeError`]'s, from the page that failed (the pages before it were handed over).
+pub fn pull_requests(
+    account: &Account,
+    repository: &ForgeRepository,
+    limit: u32,
+    cancel: &CancelToken,
+    found: impl FnMut(PullRequestPage),
+) -> Result<(), ForgeError> {
+    match repository.host().kind() {
+        ForgeKind::GitHub => github::pull_requests(account, repository, limit, cancel, found),
+        ForgeKind::GitLab => gitlab::merge_requests(account, repository, limit, cancel, found),
+    }
+}
+
+/// Reads pull (or merge) request `number`'s details.
+///
+/// # Errors
+///
+/// Any of [`ForgeError`]'s.
+pub fn pull_request_details(
+    account: &Account,
+    repository: &ForgeRepository,
+    number: u32,
+    cancel: &CancelToken,
+) -> Result<PullRequestDetails, ForgeError> {
+    match repository.host().kind() {
+        ForgeKind::GitHub => github::pull_request_details(account, repository, number, cancel),
+        ForgeKind::GitLab => gitlab::merge_request_details(account, repository, number, cancel),
+    }
+}
+
+/// Reads `repository`'s default branch and the repository it was forked from.
+///
+/// # Errors
+///
+/// Any of [`ForgeError`]'s.
+pub fn repository_info(
+    account: &Account,
+    repository: &ForgeRepository,
+    cancel: &CancelToken,
+) -> Result<RepositoryInfo, ForgeError> {
+    match repository.host().kind() {
+        ForgeKind::GitHub => github::repository_info(account, repository, cancel),
+        ForgeKind::GitLab => gitlab::project_info(account, repository, cancel),
+    }
+}
+
+/// Opens a pull (or merge) request into `repository`.
+///
+/// # Errors
+///
+/// Any of [`ForgeError`]'s; [`ForgeError::Status`] with the forge's reason when it refuses
+/// (one is already open for the branch, nothing to merge, …).
+pub fn create_pull_request(
+    account: &Account,
+    repository: &ForgeRepository,
+    new: &NewPullRequest,
+    cancel: &CancelToken,
+) -> Result<Opened, ForgeError> {
+    match repository.host().kind() {
+        ForgeKind::GitHub => github::create_pull_request(account, repository, new, cancel),
+        ForgeKind::GitLab => gitlab::create_merge_request(account, repository, new, cancel),
+    }
+}
+
+/// Who the account's credential is, as its host says (which checks the host accepts it).
+pub(crate) fn viewer(account: &Account, cancel: &CancelToken) -> Result<String, ForgeError> {
+    match account.host().kind() {
+        ForgeKind::GitHub => github::viewer(account, cancel),
+        ForgeKind::GitLab => gitlab::current_user(account, cancel),
+    }
+}

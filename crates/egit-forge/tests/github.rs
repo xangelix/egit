@@ -14,10 +14,11 @@
 
 use std::sync::Arc;
 
-use egit_forge::testing::{FakeGitHub, FakePull, FakeRepository};
+use egit_forge::testing::{FakeForge, FakePull, FakeRepository};
 use egit_forge::{
-    Account, CheckState, ForgeError, ForgeHost, ForgeRepository, NewPullRequest, ReviewDecision,
-    ReviewState, create_pull_request, pull_request_details, pull_requests, repository_info,
+    Account, CheckState, ForgeError, ForgeHost, ForgeKind, ForgeRepository, NewPullRequest,
+    ReviewDecision, ReviewState, create_pull_request, pull_request_details, pull_requests,
+    repository_info,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -26,11 +27,11 @@ const TOKEN: &str = "t0ken";
 
 /// A fake serving `pulls` open pull requests on `octo/tool`, and a sandbox whose credential
 /// helper keeps `token` for it.
-fn setup(pulls: u32, token: &str) -> (FakeGitHub, Sandbox, Account, ForgeRepository) {
-    let fake = FakeGitHub::start(TOKEN, "ada").unwrap();
+fn setup(pulls: u32, token: &str) -> (FakeForge, Sandbox, Account, ForgeRepository) {
+    let fake = FakeForge::start(ForgeKind::GitHub, TOKEN, "ada").unwrap();
     fake.state().repositories.push(FakeRepository {
-        owner: "octo".to_owned(),
-        name: "tool".to_owned(),
+        path: "octo/tool".to_owned(),
+        id: 1,
         default_branch: "main".to_owned(),
         parent: Some("upstream/tool".to_owned()),
         pulls: (0..pulls)
@@ -62,9 +63,9 @@ fn setup(pulls: u32, token: &str) -> (FakeGitHub, Sandbox, Account, ForgeReposit
             ],
         )
         .unwrap();
-    let host = ForgeHost::parse(&fake.host_entry()).unwrap();
+    let host = ForgeHost::parse(ForgeKind::GitHub, &fake.host_entry()).unwrap();
     let account = Account::new(sandbox.git().clone(), None, host.clone());
-    let repository = ForgeRepository::new(host, "octo", "tool").unwrap();
+    let repository = ForgeRepository::new(host, "octo/tool").unwrap();
     (fake, sandbox, account, repository)
 }
 
@@ -96,7 +97,7 @@ fn pull_requests_come_a_page_at_a_time() {
         fake.state()
             .requests
             .iter()
-            .all(|request| request.authorization.as_deref() == Some("bearer t0ken"))
+            .all(|request| request.authorization.as_deref() == Some("Bearer t0ken"))
     );
 }
 
@@ -149,10 +150,10 @@ fn a_pull_request_s_details_and_the_repository_are_read() {
 
     let info = repository_info(&account, &repository, &CancelToken::new()).unwrap();
     assert_eq!(info.default_branch.as_deref(), Some("main"));
-    assert_eq!(
-        info.parent,
-        Some(("upstream/tool".to_owned(), Some("main".to_owned())))
-    );
+    let (parent, default) = info.parent.unwrap();
+    assert_eq!(parent.path(), "upstream/tool");
+    assert_eq!(parent.host(), repository.host());
+    assert_eq!(default.as_deref(), Some("main"));
 }
 
 #[test]
@@ -162,7 +163,7 @@ fn a_pull_request_is_opened_and_a_second_for_its_branch_refused() {
         title: "Add a feature".to_owned(),
         body: "It does things.".to_owned(),
         head_branch: "feature".to_owned(),
-        head_owner: Some("ada".to_owned()),
+        head: Some(ForgeRepository::new(repository.host().clone(), "ada/tool").unwrap()),
         base_branch: "main".to_owned(),
         draft: true,
     };
@@ -222,7 +223,7 @@ fn signing_in_says_who_and_keeps_the_credential() {
 #[test]
 fn rate_limits_and_missing_repositories_say_so() {
     let (fake, _sandbox, account, repository) = setup(1, TOKEN);
-    let other = ForgeRepository::new(repository.host().clone(), "octo", "missing").unwrap();
+    let other = ForgeRepository::new(repository.host().clone(), "octo/missing").unwrap();
     assert!(matches!(
         pull_requests(&account, &other, 100, &CancelToken::new(), |_| {}),
         Err(ForgeError::NotFound { .. })
@@ -265,7 +266,7 @@ fn signing_in_asks_the_user_and_has_the_helper_keep_what_worked() {
     let git = sandbox
         .git_with([("GIT_ASKPASS", askpass.as_os_str())])
         .unwrap();
-    let host = ForgeHost::parse(&fake.host_entry()).unwrap();
+    let host = ForgeHost::parse(ForgeKind::GitHub, &fake.host_entry()).unwrap();
     let account = Account::new(git, None, host);
     assert_eq!(
         account.sign_in("Signing in", &CancelToken::new()).unwrap(),

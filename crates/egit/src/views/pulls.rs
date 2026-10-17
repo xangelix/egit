@@ -1,4 +1,5 @@
-//! A repository's pull requests on GitHub, in the commit table's place: the open ones as rows
+//! A repository's pull requests (GitHub's) or merge requests (GitLab's), in the commit table's
+//! place, each named its forge's way: the open ones as rows
 //! (each repository's most recently updated first), the selected one's details below (read when
 //! it is selected), with ways to show its head commit, check it out, and open its page; or why
 //! they can't be read (signing in would help, a rate limit, …).
@@ -15,7 +16,7 @@ use egui::{Color32, Frame, Id, Key, Margin, Modifiers, RichText, Sense, Ui};
 use egui_async::Bind;
 
 use super::history::Shared;
-use crate::forge::{ForgeProblem, Listed, RepoForge};
+use crate::forge::{ForgeProblem, Listed, RepoForge, fork_head, request_noun, request_number};
 use crate::format;
 use crate::history::HistoryState;
 use crate::jobs;
@@ -90,15 +91,14 @@ impl PullRequestView {
         self.cancel = CancelToken::new();
         self.details_of = Some(selected);
         let cancel = self.cancel.clone();
+        let title = format!(
+            "The {}'s details couldn't be read",
+            request_noun(repository.host().kind())
+        );
         self.details.request(jobs::blocking(move || {
             pull_request_details(&account, &repository, selected.1, &cancel)
                 .map(Arc::new)
-                .map_err(|error| {
-                    Problem::new(
-                        "The pull request's details couldn't be read",
-                        error.to_string(),
-                    )
-                })
+                .map_err(|error| Problem::new(title, error.to_string()))
         }));
     }
 }
@@ -213,7 +213,7 @@ fn bar(
                 {
                     event = Some(PullRequestEvent::Close);
                 }
-                ui.label(RichText::new("Pull requests").color(palette.muted));
+                ui.label(RichText::new(capitalized(forge.nouns())).color(palette.muted));
                 let names: Vec<String> = forge
                     .repositories
                     .iter()
@@ -262,8 +262,15 @@ fn empty(
     problem: Option<&ForgeProblem>,
 ) -> Option<PullRequestEvent> {
     let mut event = None;
+    let nouns = shared.forge.nouns();
     match problem {
         Some(ForgeProblem::SignIn { host, refused }) => {
+            let account = shared
+                .forge
+                .accounts()
+                .iter()
+                .find(|account| account.host().name() == host);
+            let kind = account.map_or_else(|| shared.forge.kind(), |account| account.host().kind());
             widgets::card(ui, |ui| {
                 ui.label(
                     RichText::new(format!("{}  Sign in to {host}", icon::SIGN_IN))
@@ -277,7 +284,10 @@ fn empty(
                          can read this repository."
                     ));
                 } else {
-                    ui.label(format!("Sign in to {host} to see its pull requests."));
+                    ui.label(format!(
+                        "Sign in to {host} to see its {}s.",
+                        request_noun(kind)
+                    ));
                 }
                 ui.label(muted(
                     ui,
@@ -293,22 +303,15 @@ fn empty(
                     if widgets::primary(ui, !signing, "Sign in").clicked() {
                         event = Some(PullRequestEvent::SignIn(host.clone()));
                     }
-                    if widgets::secondary(ui, true, "Create a token…")
-                        .on_hover_text("Its page on the host, with the scope pull requests need")
-                        .clicked()
+                    if let Some(account) = account
+                        && widgets::secondary(ui, true, "Create a token…")
+                            .on_hover_text(format!(
+                                "Its page on the host, with the scope {}s need",
+                                request_noun(kind)
+                            ))
+                            .clicked()
                     {
-                        let base = shared
-                            .forge
-                            .accounts()
-                            .iter()
-                            .find(|account| account.host().name() == host)
-                            .map_or_else(
-                                || format!("https://{host}"),
-                                |account| account.host().web_url(""),
-                            );
-                        event = Some(PullRequestEvent::Open(format!(
-                            "{base}/settings/tokens/new?scopes=repo&description=egit"
-                        )));
+                        event = Some(PullRequestEvent::Open(account.host().new_token_url()));
                     }
                 });
                 if shared.forge.signing {
@@ -321,16 +324,18 @@ fn empty(
             });
         }
         Some(problem) => {
-            let problem = Problem::new("The pull requests couldn't be read", said(problem));
+            let problem = Problem::new(format!("The {nouns} couldn't be read"), said(problem));
             widgets::problem_box(ui, &problem, |ui| {
                 if widgets::secondary(ui, true, "Try again").clicked() {
                     event = Some(PullRequestEvent::Refresh);
                 }
             });
         }
-        None if shared.forge.is_reading() => widgets::working(ui, "Reading the pull requests…"),
+        None if shared.forge.is_reading() => {
+            widgets::working(ui, &format!("Reading the {nouns}…"));
+        }
         None => {
-            ui.label(muted(ui, "No pull requests are open."));
+            ui.label(muted(ui, format!("No {nouns} are open.")));
         }
     }
     event
@@ -448,7 +453,7 @@ fn row(
             .max_rect(rect.shrink2(egui::vec2(8.0, 0.0)))
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    let mut number = format!("#{}", pull.number);
+    let mut number = request_number(shared.forge.kind_of(listed.repository), pull.number);
     if several && let Some(repository) = shared.forge.repositories.get(listed.repository) {
         number = format!("{} {number}", repository.name());
     }
@@ -564,6 +569,7 @@ fn details(
     };
     let pull = &listed.pull;
     let repository = shared.forge.repositories.get(listed.repository)?.clone();
+    let kind = repository.host().kind();
     let head_row = head_row(history, view, selected, pull.head_commit);
     let mut event = None;
     egui::ScrollArea::vertical()
@@ -572,7 +578,7 @@ fn details(
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(RichText::new(&pull.title).strong().size(16.0));
-                ui.label(muted(ui, format!("#{}", pull.number)));
+                ui.label(muted(ui, request_number(kind, pull.number)));
                 if pull.draft {
                     chip(ui, "Draft", palette.muted);
                 }
@@ -616,7 +622,7 @@ fn details(
                 if widgets::secondary(
                     ui,
                     true,
-                    &format!("{}  Open on GitHub", icon::ARROW_SQUARE_OUT),
+                    &format!("{}  Open on {}", icon::ARROW_SQUARE_OUT, kind.name()),
                 )
                 .clicked()
                 {
@@ -681,15 +687,17 @@ fn check_out(
         .ok_or_else(|| "None of the remotes is its repository".to_owned())?
         .to_owned();
     let current = shared.branch();
+    let kind = shared.forge.kind_of(listed.repository);
     if pull.cross_repository {
-        let branch = format!("pr/{}", pull.number);
+        let (source, branch) = fork_head(kind, pull.number);
         if current == Some(branch.as_bytes().as_bstr()) {
             return Err(format!("Checked out already, as {branch}"));
         }
         return Ok((
             Task::CheckOutPullRequest {
                 remote: remote.clone(),
-                refspec: format!("refs/pull/{}/head:refs/heads/{branch}", pull.number).into(),
+                refspec: format!("{source}:refs/heads/{branch}").into(),
+                kind,
                 number: pull.number,
                 to: SwitchTo::Branch(branch.clone().into()),
             },
@@ -723,6 +731,7 @@ fn check_out(
         Task::CheckOutPullRequest {
             remote,
             refspec,
+            kind,
             number: pull.number,
             to,
         },
@@ -814,4 +823,12 @@ fn described(
             });
     }
     event
+}
+
+/// `text` with its first letter capitalized.
+fn capitalized(text: &str) -> String {
+    let mut letters = text.chars();
+    letters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(letters).collect()
+    })
 }

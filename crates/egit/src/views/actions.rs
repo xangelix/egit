@@ -12,7 +12,7 @@ use egui::{Response, Ui};
 
 use super::dialogs::Dialog;
 use super::history::ID_DIGITS;
-use crate::forge::RepoForge;
+use crate::forge::{RepoForge, request_noun, request_number};
 use crate::format;
 use crate::history::Refs;
 use crate::tasks::{Task, remote_names, upstream_of};
@@ -55,7 +55,7 @@ pub(super) struct Menus<'a> {
     pub(super) busy: bool,
     /// Whether an operation is in progress (the current branch can't change meanwhile).
     pub(super) operation: bool,
-    /// Its remotes on GitHub, and their pull requests.
+    /// Its remotes on GitHub and GitLab, and their requests.
     pub(super) forge: &'a RepoForge,
 }
 
@@ -208,7 +208,11 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
     });
     if let Some(repository) = menus.forge.repositories.first() {
         ui.separator();
-        if item(ui, "Open on GitHub", Ok(())) {
+        if item(
+            ui,
+            &format!("Open on {}", repository.host().kind().name()),
+            Ok(()),
+        ) {
             ask(Ask::Open(repository.commit_url(id)));
         }
     }
@@ -314,7 +318,8 @@ pub(super) fn ref_menu(
     }
 }
 
-/// A branch's pull request, when one of the remotes is on GitHub: the open one bringing it
+/// A branch's pull (or merge) request, when one of the remotes is on GitHub or GitLab: the
+/// open one bringing it
 /// in, or opening one (once it is pushed there).
 fn pull_request_items(
     ui: &mut Ui,
@@ -337,18 +342,25 @@ fn pull_request_items(
             .split_remote(short)
             .map(|(remote, branch)| (remote.to_owned(), branch.to_str_lossy().into_owned())),
     };
-    let on_github = pushed.as_ref().and_then(|(remote, branch)| {
+    let on_forge = pushed.as_ref().and_then(|(remote, branch)| {
         Some((remote, branch, forge.repository_of(remote.as_bstr())?))
     });
     ui.separator();
-    match on_github {
+    match on_forge {
         Some((_, branch, head)) if let Some(open) = forge.pull_request_for(head, branch) => {
-            if item(ui, &format!("Show pull request #{}", open.1), Ok(())) {
+            let kind = head.host().kind();
+            let shown = format!(
+                "Show {} {}",
+                request_noun(kind),
+                request_number(kind, open.1)
+            );
+            if item(ui, &shown, Ok(())) {
                 ask(Ask::PullRequest(Some(open)));
             }
         }
         Some((remote, branch, head)) if reference.kind == RefKind::Branch => {
-            if item(ui, "Create pull request…", menus.idle()) {
+            let create = format!("Create {}…", request_noun(head.host().kind()));
+            if item(ui, &create, menus.idle()) {
                 ask(Ask::CreatePullRequest {
                     branch: short.to_owned(),
                     remote: remote.clone(),
@@ -360,8 +372,8 @@ fn pull_request_items(
         None if reference.kind == RefKind::Branch => {
             item(
                 ui,
-                "Create pull request…",
-                Err("Push it to a remote on GitHub first"),
+                &format!("Create {}…", request_noun(forge.kind())),
+                Err("Push it to a remote on GitHub or GitLab first"),
             );
         }
         Some(_) | None => {}

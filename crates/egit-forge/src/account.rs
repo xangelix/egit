@@ -1,4 +1,4 @@
-//! Signing in to a GitHub host with the credential git's helpers keep for it: taken without
+//! Signing in to a forge's host with the credential git's helpers keep for it: taken without
 //! asking for work nobody watches, asked for (through egit's prompts, or a helper's own window)
 //! when the user signs in; kept by the helpers (`approve`) once the host accepts it, forgotten
 //! (`reject`) when it refuses it, as git itself does with a remote's.
@@ -71,17 +71,18 @@ impl Account {
             .fill(Asking::As(context), cancel)?
             .ok_or_else(|| self.not_signed_in())?;
         self.state.lock().credential = Some(credential);
-        let login = crate::github::viewer(self, cancel)?;
+        let login = crate::api::viewer(self, cancel)?;
         self.state.lock().login = Some(login.clone());
         Ok(login)
     }
 
-    /// Posts `body` to `url` with the credential (filled without asking when there is none
-    /// yet); a refused credential is forgotten, an accepted one kept by the helpers.
-    pub(crate) fn post(
+    /// Sends `body` to `url` (a GET without one) with the credential, filled without asking
+    /// when there is none yet; a refused credential is forgotten, an accepted one kept by the
+    /// helpers.
+    pub(crate) fn send(
         &self,
         url: &str,
-        body: &[u8],
+        body: Option<&[u8]>,
         cancel: &CancelToken,
     ) -> Result<Answer, ForgeError> {
         let known = self.state.lock().credential.clone();
@@ -97,7 +98,7 @@ impl Account {
         if cancel.is_cancelled() {
             return Err(ForgeError::Cancelled);
         }
-        let answer = self.http.post(url, body, credential.password())?;
+        let answer = self.http.send(url, body, credential.password())?;
         if answer.status == 401 {
             self.forget(&credential);
             return Err(ForgeError::Refused {

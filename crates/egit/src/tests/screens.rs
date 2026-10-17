@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use egit_forge::testing::{FakeGitHub, FakePull, FakeRepository};
+use egit_forge::ForgeKind;
+use egit_forge::testing::{FakeForge, FakePull, FakeRepository};
 use egit_git::askpass::{PromptKind, ask_as_helper};
 use egit_git::testing::Sandbox;
 use egit_git::{ConfigPlace, ConfigSnapshot, Git};
@@ -2189,11 +2190,16 @@ fn commit_of(sandbox: &Sandbox, repo: &Path, name: &str) -> String {
     String::from_utf8(shown.stdout).unwrap().trim().to_owned()
 }
 
-/// A clone whose `origin` is `octo/tool` on `fake` (fetched through a bare repository, by
+/// A clone whose `origin` is `path` on `fake` (fetched through a bare repository, by
 /// `insteadOf`), signed in with `token` through a `store` helper: `main` (Start), `topic` (Add
 /// topic), and a fork's pull request kept as `refs/pull/7/head`. Returns the clone, `topic`'s
 /// commit, and the fork's.
-fn github_clone(sandbox: &Sandbox, fake: &FakeGitHub, token: &str) -> (PathBuf, String, String) {
+fn forge_clone(
+    sandbox: &Sandbox,
+    fake: &FakeForge,
+    path: &str,
+    token: &str,
+) -> (PathBuf, String, String) {
     let bare = sandbox.path("origin.git");
     let bare_path = bare.to_str().unwrap().to_owned();
     sandbox
@@ -2218,7 +2224,11 @@ fn github_clone(sandbox: &Sandbox, fake: &FakeGitHub, token: &str) -> (PathBuf, 
         .commit_file(&seed, "f", "f\n", "Fork change")
         .unwrap();
     let fork = commit_of(sandbox, &seed, "HEAD");
-    push("HEAD:refs/pull/7/head");
+    // Where the forge keeps a request's head.
+    push(match fake.kind() {
+        ForgeKind::GitHub => "HEAD:refs/pull/7/head",
+        ForgeKind::GitLab => "HEAD:refs/merge-requests/7/head",
+    });
 
     let work = sandbox.path("work");
     sandbox
@@ -2232,14 +2242,24 @@ fn github_clone(sandbox: &Sandbox, fake: &FakeGitHub, token: &str) -> (PathBuf, 
             ],
         )
         .unwrap();
-    let url = format!("http://{}/octo/tool.git", fake.address());
+    let url = format!("http://{}/{path}.git", fake.address());
     sandbox
         .run(&work, "remote", &["set-url", "origin", &url])
         .unwrap();
     let rewrite = format!("url.file://{bare_path}.insteadOf");
     sandbox.run(&work, "config", &[&rewrite, &url]).unwrap();
     sandbox
-        .run(&work, "config", &["egit.githubHost", &fake.host_entry()])
+        .run(
+            &work,
+            "config",
+            &[
+                match fake.kind() {
+                    ForgeKind::GitHub => "egit.githubHost",
+                    ForgeKind::GitLab => "egit.gitlabHost",
+                },
+                &fake.host_entry(),
+            ],
+        )
         .unwrap();
     let store = sandbox.path("credentials");
     std::fs::write(&store, format!("http://ada:{token}@{}\n", fake.address())).unwrap();
@@ -2247,9 +2267,21 @@ fn github_clone(sandbox: &Sandbox, fake: &FakeGitHub, token: &str) -> (PathBuf, 
     sandbox
         .run(&work, "config", &["credential.helper", &helper])
         .unwrap();
+    serve_requests(fake, path, &topic, &fork);
+    (work, topic, fork)
+}
+
+/// `fake`'s open requests on `path`: `!8`/`#8` (Add topic, from `topic`, approved, its build
+/// passed) and `7` (Fork change, from a fork's `feature` at `fork`, its build failed).
+fn serve_requests(fake: &FakeForge, path: &str, topic: &str, fork: &str) {
+    // Each forge's own words for a passed build and a failed one.
+    let (passed_run, failed) = match fake.kind() {
+        ForgeKind::GitHub => (("COMPLETED", Some("SUCCESS".to_owned())), "FAILURE"),
+        ForgeKind::GitLab => (("SUCCESS", None), "FAILED"),
+    };
     fake.state().repositories.push(FakeRepository {
-        owner: "octo".to_owned(),
-        name: "tool".to_owned(),
+        path: path.to_owned(),
+        id: 41,
         default_branch: "main".to_owned(),
         parent: None,
         pulls: vec![
@@ -2259,14 +2291,10 @@ fn github_clone(sandbox: &Sandbox, fake: &FakeGitHub, token: &str) -> (PathBuf, 
                 author: "bo".to_owned(),
                 head_branch: "topic".to_owned(),
                 base_branch: "main".to_owned(),
-                head_commit: topic.clone(),
+                head_commit: topic.to_owned(),
                 review: Some("APPROVED".to_owned()),
                 checks: Some("SUCCESS".to_owned()),
-                check_runs: vec![(
-                    "build".to_owned(),
-                    "COMPLETED".to_owned(),
-                    Some("SUCCESS".to_owned()),
-                )],
+                check_runs: vec![("build".to_owned(), passed_run.0.to_owned(), passed_run.1)],
                 body: "Adds the topic.".to_owned(),
                 ..FakePull::default()
             },
@@ -2277,13 +2305,12 @@ fn github_clone(sandbox: &Sandbox, fake: &FakeGitHub, token: &str) -> (PathBuf, 
                 head_branch: "feature".to_owned(),
                 fork: Some("cy/tool".to_owned()),
                 base_branch: "main".to_owned(),
-                head_commit: fork.clone(),
-                checks: Some("FAILURE".to_owned()),
+                head_commit: fork.to_owned(),
+                checks: Some(failed.to_owned()),
                 ..FakePull::default()
             },
         ],
     });
-    (work, topic, fork)
 }
 
 /// Whether the first repository's pull requests are read, `count` of them.
@@ -2299,8 +2326,8 @@ fn pull_requests_read(count: usize) -> impl Fn(&mut EgitApp) -> bool {
 #[test]
 fn pull_requests_are_listed_badged_checked_out_and_opened() {
     let sandbox = Sandbox::new().unwrap();
-    let fake = FakeGitHub::start("t0ken", "ada").unwrap();
-    let (work, _, _) = github_clone(&sandbox, &fake, "t0ken");
+    let fake = FakeForge::start(ForgeKind::GitHub, "t0ken", "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "octo/tool", "t0ken");
     let mut harness = harness(&sandbox);
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &work);
@@ -2365,8 +2392,8 @@ fn pull_requests_are_listed_badged_checked_out_and_opened() {
 #[test]
 fn a_pull_request_is_opened_from_a_branch_s_menu() {
     let sandbox = Sandbox::new().unwrap();
-    let fake = FakeGitHub::start("t0ken", "ada").unwrap();
-    let (work, _, _) = github_clone(&sandbox, &fake, "t0ken");
+    let fake = FakeForge::start(ForgeKind::GitHub, "t0ken", "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "octo/tool", "t0ken");
     sandbox
         .run(&work, "switch", &["--quiet", "--create", "fresh"])
         .unwrap();
@@ -2432,8 +2459,8 @@ fn a_pull_request_is_opened_from_a_branch_s_menu() {
 #[test]
 fn pull_requests_without_credentials_offer_to_sign_in() {
     let sandbox = Sandbox::new().unwrap();
-    let fake = FakeGitHub::start("t0ken", "ada").unwrap();
-    let (work, _, _) = github_clone(&sandbox, &fake, "wrong");
+    let fake = FakeForge::start(ForgeKind::GitHub, "t0ken", "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "octo/tool", "wrong");
     let mut harness = harness(&sandbox);
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &work);
@@ -2463,4 +2490,118 @@ fn pull_requests_without_credentials_offer_to_sign_in() {
     // Nobody can answer git's question here: signing in says so.
     harness.get_by_label("Sign in").click();
     wait_for_label(&mut harness, "No credentials were given.");
+}
+
+#[test]
+fn merge_requests_on_gitlab_are_listed_badged_checked_out_and_opened() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, "glpat-t0ken", "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", "glpat-t0ken");
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    settle(&mut harness, "the merge requests", pull_requests_read(2));
+    wait_for_label(&mut harness, &format!("{} !8", icon::GIT_PULL_REQUEST));
+
+    harness.get_by_label_contains("2 merge requests").click();
+    wait_for_label(&mut harness, "Adds the topic.");
+    harness.get_by_label("build");
+    harness.get_by_label("Merge requests");
+    render(&mut harness, "merge-requests");
+
+    click_when_enabled(&mut harness, "Check out");
+    wait_for_label(&mut harness, "Checked out merge request !8 as topic.");
+    let branch = sandbox.run(&work, "branch", &["--show-current"]).unwrap();
+    assert_eq!(branch.stdout.trim_ascii(), b"topic");
+
+    // A fork's: fetched from GitLab's ref for it into mr/7.
+    harness
+        .get_by_role_and_label(Role::Button, "Fork change")
+        .click();
+    wait_for_label(
+        &mut harness,
+        "cy wants to merge feature into main, from cy/tool",
+    );
+    click_when_enabled(&mut harness, "Check out");
+    wait_for_label(&mut harness, "Checked out merge request !7 as mr/7.");
+    let branch = sandbox.run(&work, "branch", &["--show-current"]).unwrap();
+    assert_eq!(branch.stdout.trim_ascii(), b"mr/7");
+
+    harness.get_by_label_contains("Open on GitLab").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state.opener.recorded(),
+        [format!(
+            "http://{}/team/sub/tool/-/merge_requests/7",
+            fake.address()
+        )]
+    );
+}
+
+#[test]
+fn a_merge_request_is_opened_from_a_branch_s_menu_on_gitlab() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, "glpat-t0ken", "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", "glpat-t0ken");
+    sandbox
+        .run(&work, "switch", &["--quiet", "--create", "fresh"])
+        .unwrap();
+    sandbox
+        .run(
+            &work,
+            "commit",
+            &[
+                "--quiet",
+                "--allow-empty",
+                "--message",
+                "Make it fresh\n\nBecause it was stale.",
+            ],
+        )
+        .unwrap();
+    sandbox
+        .run(
+            &work,
+            "push",
+            &["--quiet", "--set-upstream", "origin", "fresh"],
+        )
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(3));
+    settle(&mut harness, "the merge requests", pull_requests_read(2));
+
+    let fresh = format!("{} fresh", icon::GIT_BRANCH);
+    menu_item(&mut harness, &fresh, "Create merge request…");
+    wait_for_label(&mut harness, "Create a merge request");
+    settle(&mut harness, "the suggestions", |app| {
+        app.state.repos[0].history_view.pull_form_title() == Some("Make it fresh".to_owned())
+    });
+    harness.get_by_label("Draft").click();
+    click_when_enabled(&mut harness, "Create merge request");
+    wait_for_label(&mut harness, "Opened merge request !9.");
+    let sent = fake
+        .state()
+        .requests
+        .iter()
+        .find(|request| request.path.ends_with("/merge_requests"))
+        .unwrap()
+        .clone();
+    assert_eq!(
+        sent.path,
+        "/api/v4/projects/team%2Fsub%2Ftool/merge_requests"
+    );
+    assert_eq!(sent.body["source_branch"], "fresh");
+    assert_eq!(sent.body["target_branch"], "main");
+    assert_eq!(sent.body["title"], "Draft: Make it fresh");
+    assert_eq!(sent.body["description"], "Because it was stale.");
+
+    settle(
+        &mut harness,
+        "the merge requests again",
+        pull_requests_read(3),
+    );
+    menu_item(&mut harness, &fresh, "Show merge request !9");
+    wait_for_label(&mut harness, "ada wants to merge fresh into main");
 }

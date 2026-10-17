@@ -9,9 +9,9 @@
 //! scrolling and stepping through them. And the blame of 100,000 lines of C that 100 commits
 //! rewrote here and there: how soon its first lines are labelled and all of them, and frames
 //! jumping while git still blames and once it is done, and scrolling. And 1,000 open pull
-//! requests from a fake GitHub, each the head of one of 10,000 commits: how soon the first
-//! page shows and all of them, and frames scrolling and stepping through the list, and the
-//! commit table under their badges.
+//! requests from a fake GitHub (then merge requests from a fake GitLab), each the head of one
+//! of 10,000 commits: how soon the first page shows and all of them, and frames scrolling and
+//! stepping through the list, and the commit table under their badges.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
@@ -33,7 +33,8 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
-use egit_forge::testing::{FakeGitHub, FakePull, FakeRepository};
+use egit_forge::ForgeKind;
+use egit_forge::testing::{FakeForge, FakePull, FakeRepository};
 use egit_git::testing::Sandbox;
 use egit_text::{Options, Text};
 use egui::accesskit::Role;
@@ -922,17 +923,29 @@ fn corpus_blame() {
 /// Open pull requests in their measurement.
 const PULLS: u32 = 1_000;
 
-/// [`long_branch`] on GitHub (a fake one): `origin` is `octo/tool` there, signed in through a
-/// `store` helper, with [`PULLS`] open pull requests, each the head of one of the newest
-/// commits.
-fn on_github(sandbox: &Sandbox, fake: &FakeGitHub) -> std::path::PathBuf {
+/// [`long_branch`] on a fake forge: `origin` is `octo/tool` there (GitLab's in a subgroup),
+/// signed in through a `store` helper, with [`PULLS`] open requests, each the head of one of
+/// the newest commits.
+fn on_forge(sandbox: &Sandbox, fake: &FakeForge) -> std::path::PathBuf {
     let repo = long_branch(sandbox);
-    let url = format!("http://{}/octo/tool.git", fake.address());
+    let (path, key, statuses) = match fake.kind() {
+        ForgeKind::GitHub => (
+            "octo/tool",
+            "egit.githubHost",
+            ["SUCCESS", "FAILURE", "PENDING"],
+        ),
+        ForgeKind::GitLab => (
+            "octo/sub/tool",
+            "egit.gitlabHost",
+            ["SUCCESS", "FAILED", "RUNNING"],
+        ),
+    };
+    let url = format!("http://{}/{path}.git", fake.address());
     sandbox
         .run(&repo, "remote", &["add", "origin", &url])
         .unwrap();
     sandbox
-        .run(&repo, "config", &["egit.githubHost", &fake.host_entry()])
+        .run(&repo, "config", &[key, &fake.host_entry()])
         .unwrap();
     let store = sandbox.path("credentials");
     std::fs::write(&store, format!("http://ada:t0ken@{}\n", fake.address())).unwrap();
@@ -963,15 +976,13 @@ fn on_github(sandbox: &Sandbox, fake: &FakeGitHub) -> std::path::PathBuf {
                     [usize::try_from(number % 3).unwrap()]
                 .to_owned(),
             ),
-            checks: Some(
-                ["SUCCESS", "FAILURE", "PENDING"][usize::try_from(number % 3).unwrap()].to_owned(),
-            ),
+            checks: Some(statuses[usize::try_from(number % 3).unwrap()].to_owned()),
             ..FakePull::default()
         })
         .collect();
     fake.state().repositories.push(FakeRepository {
-        owner: "octo".to_owned(),
-        name: "tool".to_owned(),
+        path: path.to_owned(),
+        id: 1,
         default_branch: "main".to_owned(),
         parent: None,
         pulls,
@@ -982,10 +993,24 @@ fn on_github(sandbox: &Sandbox, fake: &FakeGitHub) -> std::path::PathBuf {
 #[test]
 #[ignore = "a release-build measurement: see the module's documentation"]
 fn corpus_pull_requests() {
-    println!("{PULLS} open pull requests on a history of {REBASED} commits:");
+    for kind in [ForgeKind::GitHub, ForgeKind::GitLab] {
+        requests_on(kind);
+    }
+}
+
+/// [`PULLS`] open requests on `kind`'s fake, measured.
+fn requests_on(kind: ForgeKind) {
+    let nouns = match kind {
+        ForgeKind::GitHub => "pull requests",
+        ForgeKind::GitLab => "merge requests",
+    };
+    println!(
+        "{PULLS} open {nouns} ({}) on a history of {REBASED} commits:",
+        kind.name()
+    );
     let sandbox = Sandbox::new().unwrap();
-    let fake = FakeGitHub::start("t0ken", "ada").unwrap();
-    let repo = on_github(&sandbox, &fake);
+    let fake = FakeForge::start(kind, "t0ken", "ada").unwrap();
+    let repo = on_forge(&sandbox, &fake);
     reset_peak_memory();
     let git = sandbox.git().clone();
     let builder = Harness::builder().with_size([1400.0, 900.0]);
@@ -1045,9 +1070,12 @@ fn corpus_pull_requests() {
         });
     });
     let mut worst = report("scrolling the badged commits", badged);
-    snapshot(&mut harness, "pull-request-badges");
+    let screen = kind.name().to_ascii_lowercase();
+    snapshot(&mut harness, &format!("requests-badges-{screen}"));
 
-    harness.get_by_label_contains("1,000 pull requests").click();
+    harness
+        .get_by_label_contains(&format!("1,000 {nouns}"))
+        .click();
     harness.run_steps(4);
     harness.hover_at(egui::pos2(450.0, 250.0));
     let scrolling = measure_frames(&mut harness, 600, |harness, _| {
@@ -1058,12 +1086,12 @@ fn corpus_pull_requests() {
             modifiers: egui::Modifiers::NONE,
         });
     });
-    worst = worst.max(report("scrolling the pull requests", scrolling));
+    worst = worst.max(report("scrolling the list", scrolling));
     let stepping = measure_frames(&mut harness, 600, |harness, _| {
         harness.key_press(egui::Key::ArrowDown);
     });
     worst = worst.max(report("stepping through them (each read)", stepping));
-    snapshot(&mut harness, "pull-requests");
+    snapshot(&mut harness, &format!("requests-{screen}"));
     println!(
         "  peak memory {:.0} MB (the repository made beforehand not counted)",
         peak_memory_mb()

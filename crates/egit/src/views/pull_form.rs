@@ -1,4 +1,5 @@
-//! The dialog that opens a pull request from a pushed branch: into its own repository, or the
+//! The dialog that opens a pull request (GitHub's; a merge request, GitLab's) from a pushed
+//! branch: into its own repository, or the
 //! one it was forked from (the default when it is a fork), against a base branch (that
 //! repository's default first), titled and described from the branch's commit when it has one
 //! (its name otherwise), as a draft or not. What it starts is a task.
@@ -7,6 +8,8 @@ use std::sync::Arc;
 
 use bstr::{BString, ByteSlice as _};
 use egit_forge::{ForgeRepository, NewPullRequest, repository_info};
+
+use crate::forge::request_noun;
 use egit_git::{CancelToken, Commit, ObjectKind, commits_between};
 use egui::{Id, Modal, RichText, TextEdit, Ui};
 use egui_async::Bind;
@@ -101,11 +104,8 @@ impl PullRequestForm {
                 )
             })?;
             let mut targets = vec![(head.clone(), info.default_branch.clone())];
-            if let Some((parent, default)) = info.parent
-                && let Some((owner, name)) = parent.split_once('/')
-                && let Some(parent) = ForgeRepository::new(head.host().clone(), owner, name)
-            {
-                // A fork's pull requests usually go to the repository it came from.
+            if let Some((parent, default)) = info.parent {
+                // A fork's requests usually go to the repository it came from.
                 targets.insert(0, (parent, default));
             }
             let base = targets
@@ -217,7 +217,12 @@ enum Answer {
 
 /// The form; its answer, once given.
 fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<Answer> {
-    ui.label(RichText::new("Create a pull request").size(18.0).strong());
+    let noun = request_noun(form.head.host().kind());
+    ui.label(
+        RichText::new(format!("Create a {noun}"))
+            .size(18.0)
+            .strong(),
+    );
     ui.add_space(8.0);
     ui.add(
         egui::Label::new(format!(
@@ -285,10 +290,10 @@ fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<
         .map(|(target, _)| target.clone());
     let ready = into.is_some() && !form.title.trim().is_empty() && !form.base.trim().is_empty();
     widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, ready && !shared.busy, "Create pull request").clicked()
+        if widgets::primary(ui, ready && !shared.busy, &format!("Create {noun}")).clicked()
             && let Some(into) = &into
         {
-            let head_owner = (!into.is(&form.head)).then(|| form.head.owner().to_owned());
+            let head = (!into.is(&form.head)).then(|| form.head.clone());
             answer = Some(Answer::Create(Task::CreatePullRequest(Box::new(
                 PullRequestToOpen {
                     repository: into.clone(),
@@ -296,7 +301,7 @@ fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<
                         title: form.title.trim().to_owned(),
                         body: form.body.trim().to_owned(),
                         head_branch: form.head_branch.clone(),
-                        head_owner,
+                        head,
                         base_branch: form.base.trim().to_owned(),
                         draft: form.draft,
                     },

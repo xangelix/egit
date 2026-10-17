@@ -2,201 +2,23 @@
 //! request's details, the repository's default branch and the one it was forked from, who is
 //! signed in, and opening a pull request (REST).
 //!
-//! Every answer is checked: a rate limit used up (by its headers, or GraphQL's `RATE_LIMITED`)
-//! says until when, a repository that isn't there (or isn't visible) says so, and anything else
-//! the host refuses carries its own reason.
-
-use std::time::{SystemTime, UNIX_EPOCH};
+//! Every answer is read as `answer.rs` reads them.
 
 use egit_git::{CancelToken, ObjectId};
 use serde::Deserialize;
-use serde::de::DeserializeOwned;
 use serde_json::json;
 
 use crate::account::Account;
+use crate::answer::{cancelled, graphql, not_found, parse_time, read_answer};
 use crate::error::ForgeError;
-use crate::http::Answer;
+use crate::model::{
+    Check, CheckState, Mergeable, NewPullRequest, Opened, PullRequest, PullRequestDetails,
+    PullRequestPage, RepositoryInfo, Review, ReviewDecision, ReviewState,
+};
 use crate::repository::ForgeRepository;
 
 /// Pull requests a page.
 const PAGE: u32 = 100;
-
-/// A pull request, as a list shows it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PullRequest {
-    /// Its number in the repository.
-    pub number: u32,
-    /// Its title.
-    pub title: String,
-    /// Its author's login (`ghost` for a deleted account).
-    pub author: String,
-    /// Whether it is a draft.
-    pub draft: bool,
-    /// The branch it brings in.
-    pub head_branch: String,
-    /// The repository that branch is in (`owner/name`), when known (a deleted fork isn't).
-    pub head_repository: Option<String>,
-    /// Whether that repository is another than the base's (a fork).
-    pub cross_repository: bool,
-    /// The branch it goes into.
-    pub base_branch: String,
-    /// Its head commit.
-    pub head_commit: Option<ObjectId>,
-    /// Where its reviews stand.
-    pub review: ReviewDecision,
-    /// Its head commit's checks, all together.
-    pub checks: CheckState,
-    /// When it last changed (seconds since the Unix epoch).
-    pub updated: i64,
-    /// Its web page.
-    pub url: String,
-}
-
-/// Where a pull request's reviews stand, as the repository's rules see them.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum ReviewDecision {
-    /// No review is required, or none is known.
-    #[default]
-    None,
-    /// A review is required and none approved yet.
-    Required,
-    /// Approved.
-    Approved,
-    /// A reviewer asked for changes.
-    ChangesRequested,
-}
-
-/// A check's state (or a commit's, all its checks together).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub enum CheckState {
-    /// No checks.
-    #[default]
-    None,
-    /// Skipped, neutral, or stale: neither passed nor failed.
-    Neutral,
-    /// Passed.
-    Success,
-    /// Queued or running.
-    Pending,
-    /// Failed (or errored, timed out, was cancelled, needs action).
-    Failure,
-}
-
-/// A page of a repository's open pull requests.
-#[derive(Clone, Debug, Default)]
-pub struct PullRequestPage {
-    /// The pull requests, the most recently updated first.
-    pub pulls: Vec<PullRequest>,
-    /// How many are open in all.
-    pub total: u32,
-    /// Where the next page starts, if there is one.
-    pub next: Option<String>,
-}
-
-/// A pull request's details, read when it is looked at.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PullRequestDetails {
-    /// Its description, as written (Markdown).
-    pub body: String,
-    /// Lines added and removed, and files changed.
-    pub additions: u32,
-    /// Lines removed.
-    pub deletions: u32,
-    /// Files changed.
-    pub changed_files: u32,
-    /// Its commits.
-    pub commits: u32,
-    /// Whether it merges cleanly.
-    pub mergeable: Mergeable,
-    /// Its head commit's checks, one by one.
-    pub checks: Vec<Check>,
-    /// Each reviewer's latest review that approved or asked for changes.
-    pub reviews: Vec<Review>,
-    /// Its labels.
-    pub labels: Vec<String>,
-}
-
-/// Whether a pull request merges cleanly.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Mergeable {
-    /// Not known yet (GitHub works it out in the background).
-    #[default]
-    Unknown,
-    /// It merges cleanly.
-    Yes,
-    /// It conflicts with its base.
-    Conflicting,
-}
-
-/// One check of a commit.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Check {
-    /// Its name.
-    pub name: String,
-    /// Its state.
-    pub state: CheckState,
-    /// Its page, if it has one.
-    pub url: Option<String>,
-}
-
-/// A reviewer's latest opinion.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Review {
-    /// The reviewer's login.
-    pub author: String,
-    /// What they said.
-    pub state: ReviewState,
-}
-
-/// What a review said.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReviewState {
-    /// Approved.
-    Approved,
-    /// Asked for changes.
-    ChangesRequested,
-    /// Commented.
-    Commented,
-    /// Was dismissed.
-    Dismissed,
-    /// Isn't submitted yet.
-    Pending,
-}
-
-/// A repository's default branch, and the repository it was forked from.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RepositoryInfo {
-    /// Its default branch (none in an empty repository).
-    pub default_branch: Option<String>,
-    /// The repository it was forked from (`owner/name`) and that one's default branch.
-    pub parent: Option<(String, Option<String>)>,
-}
-
-/// A pull request to open.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NewPullRequest {
-    /// Its title.
-    pub title: String,
-    /// Its description.
-    pub body: String,
-    /// The branch it brings in.
-    pub head_branch: String,
-    /// The repository that branch is in, when it isn't the base repository (a fork).
-    pub head_owner: Option<String>,
-    /// The branch it goes into.
-    pub base_branch: String,
-    /// Whether it is a draft.
-    pub draft: bool,
-}
-
-/// A pull request opened: its number and page.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Opened {
-    /// Its number.
-    pub number: u32,
-    /// Its web page.
-    pub url: String,
-}
 
 /// Reads `repository`'s open pull requests, the most recently updated first, a page at a time
 /// (each handed to `found` as it lands), up to `limit` of them.
@@ -204,7 +26,7 @@ pub struct Opened {
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s, from the page that failed (the pages before it were handed over).
-pub fn pull_requests(
+pub(crate) fn pull_requests(
     account: &Account,
     repository: &ForgeRepository,
     limit: u32,
@@ -268,7 +90,7 @@ pub fn pull_requests(
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub fn pull_request_details(
+pub(crate) fn pull_request_details(
     account: &Account,
     repository: &ForgeRepository,
     number: u32,
@@ -298,7 +120,7 @@ pub fn pull_request_details(
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub fn repository_info(
+pub(crate) fn repository_info(
     account: &Account,
     repository: &ForgeRepository,
     cancel: &CancelToken,
@@ -315,11 +137,12 @@ pub fn repository_info(
         .ok_or_else(|| not_found(account, repository.full_name()))?;
     Ok(RepositoryInfo {
         default_branch: found.default_branch_ref.map(|branch| branch.name),
-        parent: found.parent.map(|parent| {
-            (
-                format!("{}/{}", parent.owner.login, parent.name),
+        parent: found.parent.and_then(|parent| {
+            let path = format!("{}/{}", parent.owner.login, parent.name);
+            Some((
+                ForgeRepository::new(repository.host().clone(), &path)?,
                 parent.default_branch_ref.map(|branch| branch.name),
-            )
+            ))
         }),
     })
 }
@@ -330,15 +153,15 @@ pub fn repository_info(
 ///
 /// Any of [`ForgeError`]'s; [`ForgeError::Status`] with GitHub's reason when it refuses (one is
 /// already open for the branch, nothing to merge, …).
-pub fn create_pull_request(
+pub(crate) fn create_pull_request(
     account: &Account,
     repository: &ForgeRepository,
     new: &NewPullRequest,
     cancel: &CancelToken,
 ) -> Result<Opened, ForgeError> {
-    let head = new.head_owner.as_ref().map_or_else(
+    let head = new.head.as_ref().map_or_else(
         || new.head_branch.clone(),
-        |owner| format!("{owner}:{}", new.head_branch),
+        |fork| format!("{}:{}", fork.owner(), new.head_branch),
     );
     let body = json!({
         "title": new.title,
@@ -353,7 +176,7 @@ pub fn create_pull_request(
         repository.owner(),
         repository.name()
     ));
-    let answer = account.post(&url, body.as_bytes(), cancel)?;
+    let answer = account.send(&url, Some(body.as_bytes()), cancel)?;
     let created: Created = read_answer(account, &answer, &repository.full_name())?;
     Ok(Opened {
         number: created.number,
@@ -366,177 +189,6 @@ pub(crate) fn viewer(account: &Account, cancel: &CancelToken) -> Result<String, 
     let data: ViewerData = graphql(account, VIEWER, &json!({}), "the account", cancel)?;
     account.note_login(&data.viewer.login);
     Ok(data.viewer.login)
-}
-
-/// Runs a GraphQL query, reading its data or its errors.
-fn graphql<T: DeserializeOwned>(
-    account: &Account,
-    query: &str,
-    variables: &serde_json::Value,
-    what: &str,
-    cancel: &CancelToken,
-) -> Result<T, ForgeError> {
-    let body = json!({ "query": query, "variables": variables }).to_string();
-    let url = account.host().graphql_url();
-    let answer = account.post(&url, body.as_bytes(), cancel)?;
-    let (remaining, reset) = (answer.remaining, answer.reset);
-    let reply: GraphQlReply<T> = read_answer(account, &answer, what)?;
-    if let Some(error) = reply.errors.first() {
-        let host = account.host().name().to_owned();
-        return Err(match error.kind.as_deref() {
-            Some("RATE_LIMITED") => ForgeError::RateLimited {
-                host,
-                reset: reset.filter(|_| remaining.is_none_or(|left| left == 0)),
-            },
-            Some("NOT_FOUND") => ForgeError::NotFound {
-                host,
-                what: what.to_owned(),
-            },
-            Some("FORBIDDEN" | "INSUFFICIENT_SCOPES") => ForgeError::Forbidden {
-                host,
-                message: error.message.clone(),
-            },
-            _ => ForgeError::Status {
-                host,
-                status: 200,
-                message: error.message.clone(),
-            },
-        });
-    }
-    reply.data.ok_or_else(|| ForgeError::Malformed {
-        host: account.host().name().to_owned(),
-        detail: "an answer without data".to_owned(),
-    })
-}
-
-/// Reads a successful answer's JSON, or turns a refusal into its error.
-fn read_answer<T: DeserializeOwned>(
-    account: &Account,
-    answer: &Answer,
-    what: &str,
-) -> Result<T, ForgeError> {
-    let host = account.host().name().to_owned();
-    match answer.status {
-        200..=299 => serde_json::from_slice(&answer.body).map_err(|error| ForgeError::Malformed {
-            host,
-            detail: error.to_string(),
-        }),
-        403 | 429 if answer.remaining == Some(0) || answer.retry_after.is_some() => {
-            let reset = answer.reset.or_else(|| {
-                answer
-                    .retry_after
-                    .map(|after| now().saturating_add(after.max(0)))
-            });
-            Err(ForgeError::RateLimited { host, reset })
-        }
-        403 => Err(ForgeError::Forbidden {
-            host,
-            message: reason(&answer.body),
-        }),
-        404 => Err(ForgeError::NotFound {
-            host,
-            what: what.to_owned(),
-        }),
-        status => Err(ForgeError::Status {
-            host,
-            status,
-            message: reason(&answer.body),
-        }),
-    }
-}
-
-/// A refusal's reason: GitHub's `message`, with a validation failure's own messages.
-fn reason(body: &[u8]) -> String {
-    let refusal: Refusal = serde_json::from_slice(body).unwrap_or_default();
-    let details: Vec<String> = refusal
-        .errors
-        .into_iter()
-        .filter_map(|error| error.message)
-        .collect();
-    if !details.is_empty() {
-        return details.join(" ");
-    }
-    refusal.message.unwrap_or_else(|| {
-        let text = String::from_utf8_lossy(body);
-        text.chars().take(200).collect()
-    })
-}
-
-fn not_found(account: &Account, what: String) -> ForgeError {
-    ForgeError::NotFound {
-        host: account.host().name().to_owned(),
-        what,
-    }
-}
-
-const fn cancelled() -> ForgeError {
-    ForgeError::Cancelled
-}
-
-/// Seconds since the Unix epoch.
-fn now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|since| i64::try_from(since.as_secs()).ok())
-        .unwrap_or(0)
-}
-
-/// An ISO 8601 time as GitHub writes it (`2024-05-01T10:20:30Z`), in seconds since the Unix
-/// epoch.
-pub(crate) fn parse_time(text: &str) -> Option<i64> {
-    let number = |range: std::ops::Range<usize>| -> Option<i64> {
-        let digits = text.get(range)?;
-        digits
-            .bytes()
-            .all(|byte| byte.is_ascii_digit())
-            .then(|| digits.parse().ok())
-            .flatten()
-    };
-    let separators = [(4, b'-'), (7, b'-'), (10, b'T'), (13, b':'), (16, b':')];
-    if !separators
-        .iter()
-        .all(|&(at, byte)| text.as_bytes().get(at) == Some(&byte))
-    {
-        return None;
-    }
-    let (year, month, day) = (number(0..4)?, number(5..7)?, number(8..10)?);
-    let (hour, minute, second) = (number(11..13)?, number(14..16)?, number(17..19)?);
-    if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 || minute > 59 {
-        return None;
-    }
-    // Days from the civil date (Howard Hinnant's algorithm), in years starting in March.
-    let year = if month <= 2 {
-        year.checked_sub(1)?
-    } else {
-        year
-    };
-    let era = year.div_euclid(400);
-    let of_era = year.rem_euclid(400);
-    let month_index = if month > 2 {
-        month.checked_sub(3)?
-    } else {
-        month.checked_add(9)?
-    };
-    let of_year = 153_i64
-        .checked_mul(month_index)?
-        .checked_add(2)?
-        .checked_div(5)?
-        .checked_add(day)?
-        .checked_sub(1)?;
-    let of_cycle = of_era
-        .checked_mul(365)?
-        .checked_add(of_era.checked_div(4)?)?
-        .checked_sub(of_era.checked_div(100)?)?
-        .checked_add(of_year)?;
-    let days = era
-        .checked_mul(146_097)?
-        .checked_add(of_cycle)?
-        .checked_sub(719_468)?;
-    days.checked_mul(86_400)?
-        .checked_add(hour.checked_mul(3_600)?)?
-        .checked_add(minute.checked_mul(60)?)?
-        .checked_add(second)
 }
 
 const PULL_REQUESTS: &str = "query PullRequests($owner: String!, $name: String!, $first: Int!, \
@@ -560,33 +212,6 @@ const REPOSITORY: &str = "query Repository($owner: String!, $name: String!) { \
     login } defaultBranchRef { name } } } }";
 
 const VIEWER: &str = "query Viewer { viewer { login } }";
-
-#[derive(Deserialize)]
-struct GraphQlReply<T> {
-    data: Option<T>,
-    #[serde(default)]
-    errors: Vec<GraphQlError>,
-}
-
-#[derive(Deserialize)]
-struct GraphQlError {
-    #[serde(rename = "type")]
-    kind: Option<String>,
-    #[serde(default)]
-    message: String,
-}
-
-#[derive(Default, Deserialize)]
-struct Refusal {
-    message: Option<String>,
-    #[serde(default)]
-    errors: Vec<RefusalDetail>,
-}
-
-#[derive(Deserialize)]
-struct RefusalDetail {
-    message: Option<String>,
-}
 
 #[derive(Deserialize)]
 struct Created {
@@ -921,24 +546,6 @@ struct ParentNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn github_times_are_read() {
-        assert_eq!(parse_time("1970-01-01T00:00:00Z"), Some(0));
-        assert_eq!(parse_time("2024-02-29T12:34:56Z"), Some(1_709_210_096));
-        assert_eq!(parse_time("2000-03-01T00:00:00Z"), Some(951_868_800));
-        assert_eq!(parse_time("2024-13-01T00:00:00Z"), None);
-        assert_eq!(parse_time("yesterday"), None);
-    }
-
-    #[test]
-    fn a_refusal_s_own_reasons_are_given() {
-        let body = br#"{"message":"Validation Failed","errors":[{"resource":"PullRequest",
-            "code":"custom","message":"A pull request already exists for ada:topic."}]}"#;
-        assert_eq!(reason(body), "A pull request already exists for ada:topic.");
-        assert_eq!(reason(br#"{"message":"Not Found"}"#), "Not Found");
-        assert_eq!(reason(b"<html>"), "<html>");
-    }
 
     #[test]
     fn check_runs_and_statuses_have_states() {

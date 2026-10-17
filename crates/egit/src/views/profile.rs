@@ -1,12 +1,13 @@
 //! The Profile tab: who you are to git, how you sign, how git gets your credentials, the GitHub
-//! hosts pull requests come from, and how pull and push behave, each with where it is set.
-//! Identity, signing, and the GitHub Enterprise hosts can be changed here (in your global
+//! and GitLab hosts pull and merge requests come from, and how pull and push behave, each with
+//! where it is set.
+//! Identity, signing, and the listed GitHub and GitLab hosts can be changed here (in your global
 //! configuration).
 
 use std::path::Path;
 use std::sync::Arc;
 
-use egit_forge::ForgeHost;
+use egit_forge::{ForgeHost, ForgeKind};
 use egit_git::{
     ConfigEntry, ConfigScope, ConfigSnapshot, PullFastForward, PullRebase, SigningFormat,
 };
@@ -15,7 +16,7 @@ use egui_async::Bind;
 use egui_table_kit::table::TableKit;
 
 use crate::app::{Action, AppState, ConfigChange};
-use crate::forge::HOSTS_KEY;
+use crate::forge::{GITHUB_HOSTS_KEY, GITLAB_HOSTS_KEY};
 use crate::problem::Problem;
 use crate::tables::{ConfigRows, ROW_HEIGHT, SnapshotTable};
 use crate::theme::{Palette, icon};
@@ -36,8 +37,9 @@ pub(crate) struct ProfileView {
     /// The settings the form was filled from.
     filled_from: Option<Arc<ConfigSnapshot>>,
     table: SnapshotTable,
-    /// A GitHub Enterprise host being typed, to add.
-    new_host: String,
+    /// A GitHub Enterprise host being typed, to add; and a self-managed GitLab one.
+    new_github_host: String,
+    new_gitlab_host: String,
 }
 
 impl Default for ProfileView {
@@ -49,7 +51,8 @@ impl Default for ProfileView {
             saved: Form::default(),
             filled_from: None,
             table: SnapshotTable::new("profile-config".to_owned()),
-            new_host: String::new(),
+            new_github_host: String::new(),
+            new_gitlab_host: String::new(),
         }
     }
 }
@@ -207,7 +210,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         ui.add_space(12.0);
         credentials_card(ui, &snapshot, home.as_deref());
         ui.add_space(12.0);
-        github_card(
+        forges_card(
             ui,
             &mut state.profile,
             &snapshot,
@@ -425,9 +428,10 @@ fn credentials_card(ui: &mut Ui, snapshot: &ConfigSnapshot, home: Option<&Path>)
     });
 }
 
-/// The GitHub hosts egit reads pull requests from: github.com, and the Enterprise hosts listed
-/// (`egit.githubHost`), added and removed here.
-fn github_card(
+/// The forges' hosts egit reads pull and merge requests from: github.com and gitlab.com, and
+/// the GitHub Enterprise and self-managed GitLab hosts listed (`egit.githubHost`,
+/// `egit.gitlabHost`), added and removed here.
+fn forges_card(
     ui: &mut Ui,
     view: &mut ProfileView,
     snapshot: &ConfigSnapshot,
@@ -436,32 +440,77 @@ fn github_card(
 ) {
     let saving = view.saving.is_pending();
     widgets::card(ui, |ui| {
-        widgets::heading(ui, "GitHub");
+        widgets::heading(ui, "GitHub and GitLab");
         ui.add(
             egui::Label::new(muted(
                 ui,
-                "egit reads the pull requests of remotes on github.com, and on the GitHub \
-                 Enterprise hosts listed here, signing in with the credentials git keeps for \
-                 each host.",
+                "egit reads the pull requests of remotes on github.com and the merge requests \
+                 of those on gitlab.com, and of those on the hosts listed here, signing in with \
+                 the credentials git keeps for each host.",
             ))
             .wrap(),
         );
-        ui.add_space(6.0);
-        Grid::new("profile-github")
+        for (kind, key, typed) in [
+            (
+                ForgeKind::GitHub,
+                GITHUB_HOSTS_KEY,
+                &mut view.new_github_host,
+            ),
+            (
+                ForgeKind::GitLab,
+                GITLAB_HOSTS_KEY,
+                &mut view.new_gitlab_host,
+            ),
+        ] {
+            ui.add_space(8.0);
+            let listed = HostList {
+                kind,
+                key,
+                saving,
+                home,
+            };
+            listed.show(ui, snapshot, typed, actions);
+        }
+    });
+}
+
+/// One forge's hosts in the profile: each listed, removable where the user's own settings list
+/// it, and a field to add one.
+struct HostList<'a> {
+    kind: ForgeKind,
+    key: &'static str,
+    saving: bool,
+    home: Option<&'a Path>,
+}
+
+impl HostList<'_> {
+    fn show(
+        self,
+        ui: &mut Ui,
+        snapshot: &ConfigSnapshot,
+        typed: &mut String,
+        actions: &mut Vec<Action>,
+    ) {
+        let (title, hint) = match self.kind {
+            ForgeKind::GitHub => ("GitHub Enterprise hosts", "github.example.com"),
+            ForgeKind::GitLab => ("Self-managed GitLab hosts", "gitlab.example.com"),
+        };
+        ui.label(RichText::new(title).strong());
+        Grid::new(("profile-forge-hosts", self.key))
             .num_columns(3)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
-                for entry in snapshot.get_all(HOSTS_KEY) {
+                for entry in snapshot.get_all(self.key) {
                     let host = entry.text().to_string();
                     ui.label(&host);
-                    widgets::origin(ui, Some(entry), home);
+                    widgets::origin(ui, Some(entry), self.home);
                     if entry.scope == ConfigScope::Global {
-                        if widgets::secondary(ui, !saving, "Remove")
-                            .on_hover_text(format!("Stop reading {host}'s pull requests"))
+                        if widgets::secondary(ui, !self.saving, "Remove")
+                            .on_hover_text(format!("Stop reading {host}'s requests"))
                             .clicked()
                         {
                             actions.push(Action::SaveProfile(vec![ConfigChange::Remove {
-                                key: HOSTS_KEY,
+                                key: self.key,
                                 value: host.clone(),
                             }]));
                         }
@@ -472,32 +521,28 @@ fn github_card(
                 }
             });
         ui.horizontal(|ui| {
-            let label = ui.label(muted(ui, "Enterprise host"));
+            let label = ui.label(muted(ui, format!("{} host", self.kind.name())));
             let field = ui
-                .add_sized(
-                    FIELD,
-                    TextEdit::singleline(&mut view.new_host).hint_text("github.example.com"),
-                )
+                .add_sized(FIELD, TextEdit::singleline(typed).hint_text(hint))
                 .labelled_by(label.id);
-            let typed = view.new_host.trim();
-            let host = ForgeHost::parse(typed).filter(|host| !host.is_github_com());
+            let entry = typed.trim().to_owned();
+            let host = ForgeHost::parse(self.kind, &entry).filter(|host| !host.is_public());
             let entered =
                 field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            if (widgets::secondary(ui, host.is_some() && !saving, "Add").clicked() || entered)
-                && host.is_some()
-            {
+            let add = widgets::secondary(ui, host.is_some() && !self.saving, "Add");
+            if (add.clicked() || entered) && host.is_some() {
                 actions.push(Action::SaveProfile(vec![ConfigChange::Add {
-                    key: HOSTS_KEY,
-                    value: typed.to_owned(),
+                    key: self.key,
+                    value: entry,
                 }]));
-                view.new_host.clear();
-            } else if !typed.is_empty() && host.is_none() {
+                typed.clear();
+            } else if !entry.is_empty() && host.is_none() {
                 ui.label(
                     RichText::new("Not a host egit can use").color(Palette::of(ui.ctx()).danger),
                 );
             }
         });
-    });
+    }
 }
 
 fn pull_push_card(ui: &mut Ui, snapshot: &ConfigSnapshot, home: Option<&Path>) {

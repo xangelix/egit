@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bstr::{BStr, BString, ByteSlice as _};
-use egit_forge::{Account, ForgeRepository, NewPullRequest, Opened, create_pull_request};
+use egit_forge::{
+    Account, ForgeKind, ForgeRepository, NewPullRequest, Opened, create_pull_request,
+};
 use egit_git::{
     CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError, FetchOptions, Git,
     GitError, Integrated, MAX_PLANNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled,
@@ -25,6 +27,7 @@ use egit_git::{
 };
 use egui_async::Bind;
 
+use crate::forge::{request_noun, request_number};
 use crate::jobs::{self, WriteLock};
 use crate::problem::Problem;
 
@@ -116,10 +119,11 @@ pub(crate) enum Task {
         pop: bool,
     },
     DropStash(Stash),
-    /// Fetch a pull request's head (`refspec`, from `remote`), then switch to it.
+    /// Fetch a pull (or merge) request's head (`refspec`, from `remote`), then switch to it.
     CheckOutPullRequest {
         remote: BString,
         refspec: BString,
+        kind: ForgeKind,
         number: u32,
         to: SwitchTo,
     },
@@ -136,7 +140,7 @@ pub(crate) struct PullRequestToOpen {
 
 impl Task {
     /// What it is doing, for people ("Pulling…").
-    pub(crate) const fn doing(&self) -> &'static str {
+    pub(crate) fn doing(&self) -> &'static str {
         match self {
             Self::Fetch => "Fetching",
             Self::Pull(_) | Self::PullAndRemember { .. } => "Pulling",
@@ -161,8 +165,18 @@ impl Task {
             Self::ApplyStash { pop: false, .. } => "Applying the stash",
             Self::ApplyStash { pop: true, .. } => "Popping the stash",
             Self::DropStash(_) => "Dropping the stash",
-            Self::CheckOutPullRequest { .. } => "Checking out the pull request",
-            Self::CreatePullRequest(_) => "Opening the pull request",
+            Self::CheckOutPullRequest {
+                kind: ForgeKind::GitHub,
+                ..
+            } => "Checking out the pull request",
+            Self::CheckOutPullRequest {
+                kind: ForgeKind::GitLab,
+                ..
+            } => "Checking out the merge request",
+            Self::CreatePullRequest(open) => match open.repository.host().kind() {
+                ForgeKind::GitHub => "Opening the pull request",
+                ForgeKind::GitLab => "Opening the merge request",
+            },
         }
     }
 }
@@ -383,20 +397,25 @@ fn forge(
         Task::CheckOutPullRequest {
             remote,
             refspec,
+            kind,
             number,
             to,
         } => {
+            let named = format!("{} {}", request_noun(*kind), request_number(*kind, *number));
             let fetched = fetch_refspecs(
                 git,
                 repository,
                 remote.as_ref(),
                 std::slice::from_ref(refspec),
-                &format!("Fetching pull request #{number}"),
+                &format!("Fetching {named}"),
                 progress,
                 cancel,
             )
             .map(|()| Outcome::Done)
-            .or_else(failed("The pull request couldn't be fetched"))?;
+            .or_else(failed(match kind {
+                ForgeKind::GitHub => "The pull request couldn't be fetched",
+                ForgeKind::GitLab => "The merge request couldn't be fetched",
+            }))?;
             if fetched == Outcome::Cancelled {
                 return Ok(fetched);
             }
@@ -413,18 +432,22 @@ fn forge(
                 repository: on,
                 new,
             } = &**open;
+            let title = match on.host().kind() {
+                ForgeKind::GitHub => "The pull request wasn't opened",
+                ForgeKind::GitLab => "The merge request wasn't opened",
+            };
             let account = accounts
                 .iter()
                 .find(|account| account.host() == on.host())
                 .ok_or_else(|| {
                     Problem::new(
-                        "The pull request wasn't opened",
+                        title,
                         format!("{} isn't one of this repository's remotes.", on.full_name()),
                     )
                 })?;
             create_pull_request(account, on, new, cancel)
                 .map(Outcome::Opened)
-                .map_err(|error| Problem::new("The pull request wasn't opened", error.to_string()))
+                .map_err(|error| Problem::new(title, error.to_string()))
         }
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),

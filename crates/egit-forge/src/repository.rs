@@ -1,6 +1,6 @@
-//! Which GitHub repository a remote's URL names: `https://github.com/owner/name.git`,
-//! `git@github.com:owner/name.git`, `ssh://git@ssh.github.com:443/owner/name`, an Enterprise
-//! host's, and an ssh host alias's (resolved as ssh resolves it).
+//! Which forge repository a remote's URL names: `https://github.com/owner/name.git`,
+//! `git@gitlab.com:group/subgroup/project.git`, `ssh://git@ssh.github.com:443/owner/name`, a
+//! listed host's, and an ssh host alias's (resolved as ssh resolves it).
 
 use std::io::Read as _;
 use std::process::{Command, Stdio};
@@ -8,24 +8,30 @@ use std::time::{Duration, Instant};
 
 use egit_git::ObjectId;
 
-use crate::host::{ForgeHost, ForgeHosts, strip_prefix_ignore_case};
+use crate::host::{ForgeHost, ForgeHosts, ForgeKind, strip_prefix_ignore_case};
 
-/// A repository on a GitHub host.
+/// A repository on a forge's host: GitHub's `owner/name`, or GitLab's `group/…/project`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ForgeRepository {
     host: ForgeHost,
-    owner: String,
-    name: String,
+    path: String,
 }
 
 impl ForgeRepository {
-    /// `owner/name` on `host`; `None` unless both are names GitHub could give.
+    /// `path` on `host`: `owner/name` on GitHub; on GitLab, a project in its group and the
+    /// groups around those. `None` unless each part is a name the forge could give.
     #[must_use]
-    pub fn new(host: ForgeHost, owner: &str, name: &str) -> Option<Self> {
-        (is_name(owner) && is_name(name)).then(|| Self {
+    pub fn new(host: ForgeHost, path: &str) -> Option<Self> {
+        let parts = path.split('/').count();
+        let fits = match host.kind() {
+            ForgeKind::GitHub => parts == 2,
+            ForgeKind::GitLab => parts >= 2,
+        };
+        // GitLab's pages say `/-/` where a path ends.
+        let named = path.split('/').all(|part| is_name(part) && part != "-");
+        (fits && named).then(|| Self {
             host,
-            owner: owner.to_owned(),
-            name: name.to_owned(),
+            path: path.to_owned(),
         })
     }
 
@@ -35,62 +41,74 @@ impl ForgeRepository {
         &self.host
     }
 
-    /// Its owner (a user or an organization).
+    /// Its path: `owner/name`, or `group/subgroup/project`.
+    #[must_use]
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Its owner: a user, an organization, or the groups it is in.
     #[must_use]
     pub fn owner(&self) -> &str {
-        &self.owner
+        self.path
+            .rsplit_once('/')
+            .map_or(self.path.as_str(), |(owner, _)| owner)
     }
 
-    /// Its name.
+    /// Its name, the path's last part.
     #[must_use]
     pub fn name(&self) -> &str {
-        &self.name
+        self.path
+            .rsplit_once('/')
+            .map_or(self.path.as_str(), |(_, name)| name)
     }
 
-    /// `owner/name`.
+    /// Its path, for people.
     #[must_use]
     pub fn full_name(&self) -> String {
-        format!("{}/{}", self.owner, self.name)
+        self.path.clone()
     }
 
-    /// Whether `other` is the same repository (GitHub's names ignore case).
+    /// Whether `other` is the same repository (forges' names ignore case).
     #[must_use]
     pub fn is(&self, other: &Self) -> bool {
-        self.host == other.host
-            && self.owner.eq_ignore_ascii_case(&other.owner)
-            && self.name.eq_ignore_ascii_case(&other.name)
+        self.host == other.host && self.is_named(&other.path)
     }
 
-    /// Whether it is `owner/name` on the same host (ignoring case).
+    /// Whether its path is `path` (ignoring case).
     #[must_use]
-    pub fn is_named(&self, full_name: &str) -> bool {
-        full_name.split_once('/').is_some_and(|(owner, name)| {
-            self.owner.eq_ignore_ascii_case(owner) && self.name.eq_ignore_ascii_case(name)
-        })
+    pub fn is_named(&self, path: &str) -> bool {
+        self.path.eq_ignore_ascii_case(path)
     }
 
     /// Its web page.
     #[must_use]
     pub fn web_url(&self) -> String {
-        self.host.web_url(&format!("/{}/{}", self.owner, self.name))
+        self.host.web_url(&format!("/{}", self.path))
     }
 
-    /// A pull request's web page.
+    /// A pull request's (or merge request's) web page.
     #[must_use]
     pub fn pull_request_url(&self, number: u32) -> String {
-        self.host
-            .web_url(&format!("/{}/{}/pull/{number}", self.owner, self.name))
+        let path = &self.path;
+        self.host.web_url(&match self.host.kind() {
+            ForgeKind::GitHub => format!("/{path}/pull/{number}"),
+            ForgeKind::GitLab => format!("/{path}/-/merge_requests/{number}"),
+        })
     }
 
     /// A commit's web page.
     #[must_use]
     pub fn commit_url(&self, commit: ObjectId) -> String {
-        self.host
-            .web_url(&format!("/{}/{}/commit/{commit}", self.owner, self.name))
+        let path = &self.path;
+        self.host.web_url(&match self.host.kind() {
+            ForgeKind::GitHub => format!("/{path}/commit/{commit}"),
+            ForgeKind::GitLab => format!("/{path}/-/commit/{commit}"),
+        })
     }
 }
 
-/// The GitHub repository the remote URL `url` names on `hosts`, if any.
+/// The forge repository the remote URL `url` names on `hosts`, if any.
 ///
 /// An ssh URL whose host isn't one of them may be an alias from the user's ssh configuration:
 /// `alias` says which host it stands for ([`resolve_ssh_alias`]).
@@ -130,11 +148,10 @@ pub fn forge_repository(
         .strip_suffix(".git")
         .or_else(|| strip_suffix_ignore_case(path, ".git"))
         .unwrap_or(path);
-    let (owner, name) = path.split_once('/')?;
-    ForgeRepository::new(host, owner, name)
+    ForgeRepository::new(host, path)
 }
 
-/// The GitHub host an ssh URL's host name is, directly or as an alias of one.
+/// The forge host an ssh URL's host name is, directly or as an alias of one.
 fn ssh_host(
     hosts: &ForgeHosts,
     hostname: &str,
@@ -167,7 +184,7 @@ fn strip_suffix_ignore_case<'a>(text: &'a str, suffix: &str) -> Option<&'a str> 
         .flatten()
 }
 
-/// Whether `name` could be a GitHub owner's or repository's name: letters, digits, `-`, `_`,
+/// Whether `name` could be a part of a forge's repository path: letters, digits, `-`, `_`,
 /// `.`, not starting with a dot (so never `.` or `..`).
 fn is_name(name: &str) -> bool {
     !name.is_empty()
@@ -226,9 +243,11 @@ mod tests {
     use super::*;
 
     fn named(url: &str) -> Option<String> {
-        let hosts = ForgeHosts::with_enterprise(["ghe.example.com:8443"]);
-        forge_repository(url, &hosts, |alias| {
-            (alias == "github-work").then(|| "github.com".to_owned())
+        let hosts = ForgeHosts::with_listed(["ghe.example.com:8443"], ["git.example.org"]);
+        forge_repository(url, &hosts, |alias| match alias {
+            "github-work" => Some("github.com".to_owned()),
+            "gitlab-work" => Some("gitlab.com".to_owned()),
+            _ => None,
         })
         .map(|repository| format!("{} {}", repository.host().name(), repository.full_name()))
     }
@@ -258,6 +277,34 @@ mod tests {
     }
 
     #[test]
+    fn every_form_of_a_gitlab_url_names_its_project_in_its_groups() {
+        for url in [
+            "https://gitlab.com/gitlab-org/gitlab",
+            "https://gitlab.com/gitlab-org/gitlab.git",
+            "git@gitlab.com:gitlab-org/gitlab.git",
+            "ssh://git@altssh.gitlab.com:443/gitlab-org/gitlab.git",
+            "git@gitlab-work:gitlab-org/gitlab.git",
+        ] {
+            assert_eq!(
+                named(url).as_deref(),
+                Some("gitlab.com gitlab-org/gitlab"),
+                "{url}"
+            );
+        }
+        assert_eq!(
+            named("https://gitlab.com/group/sub.group/deeper/project.git").as_deref(),
+            Some("gitlab.com group/sub.group/deeper/project")
+        );
+        assert_eq!(
+            named("git@git.example.org:team/tool.git").as_deref(),
+            Some("git.example.org team/tool")
+        );
+        // A page's address, not a repository's.
+        assert_eq!(named("https://gitlab.com/group/project/-/tree/main"), None);
+        assert_eq!(named("https://gitlab.com/project"), None);
+    }
+
+    #[test]
     fn enterprise_urls_name_their_host() {
         assert_eq!(
             named("https://ghe.example.com:8443/team/tool.git").as_deref(),
@@ -277,9 +324,10 @@ mod tests {
             "/srv/git/repo.git",
             "./relative/repo",
             "file:///srv/git/repo.git",
-            "https://gitlab.com/group/project.git",
-            "git@gitlab.com:group/project.git",
+            "https://bitbucket.org/group/project.git",
+            "git@bitbucket.org:group/project.git",
             "git@unknown-alias:owner/name.git",
+            "https://github.com/group/sub/project",
             "https://github.com/rust-lang",
             "https://github.com/rust-lang/rust/tree/master",
             "https://github.com/../etc",
@@ -293,14 +341,23 @@ mod tests {
 
     #[test]
     fn web_pages_are_on_the_host() {
-        let repository =
-            ForgeRepository::new(ForgeHost::github_com(), "rust-lang", "rust").unwrap();
+        let repository = ForgeRepository::new(ForgeHost::github_com(), "rust-lang/rust").unwrap();
         assert_eq!(
             repository.pull_request_url(42),
             "https://github.com/rust-lang/rust/pull/42"
         );
         assert!(repository.is_named("Rust-Lang/RUST"));
         assert!(!repository.is_named("rust-lang/cargo"));
+        assert_eq!(
+            (repository.owner(), repository.name()),
+            ("rust-lang", "rust")
+        );
+        let project = ForgeRepository::new(ForgeHost::gitlab_com(), "a/b/c").unwrap();
+        assert_eq!(
+            project.pull_request_url(7),
+            "https://gitlab.com/a/b/c/-/merge_requests/7"
+        );
+        assert_eq!((project.owner(), project.name()), ("a/b", "c"));
     }
 
     #[test]

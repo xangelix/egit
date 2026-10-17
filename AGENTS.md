@@ -53,9 +53,10 @@ it.
   10,000 commits: read and shown in 50 ms, scrolled at 0.43 ms p99, stepped at 0.52 ms.
   `corpus_blame`: 100,000 lines of C rewritten by 100 commits: the first lines labelled in
   47 ms, all in 0.65 s, jumping at 3.6 ms p99 while git blames (3.8 ms after: colouring).
-  `corpus_pull_requests`: 1,000 open pull requests from a fake GitHub on 10,000 commits: the
-  first page shown 24 ms after opening, all in 33 ms; the badged commit table scrolled at
-  0.44 ms p99, the list at 0.25 ms, stepped through (each one's details read) at 0.56 ms.
+  `corpus_pull_requests`: 1,000 open pull requests from a fake GitHub, then merge requests
+  from a fake GitLab, on 10,000 commits: the first page shown 28 ms after opening, all in
+  34 ms; the badged commit table scrolled at 0.54 ms p99, the list at 0.28 ms, stepped
+  through (each one's details read) at 0.40 ms (each forge alike).
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a
@@ -299,35 +300,52 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     A `Credential` is wiped when dropped. `tests/credential.rs` fills, rejects, and approves
     through a sandbox's `store` helper.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
-- `crates/egit-forge` — forges' web APIs (GitHub: github.com and Enterprise Server); no egui.
-  egit's only network connections of its own (git makes every other).
-  - `host.rs` — `ForgeHost`: github.com (its APIs on `api.github.com`) or an Enterprise host
-    (`/api/graphql`, `/api/v3`); `parse` reads a listed entry (`host[:port]`, `https://`;
-    `http://` only for the loopback address). `ForgeHosts`: github.com and the listed;
-    `for_web` by `host[:port]` (no default port), `for_ssh` by host name (`ssh.github.com` is
-    github.com).
-  - `repository.rs` — `ForgeRepository` (host, owner, name; web pages of it, a pull request,
-    a commit). `forge_repository`: a remote URL of any form (https, ssh, scp-like, `git://`)
-    to its repository; an ssh host alias through `resolve_ssh_alias` (`ssh -G -- <alias>`'s
-    `hostname`, 2 s at most; never an option).
+- `crates/egit-forge` — forges' web APIs: GitHub's (github.com, Enterprise Server) and GitLab's
+  (gitlab.com, self-managed); no egui. egit's only network connections of its own (git makes
+  every other).
+  - `host.rs` — `ForgeKind` (GitHub, GitLab; `name`). `ForgeHost`: a kind and a host:
+    github.com (APIs on `api.github.com`), an Enterprise host (`/api/graphql`, `/api/v3`),
+    GitLab's (`/api/graphql`, `/api/v4`); `parse` reads a listed entry (`host[:port]`,
+    `https://`; `http://` only for the loopback address); `is_public` (github.com, gitlab.com);
+    `new_token_url` (the forge's page making a token with what egit needs). `ForgeHosts`:
+    github.com, gitlab.com, and the listed (`with_listed`: each kind's); `for_web` by
+    `host[:port]` (no default port), `for_ssh` by host name (`ssh.github.com`,
+    `altssh.gitlab.com` are their forges').
+  - `repository.rs` — `ForgeRepository` (a host and a path: GitHub's `owner/name`, GitLab's
+    `group/…/project`; `owner`, `name`, `is`, web pages of it, a request (`/pull/12`,
+    `/-/merge_requests/12`), a commit). `forge_repository`: a remote URL of any form (https,
+    ssh, scp-like, `git://`) to its repository; an ssh host alias through `resolve_ssh_alias`
+    (`ssh -G -- <alias>`'s `hostname`, 2 s at most; never an option).
   - `http.rs` — `Http`, a ureq agent per host: rustls on aws-lc-rs (`deny.toml` bans `ring`
     and `webpki-roots`), certificates checked by the platform verifier (the system's trust
     store), the environment's proxy (none for the loopback address), no redirects, 10 s to
-    connect and 60 s in all, answers of 32 MiB at most; the token a sensitive header, built in
-    a zeroizing string, and refused without HTTPS (but to the loopback address).
+    connect and 60 s in all, answers of 32 MiB at most; the token a sensitive bearer header,
+    built in a zeroizing string, and refused without HTTPS (but to the loopback address);
+    GitHub's media type and API version only to GitHub; either forge's rate-limit headers.
   - `account.rs` — `Account`: a host's sign-in under a repository's configuration: the
     credential filled without asking on first use; `sign_in` asks (labelled) and checks it
-    (`viewer`); a 401 rejects and forgets it (`Refused`), the first success approves it.
-  - `github.rs` — GraphQL: `pull_requests` (open, most recently updated first, 100 a page, each
-    handed over as it lands, up to a limit), `pull_request_details` (description, counts,
-    mergeable, checks one by one, latest reviews, labels), `repository_info` (default branch,
-    the repository it was forked from); REST: `create_pull_request` (`owner:branch` from a
-    fork). Rate limits (by headers or `RATE_LIMITED`) say when they reset; `NOT_FOUND`,
-    refusals, and GitHub's validation messages become `ForgeError`s (`error.rs`).
-  - `testing.rs` (feature `testing`) — `FakeGitHub`: the API on the loopback address (pages,
-    details, repository, viewer, opening; the bearer token checked; a rate limit to switch on;
-    requests recorded). `tests/github.rs` runs each call against it, signed in through a
-    sandbox's `store` helper.
+    (who it is); a 401 rejects and forgets it (`Refused`), the first success approves it.
+  - `api.rs` — the calls, each sent to its repository's forge: `pull_requests` (open, most
+    recently updated first, 100 a page, each handed over as it lands, up to a limit),
+    `pull_request_details`, `repository_info` (default branch, the repository it was forked
+    from), `create_pull_request`. `model.rs` — what they give, alike for both forges
+    (`PullRequest`, `PullRequestDetails`, `CheckState`, `ReviewDecision`, `NewPullRequest`:
+    a fork's `head` repository, …). `answer.rs` — answers read alike: GraphQL data or errors,
+    REST JSON, rate limits (by either forge's headers, or `RATE_LIMITED`) saying when they
+    reset, `NOT_FOUND`, refusals with either forge's reasons (GitHub's validation messages,
+    GitLab's `message` as a sentence, list, or fields); `parse_time`.
+  - `github.rs` — GitHub: GraphQL for pull requests, details (checks one by one, latest
+    reviews), and the repository; REST for opening one (`owner:branch` from a fork).
+    `gitlab.rs` — GitLab: GraphQL (`project(fullPath:)`) for merge requests (`state: opened,
+    sort: UPDATED_DESC`; approved by whom, the head pipeline's status) and details (the
+    pipeline's jobs, not retried; a failure allowed is neutral; who approved; whether it
+    conflicts); REST for the project (`GET /projects/:path`: its id, default branch, the
+    project it was forked from) and opening one (in the branch's own project; from a fork,
+    aimed at the target's id; a draft by GitLab's own `Draft:` mark).
+  - `testing.rs` (feature `testing`) — `FakeForge`: either forge's API on the loopback address
+    (pages, details, repository, who is signed in, opening; the bearer token checked; a rate
+    limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each
+    call against it, signed in through a sandbox's `store` helper (and an askpass script).
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
   - `layout.rs` — `GraphBuilder::push` lays out each commit as `walk_history` yields it, in
@@ -518,11 +536,12 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     and `upstream_of` read the configuration. A forge's tasks run with the tab's accounts:
     `CheckOutPullRequest` (`fetch_refspecs` of its refspec, then a switch; changes in the way
     lead to stash-and-switch, as a switch's do) and `CreatePullRequest` (`Outcome::Opened`).
-  - `forge.rs` — `RepoForge`, a tab's GitHub side: `configured` (whenever new configuration
-    lands) works out in a job which remotes are GitHub repositories (`remote_urls`, as git
-    rewrites them, else as `remote.<name>.url` writes them; the hosts listed as
-    `egit.githubHost`); an `Account` per host (the repository's credential configuration);
-    the open pull requests read in a detached job, each repository up to `LIMIT` (1,000),
+  - `forge.rs` — `RepoForge`, a tab's forge side: `configured` (whenever new configuration
+    lands) works out in a job which remotes are GitHub repositories or GitLab projects
+    (`remote_urls`, as git rewrites them, else as `remote.<name>.url` writes them; the hosts
+    listed as `egit.githubHost` and `egit.gitlabHost`); an `Account` per host (the
+    repository's credential configuration); the open requests read in a detached job, each
+    repository up to `LIMIT` (1,000),
     each page into a shared `Found` as it lands (the window woken); a read again
     (`refresh`: after any task that exchanged with a remote, each background fetch, a
     sign-in, and Refresh) takes over only once complete, a failed one keeping what is shown
@@ -530,7 +549,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     head commits sorted with their pull request's number and checks, made again when the
     list grows or is replaced (`badges_at`, a binary search). `pull_request_for` (a branch's
     open one), `remote_of`, `repository_of`, `sign_in` (asks through egit's prompts;
-    `signing`, `sign_in_problem`).
+    `signing`, `sign_in_problem`); `kind`, `kind_of`, `nouns`. Each forge's words:
+    `request_noun` ("pull request", "merge request"), `request_number` (`#12`, `!12`), and
+    `fork_head` (`refs/pull/12/head` into `pr/12`, `refs/merge-requests/12/head` into
+    `mr/12`).
   - `desktop.rs` — `Opener`, and `is_web_page` (HTTPS, or HTTP to the loopback address;
     nothing that could pass for an option): `xdg-open`, else `gio open`, in a job.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
@@ -643,32 +665,36 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     as git names it, until edited), submodules, partial; `Action::Clone` runs `clone` as a
     job (one at a time; `format::progress` and Cancel while it runs, `CancelClone`), then
     opens the repository; cancelled, it says git removed what it had made.
-    `views/pulls.rs` — `PullRequestView`, the pull requests in the commit table's place (a
-    `Tool`, from the top bar's "N pull requests" button or a badge): a bar (repositories,
+    `views/pulls.rs` — `PullRequestView`, the pull (or merge) requests in the commit table's
+    place, named their forge's way (a `Tool`, from the top bar's "N pull requests" or "N merge
+    requests" button, or a badge): a bar (repositories,
     "12 open" or "1,000 of 5,512 open: the most recently updated", Refresh, a problem), the
     rows (`show_rows`: number, checks, title, a draft's chip, author, head → base and a
     fork, review, age; ↑ ↓), and the selected one's details (read when selected:
     `pull_request_details`): "Show the commit" (when its head is in the history: looked for
     once a selection, a scan), "Check out" (a same-repository one fetches its branch into the
-    remote-tracking one and switches to the local branch, tracking it; a fork's fetches
-    `refs/pull/<n>/head` into `pr/<n>`; disabled, saying why, while a task runs or an
+    remote-tracking one and switches to the local branch, tracking it; a fork's fetches its
+    forge's ref for it into `pr/<n>` or `mr/<n>` (`fork_head`); disabled, saying why, while a
+    task runs or an
     operation is in progress), "Open on GitHub", its size and mergeability, labels, checks
     (each with its page), latest reviews, description. Without credentials, a card to sign in
     (git's prompts) or to create a token on the host. `check_look` gives a checks state's
     icon and colour, which the commit table's pull request badges (`#12`, on head commits,
     their title on hover; a click shows it, the menu opens its page) share.
-    `views/pull_form.rs` — `PullRequestForm`, the dialog opening a pull request, from a
-    local branch's menu ("Create pull request…" once it is pushed to a remote on GitHub;
-    "Show pull request #n" when one is open for it): in a job, the repository's default branch
+    `views/pull_form.rs` — `PullRequestForm`, the dialog opening a pull (or merge) request,
+    from a local branch's menu ("Create pull request…" or "Create merge request…" once it is
+    pushed to a remote on GitHub or GitLab; "Show pull request #n" or "Show merge request !n"
+    when one is open for it): in a job, the repository's default branch
     and the one it was forked from (`repository_info`; a fork's pull request goes there by
     default), and the title and description of the branch's one commit
     (`commits_between` against the base, then its message), its name otherwise; then into,
-    base, title, description, draft. "Open on GitHub" is on a commit's menu too.
+    base, title, description, draft. "Open on GitHub" (or GitLab) is on a commit's menu too.
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
-    credentials, the GitHub Enterprise hosts (added and removed as `egit.githubHost`), pull
-    and push, and every setting, each with its origin), `repo` (overview
-    and settings table), `status_bar` (git's version and path, the theme, a warning when
+    credentials, the GitHub Enterprise and self-managed GitLab hosts (added and removed as
+    `egit.githubHost` and `egit.gitlabHost`), pull and push, and every setting, each with its
+    origin), `repo` (overview and settings table), `status_bar` (git's version and path, the
+    theme, a warning when
     questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
     `AskpassServer` at launch and gives git its environment; questions queue and show one
     at a time in a modal (`PromptKind` decides the field and buttons); the abandoned are

@@ -70,7 +70,7 @@ pub(crate) struct RepoTab {
     pub(crate) commits_made: u64,
     /// What the user asked of it: fetching, pulling, pushing, ….
     pub(crate) tasks: Tasks,
-    /// Its remotes on GitHub, and their pull requests.
+    /// Its remotes on GitHub and GitLab, and their requests.
     pub(crate) forge: RepoForge,
     /// The configuration the forge last worked its remotes out from.
     forge_config: Option<Arc<ConfigSnapshot>>,

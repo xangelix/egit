@@ -1,8 +1,9 @@
-//! A repository's forge: which of its remotes are GitHub repositories (on github.com, or on an
-//! Enterprise host the configuration lists as `egit.githubHost`), an account per host signed in
-//! with git's credentials, and their open pull requests, read in the background (a page at a
-//! time, shown as each lands) and read again when the remotes may have moved; the badges they
-//! put on their head commits.
+//! A repository's forge: which of its remotes are GitHub repositories or GitLab projects (on
+//! github.com and gitlab.com, or on hosts the configuration lists as `egit.githubHost` and
+//! `egit.gitlabHost`), an account per host signed in with git's credentials, and their open pull
+//! requests (GitHub's) and merge requests (GitLab's), read in the background (a page at a time,
+//! shown as each lands) and read again when the remotes may have moved; the badges they put on
+//! their head commits; and how each forge names them.
 //!
 //! A read again takes over only once complete, so the list never empties or jumps meanwhile.
 
@@ -10,8 +11,8 @@ use std::sync::Arc;
 
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_forge::{
-    Account, CheckState, ForgeError, ForgeHost, ForgeHosts, ForgeRepository, PullRequest,
-    forge_repository, pull_requests, resolve_ssh_alias,
+    Account, CheckState, ForgeError, ForgeHost, ForgeHosts, ForgeKind, ForgeRepository,
+    PullRequest, forge_repository, pull_requests, resolve_ssh_alias,
 };
 use egit_git::{CancelToken, ConfigSnapshot, Git, ObjectId, Repository, remote_urls};
 use egui_async::Bind;
@@ -20,13 +21,43 @@ use parking_lot::{Mutex, MutexGuard};
 use crate::jobs;
 use crate::problem::Problem;
 
-/// The key listing GitHub Enterprise hosts (one value each).
-pub(crate) const HOSTS_KEY: &str = "egit.githubHost";
+/// The keys listing GitHub Enterprise and self-managed GitLab hosts (one value each).
+pub(crate) const GITHUB_HOSTS_KEY: &str = "egit.githubHost";
+pub(crate) const GITLAB_HOSTS_KEY: &str = "egit.gitlabHost";
+
+/// What `kind` calls what it merges: "pull request" or "merge request".
+pub(crate) const fn request_noun(kind: ForgeKind) -> &'static str {
+    match kind {
+        ForgeKind::GitHub => "pull request",
+        ForgeKind::GitLab => "merge request",
+    }
+}
+
+/// How `kind` writes a request's number: GitHub's `#12`, GitLab's `!12`.
+pub(crate) fn request_number(kind: ForgeKind, number: u32) -> String {
+    match kind {
+        ForgeKind::GitHub => format!("#{number}"),
+        ForgeKind::GitLab => format!("!{number}"),
+    }
+}
+
+/// Where a fork's request `number` is fetched from on its base repository, and the branch it
+/// is fetched into: GitHub's `refs/pull/12/head` into `pr/12`, GitLab's
+/// `refs/merge-requests/12/head` into `mr/12`.
+pub(crate) fn fork_head(kind: ForgeKind, number: u32) -> (String, String) {
+    match kind {
+        ForgeKind::GitHub => (format!("refs/pull/{number}/head"), format!("pr/{number}")),
+        ForgeKind::GitLab => (
+            format!("refs/merge-requests/{number}/head"),
+            format!("mr/{number}"),
+        ),
+    }
+}
 
 /// The most open pull requests read for each repository: the most recently updated.
 pub(crate) const LIMIT: u32 = 1_000;
 
-/// A remote that is a GitHub repository.
+/// A remote that is a forge's repository.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ForgeRemote {
     pub(crate) remote: BString,
@@ -73,7 +104,7 @@ impl ForgeProblem {
                 reset: *reset,
             },
             other => Self::Other(Problem::new(
-                "The pull requests couldn't be read",
+                "The requests couldn't be read",
                 other.to_string(),
             )),
         }
@@ -103,7 +134,7 @@ pub(crate) struct Badge {
 /// A repository's forge.
 #[derive(Debug)]
 pub(crate) struct RepoForge {
-    /// The remotes that are GitHub repositories, being worked out.
+    /// The remotes that are forges' repositories, being worked out.
     resolving: Bind<Arc<[ForgeRemote]>, Problem>,
     /// What they were worked out as, last.
     pub(crate) remotes: Arc<[ForgeRemote]>,
@@ -156,7 +187,7 @@ impl RepoForge {
         }
     }
 
-    /// Works out (again) which remotes are GitHub repositories, from the repository's
+    /// Works out (again) which remotes are forges' repositories, from the repository's
     /// configuration as just read: the hosts it lists, and its remotes' URLs, as git rewrites
     /// them (else as written).
     pub(crate) fn configured(
@@ -165,11 +196,12 @@ impl RepoForge {
         repository: &Arc<Repository>,
         config: &ConfigSnapshot,
     ) {
-        let hosts = ForgeHosts::with_enterprise(
+        let listed = |key| {
             config
-                .get_all(HOSTS_KEY)
-                .filter_map(|entry| entry.text().to_str().ok()),
-        );
+                .get_all(key)
+                .filter_map(|entry| entry.text().to_str().ok())
+        };
+        let hosts = ForgeHosts::with_listed(listed(GITHUB_HOSTS_KEY), listed(GITLAB_HOSTS_KEY));
         let written = written_urls(config);
         let (git, repository) = (git.clone(), Arc::clone(repository));
         self.resolving.request(jobs::blocking(move || {
@@ -342,6 +374,35 @@ impl RepoForge {
             .map(|listed| listed.pull.title.clone())
     }
 
+    /// Which forge the repositories are on: the first one's (GitHub's, before any is known).
+    pub(crate) fn kind(&self) -> ForgeKind {
+        self.repositories
+            .first()
+            .map_or(ForgeKind::GitHub, |repository| repository.host().kind())
+    }
+
+    /// What its repositories' forges call what they merge, in the plural: "pull requests",
+    /// "merge requests", or both when the remotes are on each.
+    pub(crate) fn nouns(&self) -> &'static str {
+        let on = |kind| {
+            self.repositories
+                .iter()
+                .any(|repository| repository.host().kind() == kind)
+        };
+        match (on(ForgeKind::GitHub), on(ForgeKind::GitLab)) {
+            (true, true) => "pull and merge requests",
+            (false, true) => "merge requests",
+            _ => "pull requests",
+        }
+    }
+
+    /// Which forge repository `index` is on.
+    pub(crate) fn kind_of(&self, index: usize) -> ForgeKind {
+        self.repositories
+            .get(index)
+            .map_or_else(|| self.kind(), |repository| repository.host().kind())
+    }
+
     /// The sign-ins, a host each.
     pub(crate) fn accounts(&self) -> &[Arc<Account>] {
         &self.accounts
@@ -364,7 +425,7 @@ impl RepoForge {
             .map(|remote| remote.remote.as_bstr())
     }
 
-    /// The repository a remote is, if it is one of GitHub's.
+    /// The repository a remote is, if it is on a forge.
     pub(crate) fn repository_of(&self, remote: &BStr) -> Option<&ForgeRepository> {
         self.remotes
             .iter()
@@ -460,7 +521,7 @@ impl RepoForge {
                     if matches!(error, ForgeError::Cancelled) {
                         return;
                     }
-                    tracing::debug!(%error, repository = %repository.full_name(), "pull requests unread");
+                    tracing::debug!(%error, repository = %repository.full_name(), "requests unread");
                     let problem = ForgeProblem::of(&error);
                     if matches!(
                         problem,
