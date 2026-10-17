@@ -1690,6 +1690,98 @@ fn changes_are_stashed_popped_and_dropped() {
 }
 
 #[test]
+fn history_is_rewritten_in_the_rebase_editor() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    for (index, subject) in ["One", "Two", "Three", "Four", "Five"].iter().enumerate() {
+        let file = format!("f{}", index + 1);
+        sandbox
+            .commit_file(&repo, &file, &format!("{subject}\n"), subject)
+            .unwrap();
+    }
+    let short = |name: &str| {
+        let shown = sandbox
+            .run(&repo, "rev-parse", &["--short=8", name])
+            .unwrap();
+        String::from_utf8(shown.stdout).unwrap().trim().to_owned()
+    };
+    let subjects = || {
+        let shown = sandbox.run(&repo, "log", &["--format=%s"]).unwrap();
+        String::from_utf8(shown.stdout).unwrap()
+    };
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_of(5));
+
+    harness
+        .get_by_role_and_label(Role::Button, "Two")
+        .click_secondary();
+    wait_for_label(&mut harness, "Rebase interactively from here…");
+    harness
+        .get_by_label("Rebase interactively from here…")
+        .click();
+    wait_for_label(&mut harness, "Rebase main interactively");
+    wait_for_label(
+        &mut harness,
+        &format!("4 commits, onto {}", short("HEAD~4")),
+    );
+    render(&mut harness, "rebase-editor");
+
+    // By keys: `Five` dropped, `Three` squashed into `Two`, `Four` moved to the bottom.
+    let select = |harness: &mut Harness<'_, EgitApp>, subject: &str| {
+        harness.get_by_role_and_label(Role::Button, subject).click();
+        harness.run_steps(2);
+    };
+    // Each key lands before a row is looked for: moves move them.
+    let press = |harness: &mut Harness<'_, EgitApp>, modifiers, key| {
+        harness.key_press_modifiers(modifiers, key);
+        harness.run_steps(2);
+    };
+    let none = egui::Modifiers::NONE;
+    select(&mut harness, "Five");
+    press(&mut harness, none, egui::Key::D);
+    select(&mut harness, "Three");
+    press(&mut harness, none, egui::Key::S);
+    select(&mut harness, "Four");
+    for _ in 0..2 {
+        press(&mut harness, egui::Modifiers::ALT, egui::Key::ArrowDown);
+    }
+    // `Two` reworded: its new message is the squashed pair's.
+    select(&mut harness, "Two");
+    press(&mut harness, none, egui::Key::R);
+    wait_for_label(&mut harness, "Its new message:");
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Its new message:")
+        .focus();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.run_steps(1);
+    type_into(
+        &mut harness,
+        Role::MultilineTextInput,
+        "Its new message:",
+        "Two and three",
+    );
+    render(&mut harness, "rebase-plan");
+    harness.get_by_label("Start rebase").click();
+    wait_for_label(&mut harness, "Rebased: the branch is rewritten.");
+    assert_eq!(subjects(), "Two and three\nFour\nOne\n");
+    settle(&mut harness, "the rewritten history", history_of(3));
+
+    // A commit dropped from its menu, once confirmed.
+    let four = short("HEAD~1");
+    harness
+        .get_by_role_and_label(Role::Button, "Four")
+        .click_secondary();
+    wait_for_label(&mut harness, "Drop this commit…");
+    harness.get_by_label("Drop this commit…").click();
+    wait_for_label(&mut harness, &format!("Drop {four} from main?"));
+    harness.get_by_label("Drop").click();
+    wait_for_label(&mut harness, &format!("Dropped {four}."));
+    assert_eq!(subjects(), "Two and three\nOne\n");
+}
+
+#[test]
 fn whole_file_shows_all_of_the_file_and_back() {
     let sandbox = Sandbox::new().unwrap();
     let repo = sandbox.init("repo").unwrap();

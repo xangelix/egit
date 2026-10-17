@@ -9,6 +9,7 @@ pub(crate) mod home;
 mod merge;
 pub(crate) mod profile;
 pub(crate) mod prompts;
+mod rebase;
 pub(crate) mod repo;
 pub(crate) mod status_bar;
 mod tasks;

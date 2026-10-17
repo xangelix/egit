@@ -4,7 +4,9 @@
 //! text and scrolling it. Then the whole application on a commit that moves 100,000 files:
 //! how soon they are listed and counted, and frames scrolling through them beside a diff. And
 //! the merge editor on 100,000 lines of C with 1,000 conflicts: how soon git merges them and
-//! the document is made (open, and again after a pick), and frames stepping through them.
+//! the document is made (open, and again after a pick), and frames stepping through them. And
+//! the interactive rebase editor on 10,000 commits: how soon they are read, and frames
+//! scrolling and stepping through them.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
@@ -588,6 +590,131 @@ fn corpus_merge() {
     });
     let worst = report("stepping through the conflicts", stepping);
     snapshot(&mut harness, "merge");
+    if !cfg!(debug_assertions) {
+        assert!(
+            worst < Duration::from_millis(8),
+            "the 99th percentile frame took {worst:?}"
+        );
+    }
+}
+
+/// Commits in the interactive rebase editor's measurement.
+const REBASED: usize = 10_000;
+
+/// A repository whose `main` holds `REBASED` commits, each changing one file.
+fn long_branch(sandbox: &Sandbox) -> std::path::PathBuf {
+    let repo = sandbox.init("long").unwrap();
+    let mut stream = Vec::new();
+    for index in 0..REBASED {
+        let message = format!("Commit {index}\n");
+        let data = format!("{index}\n");
+        let _ = write!(
+            stream,
+            "commit refs/heads/main\ncommitter T <t@egit.invalid> {} +0000\ndata {}\n{message}\
+             M 100644 inline counter\ndata {}\n{data}\n",
+            1_700_000_000 + index,
+            message.len(),
+            data.len()
+        );
+    }
+    sandbox
+        .git()
+        .write("fast-import")
+        .arg("--quiet")
+        .current_dir(&repo)
+        .stdin(stream)
+        .output()
+        .unwrap();
+    sandbox
+        .run(&repo, "symbolic-ref", &["HEAD", "refs/heads/main"])
+        .unwrap();
+    sandbox.run(&repo, "reset", &["--quiet", "--hard"]).unwrap();
+    repo
+}
+
+#[test]
+#[ignore = "a release-build measurement: see the module's documentation"]
+fn corpus_rebase() {
+    println!("the interactive rebase editor on {REBASED} commits:");
+    let sandbox = Sandbox::new().unwrap();
+    let repo = long_branch(&sandbox);
+    let git = sandbox.git().clone();
+    let builder = Harness::builder().with_size([1400.0, 900.0]);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    let mut harness = builder.build_eframe(move |creation| {
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            None,
+            Prompts::none(),
+        )
+    });
+    harness.run_steps(2);
+    harness.state_mut().state.actions.push(Action::Open(repo));
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state.repos.first().is_some_and(|repo| {
+            !repo.history.is_loading()
+                && repo.history.shown.rows() == u64::try_from(REBASED).unwrap()
+        })
+    });
+
+    // To the root (End), then its menu.
+    let newest = format!("Commit {}", REBASED - 1);
+    let started = Instant::now();
+    while harness
+        .query_by_role_and_label(Role::Button, &newest)
+        .is_none()
+    {
+        assert!(started.elapsed() < Duration::from_secs(30), "no subject");
+        harness.step();
+    }
+    harness.get_by_role_and_label(Role::Button, &newest).click();
+    harness.run_steps(2);
+    harness.key_press(egui::Key::End);
+    let started = Instant::now();
+    while harness
+        .query_by_role_and_label(Role::Button, "Commit 0")
+        .is_none()
+    {
+        assert!(started.elapsed() < Duration::from_secs(30), "no root");
+        harness.step();
+    }
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(Role::Button, "Commit 0")
+        .click_secondary();
+    harness.run_steps(2);
+    let started = Instant::now();
+    harness
+        .get_by_label("Rebase interactively from here…")
+        .click();
+    let read = format!("{REBASED} commits, from the root");
+    while harness.query_by_label(&read).is_none() {
+        assert!(started.elapsed() < Duration::from_secs(30), "not read");
+        harness.step();
+    }
+    println!("  read and shown in {:?}", started.elapsed());
+
+    // The newest selected (stepping starts there), then the plan scrolled.
+    harness.get_by_role_and_label(Role::Button, &newest).click();
+    harness.run_steps(2);
+    harness.hover_at(egui::pos2(450.0, 400.0));
+    let scrolling = measure_frames(&mut harness, 600, |harness, _| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -600.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+    let mut worst = report("wheel scrolling the plan", scrolling);
+    let stepping = measure_frames(&mut harness, 600, |harness, _| {
+        harness.key_press(egui::Key::ArrowDown);
+    });
+    worst = worst.max(report("stepping down the plan", stepping));
+    snapshot(&mut harness, "rebase");
+    println!("  peak memory {:.0} MB", peak_memory_mb());
     if !cfg!(debug_assertions) {
         assert!(
             worst < Duration::from_millis(8),

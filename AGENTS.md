@@ -45,7 +45,8 @@ it.
   (3.7 ms jumping, up to 2.6 ms scrolling: colouring takes up to 3 ms a frame).
   `corpus_merge`: the merge editor on 100,000 lines of C with 1,000 conflicts: merged by git
   in 220 ms, the document made in 9 ms (open, and again after a pick), stepping from conflict
-  to conflict highlighted at 3.4 ms p99.
+  to conflict highlighted at 3.4 ms p99. `corpus_rebase`: the interactive rebase editor on
+  10,000 commits: read and shown in 50 ms, scrolled at 0.43 ms p99, stepped at 0.52 ms.
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a
@@ -430,9 +431,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     asked for at a time (fetch `--all --prune`, pull as configured or by merge or rebase,
     push a branch or a tag, delete a remote's branch, abort or continue an operation,
     remember `pull.rebase` then pull; switch, stash then switch, create, rename, or delete a
-    branch, tag or delete a tag; merge, rebase onto, cherry-pick, revert, reset; stash, apply
-    or pop or drop a stash; `Action::Task`), run by `run` through four groups (remotes,
-    history, references, stashes), under the `WriteLock`, its `Progress` shown and
+    branch, tag or delete a tag; merge, rebase onto, cherry-pick, revert, reset; rebase
+    interactively, drop a commit, squash one into its parent (their plans made in the job from
+    `rebase_range`; `range_problem` says why a range won't do); stash, apply or pop or drop a
+    stash; `Action::Task`), run by `run` through five groups (remotes, history, rewriting,
+    references, stashes), under the `WriteLock`, its `Progress` shown and
     `CancelToken` stopped by `Action::CancelTask` (`Outcome::Cancelled`, not a failure).
     Besides git's results, an `Outcome` can be `Done`, `Integrated` (done, conflicts, empty),
     `Stashed` (whether anything was), `WouldOverwrite` (a switch refused, with the paths), or
@@ -520,7 +523,19 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     rebase onto it; rename or delete a branch, delete a remote's on its remote; push or delete
     a tag), a branch badge double-clicked (switch), and the stash menu beside the commit count
     ("Stash the changes…", and each stash with Apply, Pop, Drop…). Each asks a task or a
-    dialog (`Ask`), carried out by the history view (`carry_out`).
+    dialog (`Ask`), or opens the rebase editor, carried out by the history view
+    (`carry_out`). The commit menu's "Rewrite" group (on a branch, nothing running): "Rebase
+    interactively from here…", "Edit the message…" (the editor, that commit reworded),
+    "Squash into its parent", "Drop this commit…" (a dialog first).
+    `views/rebase.rs` — `RebaseView`, the interactive rebase editor in the commit table's
+    place (Escape or "History" goes back): the range read in a job, the plan's rows newest
+    first (each a commit's place in the range, a `Kind`, and a reworded message once there is
+    one), drawn with `show_rows` (one height: a row's pitch counts the item spacing), each with
+    Move up and Move down, its step, its name and subject (dropped struck through, melded
+    marked), the selected one's message below (a code field when reworded); keys while no
+    text field has the focus: ↑ ↓, Alt+↑ Alt+↓ to move, P R S F D. `plan` hands git the rows
+    oldest first, or says why not (nothing changes, nothing to meld into, an empty message,
+    everything dropped); "Start rebase" runs it as a task.
     `views/clone.rs` — Home's clone card (`CloneView`): the address, the folder it goes into
     (typed, `~` the home folder and a relative path inside it, or picked: `PickCloneFolder`;
     `Settings::clone_folder`, the last clone's, at first), the folder's name (`name_from_url`,

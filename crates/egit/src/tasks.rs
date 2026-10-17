@@ -15,11 +15,12 @@ use std::time::{Duration, Instant};
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
     CancelToken, ConfigEntry, ConfigSnapshot, ConfigTarget, DeleteBranchError, FetchOptions, Git,
-    GitError, Integrated, ObjectId, Operation, Progress, PullMode, Pulled, PushOptions, Pushed,
-    Repository, ResetMode, Stash, StashError, SwitchError, SwitchTo, abort_operation, cherry_pick,
-    continue_operation, create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
-    fetch, merge, pull, push, push_tag, rebase, rename_branch, reset, revert, set_config,
-    stash_apply, stash_drop, stash_push, switch,
+    GitError, Integrated, MAX_PLANNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled,
+    PushOptions, Pushed, RangeError, RebaseError, RebaseRange, Repository, ResetMode, Stash,
+    StashError, Step, SwitchError, SwitchTo, abort_operation, cherry_pick, continue_operation,
+    create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag, fetch, merge, pull,
+    push, push_tag, rebase, rebase_interactive, rebase_range, rename_branch, reset, revert,
+    set_config, stash_apply, stash_drop, stash_push, switch,
 };
 use egui_async::Bind;
 
@@ -80,6 +81,16 @@ pub(crate) enum Task {
     },
     CherryPick(ObjectId),
     Revert(ObjectId),
+    /// Rebase the current branch interactively: onto `base` (`None`: from the root), its
+    /// commits as `plan` says (oldest first).
+    InteractiveRebase {
+        base: Option<ObjectId>,
+        plan: Vec<Planned>,
+    },
+    /// Drop a commit from the current branch (what follows it rebased).
+    DropCommit(ObjectId),
+    /// Squash a commit into its parent (their messages joined).
+    SquashIntoParent(ObjectId),
     /// Reset the current branch to a commit.
     Reset(ObjectId, ResetMode),
     /// Tag a commit: annotated with a message, or lightweight.
@@ -123,7 +134,9 @@ impl Task {
                 "Deleting"
             }
             Self::Merge { .. } => "Merging",
-            Self::Rebase { .. } => "Rebasing",
+            Self::Rebase { .. } | Self::InteractiveRebase { .. } => "Rebasing",
+            Self::DropCommit(_) => "Dropping the commit",
+            Self::SquashIntoParent(_) => "Squashing",
             Self::CherryPick(_) => "Cherry-picking",
             Self::Revert(_) => "Reverting",
             Self::Reset(..) => "Resetting",
@@ -301,6 +314,9 @@ fn run(
         | Task::CherryPick(_)
         | Task::Revert(_)
         | Task::Reset(..) => history(git, repository, task, cancel),
+        Task::InteractiveRebase { .. } | Task::DropCommit(_) | Task::SquashIntoParent(_) => {
+            rewrite(git, repository, task, cancel)
+        }
         Task::Switch(_)
         | Task::StashAndSwitch(_)
         | Task::CreateBranch { .. }
@@ -417,6 +433,83 @@ fn history(
             .or_else(failed("Resetting failed")),
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),
+    }
+}
+
+/// The current branch's history rewritten: interactively, or one commit dropped or squashed.
+fn rewrite(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
+    const TITLE: &str = "Rebasing failed";
+    let range =
+        |from| rebase_range(git, repository, from, cancel).map_err(|error| range_problem(&error));
+    let (base, plan) = match task {
+        Task::InteractiveRebase { base, plan } => (*base, plan.clone()),
+        Task::DropCommit(commit) => {
+            let range = range(*commit)?;
+            (
+                range.base,
+                planned(&range, |id| (id == *commit).then_some(Step::Drop)),
+            )
+        }
+        Task::SquashIntoParent(commit) => {
+            let parent = range(*commit)?.base.ok_or_else(|| {
+                Problem::new(
+                    TITLE,
+                    "It is the first commit: there is nothing to squash it into.",
+                )
+            })?;
+            let range = range(parent)?;
+            (
+                range.base,
+                planned(&range, |id| (id == *commit).then_some(Step::Squash)),
+            )
+        }
+        // `run` sends the others elsewhere.
+        _ => return Ok(Outcome::Done),
+    };
+    match rebase_interactive(git, repository, base, &plan, cancel) {
+        Ok(integrated) => Ok(Outcome::Integrated(integrated)),
+        Err(RebaseError::Git(error)) => failed(TITLE)(error),
+        Err(error) => Err(Problem::new(TITLE, format!("The plan won't do: {error}."))),
+    }
+}
+
+/// `range`'s commits, picked unless `step` says otherwise.
+fn planned(range: &RebaseRange, step: impl Fn(ObjectId) -> Option<Step>) -> Vec<Planned> {
+    range
+        .commits
+        .iter()
+        .map(|commit| Planned {
+            id: commit.id,
+            step: step(commit.id).unwrap_or(Step::Pick),
+        })
+        .collect()
+}
+
+/// Why a range can't be rewritten, for people.
+pub(crate) fn range_problem(error: &RangeError) -> Problem {
+    const TITLE: &str = "This can't be rewritten here";
+    match error {
+        RangeError::NotInBranch => Problem::new(
+            TITLE,
+            "The commit isn't in the current branch: only its own commits can be rewritten.",
+        ),
+        RangeError::Merges(count) => Problem::new(
+            TITLE,
+            format!(
+                "Between the commit and HEAD are {count} merge(s): an interactive rebase would \
+                 flatten them. Start after the last merge."
+            ),
+        ),
+        RangeError::TooMany => Problem::new(
+            TITLE,
+            format!("It would rewrite more than {MAX_PLANNED} commits."),
+        ),
+        RangeError::Git(error) => Problem::git("The commits couldn't be read", error),
     }
 }
 

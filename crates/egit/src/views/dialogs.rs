@@ -52,6 +52,8 @@ pub(crate) enum Dialog {
     DeleteTag(BString),
     /// Whether to reset the current branch to a commit, discarding uncommitted changes.
     HardReset { at: ObjectId },
+    /// Whether to drop a commit from the current branch.
+    DropCommit(ObjectId),
     /// Whether to stash the changes in the way of a switch, then switch.
     StashAndSwitch {
         to: SwitchTo,
@@ -124,6 +126,17 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
             || Task::DeleteTag(name.clone()),
         ),
         Dialog::HardReset { at } => hard_reset(ui, pane, *at),
+        Dialog::DropCommit(commit) => {
+            let branch = pane.branch().unwrap_or_else(|| "HEAD".to_owned());
+            confirm(
+                ui,
+                &format!("Drop {} from {branch}?", commit.abbreviated(ID_DIGITS)),
+                "Its changes go from the branch, and the commits after it are rewritten (git's \
+                 reflog keeps the old ones for a while).",
+                "Drop",
+                || Task::DropCommit(*commit),
+            )
+        }
         Dialog::StashAndSwitch {
             to,
             paths,

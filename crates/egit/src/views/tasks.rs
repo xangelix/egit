@@ -398,6 +398,12 @@ fn done_text(task: &Task) -> String {
             stash.index
         ),
         Task::DropStash(stash) => format!("Dropped stash@{{{}}}.", stash.index),
+        Task::InteractiveRebase { .. } => "Rebased: the branch is rewritten.".to_owned(),
+        Task::DropCommit(commit) => format!("Dropped {}.", commit.abbreviated(ID_DIGITS)),
+        Task::SquashIntoParent(commit) => format!(
+            "Squashed {} into its parent.",
+            commit.abbreviated(ID_DIGITS)
+        ),
         _ => "Done.".to_owned(),
     }
 }

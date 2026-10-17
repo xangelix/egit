@@ -27,6 +27,7 @@ use egui_table_kit::layout::{
 
 use super::actions::{self, Ask, Menus};
 use super::file::{self, FileView, WorkFile};
+use super::rebase::{self, RebaseEvent, RebaseView};
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
@@ -146,6 +147,8 @@ pub(crate) struct HistoryView {
     tasks: TasksView,
     /// What a menu in the details asked for, carried out once the panels are drawn.
     asked: Option<Ask>,
+    /// The interactive rebase editor, in place of the commit table.
+    rebase: Option<RebaseView>,
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -230,6 +233,7 @@ impl HistoryView {
             work: WorkPanel::new(repo),
             tasks: TasksView::default(),
             asked: None,
+            rebase: None,
         }
     }
 
@@ -582,13 +586,27 @@ fn panels(
             }
         });
     if let Some(asked) = view.asked.take() {
-        carry_out(asked, shared.id, view, actions);
+        carry_out(asked, shared, view, actions);
     }
 
     view.close_unselected_file();
     egui::CentralPanel::default()
         .frame(Frame::new())
         .show(ui, |ui| match &mut view.file {
+            _ if view.rebase.is_some() => {
+                let event = view
+                    .rebase
+                    .as_mut()
+                    .and_then(|rebase| rebase::show(ui, shared, rebase));
+                match event {
+                    Some(RebaseEvent::Start(task)) => {
+                        actions.push(Action::Task(shared.id, task));
+                        view.rebase = None;
+                    }
+                    Some(RebaseEvent::Close) => view.rebase = None,
+                    None => {}
+                }
+            }
             Some(file) => {
                 if !file::show(ui, shared, &history.objects, file, actions) {
                     view.file = None;
@@ -698,7 +716,7 @@ fn top_bar(
         let menus = shared.menus(history.shown.refs());
         actions::stash_menu(ui, &menus, task_pane.stashes, has_changes, &mut asked);
         if let Some(asked) = asked {
-            carry_out(asked, shared.id, view, task_pane.actions);
+            carry_out(asked, shared, view, task_pane.actions);
         }
         // What comes and goes follows the buttons: ids are counted in order, and a click
         // pressed on one id and released on another is lost.
@@ -852,15 +870,20 @@ fn commit_table(
         ui.memory_mut(|memory| memory.request_focus(keys));
     }
     if let Some(asked) = asked {
-        carry_out(asked, shared.id, view, actions);
+        carry_out(asked, shared, view, actions);
     }
 }
 
-/// Does what a menu asked: starts its task, or asks its dialog's question first.
-fn carry_out(asked: Ask, id: RepoId, view: &mut HistoryView, actions: &mut Vec<Action>) {
+/// Does what a menu asked: starts its task, asks its dialog's question first, or opens the
+/// rebase editor.
+fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &mut Vec<Action>) {
     match asked {
-        Ask::Task(task) => actions.push(Action::Task(id, task)),
+        Ask::Task(task) => actions.push(Action::Task(shared.id, task)),
         Ask::Dialog(dialog) => view.tasks.dialog = Some(dialog),
+        Ask::Rebase { from, reword } => {
+            view.file = None;
+            view.rebase = Some(RebaseView::new(shared, from, reword));
+        }
     }
 }
 

@@ -21,6 +21,11 @@ use crate::widgets::muted;
 pub(super) enum Ask {
     Task(Task),
     Dialog(Dialog),
+    /// The interactive rebase editor, from a commit (with one to reword).
+    Rebase {
+        from: ObjectId,
+        reword: Option<ObjectId>,
+    },
 }
 
 /// What the menus know of the repository.
@@ -173,6 +178,7 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
     if item(ui, &format!("Revert in {current}"), can) {
         ask(Ask::Task(Task::Revert(id)));
     }
+    rewrite_items(ui, menus, id, &mut ask);
     ui.menu_button(format!("Reset {current} to this commit"), |ui| {
         if item(ui, "Soft: keep the changes staged", other) {
             ask(Ask::Task(Task::Reset(id, ResetMode::Soft)));
@@ -184,6 +190,36 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             ask(Ask::Dialog(Dialog::HardReset { at: id }));
         }
     });
+}
+
+/// Rewriting the current branch from a commit: interactively, its message, squashing it into
+/// its parent, or dropping it.
+fn rewrite_items(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, ask: &mut impl FnMut(Ask)) {
+    ui.separator();
+    let can = if menus.branch.is_none() {
+        Err("Switch to a branch first: rewriting history needs one")
+    } else {
+        menus.can_change()
+    };
+    if item(ui, "Rebase interactively from here…", can) {
+        ask(Ask::Rebase {
+            from: id,
+            reword: None,
+        });
+    }
+    if item(ui, "Edit the message…", can) {
+        ask(Ask::Rebase {
+            from: id,
+            reword: Some(id),
+        });
+    }
+    if item(ui, "Squash into its parent", can) {
+        ask(Ask::Task(Task::SquashIntoParent(id)));
+    }
+    if item(ui, "Drop this commit…", can) {
+        ask(Ask::Dialog(Dialog::DropCommit(id)));
+    }
+    ui.separator();
 }
 
 /// A ref badge's context menu.
