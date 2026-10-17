@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, CloneOptions, FetchOptions, GitError, Operation, Progress, PullMode, Pulled,
-    PushFlag, PushOptions, Repository, abort_operation, clone, continue_operation, fetch, pull,
-    push, remotes,
+    PushFlag, PushOptions, Repository, abort_operation, clone, continue_operation, fetch,
+    fetch_refspecs, pull, push, remote_urls, remotes,
 };
 
 /// A bare repository, `origin.git`, allowing partial clones, with `main` holding a commit; and
@@ -429,5 +429,80 @@ fn pushes_new_branches_and_explains_refusals_and_forces_with_a_lease() {
         rev(&sandbox, &bare, "main"),
         rev(&sandbox, &colleague, "HEAD"),
         "the colleague's work stays"
+    );
+}
+
+#[test]
+fn a_pull_request_s_head_and_a_lone_branch_are_fetched_by_refspec() {
+    let sandbox = Sandbox::new().unwrap();
+    let (bare, url) = origin(&sandbox);
+    let (work, repository) = cloned(&sandbox, &url, "work");
+    // A forge keeps a pull request's head outside the branches; and a branch the clone hasn't
+    // seen.
+    commit_and_push(&sandbox, &work, "feature", "1\n", "Feature");
+    let head = rev(&sandbox, &work, "HEAD");
+    sandbox
+        .run(&bare, "update-ref", &["refs/pull/7/head", &head])
+        .unwrap();
+    sandbox
+        .run(&bare, "update-ref", &["refs/heads/topic", &head])
+        .unwrap();
+    fetch_refspecs(
+        sandbox.git(),
+        &repository,
+        "origin".into(),
+        &[
+            "refs/pull/7/head:refs/heads/pr/7".into(),
+            "+refs/heads/topic:refs/remotes/origin/topic".into(),
+        ],
+        "Fetching pull request #7",
+        &Progress::new(),
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert_eq!(rev(&sandbox, &work, "pr/7"), head);
+    assert_eq!(rev(&sandbox, &work, "origin/topic"), head);
+    // No tags came along, and a ref the remote lacks fails.
+    let missing = fetch_refspecs(
+        sandbox.git(),
+        &repository,
+        "origin".into(),
+        &["refs/pull/8/head:refs/heads/pr/8".into()],
+        "Fetching pull request #8",
+        &Progress::new(),
+        &CancelToken::new(),
+    );
+    assert!(missing.is_err());
+}
+
+#[test]
+fn remote_urls_are_as_git_rewrites_them() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .run(&repo, "remote", &["add", "origin", "gh:octo/tool"])
+        .unwrap();
+    sandbox
+        .run(
+            &repo,
+            "remote",
+            &["add", "plain", "https://example.com/a/b.git"],
+        )
+        .unwrap();
+    sandbox
+        .run(
+            &repo,
+            "config",
+            &["url.https://github.com/.insteadOf", "gh:"],
+        )
+        .unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let urls = remote_urls(sandbox.git(), &repository).unwrap();
+    assert_eq!(
+        urls,
+        [
+            ("origin".into(), "https://github.com/octo/tool".into()),
+            ("plain".into(), "https://example.com/a/b.git".into()),
+        ]
     );
 }

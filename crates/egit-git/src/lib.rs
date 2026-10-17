@@ -90,8 +90,8 @@ pub use rebase::{
 };
 pub use remote::{
     CloneOptions, FetchOptions, PullMode, Pulled, PushFlag, PushOptions, Pushed, PushedRef,
-    abort_operation, clone, continue_operation, delete_remote_branch, fetch, pull, push, push_tag,
-    remotes,
+    abort_operation, clone, continue_operation, delete_remote_branch, fetch, fetch_refspecs, pull,
+    push, push_tag, remote_urls, remotes,
 };
 pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, Operation, Repository, Tracking, Upstream,

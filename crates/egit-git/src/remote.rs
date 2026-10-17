@@ -107,6 +107,37 @@ pub fn fetch(
     command.output().map(drop)
 }
 
+/// Fetches what `refspecs` name from `remote`, and nothing else (no tags).
+///
+/// A branch into its remote-tracking branch, say, or a forge's pull request
+/// (`refs/pull/12/head`) into a branch. `context` labels any prompt ("Fetching pull request
+/// #12").
+///
+/// # Errors
+///
+/// When git fails (the remote doesn't have it, a branch it would move isn't a fast-forward or
+/// is checked out) or is cancelled.
+pub fn fetch_refspecs(
+    git: &Git,
+    repository: &Repository,
+    remote: &BStr,
+    refspecs: &[BString],
+    context: &str,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    git.write("fetch")
+        .args(["--progress", "--no-tags", "--"])
+        .arg(OsStr::from_bytes(remote))
+        .args(refspecs.iter().map(|refspec| OsStr::from_bytes(refspec)))
+        .prompt_context(context)
+        .current_dir(repository.work_tree())
+        .progress(progress)
+        .cancel_token(cancel)
+        .output()
+        .map(drop)
+}
+
 /// How a pull brings in the upstream's commits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PullMode {
@@ -443,6 +474,31 @@ pub fn remotes(git: &Git, repository: &Repository) -> Result<Vec<BString>, GitEr
         .filter(|line| !line.is_empty())
         .map(BString::from)
         .collect())
+}
+
+/// Each remote's name and its URL as git reaches it (`url.<base>.insteadOf` applied), by
+/// `git ls-remote --get-url`, which connects to nothing.
+///
+/// # Errors
+///
+/// When git fails.
+pub fn remote_urls(
+    git: &Git,
+    repository: &Repository,
+) -> Result<Vec<(BString, BString)>, GitError> {
+    let mut urls = Vec::new();
+    for name in remotes(git, repository)? {
+        let url = git
+            .read("ls-remote")
+            .args(["--get-url", "--"])
+            .arg(OsStr::from_bytes(&name))
+            .current_dir(repository.work_tree())
+            .output()?
+            .stdout;
+        let url = url.strip_suffix(b"\n").unwrap_or(&url);
+        urls.push((name, BString::from(url)));
+    }
+    Ok(urls)
 }
 
 /// Gives up an operation git stopped in the middle of (a merge, a rebase, …), putting things

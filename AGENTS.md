@@ -212,7 +212,10 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     merge or rebase stopped (from the repository's state)), `push` (`--porcelain`, one branch
     to a remote branch; `--set-upstream`; `force` is `--force-with-lease
     --force-if-includes`; each ref's `PushFlag` and git's reason for a refusal, other lines as
-    notes; a refusal isn't an error), `remotes`, and `abort_operation` /
+    notes; a refusal isn't an error), `remotes`, `remote_urls` (each remote's URL as git
+    reaches it, `insteadOf` applied: `ls-remote --get-url`), `fetch_refspecs` (just those
+    refspecs, no tags: a pull request's `refs/pull/<n>/head`, a lone branch), and
+    `abort_operation` /
     `continue_operation` for a merge, rebase, am, cherry-pick, revert (bisect: `reset`).
     `push_tag` and `delete_remote_branch` push one refspec the same way (`Push::run`).
     `tests/remote.rs` runs each against a bare repository through `file://` (and a clone
