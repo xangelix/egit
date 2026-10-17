@@ -15,7 +15,7 @@ operation; egit runs it, reads what it prints, and draws only what is on screen.
 | 2 | Commit graph: lanes, the commit table, details and changed files | done |
 | 3 | Text grid and read-only diff viewer | done |
 | 4 | Working tree, staging, signed commits | done |
-| 5 | Clone, pull, push | in progress: fetch, pull, and push done; clone next |
+| 5 | Clone, pull, push | done; awaiting the owner's review and checks against GitHub |
 
 ## Toolchain & commands
 
