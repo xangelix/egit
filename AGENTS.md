@@ -91,7 +91,8 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     (25 ms … 800 ms) while `Stderr::held_lock` finds another git's lock. Every command gets
     `-c color.ui=never -c core.quotePath=false`. Stderr is drained on a helper thread into a
     64 KiB tail (`output.rs`), and into a `Progress` when the command has one (`progress`);
-    stdin is fed from another.
+    stdin is fed from another. Secrets: `secret_stdin` and `secret_output` keep them in
+    zeroizing buffers (growing never leaves a copy), never shown in debug output.
   - `progress.rs` — `Progress`: a long command's `--progress` lines read as they come, each
     replacing the last (git rewrites them with `\r`): the phase, done and total, the transfer
     (`1.20 MiB | 2.30 MiB/s`), whether the remote is doing it (`remote: `), and the other
@@ -280,6 +281,13 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     they stream, each `FileCommit` (first parent, author, time, subject, git's status letter,
     its path there and a rename's old one). `tests/blame.rs` blames across a rename and a move
     (either way) and the work tree, and follows a rename's history.
+  - `credential.rs` — git's credential helpers: `fill_credential` for a `CredentialPlace`
+    (protocol, host; refused with line breaks, which would inject attributes), in a
+    repository's configuration or the user's (`/`), `Asking::Never` (non-interactive: no
+    credential is `None`, not an error) or labelled prompts; `approve_credential` and
+    `reject_credential` hand back every attribute `fill` gave (an expiry, a refresh token).
+    A `Credential` is wiped when dropped. `tests/credential.rs` fills, rejects, and approves
+    through a sandbox's `store` helper.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).

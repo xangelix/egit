@@ -19,6 +19,7 @@ mod commit;
 mod committing;
 mod config;
 mod conflict;
+mod credential;
 mod diff;
 mod env;
 mod error;
@@ -53,7 +54,7 @@ pub use branch::{
     create_tag, delete_branch, delete_tag, rename_branch, switch,
 };
 pub use cancel::CancelToken;
-pub use command::{Access, GitCommand, Streamed};
+pub use command::{Access, GitCommand, SecretOutput, Streamed};
 pub use commit::{Commit, CommitParseError, Signature};
 pub use committing::{Committed, NewCommit, create_commit};
 pub use config::{
@@ -62,6 +63,9 @@ pub use config::{
 pub use conflict::{
     ConflictLines, ConflictSides, IncomingCommit, Merge, MergedText, Pick, Piece, Resolution,
     ResolveError, WholeOnly, conflict_sides, incoming_commit, merge_sides, resolve_conflict,
+};
+pub use credential::{
+    Asking, Credential, CredentialPlace, approve_credential, fill_credential, reject_credential,
 };
 pub use diff::{
     DiffLine, DiffLineKind, DiffOptions, FileDiff, Uncommitted, WHOLE_FILE, file_diff,

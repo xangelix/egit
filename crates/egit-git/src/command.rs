@@ -1,6 +1,7 @@
 //! Building and running one git command.
 
 use std::ffi::{OsStr, OsString};
+use std::fmt;
 use std::io::{self, Read as _, Write as _};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -10,6 +11,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use rustix::process::Pid;
+use zeroize::Zeroizing;
 
 use crate::batch::GitProcess;
 use crate::cancel::{CancelToken, Registration};
@@ -50,6 +52,56 @@ const HELPER_STACK: usize = 64 * 1024;
 /// Streamed output is read this many bytes at a time, into one reused buffer.
 const STREAM_CHUNK: usize = 64 * 1024;
 
+/// The most [`GitCommand::secret_output`] collects: credentials are a few lines.
+const SECRET_LIMIT: usize = 64 * 1024;
+
+/// What a command reads on standard input.
+#[derive(Clone)]
+enum Input {
+    Plain(Arc<[u8]>),
+    /// A secret: wiped from memory when the last copy goes, and never shown in debug output.
+    Secret(Arc<Zeroizing<Vec<u8>>>),
+}
+
+impl Input {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Self::Plain(bytes) => bytes,
+            Self::Secret(bytes) => bytes.as_slice(),
+        }
+    }
+}
+
+impl fmt::Debug for Input {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Plain(bytes) => write!(f, "{} bytes", bytes.len()),
+            Self::Secret(_) => f.write_str("<secret>"),
+        }
+    }
+}
+
+/// What a command that prints a secret printed (`git credential fill`): its standard output is
+/// wiped from memory when dropped, and never shown in debug output.
+pub struct SecretOutput {
+    /// How git exited.
+    pub status: ExitStatus,
+    /// Everything git printed to standard output.
+    pub stdout: Zeroizing<Vec<u8>>,
+    /// The end of what git printed to standard error.
+    pub stderr: Stderr,
+}
+
+impl fmt::Debug for SecretOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SecretOutput")
+            .field("status", &self.status)
+            .field("stdout", &"<secret>")
+            .field("stderr", &self.stderr)
+            .finish()
+    }
+}
+
 /// One git command, ready to run.
 ///
 /// Built from [`Git::read`] or [`Git::write`], then run with [`Self::output`] (collect what it
@@ -63,7 +115,7 @@ pub struct GitCommand {
     config: Vec<OsString>,
     args: Vec<OsString>,
     dir: Option<PathBuf>,
-    stdin: Option<Arc<[u8]>>,
+    stdin: Option<Input>,
     env: Vec<(OsString, OsString)>,
     cancel: Option<CancelToken>,
     stdout_limit: usize,
@@ -158,7 +210,14 @@ impl GitCommand {
 
     /// Feeds `input` to git's standard input (otherwise it reads nothing).
     pub fn stdin(mut self, input: impl Into<Arc<[u8]>>) -> Self {
-        self.stdin = Some(input.into());
+        self.stdin = Some(Input::Plain(input.into()));
+        self
+    }
+
+    /// Feeds `input`, a secret, to git's standard input: it is wiped from memory once git has
+    /// it, and never shown in debug output.
+    pub fn secret_stdin(mut self, input: Zeroizing<Vec<u8>>) -> Self {
+        self.stdin = Some(Input::Secret(Arc::new(input)));
         self
     }
 
@@ -260,6 +319,45 @@ impl GitCommand {
                 return Err(self.cancelled());
             }
         }
+    }
+
+    /// Runs the command, however git exits, collecting standard output as a secret: into buffers
+    /// wiped from memory when done with (growing never leaves a copy behind), at most 64 KiB.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::output_unchecked`].
+    pub fn secret_output(self) -> Result<SecretOutput, GitError> {
+        let (attempt, stdout) = self.run_once(|stdout| {
+            let mut collected = Zeroizing::new(Vec::with_capacity(4096));
+            let mut chunk = Zeroizing::new([0_u8; 4096]);
+            loop {
+                let read = match stdout.read(chunk.as_mut()) {
+                    Ok(0) => return Ok((collected, false)),
+                    Ok(read) => read,
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => return Err(ReadError::Io(error)),
+                };
+                let total = collected.len().saturating_add(read);
+                if total > SECRET_LIMIT {
+                    return Err(ReadError::TooLarge(SECRET_LIMIT));
+                }
+                if total > collected.capacity() {
+                    let mut grown = Zeroizing::new(Vec::with_capacity(
+                        collected.capacity().saturating_mul(2).max(total),
+                    ));
+                    grown.extend_from_slice(&collected);
+                    // The smaller buffer is wiped as it goes.
+                    collected = grown;
+                }
+                collected.extend_from_slice(chunk.get(..read).unwrap_or_default());
+            }
+        })?;
+        Ok(SecretOutput {
+            status: attempt.status,
+            stdout,
+            stderr: attempt.stderr,
+        })
     }
 
     /// Runs the command, handing standard output to `consume` in chunks as git prints it.
@@ -451,12 +549,12 @@ impl GitCommand {
             .spawn(move || drain(stderr, reader))?;
         let feed = match (stdin, &self.stdin) {
             (Some(pipe), Some(input)) => {
-                let input = Arc::clone(input);
+                let input = input.clone();
                 Some(
                     thread::Builder::new()
                         .name(format!("git {} stdin", self.subcommand))
                         .stack_size(HELPER_STACK)
-                        .spawn(move || feed(pipe, &input))?,
+                        .spawn(move || feed(pipe, input.bytes()))?,
                 )
             }
             _ => None,
