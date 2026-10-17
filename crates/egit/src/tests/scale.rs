@@ -44,6 +44,12 @@ pub(super) fn step_until(
     }
 }
 
+/// Starts the peak resident memory over from what the process holds now (Linux's
+/// `clear_refs`), so what a measurement set up beforehand isn't counted.
+pub(super) fn reset_peak_memory() {
+    let _ = std::fs::write("/proc/self/clear_refs", "5");
+}
+
 /// The process's peak resident memory, in MB.
 pub(super) fn peak_memory_mb() -> f64 {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();

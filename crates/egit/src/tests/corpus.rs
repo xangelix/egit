@@ -6,7 +6,9 @@
 //! the merge editor on 100,000 lines of C with 1,000 conflicts: how soon git merges them and
 //! the document is made (open, and again after a pick), and frames stepping through them. And
 //! the interactive rebase editor on 10,000 commits: how soon they are read, and frames
-//! scrolling and stepping through them.
+//! scrolling and stepping through them. And the blame of 100,000 lines of C that 100 commits
+//! rewrote here and there: how soon its first lines are labelled and all of them, and frames
+//! jumping while git still blames and once it is done, and scrolling.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
@@ -34,7 +36,7 @@ use egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 
-use super::scale::{peak_memory_mb, step_until};
+use super::scale::{peak_memory_mb, reset_peak_memory, step_until};
 use super::screens::{rendering, screens};
 use crate::app::{Action, EgitApp};
 use crate::fonts::{self, Fallbacks};
@@ -715,6 +717,196 @@ fn corpus_rebase() {
     worst = worst.max(report("stepping down the plan", stepping));
     snapshot(&mut harness, "rebase");
     println!("  peak memory {:.0} MB", peak_memory_mb());
+    if !cfg!(debug_assertions) {
+        assert!(
+            worst < Duration::from_millis(8),
+            "the 99th percentile frame took {worst:?}"
+        );
+    }
+}
+
+/// Lines of the blamed file, the commits writing it, and the lines each commit after the
+/// first rewrites.
+const BLAMED_LINES: u32 = 100_000;
+const BLAME_COMMITS: usize = 100;
+const REWRITTEN: usize = 500;
+
+/// A repository whose `probe.c` holds `BLAMED_LINES` lines of C, written by its first commit
+/// and rewritten by each of the next `REWRITTEN` lines at a time, scattered: a blame of tens
+/// of thousands of short runs.
+fn rewritten(sandbox: &Sandbox) -> std::path::PathBuf {
+    let repo = sandbox.init("blamed").unwrap();
+    let code = String::from_utf8(code(usize::try_from(BLAMED_LINES).unwrap())).unwrap();
+    let mut lines: Vec<String> = code.lines().map(str::to_owned).collect();
+    let mut seed = 0xb1a3_u64;
+    let mut stream = Vec::new();
+    for index in 0..BLAME_COMMITS {
+        if index > 0 {
+            for _ in 0..REWRITTEN {
+                let at = usize::try_from(random(&mut seed, u64::from(BLAMED_LINES))).unwrap();
+                lines[at] = format!("\tvalue_{at} = rewrite({index}); /* {index} */");
+            }
+        }
+        let message = format!("Rewrite {index}\n");
+        let data = lines.iter().fold(String::new(), |mut data, line| {
+            data.push_str(line);
+            data.push('\n');
+            data
+        });
+        let _ = write!(
+            stream,
+            "commit refs/heads/main\ncommitter T <t@egit.invalid> {} +0000\ndata {}\n{message}\
+             M 100644 inline probe.c\ndata {}\n{data}\n",
+            1_700_000_000 + index * 86_400,
+            message.len(),
+            data.len()
+        );
+    }
+    sandbox
+        .git()
+        .write("fast-import")
+        .arg("--quiet")
+        .current_dir(&repo)
+        .stdin(stream)
+        .output()
+        .unwrap();
+    sandbox
+        .run(&repo, "symbolic-ref", &["HEAD", "refs/heads/main"])
+        .unwrap();
+    sandbox.run(&repo, "reset", &["--quiet", "--hard"]).unwrap();
+    repo
+}
+
+/// The application showing the newest commit's `probe.c` in `repo`.
+fn newest_file(sandbox: &Sandbox, repo: std::path::PathBuf) -> Harness<'static, EgitApp> {
+    let git = sandbox.git().clone();
+    let builder = Harness::builder().with_size([1400.0, 900.0]);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    let mut harness = builder.build_eframe(move |creation| {
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            None,
+            Prompts::none(),
+        )
+    });
+    harness.run_steps(2);
+    harness.state_mut().state.actions.push(Action::Open(repo));
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state.repos.first().is_some_and(|repo| {
+            !repo.history.is_loading()
+                && repo.history.shown.rows() == u64::try_from(BLAME_COMMITS).unwrap()
+        })
+    });
+
+    // The newest commit's file.
+    let newest = format!("Rewrite {}", BLAME_COMMITS - 1);
+    let started = Instant::now();
+    while harness
+        .query_by_role_and_label(Role::Button, &newest)
+        .is_none()
+    {
+        assert!(started.elapsed() < Duration::from_secs(30), "no subject");
+        harness.step();
+    }
+    harness.get_by_role_and_label(Role::Button, &newest).click();
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        let view = &mut app.state.repos[0].history_view;
+        view.details_shown() && view.counts_shown()
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "probe.c")
+        .click();
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state.repos[0].history_view.file_shown() == Some(("probe.c".to_owned(), true))
+    });
+    harness
+}
+
+#[test]
+#[ignore = "a release-build measurement: see the module's documentation"]
+fn corpus_blame() {
+    println!("the blame of {BLAMED_LINES} lines rewritten by {BLAME_COMMITS} commits:");
+    let sandbox = Sandbox::new().unwrap();
+    let started = Instant::now();
+    let repo = rewritten(&sandbox);
+    println!("  made in {:?}", started.elapsed());
+    reset_peak_memory();
+    let mut harness = newest_file(&sandbox, repo);
+    let started = Instant::now();
+    harness.get_by_label("Blame").click();
+    let progress = |harness: &mut Harness<'_, EgitApp>| {
+        harness.state_mut().state.repos[0]
+            .history_view
+            .blame_progress()
+            .unwrap_or((0, false))
+    };
+    while progress(&mut harness).0 == 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(60),
+            "nothing blamed"
+        );
+        harness.step();
+    }
+    println!(
+        "  first {} lines blamed in {:?}",
+        progress(&mut harness).0,
+        started.elapsed()
+    );
+
+    // Jumping while git blames (as long as it does, up to 400 frames).
+    let mut seed = 0x5eed_u64;
+    let mut jumps = Vec::new();
+    while !progress(&mut harness).1 && jumps.len() < 400 {
+        jumps.extend(measure_frames(&mut harness, 1, |harness, _| {
+            let line = u32::try_from(random(&mut seed, u64::from(BLAMED_LINES))).unwrap();
+            harness.state_mut().state.repos[0]
+                .history_view
+                .blame_scroll_to(line);
+        }));
+    }
+    let mut worst = if jumps.is_empty() {
+        Duration::ZERO
+    } else {
+        report("jumping while blamed", jumps)
+    };
+    while !progress(&mut harness).1 {
+        assert!(started.elapsed() < Duration::from_secs(600), "never blamed");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    println!(
+        "  all {} lines blamed in {:?}",
+        progress(&mut harness).0,
+        started.elapsed()
+    );
+
+    let jumps = measure_frames(&mut harness, 400, |harness, _| {
+        let line = u32::try_from(random(&mut seed, u64::from(BLAMED_LINES))).unwrap();
+        harness.state_mut().state.repos[0]
+            .history_view
+            .blame_scroll_to(line);
+    });
+    worst = worst.max(report("jumping once blamed", jumps));
+    harness.state_mut().state.repos[0]
+        .history_view
+        .blame_scroll_to(50_000);
+    harness.hover_at(egui::pos2(450.0, 500.0));
+    let scrolling = measure_frames(&mut harness, 600, |harness, _| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -240.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+    worst = worst.max(report("wheel scrolling", scrolling));
+    snapshot(&mut harness, "blame");
+    println!(
+        "  peak memory {:.0} MB (the repository made beforehand not counted)",
+        peak_memory_mb()
+    );
     if !cfg!(debug_assertions) {
         assert!(
             worst < Duration::from_millis(8),

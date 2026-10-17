@@ -271,6 +271,23 @@ impl HistoryView {
         }
     }
 
+    /// How many lines the blame shown has blamed so far, and whether it is done.
+    #[cfg(test)]
+    pub(crate) fn blame_progress(&self) -> Option<(u32, bool)> {
+        match &self.tool {
+            Some(Tool::Blame(blame)) => Some((blame.found(), blame.done())),
+            _ => None,
+        }
+    }
+
+    /// Scrolls the blame shown to line `line`.
+    #[cfg(test)]
+    pub(crate) const fn blame_scroll_to(&mut self, line: u32) {
+        if let Some(Tool::Blame(blame)) = &mut self.tool {
+            blame.scroll_to_line(line);
+        }
+    }
+
     /// The file history's diff shown, as lines it adds and removes (`None` until it is read).
     #[cfg(test)]
     pub(crate) fn file_history_diff(&mut self) -> Option<(u32, u32)> {

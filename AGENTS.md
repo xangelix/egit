@@ -48,6 +48,8 @@ it.
   in 220 ms, the document made in 9 ms (open, and again after a pick), stepping from conflict
   to conflict highlighted at 3.4 ms p99. `corpus_rebase`: the interactive rebase editor on
   10,000 commits: read and shown in 50 ms, scrolled at 0.43 ms p99, stepped at 0.52 ms.
+  `corpus_blame`: 100,000 lines of C rewritten by 100 commits: the first lines labelled in
+  47 ms, all in 0.65 s, jumping at 3.6 ms p99 while git blames (3.8 ms after: colouring).
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a

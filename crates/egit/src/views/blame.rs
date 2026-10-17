@@ -111,6 +111,18 @@ impl BlameView {
         self.blaming.done.load(Ordering::Acquire)
     }
 
+    /// How many lines are blamed so far.
+    #[cfg(test)]
+    pub(super) fn found(&self) -> u32 {
+        self.blaming.state.lock().found
+    }
+
+    /// Scrolls line `line` to the top.
+    #[cfg(test)]
+    pub(super) const fn scroll_to_line(&mut self, line: u32) {
+        self.grid.scroll_to_line(line);
+    }
+
     /// The commit of the line selected, if any (its place in the blame's commits).
     fn selected(&self) -> Option<u32> {
         let (_, lines) = self.grid.selected_lines()?;
