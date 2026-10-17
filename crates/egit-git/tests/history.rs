@@ -141,6 +141,16 @@ fn lists_refs_with_tags_followed_to_their_commits() {
             &["--annotate", "--message", "Release", "v1.0", "main~1"],
         )
         .unwrap();
+    // Tags of tags, which git 2.43 peels only one level itself.
+    for (name, of) in [("signed-off", "v1.0"), ("again", "signed-off")] {
+        sandbox
+            .run(
+                &repo,
+                "tag",
+                &["--annotate", "--message", "Of a tag", name, of],
+            )
+            .unwrap();
+    }
     let main = rev(&sandbox, &repo, "main").to_string();
     sandbox
         .run(&repo, "update-ref", &["refs/remotes/origin/main", &main])
@@ -178,6 +188,13 @@ fn lists_refs_with_tags_followed_to_their_commits() {
         rev(&sandbox, &repo, "main~1"),
         "the tag is followed to its commit"
     );
+    for nested in ["refs/tags/signed-off", "refs/tags/again"] {
+        assert_eq!(
+            find(nested).unwrap().target,
+            rev(&sandbox, &repo, "main~1"),
+            "{nested} is followed through every tag"
+        );
+    }
     assert_eq!(
         find("refs/tags/light").unwrap().target,
         rev(&sandbox, &repo, "topic")

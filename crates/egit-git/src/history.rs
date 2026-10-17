@@ -170,7 +170,7 @@ impl Reference {
 }
 
 /// Every ref but symbolic ones (such as `refs/remotes/origin/HEAD`), with annotated tags
-/// followed to what they tag.
+/// followed through to what they finally tag (a tag of a tag too).
 ///
 /// # Errors
 ///
@@ -178,15 +178,22 @@ impl Reference {
 pub fn list_references(git: &Git, repository: &Repository) -> Result<Vec<Reference>, GitError> {
     let listed = git
         .read("for-each-ref")
-        .arg("--format=%(objectname)%00%(*objectname)%00%(symref)%00%(refname)")
+        .arg("--format=%(objectname)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(refname)")
         .current_dir(repository.work_tree())
         .output()?;
     let mut references = Vec::new();
+    // Tags of tags: git 2.43 (the floor) peels only the first in `%(*objectname)`; later git,
+    // since its commit 188782ec, all of them.
+    let mut nested = Vec::new();
     for line in listed.stdout.lines() {
         let mut fields = line.split_str(b"\0");
-        let (Some(object), Some(peeled), Some(symref), Some(name)) =
-            (fields.next(), fields.next(), fields.next(), fields.next())
-        else {
+        let (Some(object), Some(peeled), Some(peeled_type), Some(symref), Some(name)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
             return Err(GitError::unexpected("for-each-ref", "too few fields"));
         };
         if !symref.is_empty() {
@@ -199,6 +206,9 @@ pub fn list_references(git: &Git, repository: &Repository) -> Result<Vec<Referen
                 format!("{} isn't an object name", BStr::new(target)),
             )
         })?;
+        if peeled_type == b"tag" {
+            nested.push(references.len());
+        }
         let kind = if name.starts_with(b"refs/heads/") {
             RefKind::Branch
         } else if name.starts_with(b"refs/remotes/") {
@@ -214,7 +224,45 @@ pub fn list_references(git: &Git, repository: &Repository) -> Result<Vec<Referen
             target,
         });
     }
+    peel_nested(git, repository, &mut references, &nested)?;
     Ok(references)
+}
+
+/// Peels the references at `nested` (tags of tags) through every tag, as later git peels
+/// `%(*objectname)` itself: one `rev-parse` of `<name>^{}` for all of them.
+fn peel_nested(
+    git: &Git,
+    repository: &Repository,
+    references: &mut [Reference],
+    nested: &[usize],
+) -> Result<(), GitError> {
+    if nested.is_empty() {
+        return Ok(());
+    }
+    let names: Vec<std::ffi::OsString> = nested
+        .iter()
+        .filter_map(|&at| references.get(at))
+        .map(|reference| {
+            let mut name = reference.name.to_os_str_lossy().into_owned();
+            name.push("^{}");
+            name
+        })
+        .collect();
+    // Each name is a ref's, so `refs/…`: never an option (and git 2.43's `rev-parse` would
+    // echo `--end-of-options` back).
+    let peeled = git
+        .read("rev-parse")
+        .args(&names)
+        .current_dir(repository.work_tree())
+        .output()?;
+    for (&at, line) in nested.iter().zip(peeled.stdout.lines()) {
+        let target = ObjectId::from_hex(line)
+            .ok_or_else(|| GitError::unexpected("rev-parse", "an object name"))?;
+        if let Some(reference) = references.get_mut(at) {
+            reference.target = target;
+        }
+    }
+    Ok(())
 }
 
 /// How a commit changed a file.
