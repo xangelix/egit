@@ -394,10 +394,14 @@ fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut ReflogView, entries: &[Refl
                     .truncate()
                     .selectable(false),
             );
-            row.label(
-                RichText::new(entry.commit.abbreviated(ID_DIGITS).to_string())
-                    .monospace()
-                    .color(palette.muted),
+            // Not selectable: a click on it selects the row.
+            row.add(
+                egui::Label::new(
+                    RichText::new(entry.commit.abbreviated(ID_DIGITS).to_string())
+                        .monospace()
+                        .color(palette.muted),
+                )
+                .selectable(false),
             );
             row.add(
                 egui::Label::new(muted(&row, entry.subject.to_str_lossy()))

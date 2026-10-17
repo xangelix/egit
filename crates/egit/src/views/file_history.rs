@@ -351,10 +351,14 @@ fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut FileHistoryView, count: usi
                     .max_rect(rect.shrink2(egui::vec2(8.0, 0.0)))
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
-            row.label(
-                RichText::new(commit.id.abbreviated(ID_DIGITS).to_string())
-                    .monospace()
-                    .color(palette.muted),
+            // Not selectable: a click on it selects the row.
+            row.add(
+                egui::Label::new(
+                    RichText::new(commit.id.abbreviated(ID_DIGITS).to_string())
+                        .monospace()
+                        .color(palette.muted),
+                )
+                .selectable(false),
             );
             let age = u64::try_from(commit.time)
                 .map_or_else(|_| String::new(), |time| compact_age(time, now));

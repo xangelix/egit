@@ -495,10 +495,14 @@ fn row(
         view.selected = at;
         view.set_kind(range, kind);
     }
-    ui.label(
-        RichText::new(commit.id.abbreviated(ID_DIGITS).to_string())
-            .monospace()
-            .color(palette.muted),
+    // Not selectable: a click on it selects the row.
+    ui.add(
+        egui::Label::new(
+            RichText::new(commit.id.abbreviated(ID_DIGITS).to_string())
+                .monospace()
+                .color(palette.muted),
+        )
+        .selectable(false),
     );
     let mut text = RichText::new(subject);
     text = match kind {
@@ -519,7 +523,7 @@ fn row(
     };
     ui.add(egui::Label::new(text).truncate().selectable(false));
     if kind.melds() {
-        ui.label(muted(ui, "into the commit below"));
+        ui.add(egui::Label::new(muted(ui, "into the commit below")).selectable(false));
     }
 }
 
