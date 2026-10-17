@@ -30,6 +30,7 @@ it.
 | 16 | Undo, and the reflog | done; awaiting the owner's review |
 | 17 | The sidebar, and the repository's plumbing | done; awaiting the owner's review |
 | 18 | Bisect, and rebasing merges | done; awaiting the owner's review |
+| 19 | Polish: preferences, a command palette and shortcuts, the accessibility audit | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -66,7 +67,8 @@ it.
   refs (50,000 branches in 100 folders, 30,000 of a remote's, 20,000 tags) on 1,000 commits:
   listed 280 ms after opening (its longest frame meanwhile 5.6 ms: they are sorted in a job),
   scrolled at 0.7–1.1 ms p99, the tags unfolded in a frame of 1.2 ms, each letter typed in the
-  filter 5.6 ms at most; peak 191 MB.
+  filter 5.6 ms at most; then the command palette over its 50,001 branches: opened in a frame
+  of 2.8 ms, each letter typed 4.1 ms at most; peak 179 MB.
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory, then how much of what
@@ -522,8 +524,11 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     many short texts (a finder built once, or ASCII folded).
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
   (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io: bump
-  `rev` to the owner's pushed commit after each change made there), `egui-async` 0.7 (stay on
-  0.36 until `egui_tiles` and `egui-phosphor` move).
+  `rev` to the owner's pushed commit after each change made there; until it is pushed, cargo
+  fetches it from the clone: `GIT_CONFIG_COUNT=1
+  GIT_CONFIG_KEY_0=url.$HOME/egui-table-kit.insteadOf
+  GIT_CONFIG_VALUE_0=https://github.com/xangelix/egui-table-kit CARGO_NET_GIT_FETCH_WITH_CLI=true
+  cargo fetch`), `egui-async` 0.7 (stay on 0.36 until `egui_tiles` and `egui-phosphor` move).
   - `main.rs` — started as `egit-askpass` it is the askpass helper (`run_helper`); otherwise
     `lib.rs`'s `run`: `-h`/`-V`, paths to open, `EGIT_LOG` logging, the runtime, the window.
   - `app.rs` — `EgitApp { tabs, state }`. Views never change `AppState` directly: they push
@@ -538,8 +543,29 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
   - `jobs.rs` — the runtime (2 workers, at most 16 blocking jobs: git processes queue
     beyond), `blocking` (a closure on the blocking pool as a future for a `Bind`), and
     `WriteLock` (taken inside jobs, never on the interface thread).
-  - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Repo(id)}`; `show`
-    focuses or adds a tab; Home can't be closed; closing a repository's tab pushes `Closed`.
+  - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Preferences,
+    Repo(id)}`; `show` focuses or adds a tab; `front` (the tab in front), `close_front`,
+    `show_nth` (⌘W, ⌘1 … ⌘9); Home can't be closed; closing a repository's tab pushes `Closed`.
+    Tabs underline under the pointer (`widgets::tab_hover`; egui_tiles' don't answer it), and
+    their close button is 24 points.
+  - `preferences.rs` — `Preferences` (kept in the settings, every field defaulted so older
+    settings read): the text's size (70–200%, egui's zoom, which ⌘+ ⌘− ⌘0 change too: followed
+    back), the background fetch (`FetchEvery`: never, every minute, 5 (the default), 15, or 30
+    minutes), the sidebar shown when a repository opens, a file's first look (`FilePreferences`:
+    diffs side by side, lines wrapped, a tab's width of 2, 4, or 8 cells), and commit dates
+    written or as how long ago (`Dates`). `apply` puts them into egui (the zoom, and the context
+    the views read them from: `Preferences::of`), and the tab width where every text measured
+    from then on takes it (`text_options`).
+  - `commands.rs` — what the keyboard can ask: `Command` (the palette, preferences, open,
+    clone, home, profile, close the tab, a tab by number, a theme, a recent repository) and
+    `RepoCommand` (fetch, pull, push, undo, redo, search, the sidebar shown or filtered, the
+    reflog, the work tree, the requests, stash, patches, a branch made or switched to, read
+    again), each's words and shortcut; `pressed` takes the application's own shortcuts at a
+    frame's start (⌘K and ⇧⌘P, ⌘,, ⌘O, ⌘W, ⌘B, ⌘R, ⌘1 … ⌘9; the views take theirs), the more
+    specific first. `keys_text`: a shortcut written as a Mac shows it (`⇧⌘Z`) shown so on
+    macOS and as `Ctrl+Shift+Z` elsewhere (egui's command key is Ctrl there). `score`: how
+    well typed letters match words (in order; word starts and runs count more). The
+    Preferences tab lists every shortcut (`Command::shortcuts`).
   - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head, operations, a stopped
     `git am`'s progress, and a bisection's `Bisection`) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
@@ -703,8 +729,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     `CancelToken` stopped by `Action::CancelTask` (`Outcome::Cancelled`, not a failure).
     Besides git's results, an `Outcome` can be `Done`, `Integrated` (done, conflicts, empty),
     `Stashed` (whether anything was), `WouldOverwrite` (a switch refused, with the paths), or
-    `NotMerged` (a delete refused). And a background fetch every 5 minutes (the first 10 s
-    after opening; only with a remote): non-interactive, without the lock, stopped when the
+    `NotMerged` (a delete refused). And a background fetch as often as the preferences say
+    (`fetch_every`; every 5 minutes by default, or never; the first 10 s after opening; only
+    with a remote): non-interactive, without the lock, stopped when the
     user starts a task, its failure kept apart (`background_problem`; `background_fetches`
     counts them, for the forge). `remote_names`, `has_remotes` (a scan, nothing allocated),
     and `upstream_of` read the configuration. Fast-forwards (`FastForward` the current branch,
@@ -971,12 +998,28 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     default), and the title and description of the branch's one commit
     (`commits_between` against the base, then its message), its name otherwise; then into,
     base, title, description, draft. "Open on GitHub" (or GitLab) is on a commit's menu too.
+    `views/palette.rs` — `PaletteView`, the command palette (⌘K, ⇧⌘P, or the status bar's
+    Commands): a modal with a field ("Command, branch, or repository") and the `Offer`s
+    gathered as it opens (`AppState`'s `offers`: the repository in front's commands, each
+    allowed or saying why not (`RepoTab::allows`), the application's commands, the recent
+    repositories not open, and a switch to each local branch but the current one: `Offers`
+    keeps a branch's place among the shared refs, its words made only for the rows drawn),
+    narrowed by `score` as letters are typed (a letter typed after the others among what they
+    matched), best first, drawn with `show_rows`; ↑ ↓ choose (taken at the
+    frame's start, before the views below see them: `take_keys`), Enter or a click runs it,
+    Escape closes. A repository's command is queued on its history view (`HistoryView::queue`),
+    carried out next frame by the same code as its button.
+    `views/preferences.rs` — the Preferences tab (⌘, or the status bar's): cards for how
+    egit looks (theme, text size, commit dates), repositories (the background fetch, the
+    sidebar), diffs and files (side by side, wrapped, tab width), and every keyboard shortcut;
+    each change pushes `Action::SetPreferences`, in effect at once (each tab's fetch interval
+    and sidebar too) and kept.
   - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
     repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
     credentials, the GitHub Enterprise and self-managed GitLab hosts (added and removed as
     `egit.githubHost` and `egit.gitlabHost`), pull and push, and every setting, each with its
     origin), `repo` (overview and settings table), `status_bar` (git's version and path, the
-    theme, a warning when
+    theme, Commands and Preferences, a warning when
     questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
     `AskpassServer` at launch and gives git its environment; questions queue and show one
     at a time in a modal (`PromptKind` decides the field and buttons); the abandoned are
@@ -995,8 +1038,13 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     and a rename's old one on hover.
   - `theme.rs` (palettes, WCAG AA checked by tests, text over every line background too: diff
     lines and words, a conflict's sides and headers, resolved lines, rows a search found;
-    Phosphor icons), `widgets.rs` (cards,
-    buttons, origin labels, problem boxes), `format.rs` (`~` paths, "5 minutes ago",
+    a selected or found row under the pointer (`selected_hover`) too; Phosphor icons),
+    `widgets.rs` (cards, buttons, origin labels, problem boxes; `TARGET`, the 24 points every
+    control takes each way: `small` buttons, `line_field` text fields as tall as buttons,
+    `icon_button` exactly its place, `row_fill` a list row's background (a selected one
+    lightens under the pointer); `focus_ring`, drawn once a frame around the control with the
+    keyboard focus after a key (Tab, an arrow) or an assistive technology moved it, gone at the
+    next press of the pointer, as a browser's `:focus-visible`), `format.rs` (`~` paths, "5 minutes ago",
     dates, a long command's progress), `settings.rs` (theme, recent repositories, open tabs,
     the clone folder; non-UTF-8 paths kept as
     bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
@@ -1014,8 +1062,15 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     times out saves `timed-out-<test>.png`; `menu_item` right-clicks and picks, and
     `double_click` puts both clicks in one frame (the harness's frames are a quarter second
     apart). After an action, wait for the history's rows to settle before aiming a click at
-    one: a re-read moves them. Not yet audited, as eshine does: hover response,
-    cursors, focus rings, and 24-point targets. `src/tests/menus.rs` drives the menus' newer
+    one: a re-read moves them. Then, the pointer resting on each control it can reach: it
+    visibly responds, its cursor fits (a text cursor over a field, a hand over the rest:
+    `pointing_hand` sets it for every enabled control that clicks), it is 24 points each way
+    (WCAG 2.5.8), and the keyboard focus shows on it; each looked at with the focus elsewhere
+    (given back after), but a field that takes the focus back whenever nothing has it (a
+    dialog's). `src/tests/polish.rs` drives preferences (changed from the status bar, in effect
+    for a repository opened after: dates as how long ago, a diff side by side, no background
+    fetch; kept) and the palette (a command found by a few letters, one that can't run saying
+    why, a branch switched to) and the shortcuts (⌘B, ⌘,, ⌘W, ⌘1). `src/tests/menus.rs` drives the menus' newer
     actions: pulling, pushing, fast-forwarding branches, upstreams set and forgotten, a name
     copied, a branch deleted here and on its remote, a patch saved, a worktree opened in a
     tab, the graph narrowed and pinned. `src/tests/bisect.rs` drives a bisection from two
