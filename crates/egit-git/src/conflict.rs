@@ -228,6 +228,19 @@ impl Side {
 }
 
 impl MergedText {
+    /// Reads `merge-file -p` output whose markers are `marker` characters long and whose sides'
+    /// files all end with a newline: `None` when its markers aren't in order, or it is over
+    /// 4 GiB.
+    #[must_use]
+    pub fn parse(text: Vec<u8>, marker: usize) -> Option<Self> {
+        let pieces = parse_merged(&text, marker)?;
+        Some(Self {
+            text,
+            pieces,
+            open_ends: [false; 3],
+        })
+    }
+
     /// Its pieces, in order.
     #[must_use]
     pub fn pieces(&self) -> &[Piece] {
@@ -629,6 +642,8 @@ pub struct IncomingCommit {
     pub id: ObjectId,
     /// Its subject (`%s`).
     pub subject: String,
+    /// The branches at it, local and remote (the branch merged, say).
+    pub branches: Vec<String>,
 }
 
 /// The commit `operation` brings in, if git keeps one.
@@ -655,7 +670,15 @@ pub fn incoming_commit(
     let shown = git
         .read("log")
         .config("log.showSignature", "false")
-        .args(["-1", "--no-walk", "--format=%H%x00%s", name, "--"])
+        .args([
+            "-1",
+            "--no-walk",
+            "--decorate-refs=refs/heads/",
+            "--decorate-refs=refs/remotes/",
+            "--format=%H%x00%s%x00%D",
+            name,
+            "--",
+        ])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output_unchecked()?;
@@ -663,12 +686,22 @@ pub fn incoming_commit(
         return Ok(None);
     }
     let line = shown.stdout.trim_end_with(|c| c == '\n');
-    let Some((id, subject)) = line.split_once_str(b"\0") else {
+    let mut fields = line.split_str(b"\0");
+    let (Some(id), Some(subject), names) = (fields.next(), fields.next(), fields.next()) else {
         return Ok(None);
     };
+    // `HEAD -> main, origin/main, origin/HEAD`: the branches, without `HEAD`s.
+    let branches = names
+        .unwrap_or_default()
+        .split_str(b", ")
+        .map(|name| name.strip_prefix(b"HEAD -> ").unwrap_or(name))
+        .filter(|name| !name.is_empty() && *name != b"HEAD" && !name.ends_with(b"/HEAD"))
+        .map(|name| name.to_str_lossy().into_owned())
+        .collect();
     Ok(ObjectId::from_hex(id).map(|id| IncomingCommit {
         id,
         subject: subject.to_str_lossy().into_owned(),
+        branches,
     }))
 }
 

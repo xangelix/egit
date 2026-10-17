@@ -220,8 +220,9 @@ feature newer than 2.43.0 without a fallback, and check its release notes when u
     sides: `hash-object -w --no-filters`, a stage-0 entry through `update-index --index-info`
     (it replaces the stages), and `checkout-index --force` writing the work tree through the
     filters; deletion is `git rm --force`. `incoming_commit`: the commit merged, picked,
-    reverted, or replayed (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`).
-    `tests/conflict.rs` resolves conflicts from each operation and continues it, and checks
+    reverted, or replayed (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `REBASE_HEAD`),
+    with the branches at it (`%D`, `--decorate-refs`). `MergedText::parse` reads `merge-file`
+    output of one's own. `tests/conflict.rs` resolves conflicts from each operation and continues it, and checks
     that taking one side everywhere is `merge-file --ours`/`--theirs` on 250 random cases
     (lines like markers, missing final newlines).
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test.

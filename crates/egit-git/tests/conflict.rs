@@ -165,6 +165,7 @@ fn a_merge_conflict_is_merged_resolved_and_committed() {
     assert!(sides.base.is_some() && sides.current.is_some() && sides.incoming.is_some());
     let commit = incoming(&sandbox, &repo, Operation::Merge).unwrap();
     assert_eq!(commit.subject, "Incoming change");
+    assert_eq!(commit.branches, ["side"]);
     assert_eq!(incoming(&sandbox, &repo, Operation::CherryPick), None);
 
     let text = merged(&sandbox, &repo, &sides);
