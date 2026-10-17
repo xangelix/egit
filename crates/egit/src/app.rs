@@ -755,6 +755,8 @@ impl eframe::App for EgitApp {
         }
         self.state.prompts.show(ui.ctx());
         self.apply_actions(ui.ctx());
+        pointing_hand(ui.ctx());
+        crate::widgets::focus_ring(ui.ctx());
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -840,6 +842,24 @@ fn offers(state: &mut AppState, front: Option<Pane>) -> Offers {
         }
     }
     offers
+}
+
+/// The pointer over anything enabled that a click acts on shows a hand, as links do: egui gives
+/// its buttons one (`interact_cursor`), but not checkboxes, tabs, rows, or badges. A text field
+/// keeps its text cursor, and a widget that chose another cursor keeps that.
+fn pointing_hand(ctx: &egui::Context) {
+    if ctx.output(|output| output.cursor_icon) != egui::CursorIcon::Default {
+        return;
+    }
+    let hovered: Vec<egui::Id> =
+        ctx.interaction_snapshot(|snapshot| snapshot.hovered.iter().copied().collect());
+    let clickable = hovered.into_iter().any(|id| {
+        ctx.read_response(id)
+            .is_some_and(|response| response.enabled() && response.sense.senses_click())
+    });
+    if clickable {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
 }
 
 /// Watches the user's configuration `files`, waking `ctx` when one changes.

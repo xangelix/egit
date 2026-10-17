@@ -4,11 +4,21 @@
 use std::path::Path;
 
 use egit_git::{ConfigEntry, ConfigScope};
-use egui::{Button, CornerRadius, Frame, Margin, Response, RichText, Stroke, Ui};
+use egui::{
+    Button, CornerRadius, Event, Frame, Key, Margin, Response, RichText, Stroke, StrokeKind,
+    TextBuffer, TextEdit, Ui, WidgetText,
+};
 
 use crate::format::display_path;
 use crate::problem::Problem;
 use crate::theme::Palette;
+
+/// The smallest a control is drawn each way, in points: big enough to hit (WCAG 2.5.8 asks
+/// for 24).
+pub(crate) const TARGET: f32 = 24.0;
+
+/// A one-line field's margin, which makes it as tall as a button.
+const FIELD_MARGIN: Margin = Margin::symmetric(6, 5);
 
 /// A raised panel grouping related content.
 pub(crate) fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
@@ -47,6 +57,136 @@ pub(crate) fn primary(ui: &mut Ui, enabled: bool, text: &str) -> Response {
 /// Any other button.
 pub(crate) fn secondary(ui: &mut Ui, enabled: bool, text: &str) -> Response {
     ui.add_enabled(enabled, Button::new(text))
+}
+
+/// A compact button: small text, yet a whole target to hit.
+pub(crate) fn small<'a>(text: impl Into<WidgetText>) -> Button<'a> {
+    Button::new(text)
+        .small()
+        .min_size(egui::vec2(TARGET, TARGET))
+}
+
+/// A button of one icon filling exactly `rect` (so never wider than its place): the glyph, a
+/// background while the pointer is on it or presses it, and `name`, its words for those who
+/// don't see the icon.
+pub(crate) fn icon_button(
+    ui: &Ui,
+    rect: egui::Rect,
+    id: egui::Id,
+    glyph: &str,
+    name: &str,
+    enabled: bool,
+) -> Response {
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let response = ui.interact(rect, id, sense);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+    let visuals = ui.style().interact(&response);
+    if enabled && (response.hovered() || response.is_pointer_button_down_on()) {
+        ui.painter()
+            .rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
+    }
+    let color = if enabled {
+        visuals.text_color()
+    } else {
+        ui.visuals().weak_text_color()
+    };
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        egui::TextStyle::Button.resolve(ui.style()),
+        color,
+    );
+    response
+}
+
+/// Paints a list row's background: the selection's, a step lighter (or darker) while the
+/// pointer rests on it; or a hovered row's.
+pub(crate) fn row_fill(ui: &Ui, rect: egui::Rect, rounding: f32, selected: bool, hovered: bool) {
+    let palette = Palette::of(ui.ctx());
+    let painter = ui.painter();
+    if selected {
+        painter.rect_filled(rect, rounding, palette.accent.gamma_multiply(0.22));
+        if hovered {
+            painter.rect_filled(rect, rounding, palette.selected_hover);
+        }
+    } else if hovered {
+        painter.rect_filled(rect, rounding, palette.surface_alt);
+    }
+}
+
+/// A one-line text field, as tall as a button.
+pub(crate) fn line_field(text: &mut dyn TextBuffer) -> TextEdit<'_> {
+    TextEdit::singleline(text).margin(FIELD_MARGIN)
+}
+
+/// Shows which control has the keyboard focus, as a browser's `:focus-visible` does: a ring
+/// around it once a key (Tab, an arrow) or an assistive technology moved the focus, and none
+/// from the next press of the pointer. Called once a frame, after everything is drawn.
+pub(crate) fn focus_ring(ctx: &egui::Context) {
+    let id = egui::Id::new("egit-focus-visible");
+    // The frame's events as they came: views consume the arrows they act on.
+    let moved = ctx.input(|input| {
+        input.raw.events.iter().fold(None, |shown, event| match event {
+            Event::PointerButton { pressed: true, .. } => Some(false),
+            Event::Key {
+                key: Key::Tab | Key::ArrowUp | Key::ArrowDown | Key::ArrowLeft | Key::ArrowRight,
+                pressed: true,
+                ..
+            } => Some(true),
+            Event::AccessKitActionRequest(request)
+                if request.action == egui::accesskit::Action::Focus =>
+            {
+                Some(true)
+            }
+            _ => shown,
+        })
+    });
+    let visible = moved.map_or_else(
+        || ctx.data(|data| data.get_temp(id)).unwrap_or(false),
+        |visible| {
+            ctx.data_mut(|data| data.insert_temp(id, visible));
+            visible
+        },
+    );
+    if !visible {
+        return;
+    }
+    let Some(focused) = ctx
+        .memory(egui::Memory::focused)
+        .and_then(|focused| ctx.read_response(focused))
+    else {
+        return;
+    };
+    // Inside the control, and only where it shows: never over a neighbour.
+    ctx.layer_painter(focused.layer_id)
+        .with_clip_rect(focused.interact_rect)
+        .rect_stroke(
+            focused.rect,
+            CornerRadius::same(4),
+            Stroke::new(2.0, Palette::of(ctx).accent),
+            StrokeKind::Inside,
+        );
+}
+
+/// A tab's answer to the pointer resting on it (`egui_tiles`' tabs have none): a line under it.
+pub(crate) fn tab_hover(response: &Response) {
+    if response.hovered() {
+        let rect = response.rect.shrink(1.0);
+        response
+            .ctx
+            .layer_painter(response.layer_id)
+            .with_clip_rect(response.rect)
+            .hline(
+                rect.x_range(),
+                rect.bottom() - 1.0,
+                Stroke::new(2.0, Palette::of(&response.ctx).muted),
+            );
+    }
 }
 
 /// Where a setting comes from: its scope and file, or git's default when nothing sets it.

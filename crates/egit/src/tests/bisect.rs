@@ -14,8 +14,8 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use super::patches::wait_for_text;
 use super::screens::{
-    harness, history_of, history_shown, menu_item, open_path, profile_loaded, render, settle,
-    wait_for_label,
+    click_when_enabled, harness, history_of, history_shown, menu_item, open_path, profile_loaded,
+    render, settle, wait_for_label,
 };
 use crate::app::EgitApp;
 use crate::theme::icon;
@@ -103,8 +103,8 @@ fn a_bisection_finds_the_first_bad_commit_from_the_banner() {
             .parse()
             .unwrap();
         let mark = if number >= 7 { "Bad" } else { "Good" };
-        wait_for_label(&mut harness, mark);
-        harness.get_by_label(mark).click();
+        // Clicked in the frame it is found: the banner is drawn again as the status is read.
+        click_when_enabled(&mut harness, mark);
         settle(
             &mut harness,
             "the mark taken in",

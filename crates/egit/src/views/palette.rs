@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
 use egit_git::Reference;
-use egui::{Id, Key, Modal, Modifiers, Sense, TextEdit, Ui};
+use egui::{Id, Key, Modal, Modifiers, Sense, Ui};
 
 use crate::commands::{Command, RepoCommand, SWITCH_TO, score, score_letters};
 use crate::theme::Palette;
@@ -240,7 +240,7 @@ fn contents(ui: &mut Ui, view: &mut PaletteView) -> Option<Command> {
     let label = ui.label(muted(ui, "Command, branch, or repository"));
     let field = ui
         .add(
-            TextEdit::singleline(&mut view.query)
+            crate::widgets::line_field(&mut view.query)
                 .hint_text("Type to narrow; ↑ ↓ to choose; Enter to run")
                 .desired_width(f32::INFINITY),
         )
@@ -329,12 +329,7 @@ fn offer_row(ui: &mut Ui, view: &mut PaletteView, row: usize) -> Option<Command>
         };
         egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, enabled, selected, name)
     });
-    if selected {
-        ui.painter()
-            .rect_filled(rect, 6.0, palette.accent.gamma_multiply(0.22));
-    } else if response.hovered() {
-        ui.painter().rect_filled(rect, 6.0, palette.surface_alt);
-    }
+    crate::widgets::row_fill(ui, rect, 6.0, selected, response.hovered());
     let text = if enabled { palette.text } else { palette.muted };
     let font = egui::TextStyle::Body.resolve(ui.style());
     ui.painter().text(

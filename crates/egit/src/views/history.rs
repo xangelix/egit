@@ -1808,17 +1808,23 @@ impl TableDelegate for CommitRows<'_> {
             .search
             .found()
             .is_some_and(|found| found.contains(row));
+        let hovered = response.hovered();
         let fill = if selected {
             Some(self.shared.palette.accent.gamma_multiply(0.28))
         } else if found {
             Some(self.shared.palette.found)
-        } else if response.hovered() {
+        } else if hovered {
             Some(self.shared.palette.surface_alt)
         } else {
             None
         };
         if let Some(fill) = fill {
             ui.painter().rect_filled(rect, CornerRadius::ZERO, fill);
+        }
+        // A selected or found row answers the pointer too.
+        if hovered && (selected || found) {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::ZERO, self.shared.palette.selected_hover);
         }
         if response.clicked() {
             self.clicked = Some(row);
@@ -2404,7 +2410,7 @@ fn commit_info(
                 ui.label(
                     RichText::new(details.id.abbreviated(ID_DIGITS * 2).to_string()).monospace(),
                 );
-                if ui.small_button("Copy").clicked() {
+                if ui.add(crate::widgets::small("Copy")).clicked() {
                     ui.ctx().copy_text(details.id.to_string());
                 }
             });
@@ -2428,7 +2434,7 @@ fn commit_info(
                     let link = RichText::new(name)
                         .monospace()
                         .color(ui.visuals().hyperlink_color);
-                    let response = ui.add(egui::Button::new(link).frame(false));
+                    let response = ui.add(egui::Button::new(link).frame_when_inactive(false));
                     if response.on_hover_text("Go to this parent").clicked() {
                         go_to = Some(*parent);
                     }

@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use egui::{Key, RichText, TextEdit, Ui};
+use egui::{Key, RichText, Ui};
 use egui_async::Bind;
 use egui_table_kit::interaction::RowEventKind;
 use egui_table_kit::layout::Column;
@@ -148,7 +148,7 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
             }
             let field = ui
                 .add(
-                    TextEdit::singleline(&mut state.home.path)
+                    crate::widgets::line_field(&mut state.home.path)
                         .hint_text("…or type a path")
                         .desired_width((ui.available_width() - 72.0).max(120.0)),
                 )
@@ -223,6 +223,7 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
             ])
             .with_row_height(ROW_HEIGHT)
             .with_cell_align(egui::Align::Center)
+            .with_selected_hover_color(crate::theme::Palette::of(ui.ctx()).selected_hover)
             .with_max_height(Some(height))
             .show_with_output(ui, |_, _, _, _| None);
         let output = match output {

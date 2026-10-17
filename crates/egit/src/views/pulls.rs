@@ -442,12 +442,7 @@ fn row(
             &pull.title,
         )
     });
-    if selected {
-        ui.painter()
-            .rect_filled(rect, 0.0, palette.accent.gamma_multiply(0.22));
-    } else if response.hovered() {
-        ui.painter().rect_filled(rect, 0.0, palette.surface_alt);
-    }
+    crate::widgets::row_fill(ui, rect, 0.0, selected, response.hovered());
     let mut row = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect.shrink2(egui::vec2(8.0, 0.0)))
@@ -779,7 +774,7 @@ fn described(
                 ui.add(egui::Label::new(check.name.as_str()).truncate());
                 if let Some(url) = &check.url
                     && ui
-                        .add(egui::Button::new(muted(ui, "Details")).small())
+                        .add(crate::widgets::small(muted(ui, "Details")))
                         .on_hover_text(url)
                         .clicked()
                 {

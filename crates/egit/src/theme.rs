@@ -67,6 +67,9 @@ pub(crate) struct Palette {
     pub(crate) resolved: Color32,
     /// Behind the commit table's rows a search found.
     pub(crate) found: Color32,
+    /// Over a selected (or found) row while the pointer rests on it: a little lighter, which
+    /// keeps its text as readable in either theme.
+    pub(crate) selected_hover: Color32,
 }
 
 impl Palette {
@@ -108,6 +111,7 @@ impl Palette {
         incoming_header: Color32::from_rgba_unmultiplied_const(0xB3, 0x88, 0xFF, 64),
         resolved: Color32::from_rgba_unmultiplied_const(0x3F, 0xB6, 0xA8, 22),
         found: Color32::from_rgba_unmultiplied_const(0xE5, 0xB5, 0x46, 40),
+        selected_hover: Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 12),
     };
 
     /// The light theme.
@@ -148,6 +152,7 @@ impl Palette {
         incoming_header: Color32::from_rgba_unmultiplied_const(0x7B, 0x1F, 0xA2, 46),
         resolved: Color32::from_rgba_unmultiplied_const(0x0A, 0x84, 0x77, 20),
         found: Color32::from_rgba_unmultiplied_const(0xE8, 0xA8, 0x00, 56),
+        selected_hover: Color32::from_rgba_unmultiplied_const(0xFF, 0xFF, 0xFF, 48),
     };
 
     /// The palette egui is currently showing.
@@ -158,6 +163,11 @@ impl Palette {
             Self::LIGHT
         }
     }
+}
+
+/// Behind what is selected (text, a table's rows).
+pub(crate) fn selection(palette: &Palette) -> Color32 {
+    palette.accent.gamma_multiply(0.35)
 }
 
 /// Installs the fonts: egui's, with Phosphor's icons as a fallback of both families.
@@ -200,7 +210,7 @@ fn shape(style: &mut egui::Style, palette: &Palette, dark: bool) {
     visuals.hyperlink_color = palette.accent;
     visuals.warn_fg_color = palette.warn;
     visuals.error_fg_color = palette.danger;
-    visuals.selection.bg_fill = palette.accent.gamma_multiply(0.35);
+    visuals.selection.bg_fill = selection(palette);
     visuals.selection.stroke = Stroke::new(1.0, palette.accent);
     visuals.override_text_color = None;
 
@@ -295,6 +305,25 @@ mod tests {
         )
     }
 
+    /// Text on a selected row, and on one the pointer rests on.
+    #[test]
+    fn text_meets_wcag_aa_on_a_selected_row() {
+        for palette in [Palette::DARK, Palette::LIGHT] {
+            for under in [palette.panel, palette.surface] {
+                let selected = blend(selection(&palette), under);
+                let hovered = blend(palette.selected_hover, selected);
+                for background in [selected, hovered] {
+                    let ratio = contrast(palette.text, background);
+                    assert!(
+                        ratio >= 4.5,
+                        "{background:?} ({}): {ratio:.2}",
+                        palette.dark
+                    );
+                }
+            }
+        }
+    }
+
     /// Text on every background a line takes in the grid; muted text (hunk headers, a
     /// conflict's headers but the selected one's) on all but words' highlights and the selected
     /// conflict's headers, which always take the text colour.
@@ -315,10 +344,18 @@ mod tests {
                 ("found", palette.found, true),
             ] {
                 let background = blend(line, palette.background);
+                // A found row under the pointer, too.
+                let hovered = if name == "found" {
+                    blend(palette.selected_hover, background)
+                } else {
+                    background
+                };
                 let texts = [Some(palette.text), muted.then_some(palette.muted)];
                 for text in texts.into_iter().flatten() {
-                    let ratio = contrast(text, background);
-                    assert!(ratio >= 4.5, "{name} ({}): {ratio:.2}", palette.dark);
+                    for background in [background, hovered] {
+                        let ratio = contrast(text, background);
+                        assert!(ratio >= 4.5, "{name} ({}): {ratio:.2}", palette.dark);
+                    }
                 }
             }
         }

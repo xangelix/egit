@@ -11,7 +11,7 @@ use egit_forge::{ForgeHost, ForgeKind};
 use egit_git::{
     ConfigEntry, ConfigScope, ConfigSnapshot, PullFastForward, PullRebase, SigningFormat,
 };
-use egui::{Grid, RichText, TextEdit, Ui};
+use egui::{Grid, RichText, Ui};
 use egui_async::Bind;
 use egui_table_kit::table::TableKit;
 
@@ -245,7 +245,7 @@ fn identity_card(
                 let label = ui.label("Name");
                 ui.add_sized(
                     FIELD,
-                    TextEdit::singleline(&mut view.form.name)
+                    crate::widgets::line_field(&mut view.form.name)
                         .hint_text("Your Name")
                         .vertical_align(egui::Align::Center),
                 )
@@ -256,7 +256,7 @@ fn identity_card(
                 let label = ui.label("Email");
                 ui.add_sized(
                     FIELD,
-                    TextEdit::singleline(&mut view.form.email)
+                    crate::widgets::line_field(&mut view.form.email)
                         .hint_text("you@example.com")
                         .vertical_align(egui::Align::Center),
                 )
@@ -320,7 +320,7 @@ fn signing_card(
                 };
                 ui.add_sized(
                     FIELD,
-                    TextEdit::singleline(&mut view.form.key)
+                    crate::widgets::line_field(&mut view.form.key)
                         .hint_text(hint)
                         .vertical_align(egui::Align::Center),
                 )
@@ -523,7 +523,7 @@ impl HostList<'_> {
         ui.horizontal(|ui| {
             let label = ui.label(muted(ui, format!("{} host", self.kind.name())));
             let field = ui
-                .add_sized(FIELD, TextEdit::singleline(typed).hint_text(hint))
+                .add_sized(FIELD, crate::widgets::line_field(typed).hint_text(hint))
                 .labelled_by(label.id);
             let entry = typed.trim().to_owned();
             let host = ForgeHost::parse(self.kind, &entry).filter(|host| !host.is_public());
@@ -645,6 +645,7 @@ pub(crate) fn config_table(
         .with_columns(columns)
         .with_row_height(ROW_HEIGHT)
         .with_cell_align(egui::Align::Center)
+        .with_selected_hover_color(crate::theme::Palette::of(ui.ctx()).selected_hover)
         .with_max_height(Some(height))
         .with_striped(true)
         .show(ui, |_, _, _, _| None);

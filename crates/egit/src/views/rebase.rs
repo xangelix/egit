@@ -494,12 +494,7 @@ fn row(
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::SelectableLabel, true, selected, &name)
     });
-    if selected {
-        ui.painter()
-            .rect_filled(rect, 0.0, palette.accent.gamma_multiply(0.22));
-    } else if response.hovered() {
-        ui.painter().rect_filled(rect, 0.0, palette.surface_alt);
-    }
+    crate::widgets::row_fill(ui, rect, 0.0, selected, response.hovered());
     if response.clicked() {
         view.selected = at;
     }
@@ -573,7 +568,7 @@ fn move_buttons(ui: &mut Ui, view: &mut RebaseView, range: &RebaseRange, at: usi
         (icon::ARROW_UP, "Move up", at > 0 && !keeping, true),
         (icon::ARROW_DOWN, "Move down", !last && !keeping, false),
     ] {
-        let button = ui.add_enabled(enabled, egui::Button::new(glyph).small());
+        let button = ui.add_enabled(enabled, crate::widgets::small(glyph));
         // Named in words, for those who don't see the arrow.
         button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
         let button = if keeping {

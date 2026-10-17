@@ -319,7 +319,7 @@ fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<
 fn field(ui: &mut Ui, label: &str, text: &mut String, focus: bool) {
     let label = ui.label(muted(ui, label));
     let response = ui
-        .add(TextEdit::singleline(text).desired_width(f32::INFINITY))
+        .add(crate::widgets::line_field(text).desired_width(f32::INFINITY))
         .labelled_by(label.id);
     if focus && ui.memory(|memory| memory.focused().is_none()) {
         response.request_focus();

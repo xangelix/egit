@@ -157,6 +157,16 @@ impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
         }
     }
 
+    fn on_tab_button(
+        &mut self,
+        _tiles: &mut Tiles<RepoPanel>,
+        _tile_id: TileId,
+        button_response: egui::Response,
+    ) -> egui::Response {
+        crate::widgets::tab_hover(&button_response);
+        button_response
+    }
+
     fn is_tab_closable(&self, _tiles: &Tiles<RepoPanel>, _tile_id: TileId) -> bool {
         false
     }

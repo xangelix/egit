@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 
 use egit_git::{CancelToken, CloneOptions, Git, GitError, Progress, clone};
-use egui::{Align, Key, Layout, RichText, TextEdit, Ui, vec2};
+use egui::{Align, Key, Layout, RichText, Ui, vec2};
 use egui_async::Bind;
 
 use crate::app::Action;
@@ -276,7 +276,7 @@ fn fields(ui: &mut Ui, view: &mut CloneView, actions: &mut Vec<Action>) -> bool 
             let field = ui
                 .add_sized(
                     [width, 20.0],
-                    TextEdit::singleline(&mut view.url)
+                    crate::widgets::line_field(&mut view.url)
                         .hint_text("https://github.com/owner/repository.git"),
                 )
                 .labelled_by(label.id);
@@ -299,7 +299,7 @@ fn fields(ui: &mut Ui, view: &mut CloneView, actions: &mut Vec<Action>) -> bool 
                 let field = ui
                     .add_sized(
                         [ui.available_width(), 20.0],
-                        TextEdit::singleline(&mut view.folder_text).hint_text("~/src"),
+                        crate::widgets::line_field(&mut view.folder_text).hint_text("~/src"),
                     )
                     .labelled_by(label.id);
                 if field.changed() {
@@ -312,7 +312,7 @@ fn fields(ui: &mut Ui, view: &mut CloneView, actions: &mut Vec<Action>) -> bool 
             let field = ui
                 .add_sized(
                     [width.min(320.0), 20.0],
-                    TextEdit::singleline(&mut view.name).hint_text("repository"),
+                    crate::widgets::line_field(&mut view.name).hint_text("repository"),
                 )
                 .labelled_by(label.id);
             if field.changed() {

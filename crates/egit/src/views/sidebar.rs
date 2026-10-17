@@ -26,7 +26,7 @@ use egit_text::{Needle, matches_case};
 use egui::text::{LayoutJob, TextWrapping};
 use egui::{
     Color32, FontId, Id, Key, KeyboardShortcut, Modifiers, Rect, Response, RichText, Sense,
-    TextEdit, TextFormat, Ui, WidgetInfo, WidgetType, pos2, vec2,
+    TextFormat, Ui, WidgetInfo, WidgetType, pos2, vec2,
 };
 use egui_async::Bind;
 
@@ -41,16 +41,16 @@ use crate::jobs;
 use crate::problem::Problem;
 use crate::tasks::{Task, remote_names};
 use crate::theme::{Palette, icon};
-use crate::widgets::muted;
+use crate::widgets::{TARGET, muted};
 
-/// A row's height.
-const ROW_HEIGHT: f32 = 22.0;
+/// A row's height: a whole target to hit.
+const ROW_HEIGHT: f32 = TARGET;
 
 /// How far each level of a tree is indented.
 const INDENT: f32 = 14.0;
 
-/// Room left of every row's text: a branch's checkbox.
-const GUTTER: f32 = 22.0;
+/// Room left of every row's text: a branch's checkbox (a whole target to hit).
+const GUTTER: f32 = TARGET;
 
 /// The lists the sidebar shows besides the refs, as the tab last read them.
 pub(crate) struct Lists<'a> {
@@ -848,15 +848,22 @@ pub(super) fn show(
 fn header(ui: &mut Ui, view: &mut Sidebar) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
-        let hide = ui.add(egui::Button::new(icon::CARET_DOUBLE_LEFT).frame(false));
-        hide.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Hide the sidebar"));
+        let (_, place) = ui.allocate_space(vec2(TARGET, TARGET));
+        let hide = crate::widgets::icon_button(
+            ui,
+            place,
+            Id::new("sidebar-hide"),
+            icon::CARET_DOUBLE_LEFT,
+            "Hide the sidebar",
+            true,
+        );
         if hide.on_hover_text("Hide the sidebar").clicked() {
             view.open = false;
         }
         let label = ui.label(muted(ui, "Filter"));
         let field = ui
             .add(
-                TextEdit::singleline(&mut view.filter.text)
+                crate::widgets::line_field(&mut view.filter.text)
                     .hint_text("branches, tags, …")
                     .desired_width(f32::INFINITY),
             )
@@ -894,14 +901,7 @@ fn header(ui: &mut Ui, view: &mut Sidebar) {
 
 /// A row's place: its whole width, its clickable part (right of the gutter, left of `right`
 /// pixels kept for a button), named and marked as selected or hovered.
-fn row_area(
-    ui: &mut Ui,
-    drawing: &Drawing<'_>,
-    id: Id,
-    name: &str,
-    selected: bool,
-    right: f32,
-) -> (Rect, Response) {
+fn row_area(ui: &mut Ui, id: Id, name: &str, selected: bool, right: f32) -> (Rect, Response) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
     let body = Rect::from_min_max(
         pos2(rect.left() + GUTTER, rect.top()),
@@ -913,13 +913,7 @@ fn row_area(
     let response = ui.interact(body, id, Sense::click());
     response
         .widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, name));
-    let palette = drawing.palette;
-    if selected {
-        ui.painter()
-            .rect_filled(rect, 0.0, palette.accent.gamma_multiply(0.22));
-    } else if response.hovered() {
-        ui.painter().rect_filled(rect, 0.0, palette.surface_alt);
-    }
+    crate::widgets::row_fill(ui, rect, 0.0, selected, response.hovered());
     (rect, response)
 }
 
@@ -1010,7 +1004,7 @@ fn section_row(
     let key = (section, BString::default());
     let id = Id::new(("sidebar-section", drawing.shared.id, section));
     let named = format!("{title}: {count}");
-    let (rect, response) = row_area(ui, drawing, id, &named, false, right);
+    let (rect, response) = row_area(ui, id, &named, false, right);
     let folded = view.folded.contains(&key);
     let palette = drawing.palette;
     let caret = if folded {
@@ -1042,20 +1036,11 @@ fn section_row(
     if let Some(name) = adding {
         let button = Rect::from_center_size(
             pos2(rect.right() - ROW_HEIGHT / 2.0 - 2.0, rect.center().y),
-            vec2(ROW_HEIGHT, ROW_HEIGHT - 2.0),
+            vec2(ROW_HEIGHT, ROW_HEIGHT),
         );
         let enabled = adding_allowed(drawing, section).is_ok();
-        let plus = ui.put(
-            button,
-            egui::Button::new(icon::PLUS)
-                .frame(false)
-                .sense(if enabled {
-                    Sense::click()
-                } else {
-                    Sense::hover()
-                }),
-        );
-        plus.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
+        let plus =
+            crate::widgets::icon_button(ui, button, id.with("add"), icon::PLUS, name, enabled);
         if plus.on_hover_text(name).clicked() && enabled {
             event = adding_ask(drawing, section).map(SidebarEvent::Ask);
         }
@@ -1185,7 +1170,7 @@ fn fold_row(
 ) {
     let shown = key.get(name..).unwrap_or_default().to_str_lossy();
     let id = Id::new(("sidebar-folder", drawing.shared.id, section, key.as_slice()));
-    let (rect, response) = row_area(ui, drawing, id, &format!("{shown}/"), false, 0.0);
+    let (rect, response) = row_area(ui, id, &format!("{shown}/"), false, 0.0);
     let folded = view.folded.contains(&(section, key.clone()));
     let caret = if folded {
         icon::CARET_RIGHT
@@ -1221,7 +1206,7 @@ fn remote_row(
     let name = drawing.remotes.get(remote)?.clone();
     let shown = name.to_str_lossy().into_owned();
     let id = Id::new(("sidebar-remote", drawing.shared.id, name.as_slice()));
-    let (rect, response) = row_area(ui, drawing, id, &shown, false, 0.0);
+    let (rect, response) = row_area(ui, id, &shown, false, 0.0);
     let key = (Section::Remotes, name.clone());
     let caret = if view.folded.contains(&key) {
         icon::CARET_RIGHT
@@ -1340,16 +1325,15 @@ fn check_box(
     checked: bool,
     enabled: bool,
 ) -> Response {
-    let boxed = Rect::from_center_size(
-        pos2(rect.left() + GUTTER / 2.0, rect.center().y),
-        vec2(14.0, 14.0),
-    );
+    // The box drawn small, the whole gutter beside the row taking the click.
+    let target = Rect::from_min_size(rect.min, vec2(GUTTER, rect.height()));
+    let boxed = Rect::from_center_size(target.center(), vec2(14.0, 14.0));
     let sense = if enabled {
         Sense::click()
     } else {
         Sense::hover()
     };
-    let response = ui.interact(boxed, id, sense);
+    let response = ui.interact(target, id, sense);
     let palette = drawing.palette;
     let stroke = if response.hovered() && enabled {
         palette.accent
@@ -1426,7 +1410,7 @@ fn ref_row(
     let key = Picked::Ref(reference.name.clone());
     let selected = view.selected.as_ref() == Some(&key);
     let id = Id::new(("sidebar-ref", drawing.shared.id, reference.name.as_slice()));
-    let (rect, response) = row_area(ui, drawing, id, &shown, selected, 0.0);
+    let (rect, response) = row_area(ui, id, &shown, selected, 0.0);
     let current = drawing.current.as_ref() == Some(&reference.name);
     let is_branch = matches!(reference.kind, RefKind::Branch | RefKind::RemoteBranch);
     let seen = !is_branch || current || visible(drawing.shared, reference);
@@ -1511,7 +1495,6 @@ fn stash_row(
     let id = Id::new(("sidebar-stash", drawing.shared.id, stash.id));
     let (rect, response) = row_area(
         ui,
-        drawing,
         id,
         &format!("{place}: {}", stash.message),
         selected,
@@ -1579,7 +1562,7 @@ fn worktree_row(
     let selected = view.selected.as_ref() == Some(&key);
     let id = Id::new(("sidebar-worktree", drawing.shared.id, &worktree.path));
     let named = format!("{checked_out} · {folder}");
-    let (rect, response) = row_area(ui, drawing, id, &named, selected, 0.0);
+    let (rect, response) = row_area(ui, id, &named, selected, 0.0);
     let palette = drawing.palette;
     let glyph = if worktree.main {
         icon::HOUSE
@@ -1713,7 +1696,7 @@ fn submodule_row(
         drawing.shared.id,
         submodule.path.as_slice(),
     ));
-    let (rect, response) = row_area(ui, drawing, id, &path, selected, 0.0);
+    let (rect, response) = row_area(ui, id, &path, selected, 0.0);
     let palette = drawing.palette;
     let recorded = submodule.recorded.abbreviated(ID_DIGITS).to_string();
     let state = if submodule.initialized {
@@ -1794,7 +1777,7 @@ fn request_row(
         request.repository,
         request.number,
     ));
-    let (rect, response) = row_area(ui, drawing, id, &request.label, selected, 0.0);
+    let (rect, response) = row_area(ui, id, &request.label, selected, 0.0);
     let palette = drawing.palette;
     let (glyph, color, meaning) = check_look(request.checks, palette);
     paint_line(
@@ -1822,8 +1805,15 @@ fn request_row(
 /// The narrow strip shown in the sidebar's place while it is hidden: a button showing it.
 pub(super) fn hidden(ui: &mut Ui, view: &mut Sidebar) {
     ui.add_space(6.0);
-    let show = ui.add(egui::Button::new(icon::SIDEBAR_SIMPLE).frame(false));
-    show.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, "Show the sidebar"));
+    let (_, place) = ui.allocate_space(vec2(TARGET, TARGET));
+    let show = crate::widgets::icon_button(
+        ui,
+        place,
+        Id::new("sidebar-show"),
+        icon::SIDEBAR_SIMPLE,
+        "Show the sidebar",
+        true,
+    );
     if show.on_hover_text("Show the sidebar").clicked() {
         view.open = true;
     }

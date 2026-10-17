@@ -13,7 +13,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use egit_git::askpass::{AskpassServer, Prompt, PromptKind};
-use egui::{Id, Key, Modal, RichText, TextEdit};
+use egui::{Id, Key, Modal, RichText};
 use zeroize::Zeroizing;
 
 use crate::jobs;
@@ -174,7 +174,7 @@ impl Prompts {
                 PromptKind::Visible | PromptKind::Secret => {
                     let field = ui
                         .add(
-                            TextEdit::singleline(&mut *self.answer)
+                            crate::widgets::line_field(&mut *self.answer)
                                 .id(field_id)
                                 .password(kind == PromptKind::Secret)
                                 .desired_width(f32::INFINITY),

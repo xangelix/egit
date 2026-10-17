@@ -271,7 +271,7 @@ fn commit_form(
 fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
     let summary_label = ui.label(muted(ui, "Summary"));
     ui.add(
-        TextEdit::singleline(&mut form.summary)
+        crate::widgets::line_field(&mut form.summary)
             .hint_text("What it does, in a line")
             .desired_width(f32::INFINITY),
     )
@@ -463,6 +463,7 @@ fn list_ui(
         .with_columns(columns)
         .with_row_height(ROW_HEIGHT)
         .with_cell_align(Align::Center)
+        .with_selected_hover_color(crate::theme::Palette::of(ui.ctx()).selected_hover)
         .with_max_height(Some(height))
         .with_striped(true)
         .show_with_output(ui, |ui, cell, _, text_color| {
@@ -521,7 +522,7 @@ fn file_cell(
             let button = ui
                 .add_enabled(
                     busy.then_some(false).is_none(),
-                    egui::Button::new(glyph).small(),
+                    crate::widgets::small(glyph),
                 )
                 .on_hover_text(verb);
             // Named for what it does to which file: a screen reader hears more than "+".

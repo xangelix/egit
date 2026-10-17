@@ -10,7 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use egit_git::ConfigSnapshot;
-use egui::{Frame, Key, Margin, RichText, TextEdit, Ui};
+use egui::{Frame, Key, Margin, RichText, Ui};
 
 use crate::format::count;
 use crate::history::History;
@@ -220,7 +220,7 @@ pub(super) fn bar(
                     .labelled_by(label.id);
                 let field = ui
                     .add(
-                        TextEdit::singleline(&mut search.query)
+                        crate::widgets::line_field(&mut search.query)
                             .hint_text(search.kind.hint())
                             .desired_width(FIELD_WIDTH),
                     )
@@ -245,20 +245,20 @@ pub(super) fn bar(
                 status(ui, search, history, selected, palette);
                 let any = search.found().is_some_and(|found| found.count() > 0);
                 if ui
-                    .add_enabled(any, egui::Button::new("Previous").small())
+                    .add_enabled(any, crate::widgets::small("Previous"))
                     .on_hover_text("Shift+Enter")
                     .clicked()
                 {
                     step = Some(Step::Previous);
                 }
                 if ui
-                    .add_enabled(any, egui::Button::new("Next").small())
+                    .add_enabled(any, crate::widgets::small("Next"))
                     .on_hover_text("Enter")
                     .clicked()
                 {
                     step = Some(Step::Next);
                 }
-                if ui.small_button("Close").clicked() {
+                if ui.add(crate::widgets::small("Close")).clicked() {
                     close = true;
                 }
             });

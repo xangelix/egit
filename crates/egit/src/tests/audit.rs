@@ -1,11 +1,18 @@
 //! The checks every screen passes (after eshine's): no two widgets share an id, no text or
 //! control is drawn partly over another on the same layer, nothing moves while the window sits
-//! idle, and every control has a name made of words or numbers, not just an icon.
+//! idle, and every control has a name made of words or numbers, not just an icon. Then, resting
+//! the pointer on each control the pointer can reach: it visibly responds, its cursor says what
+//! a click does (a text cursor over a field, a hand over the rest), it is big enough to hit
+//! (24 points each way, as WCAG 2.5.8 asks), and the keyboard focus shows on it. Each is
+//! looked at with the focus elsewhere (given back after); a control that takes the focus back
+//! whenever nothing has it (a dialog's field) always shows it, and is left out of those two.
 //!
 //! Elements covered by something else or scrolled out of view are skipped.
 
+use std::hash::{Hash as _, Hasher as _};
+
 use egui::accesskit::{Action, Role};
-use egui::{LayerId, Rect};
+use egui::{CursorIcon, LayerId, Rect};
 use egui_kittest::Harness;
 use egui_kittest::kittest::NodeT as _;
 
@@ -21,9 +28,28 @@ struct Element {
     visible: Rect,
     layer: LayerId,
     control: bool,
+    /// Whether the keyboard can focus it.
+    focusable: bool,
+    /// Its accessibility node, to give it the focus.
+    node: u64,
 }
 
+/// The smallest comfortable pointer target, in points (WCAG 2.5.8 asks for 24).
+const MIN_TARGET: f32 = 24.0;
+
 impl Element {
+    /// A divider or scroll bar: dragged, not read or clicked.
+    fn is_handle(&self) -> bool {
+        self.role == Role::ScrollBar || self.rect.width().min(self.rect.height()) < 8.0
+    }
+
+    fn is_text_input(&self) -> bool {
+        matches!(
+            self.role,
+            Role::TextInput | Role::MultilineTextInput | Role::SearchInput | Role::PasswordInput
+        )
+    }
+
     fn describe(&self) -> String {
         format!(
             "{:?} {:?} at ({:.0}, {:.0}) {:.0}×{:.0}",
@@ -42,6 +68,11 @@ pub(crate) fn run(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<Strin
     harness
         .ctx
         .options_mut(|options| options.warn_on_id_clash = true);
+    // A tooltip would count as a response: the control itself has to react.
+    harness
+        .ctx
+        .all_styles_mut(|style| style.interaction.tooltip_delay = 1.0e6);
+    harness.remove_cursor();
     harness.run_steps(3);
     let mut problems = id_clashes(harness, screen);
     let before = elements(harness);
@@ -103,6 +134,121 @@ pub(crate) fn run(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<Strin
                 ));
             }
         }
+    }
+    problems.extend(interaction(harness, screen));
+    problems
+}
+
+/// A fingerprint of everything painted over `rect`.
+fn painted(harness: &Harness<'_, EgitApp>, rect: Rect) -> u64 {
+    let inner = rect.shrink(1.0);
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for clipped in &harness.output().shapes {
+        let bounds = clipped
+            .shape
+            .visual_bounding_rect()
+            .intersect(clipped.clip_rect);
+        if bounds.is_positive() && bounds.intersects(inner) {
+            format!("{:?}", clipped.shape).hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+/// Rests the pointer on every control the pointer can reach, and gives each focusable one the
+/// keyboard focus: what doesn't respond, shows the wrong cursor, or is too small to hit.
+fn interaction(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    let controls: Vec<Element> = elements(harness)
+        .into_iter()
+        .filter(|element| element.control && !element.is_handle())
+        // Scrolled out of view, or mostly so: the pointer can't rest on it.
+        .filter(|element| {
+            element.visible.is_positive() && element.visible.area() >= 0.5 * element.rect.area()
+        })
+        .collect();
+    // A control holding the focus (a dialog's field) shows neither the pointer resting on it
+    // nor the focus arriving: every control is looked at without it, which comes back after.
+    let had_focus = harness.ctx.memory(egui::Memory::focused);
+    if let Some(id) = had_focus {
+        harness.ctx.memory_mut(|memory| memory.surrender_focus(id));
+        harness.run_steps(2);
+    }
+    // One that takes it back whenever nothing has it (a dialog's field) always shows it.
+    let holder = harness
+        .ctx
+        .memory(egui::Memory::focused)
+        .map(|id| id.accesskit_id().0);
+    for control in controls
+        .iter()
+        .filter(|control| Some(control.node) != holder)
+    {
+        let center = control.visible.center();
+        let top = harness
+            .ctx
+            .layer_id_at(center)
+            .unwrap_or_else(LayerId::background);
+        if top != control.layer {
+            continue;
+        }
+        if control.rect.width() < MIN_TARGET - 0.5 || control.rect.height() < MIN_TARGET - 0.5 {
+            problems.push(format!(
+                "{screen}: smaller than {MIN_TARGET} points: {}",
+                control.describe()
+            ));
+        }
+        let before = painted(harness, control.rect);
+        harness.hover_at(center);
+        harness.run_steps(3);
+        let after = painted(harness, control.rect);
+        let cursor = harness.output().platform_output.cursor_icon;
+        if after == before {
+            problems.push(format!(
+                "{screen}: no change on hover: {}",
+                control.describe()
+            ));
+        }
+        let fitting = if control.is_text_input() {
+            cursor == CursorIcon::Text
+        } else {
+            cursor != CursorIcon::Default
+        };
+        if !fitting {
+            problems.push(format!(
+                "{screen}: cursor {cursor:?} on hover: {}",
+                control.describe()
+            ));
+        }
+        harness.remove_cursor();
+        harness.run_steps(2);
+        if control.focusable {
+            let area = control.rect.expand(6.0);
+            let unfocused = painted(harness, area);
+            if let Some(node) = harness
+                .root()
+                .children_recursive()
+                .find(|node| node.accesskit_node().locate().0.0 == control.node)
+            {
+                node.focus();
+            }
+            harness.run_steps(2);
+            if painted(harness, area) == unfocused {
+                problems.push(format!(
+                    "{screen}: no sign of the keyboard focus: {}",
+                    control.describe()
+                ));
+            }
+            harness.ctx.memory_mut(|memory| {
+                if let Some(id) = memory.focused() {
+                    memory.surrender_focus(id);
+                }
+            });
+            harness.run_steps(2);
+        }
+    }
+    if let Some(id) = had_focus {
+        harness.ctx.memory_mut(|memory| memory.request_focus(id));
+        harness.run_steps(2);
     }
     problems
 }
@@ -174,6 +320,8 @@ fn elements(harness: &Harness<'_, EgitApp>) -> Vec<Element> {
             visible,
             layer,
             control,
+            focusable: data.supports_action(Action::Focus),
+            node: access.locate().0.0,
         });
     }
     found

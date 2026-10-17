@@ -149,6 +149,7 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
         tile_id: TileId,
         button_response: egui::Response,
     ) -> egui::Response {
+        crate::widgets::tab_hover(&button_response);
         match tiles.get_pane(&tile_id) {
             Some(Pane::Repo(id)) => match self.state.repos.iter().find(|repo| repo.id == *id) {
                 Some(repo) => {
@@ -158,6 +159,15 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
             },
             _ => button_response,
         }
+    }
+
+    fn close_button_outer_size(&self) -> f32 {
+        // Big enough to hit (24 points); the cross drawn as large as egui_tiles draws it.
+        24.0
+    }
+
+    fn close_button_inner_margin(&self) -> f32 {
+        7.0
     }
 
     fn is_tab_closable(&self, tiles: &Tiles<Pane>, tile_id: TileId) -> bool {

@@ -143,6 +143,14 @@ fn commits_merges_and_switches_are_taken_back_and_done_again() {
     assert_eq!(std::fs::read_to_string(repo.join("f")).unwrap(), "mine\n");
     assert_eq!(git_says(&sandbox, &repo, &["stash", "list"]), "");
     sandbox.run(&repo, "checkout", &["--", "f"]).unwrap();
+    // The work tree read again: the screens below are looked at control by control.
+    settle(&mut harness, "a clean work tree", |app| {
+        app.state.repos[0]
+            .work_tree
+            .status()
+            .and_then(Result::ok)
+            .is_some_and(|status| status.is_empty())
+    });
 
     // Moved on outside egit: the merge can't be taken back, and nothing changes.
     sandbox

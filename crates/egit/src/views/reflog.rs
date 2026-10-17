@@ -363,12 +363,7 @@ fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut ReflogView, entries: &[Refl
                     &action,
                 )
             });
-            if selected {
-                ui.painter()
-                    .rect_filled(rect, 0.0, palette.accent.gamma_multiply(0.22));
-            } else if response.hovered() {
-                ui.painter().rect_filled(rect, 0.0, palette.surface_alt);
-            }
+            crate::widgets::row_fill(ui, rect, 0.0, selected, response.hovered());
             if response.clicked() {
                 view.select(entries, at);
             }

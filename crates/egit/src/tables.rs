@@ -326,6 +326,7 @@ impl ChangesTable {
             .with_columns(columns)
             .with_row_height(ROW_HEIGHT)
             .with_cell_align(Align::Center)
+            .with_selected_hover_color(crate::theme::Palette::of(ui.ctx()).selected_hover)
             .with_max_height(Some(height))
             .with_striped(true)
             .show_with_output(ui, |ui, cell, _, text_color| {

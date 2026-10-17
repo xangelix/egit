@@ -289,7 +289,7 @@ fn buttons(ui: &mut Ui, yes: &str, ready: bool, go: impl FnOnce() -> Task) -> Op
 fn name_field(ui: &mut Ui, label: &str, text: &mut String) -> bool {
     let label = ui.label(muted(ui, label));
     let field = ui
-        .add(TextEdit::singleline(text).desired_width(f32::INFINITY))
+        .add(crate::widgets::line_field(text).desired_width(f32::INFINITY))
         .labelled_by(label.id);
     if ui.memory(|memory| memory.focused().is_none()) {
         field.request_focus();
@@ -392,8 +392,11 @@ fn first_push(ui: &mut Ui, pane: &TaskPane<'_>, options: &mut PushOptions) -> Op
                 .labelled_by(remote_label.id);
             ui.end_row();
             let name_label = ui.label(muted(ui, "As"));
-            ui.add_sized([240.0, 20.0], TextEdit::singleline(&mut name))
-                .labelled_by(name_label.id);
+            ui.add_sized(
+                [240.0, crate::widgets::TARGET + 2.0],
+                crate::widgets::line_field(&mut name),
+            )
+            .labelled_by(name_label.id);
             ui.end_row();
         });
     ui.add_space(8.0);
@@ -556,7 +559,7 @@ fn set_upstream(
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             for choice in offered {
-                if ui.small_button(choice.as_str()).clicked() {
+                if ui.add(crate::widgets::small(choice.as_str())).clicked() {
                     picked = Some(choice.clone());
                 }
             }
@@ -627,7 +630,7 @@ fn add_worktree(
     says(ui, &said);
     ui.add_space(8.0);
     let label = ui.label(muted(ui, "Folder (a new or empty one)"));
-    ui.add(TextEdit::singleline(path).desired_width(f32::INFINITY))
+    ui.add(crate::widgets::line_field(path).desired_width(f32::INFINITY))
         .labelled_by(label.id);
     let target = worktree_path(path, pane.work_tree, pane.home);
     let needs_name = !matches!(from, WorktreeAsked::Branch(_));
@@ -827,7 +830,7 @@ fn url_ready(url: &str) -> bool {
 fn field(ui: &mut Ui, label: &str, text: &mut String) -> bool {
     let label = ui.label(muted(ui, label));
     let field = ui
-        .add(TextEdit::singleline(text).desired_width(f32::INFINITY))
+        .add(crate::widgets::line_field(text).desired_width(f32::INFINITY))
         .labelled_by(label.id);
     field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter))
 }

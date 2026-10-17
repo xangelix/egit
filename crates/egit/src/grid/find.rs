@@ -7,7 +7,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use egit_text::{Text, find_all, matches_case};
-use egui::{Align, Frame, Key, Layout, Margin, Rect, RichText, Stroke, TextEdit, Ui, UiBuilder};
+use egui::{Align, Frame, Key, Layout, Margin, Rect, RichText, Stroke, Ui, UiBuilder};
 use egui_async::Bind;
 
 use super::GridSource;
@@ -240,7 +240,10 @@ impl Find {
                         ui.horizontal(|ui| {
                             let label = ui.label(RichText::new("Find").color(palette.muted));
                             let field = ui
-                                .add(TextEdit::singleline(&mut self.query).desired_width(150.0))
+                                .add(
+                                    crate::widgets::line_field(&mut self.query)
+                                        .desired_width(150.0),
+                                )
                                 .labelled_by(label.id);
                             if std::mem::take(&mut self.focus) {
                                 field.request_focus();
@@ -258,13 +261,13 @@ impl Find {
                                 egui::Label::new(RichText::new(status).color(palette.muted))
                                     .selectable(false),
                             );
-                            if ui.small_button("Previous").clicked() {
+                            if ui.add(crate::widgets::small("Previous")).clicked() {
                                 step = Some(Step::Previous);
                             }
-                            if ui.small_button("Next").clicked() {
+                            if ui.add(crate::widgets::small("Next")).clicked() {
                                 step = Some(Step::Next);
                             }
-                            if ui.small_button("Close").clicked() {
+                            if ui.add(crate::widgets::small("Close")).clicked() {
                                 close = true;
                             }
                         });
