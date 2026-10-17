@@ -1223,7 +1223,7 @@ dependencies = [
 [[package]]
 name = "egui-table-kit"
 version = "0.7.1"
-source = "git+https://github.com/xangelix/egui-table-kit?rev=9701b2d7663c7d870b2f89ac3898cea29d347951#9701b2d7663c7d870b2f89ac3898cea29d347951"
+source = "git+https://github.com/xangelix/egui-table-kit?rev=2904af9e4ca20425df588bc377ebc600872b3867#2904af9e4ca20425df588bc377ebc600872b3867"
 dependencies = [
  "ahash",
  "bitflags 2.13.2",
