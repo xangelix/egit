@@ -8,7 +8,10 @@
 //! the interactive rebase editor on 10,000 commits: how soon they are read, and frames
 //! scrolling and stepping through them. And the blame of 100,000 lines of C that 100 commits
 //! rewrote here and there: how soon its first lines are labelled and all of them, and frames
-//! jumping while git still blames and once it is done, and scrolling.
+//! jumping while git still blames and once it is done, and scrolling. And 1,000 open pull
+//! requests from a fake GitHub, each the head of one of 10,000 commits: how soon the first
+//! page shows and all of them, and frames scrolling and stepping through the list, and the
+//! commit table under their badges.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
@@ -30,6 +33,7 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::time::{Duration, Instant};
 
+use egit_forge::testing::{FakeGitHub, FakePull, FakeRepository};
 use egit_git::testing::Sandbox;
 use egit_text::{Options, Text};
 use egui::accesskit::Role;
@@ -903,6 +907,163 @@ fn corpus_blame() {
     });
     worst = worst.max(report("wheel scrolling", scrolling));
     snapshot(&mut harness, "blame");
+    println!(
+        "  peak memory {:.0} MB (the repository made beforehand not counted)",
+        peak_memory_mb()
+    );
+    if !cfg!(debug_assertions) {
+        assert!(
+            worst < Duration::from_millis(8),
+            "the 99th percentile frame took {worst:?}"
+        );
+    }
+}
+
+/// Open pull requests in their measurement.
+const PULLS: u32 = 1_000;
+
+/// [`long_branch`] on GitHub (a fake one): `origin` is `octo/tool` there, signed in through a
+/// `store` helper, with [`PULLS`] open pull requests, each the head of one of the newest
+/// commits.
+fn on_github(sandbox: &Sandbox, fake: &FakeGitHub) -> std::path::PathBuf {
+    let repo = long_branch(sandbox);
+    let url = format!("http://{}/octo/tool.git", fake.address());
+    sandbox
+        .run(&repo, "remote", &["add", "origin", &url])
+        .unwrap();
+    sandbox
+        .run(&repo, "config", &["egit.githubHost", &fake.host_entry()])
+        .unwrap();
+    let store = sandbox.path("credentials");
+    std::fs::write(&store, format!("http://ada:t0ken@{}\n", fake.address())).unwrap();
+    let helper = format!("store --file={}", store.display());
+    sandbox
+        .run(&repo, "config", &["credential.helper", &helper])
+        .unwrap();
+    let heads = sandbox
+        .run(
+            &repo,
+            "rev-list",
+            &[&format!("--max-count={PULLS}"), "main"],
+        )
+        .unwrap();
+    let pulls = String::from_utf8(heads.stdout)
+        .unwrap()
+        .lines()
+        .zip((1..=PULLS).rev())
+        .map(|(head, number)| FakePull {
+            number,
+            title: format!("Change number {number}, which does something worth reviewing"),
+            author: format!("author{}", number % 37),
+            head_branch: format!("topic-{number}"),
+            base_branch: "main".to_owned(),
+            head_commit: head.to_owned(),
+            review: Some(
+                ["APPROVED", "REVIEW_REQUIRED", "CHANGES_REQUESTED"]
+                    [usize::try_from(number % 3).unwrap()]
+                .to_owned(),
+            ),
+            checks: Some(
+                ["SUCCESS", "FAILURE", "PENDING"][usize::try_from(number % 3).unwrap()].to_owned(),
+            ),
+            ..FakePull::default()
+        })
+        .collect();
+    fake.state().repositories.push(FakeRepository {
+        owner: "octo".to_owned(),
+        name: "tool".to_owned(),
+        default_branch: "main".to_owned(),
+        parent: None,
+        pulls,
+    });
+    repo
+}
+
+#[test]
+#[ignore = "a release-build measurement: see the module's documentation"]
+fn corpus_pull_requests() {
+    println!("{PULLS} open pull requests on a history of {REBASED} commits:");
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeGitHub::start("t0ken", "ada").unwrap();
+    let repo = on_github(&sandbox, &fake);
+    reset_peak_memory();
+    let git = sandbox.git().clone();
+    let builder = Harness::builder().with_size([1400.0, 900.0]);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    let mut harness = builder.build_eframe(move |creation| {
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            None,
+            Prompts::none(),
+        )
+    });
+    harness.run_steps(2);
+    let started = Instant::now();
+    harness.state_mut().state.actions.push(Action::Open(repo));
+    let read = |harness: &mut Harness<'_, EgitApp>| {
+        harness
+            .state()
+            .state
+            .repos
+            .first()
+            .map_or(0, |repo| repo.forge.found().pulls.len())
+    };
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state
+            .repos
+            .first()
+            .is_some_and(|repo| !repo.forge.found().pulls.is_empty())
+    });
+    println!(
+        "  the first {} shown {:?} after opening",
+        read(&mut harness),
+        started.elapsed()
+    );
+    step_until(&mut harness, Duration::from_secs(60), |app| {
+        app.state.repos.first().is_some_and(|repo| {
+            !repo.forge.is_reading()
+                && repo.forge.found().pulls.len() == usize::try_from(PULLS).unwrap()
+                && !repo.history.is_loading()
+        })
+    });
+    println!(
+        "  all {} read {:?} after opening",
+        read(&mut harness),
+        started.elapsed()
+    );
+
+    // The commit table, every row of its first tenth badged: scrolled through those.
+    harness.hover_at(egui::pos2(450.0, 500.0));
+    let badged = measure_frames(&mut harness, 600, |harness, _| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -30.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+    let mut worst = report("scrolling the badged commits", badged);
+    snapshot(&mut harness, "pull-request-badges");
+
+    harness.get_by_label_contains("1,000 pull requests").click();
+    harness.run_steps(4);
+    harness.hover_at(egui::pos2(450.0, 250.0));
+    let scrolling = measure_frames(&mut harness, 600, |harness, _| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -120.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+    worst = worst.max(report("scrolling the pull requests", scrolling));
+    let stepping = measure_frames(&mut harness, 600, |harness, _| {
+        harness.key_press(egui::Key::ArrowDown);
+    });
+    worst = worst.max(report("stepping through them (each read)", stepping));
+    snapshot(&mut harness, "pull-requests");
     println!(
         "  peak memory {:.0} MB (the repository made beforehand not counted)",
         peak_memory_mb()

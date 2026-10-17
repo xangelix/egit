@@ -51,6 +51,9 @@ it.
   10,000 commits: read and shown in 50 ms, scrolled at 0.43 ms p99, stepped at 0.52 ms.
   `corpus_blame`: 100,000 lines of C rewritten by 100 commits: the first lines labelled in
   47 ms, all in 0.65 s, jumping at 3.6 ms p99 while git blames (3.8 ms after: colouring).
+  `corpus_pull_requests`: 1,000 open pull requests from a fake GitHub on 10,000 commits: the
+  first page shown 24 ms after opening, all in 33 ms; the badged commit table scrolled at
+  0.44 ms p99, the list at 0.25 ms, stepped through (each one's details read) at 0.56 ms.
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory (it fails past 8 ms a
