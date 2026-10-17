@@ -67,6 +67,35 @@ pub fn matches_case(query: &str) -> bool {
     query.chars().any(char::is_uppercase)
 }
 
+/// A query made ready to look for in many short texts (each commit's message, say): matched
+/// as it is through a finder built once, or with ASCII letters in either case.
+#[derive(Clone, Debug)]
+pub struct Needle {
+    finder: memchr::memmem::Finder<'static>,
+    fold: bool,
+}
+
+impl Needle {
+    /// `query`, its case matched unless `fold_case` (and it has a letter to fold).
+    #[must_use]
+    pub fn new(query: &[u8], fold_case: bool) -> Self {
+        Self {
+            finder: memchr::memmem::Finder::new(query).into_owned(),
+            fold: fold_case && query.iter().any(u8::is_ascii_alphabetic),
+        }
+    }
+
+    /// Where it first occurs in `haystack`; an empty query occurs at the start of anything.
+    #[must_use]
+    pub fn find(&self, haystack: &[u8]) -> Option<usize> {
+        if self.fold {
+            find_folded(haystack, self.finder.needle())
+        } else {
+            self.finder.find(haystack)
+        }
+    }
+}
+
 /// The first place `query` occurs in `haystack`, ASCII letters in either case. Scans for the
 /// query's first byte in both cases, then compares the rest.
 fn find_folded(haystack: &[u8], query: &[u8]) -> Option<usize> {
@@ -132,6 +161,18 @@ mod tests {
         bytes.extend_from_slice(b"NEEDLE");
         let found = find_all(&bytes, b"needle", true, usize::MAX, || false).unwrap();
         assert_eq!(found, [(1 << 22) - 2, (1 << 22) + 104]);
+    }
+
+    #[test]
+    fn a_needle_finds_its_first_place_in_each_text() {
+        let needle = Needle::new(b"leak", true);
+        assert_eq!(needle.find(b"Fix a memory LEAK, a leak"), Some(13));
+        assert_eq!(needle.find(b"no such thing"), None);
+        let exact = Needle::new(b"Leak", false);
+        assert_eq!(exact.find(b"leak, then Leak"), Some(11));
+        // Nothing to fold: matched as it is.
+        assert_eq!(Needle::new(b"1.2", true).find(b"v1.2"), Some(1));
+        assert_eq!(Needle::new(b"", true).find(b"x"), Some(0));
     }
 
     #[test]

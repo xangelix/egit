@@ -21,7 +21,7 @@ mod text;
 mod words;
 
 pub use cells::{Cell, Cells, Glyph, Options, line_cells};
-pub use find::{find_all, matches_case};
+pub use find::{Needle, find_all, matches_case};
 pub use measure::{CHECKPOINT_CELLS, Found, Measure};
 pub use rows::{Position, Rows, Wrap};
 pub use text::{Text, TooLarge};
