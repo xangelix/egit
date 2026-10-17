@@ -1153,7 +1153,10 @@ fn fetches_pulls_and_pushes_from_the_history() {
     sandbox.commit_file(&mine, "mine", "m\n", "Mine").unwrap();
     click_when_enabled(&mut harness, &format!("{}  Push", icon::ARROW_UP));
     wait_for_label(&mut harness, "Force push…");
-    settle(&mut harness, "the commit made", history_of(3));
+    // The commit made shown (and perhaps the colleague's too, should the background fetch have
+    // run by now: a slow machine takes this test past its first 10 s).
+    wait_for_label(&mut harness, "Mine");
+    settle(&mut harness, "the commit made", history_shown);
     render(&mut harness, "sync-refused");
     harness.get_by_label("Pull").click();
     wait_for_label(&mut harness, "The branches have diverged");
