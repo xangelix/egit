@@ -172,6 +172,18 @@ fn changes_not_staged_are_discarded_and_brought_back() {
     harness.get_by_label("Discard").click();
     wait_for_label(&mut harness, "Discarded the changes to other.txt.");
     assert_eq!(read(&repo, "other.txt").as_deref(), Some("a\n"));
+    // The list read again without it, so the rows aimed at below don't move.
+    for _ in 0..2_000 {
+        if harness
+            .query_by_role_and_label(Role::Button, "other.txt")
+            .is_none()
+        {
+            break;
+        }
+        harness.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    harness.run_steps(2);
 
     // An untracked file is deleted, and Undo brings it back.
     row_menu(&mut harness, "todo.md", "Discard changes…");
