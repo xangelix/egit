@@ -362,9 +362,22 @@ writes paths), never `OsStrExt`.
     `--push`).
   - `submodule.rs` — `submodules`: those `.gitmodules` names (`config --file .gitmodules
     --get-regexp`) that the index records (`ls-files -s` of their literal paths: mode 160000),
-    each `Submodule` (name, path, address, the commit recorded, `initialized`: its
-    `submodule.<name>.url` in the repository's configuration); `update_submodules` (`submodule
-    update --init --recursive --progress`, these paths or all). `tests/plumbing.rs` lists,
+    each `Submodule` (name, path, address, branch, the commit recorded, `initialized` with
+    `configured_url`, the address set up here: `.gitmodules` may have moved on, which `sync`
+    follows); `submodule_status` (`submodule status`, `--recursive`: each `SubmoduleStatus`'s
+    `Checkout`, not set up, at the commit recorded, elsewhere, or in conflict, its commit and
+    describe); `submodule_details` (inside one: its `HEAD`, a branch if it is on one, whether
+    it has the commit recorded, ahead and behind it); `submodule_commits` (`log from..to` in
+    it: what moving the commit recorded brings; none when it isn't here or lacks them);
+    `update_submodules_to` (`UpdateTo`: the commits recorded, or each one's branch's latest,
+    `--remote`; `--init --recursive --progress`, these paths or all) and `update_submodules`;
+    `change_submodules` (`SubmoduleChange`: init, sync `--recursive`, deinit, forced or not,
+    `--all` for none named); `add_submodule` (`--branch`, progress, labelled prompts),
+    `remove_submodule` (`git rm`, `.gitmodules` staged first, as git asks),
+    `set_submodule_url`, `set_submodule_branch` (`--default` for none). `tests/submodules.rs`
+    adds one following a branch (holding one of its own), moves it to its branch's latest and
+    lists what that brings, records it again, changes and syncs addresses, sets branches,
+    deinits and sets it up again, and removes it. `tests/plumbing.rs` lists,
     locks, removes (refused with changes or locked), and prunes worktrees; adds, renames,
     re-points, fetches alone (pruned), and removes remotes; lists submodules (in a clone, not
     set up) and sets them up; and starts a walk with branches hidden.

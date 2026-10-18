@@ -131,7 +131,12 @@ pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use stage::{stage, unstage};
 pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stash_store, stashes};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};
-pub use submodule::{Submodule, submodules, update_submodules};
+pub use submodule::{
+    Checkout, Submodule, SubmoduleChange, SubmoduleDetails, SubmoduleStatus, UpdateTo,
+    add_submodule, change_submodules, remove_submodule, set_submodule_branch, set_submodule_url,
+    submodule_commits, submodule_details, submodule_status, submodules, update_submodules,
+    update_submodules_to,
+};
 pub use tree::{git_path, ignored_paths, tree_entry, tree_folders};
 pub use version::{GitVersion, VersionParseError};
 pub use worktree::{
