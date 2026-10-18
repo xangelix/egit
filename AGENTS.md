@@ -33,6 +33,7 @@ it.
 | 19 | Polish: preferences, a command palette and shortcuts, the accessibility audit | done; awaiting the owner's review |
 | 20 | macOS and Windows | done; linted for both from Linux, CI's runs left to the owner |
 | 21 | Ergonomics: one look for every control | done; awaiting the owner's review |
+| 22 | Readability: weights, surfaces, a tree, menus that scan | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -831,15 +832,23 @@ writes paths), never `OsStrExt`.
     and Windows' own; CJK families, theirs too, then
     monospace, then regular weights; in a collection the face covering most, monospace and in
     the user's `LANG` first; outlines required, so no colour bitmaps) and adds what it finds as
-    lowest-priority fallbacks to both families. Kept fonts are leaked once into `'static`
+    lowest-priority fallbacks to every family (monospace, and each weight). Kept fonts are leaked once into `'static`
     slices: egui copies owned font data on every rebuild of its fonts, but borrows static.
-  - `views/history.rs` — the top bar: Undo and Redo, then the views and menus as quiet tools
+  - `views/history.rs` — the history's chrome (the top bar, the sidebar, the details: `chrome`,
+    the panel tone) around the commit table on the window's background. The top bar: Undo and
+    Redo, then the views and menus as quiet tools
     (Search, Reflog, Stash, Patches, and Repository: its Overview, Settings, and reading it
     again), their words beside their icons where the bar has room for all it shows
     (`Look::Full`), their icons alone elsewhere (`Look::Compact`, their words on hover), the
-    commit count, how many files are uncommitted (a button showing the working tree beside
+    commit count (a spinner beside it while the history is read), how many files are
+    uncommitted (a button showing the working tree beside
     the history in place of a commit's details, as it always is before the first commit),
-    the requests; at its right `views/tasks.rs`'s bar. Then the
+    the requests; at its right `views/tasks.rs`'s bar (drawn first, into the row; its words
+    capped at 300 points). The look is chosen from `BarRoom`: the left part's width drawn
+    compact last frame (room kept for the uncommitted files' button and the spinner, so their
+    coming never changes it) plus what the tools' words add (`widgets::tool_width`), against
+    the room the task bar leaves (its idle width while a task runs): never flipping back and
+    forth; the left part is clipped to its room. Then the
     commit table on egui-table-kit's layout `Table` (its `TableKit` keeps per-row state a
     graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
@@ -851,10 +860,16 @@ writes paths), never `OsStrExt`.
     too); a signed commit's seal by its verdict (good, doubtful, bad, or
     unchecked, its meaning on hover); a focusable area takes ↑ ↓ PgUp PgDn Home End. The message column
     is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
-    selection and the top row's commit in place when a re-read takes over. Details: message,
-    names, parents (buttons: egui announces links as plain text), people, the signature (its
-    verdict, signer, and key), refs,
-    and the changed files (`ChangesTable`), with the lines each gained and lost once counted
+    selection and the top row's commit in place when a re-read takes over. The table's
+    column titles are small and muted, and so is all but the subject (author, date, commit),
+    which leads its row. Details: the subject as the panel's title, the description in a box
+    of its own (`widgets::text_box`), then facts: names,
+    parents (buttons: egui announces links as plain text), each person (the name, leading,
+    the email beneath, muted) and their date as a fact of its own, the signature (its
+    verdict, signer, and key), refs;
+    and the changed files under a section title ("Changed files" with their count, the lines
+    gained and lost at its right; named "3 files changed") in a box (`widgets::list_box`,
+    `ChangesTable`), with the lines each gained and lost once counted
     (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
     clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or
     "History" goes back; its bar: back, how the file changed and its path, Blame and File
@@ -918,7 +933,15 @@ writes paths), never `OsStrExt`.
     "Fetch from it now"), its addresses (fetching, and pushing: empty is the same), its new
     name, its removal; a worktree's removal (again, "Remove anyway", when it has changes) and
     lock (why).
-    `views/actions.rs` — what the commit table offers (`Menus`, from `Shared::menus`: the
+    `views/actions.rs` — the menus' pieces, which every menu is built from: `item` (an
+    icon in a column of its own, then its words, which name it; disabled, why on hover),
+    `danger_item` (what loses work, in the danger colour), `shortcut_item` (its keys at its
+    right), `submenu` (an item with an arrow), `menu_header` (a group's name in small
+    capitals over its items), and `menu_rows` (rows touching, 28 points each, their words
+    8 points in). Long menus are grouped: a commit's (made here; into the current branch;
+    rewriting it; bisect; reset; copy; patches) and a branch's (switch; into the current
+    branch; its remote; renaming and deleting; copy; in the graph; its reflog). And what the
+    commit table offers (`Menus`, from `Shared::menus`: the
     branch, `HEAD`, the configuration (its remotes read only when a menu needs them), the refs, whether a task runs or an operation is in progress,
     which disable what would change the branch, saying why): a commit's context menu (switch
     there detached, create a branch or tag there, merge it in, rebase onto it, cherry-pick,
@@ -983,9 +1006,15 @@ writes paths), never `OsStrExt`.
     which the details show in place of the selection while the history doesn't have it; Apply,
     Pop, Drop); worktrees (here, locked, missing marked; a double click or "Open in a tab";
     Lock, Unlock, Remove); submodules (when there are any: path and recorded commit, or "not
-    set up"; Update or Set up, Open in a tab). A branch's or remote branch's checkbox (drawn in
-    the gutter, its own size) hides it from the graph or shows it (`Scope::hidden`; the branch
-    checked out always shows); a ref's row selects its commit (or peeks at it), a branch's
+    set up"; Update or Set up, Open in a tab). Each section's header is a band (its caret,
+    icon, title in small capitals, and count in a pill: `widgets::section_galleys`,
+    `paint_section`); a tree's levels step in by a whole icon (`INDENT`: a folder's or
+    remote's children have their icons under its name), a guide running down from each
+    level's icon, its caret hanging left of its icon (`paint_row`, `paint_caret`). A branch's
+    or remote branch's eye at its row's right (`eye`: open, or struck through while hidden;
+    named "Show <name> in the graph", a checkbox) hides it from the graph or shows it
+    (`Scope::hidden`; the branch checked out has none: it always shows, marked with a check,
+    its name leading); a ref's row selects its commit (or peeks at it), a branch's
     double click switches, its menu is its badge's. The refs are sorted (by kind, then their
     `/`-parts naturally: `v2.9` before `v2.10`, either case alike) in a job, once a read of the
     refs or when the remotes change; the rows are made again only when what they show changed
@@ -1090,7 +1119,13 @@ writes paths), never `OsStrExt`.
     third column, and its (new) path in what is left, losing its start first, from a folder's
     boundary ("…/core/dc_link.c", `elided_start`, summing cached glyph widths), the full path
     and a rename's old one on hover.
-  - `theme.rs` (palettes, WCAG AA checked by tests, text over every line background too: diff
+  - `theme.rs` (Geist, the interface's font (`fonts/Geist.ttf`, SIL Open Font License 1.1:
+    one variable font, borrowed, not copied; it has no glyphs where Phosphor's icons are, as
+    Inter has), in three weights (`Weight`: regular, medium for buttons and names that lead
+    their line, semibold for titles; `Weighted` gives `RichText` them); the monospace family
+    stays egui's; palettes: `background` behind what is read (the commit table, the text
+    grid), `panel` for the chrome around it and pages, `surface` for cards, dialogs, and the
+    sidebar's section bands; WCAG AA checked by tests, text over every line background too: diff
     lines and words, a conflict's sides and headers, resolved lines, rows a search found;
     a selected or found row under the pointer (`selected_hover`) too, and text on the danger
     colour; Phosphor icons; one scale of text: `SMALL` 11.5, `BODY` 13, `CODE` 12.5, `HEADING`
@@ -1102,8 +1137,11 @@ writes paths), never `OsStrExt`.
     `tool_menu` with its caret, and `icon_tool`, named in words, `Look::Full` or `Compact`;
     words never wrap inside a button; `quiet` draws frameless buttons without an inactive
     edge, which egui leaves out of their size but takes out of their padding, so they don't
-    grow under the pointer), `toolbar_separator`, `section_header` (a title, its
-    count, its buttons at the right), facts in aligned columns (`fact`, `fact_top`,
+    grow under the pointer; `tool_width`, how wide a tool would draw, for choosing a look
+    before drawing), `toolbar_separator`, `section_title` (small capitals, muted, its count in
+    a pill; named in sentence case) and `section_header` (one, its buttons at the right),
+    `text_box` (a long text apart: a commit's description) and `list_box` (a list's rows in a
+    border), facts in aligned columns (`fact`, `fact_top`,
     `form_row` naming its field; `FACT_LABEL` on pages), `line_field` text fields as tall as
     buttons, `icon_button` exactly its place, `row_fill` a list row's background (a selected
     one lightens under the pointer), cards, origin labels, problem boxes; `toggles.rs`: a
@@ -1131,8 +1169,9 @@ writes paths), never `OsStrExt`.
     `double_click` puts both clicks in one frame (the harness's frames are a quarter second
     apart). After an action, wait for the history's rows to settle before aiming a click at
     one: a re-read moves them. Then, the pointer resting on each control it can reach: it
-    visibly responds, moving nothing (itself included: a control growing under the pointer
-    pushes its row along), its cursor fits (a text cursor over a field, a hand over the rest:
+    visibly responds, moving nothing in its row or column (itself included: a control
+    growing under the pointer pushes its row along; elsewhere, a job landing meanwhile may
+    move things), its cursor fits (a text cursor over a field, a hand over the rest:
     `pointing_hand` sets it for every enabled control that clicks), it is 24 points each way
     (WCAG 2.5.8), and the keyboard focus shows on it; each looked at with the focus elsewhere
     (given back after), but a field that takes the focus back whenever nothing has it (a
