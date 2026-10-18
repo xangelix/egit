@@ -2115,6 +2115,74 @@ fn picked_asked(
     }
 }
 
+/// Where the details' line between a commit's message and facts and its changed files was
+/// dragged to: the message's share of the panel's height (kept with the settings).
+fn split_id() -> Id {
+    Id::new("details-split")
+}
+
+/// The scroll area of a commit's message and facts: `room` tall exactly, as the line below it
+/// was dragged, else as tall as they need up to half the panel (`height`).
+fn message_area(room: Option<f32>, height: f32) -> egui::ScrollArea {
+    let area = egui::ScrollArea::vertical().id_salt("commit-message");
+    match room {
+        Some(room) => area
+            .min_scrolled_height(room)
+            .max_height(room)
+            .auto_shrink([false, false]),
+        None => area.max_height(height * 0.5).auto_shrink([false, true]),
+    }
+}
+
+/// The least room either side of the details' line keeps.
+const SPLIT_LEAST: f32 = 96.0;
+
+/// The message's room as the line was dragged (`None`: never, or put back), within a panel
+/// `height` tall.
+fn split_room(ui: &Ui, height: f32) -> Option<f32> {
+    let share = ui
+        .ctx()
+        .data_mut(|data| data.get_persisted::<f32>(split_id()))?;
+    let most = (height - SPLIT_LEAST).max(SPLIT_LEAST);
+    Some((height * share).clamp(SPLIT_LEAST, most))
+}
+
+/// The line between a commit's message and facts (`top` tall now) and its changed files, in a
+/// panel `height` tall: dragged, it gives either side more room, and holds; a double click puts
+/// it back (the message as tall as it needs, up to half).
+fn split_line(ui: &mut Ui, height: f32, top: f32) {
+    let palette = Palette::of(ui.ctx());
+    let (place, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 12.0), Sense::hover());
+    // A thin handle (its line the place's middle), as a column's line is.
+    let grab = Rect::from_center_size(place.center(), egui::vec2(place.width(), 6.0));
+    let response = ui.interact(grab, Id::new("details-split-line"), Sense::click_and_drag());
+    crate::help::note_topic(ui, place, "details-split");
+    let active = response.hovered() || response.dragged();
+    if active {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+    let stroke = if response.dragged() {
+        Stroke::new(2.0, palette.accent)
+    } else if active {
+        Stroke::new(1.0, palette.border_strong)
+    } else {
+        Stroke::new(1.0, palette.border)
+    };
+    ui.painter()
+        .hline(place.x_range(), place.center().y, stroke);
+    #[cfg(test)]
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(Id::new("details-split-y"), place.center().y));
+    if response.double_clicked() {
+        ui.ctx().data_mut(|data| data.remove::<f32>(split_id()));
+    } else if response.dragged() && height > 0.0 {
+        let share = (top + response.drag_delta().y) / height;
+        ui.ctx()
+            .data_mut(|data| data.insert_persisted(split_id(), share.clamp(0.0, 1.0)));
+        ui.ctx().request_repaint();
+    }
+}
+
 /// The tool in the commit table's place, and what it asks.
 fn tool(
     ui: &mut Ui,
@@ -3468,40 +3536,45 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
     let editing = view.message_edit.is_some();
     let mut go_to = None;
     let height = ui.available_height();
-    // Its bar shows while a long message holds more than its half of the panel shows.
+    // As much room as the line below was dragged to give it, else what it needs up to half
+    // the panel; its bar shows while it holds more than that shows.
+    let room = split_room(ui, height);
     let saved_scroll = ui.spacing().scroll;
     widgets::show_overflow(ui);
-    egui::ScrollArea::vertical()
-        .id_salt("commit-message")
-        .max_height(height * 0.5)
-        .auto_shrink([false, true])
-        .show(ui, |ui| {
-            ui.spacing_mut().scroll = saved_scroll;
-            if shown.commit.signed
-                && let Some(git) = shared.git
-            {
-                history.signatures.want(git, shared.repository, [shown.id]);
-            }
-            let check = history.signatures.get(&shown.id);
-            let (parent, description) = commit_info(
-                ui,
-                (&shown, !editing),
-                history.shown.refs(),
-                check,
-                shared,
-                &mut view.asked,
-            );
-            go_to = parent;
-            // A double click on the description edits the message too.
-            if let Some(rect) = description
-                && rewordable == Some(Ok(()))
-                && double_clicked(ui, rect)
-            {
-                view.message_edit = Some(MessageEdit::of(&shown));
-            }
-        });
+    let message = message_area(room, height).show(ui, |ui| {
+        ui.spacing_mut().scroll = saved_scroll;
+        if shown.commit.signed
+            && let Some(git) = shared.git
+        {
+            history.signatures.want(git, shared.repository, [shown.id]);
+        }
+        let check = history.signatures.get(&shown.id);
+        let (parent, description) = commit_info(
+            ui,
+            (&shown, !editing),
+            history.shown.refs(),
+            check,
+            shared,
+            &mut view.asked,
+        );
+        go_to = parent;
+        // A double click on the description edits the message too.
+        if let Some(rect) = description
+            && rewordable == Some(Ok(()))
+            && double_clicked(ui, rect)
+        {
+            view.message_edit = Some(MessageEdit::of(&shown));
+        }
+    });
     ui.spacing_mut().scroll = saved_scroll;
-    ui.add_space(8.0);
+    // As tall as it is drawn: its room, or its content up to half (its rect is the most it may
+    // take).
+    let drawn = if room.is_some() {
+        message.inner_rect.height()
+    } else {
+        message.content_size.y.min(message.inner_rect.height())
+    };
+    split_line(ui, height, drawn);
     let counts = view.counting.of(shared, &shown);
     files_heading(
         ui,

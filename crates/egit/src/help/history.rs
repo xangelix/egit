@@ -1014,4 +1014,17 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
         ],
     },
+    Topic {
+        id: "details-split",
+        group: Group::Egit,
+        title: "The details' two parts",
+        on: &[],
+        what: "The line between a commit's message and facts and its changed files: drag it down \
+               for a long message, up for a commit of many files. It holds where it is put, for \
+               every commit and the next time egit opens; a double click puts it back (the \
+               message as tall as it needs, up to half the panel). What doesn't fit either side \
+               scrolls there.",
+        git: "",
+        cases: &[],
+    },
 ];

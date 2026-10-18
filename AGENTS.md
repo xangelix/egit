@@ -1066,7 +1066,10 @@ writes paths), never `OsStrExt`.
     `HEAD` is detached), turns them into a summary field and a description (`MessageEdit`),
     what rewording does (`HEAD`'s: only its message; an earlier one's: a rebase giving it and
     what follows new names), Save message (⌘Enter) or Cancel (Escape); saving runs `Reword`,
-    the selection staying on its row (`keep_row`); and the changed files under a section
+    the selection staying on its row (`keep_row`); a line under the message and facts
+    (`split_line`), dragged to give them or the files below more room, kept with the settings
+    as the message's share of the panel (`split_room`; a double click puts back the message's
+    own height, up to half); and the changed files under a section
     title ("Changed files" with their count, the lines gained and lost at its right, and
     `widgets::tree_toggle`, a list or a tree; named "3 files changed") in a box
     (`widgets::list_box`, `ChangesTable`, its tree a `TreeTable`), with the lines each gained
@@ -1524,7 +1527,8 @@ writes paths), never `OsStrExt`.
     on every rendered screen: each control's words drawn so far (kept in tests) must find a
     topic (`EGIT_HELP_GAPS=<file>` lists those that don't instead of failing).
     `src/tests/columns.rs` drags the lines between the commit table's columns (each moving
-    alone, holding still once let go, a double click putting them back);
+    alone, holding still once let go, a double click putting them back), and the details'
+    line between the message and the files alike;
     `src/tests/long_text.rs` edits a 200-line message in place and types one into the commit
     form, each scrolling inside its field, the buttons below still on screen.
     `src/tests/submodules.rs` meets a fresh clone's submodule not set up (the banner mends
