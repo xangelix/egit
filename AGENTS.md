@@ -1177,7 +1177,10 @@ writes paths), never `OsStrExt`.
     or unstage the file, the lines selected in its unified diff, or their hunks; for changes
     not staged, after a line, discard them the same ways (lines and hunks at once, the file
     after `Dialog::Discard` asks; disabled, saying why, while a task runs or for a
-    submodule). A file in
+    submodule). A right click in that diff opens the same as a menu at the pointer (`lines_menu`:
+    stage or discard lines or hunks, or unstage them on the staged side, and Copy), for the
+    lines selected, or the line under the pointer when the click isn't on a selection
+    (`TextGrid::select_line_at`, `line_at`, `selected_text`). A file in
     conflict shows `views/merge.rs`'s `MergeView` instead (and "Stage file", resolving it as
     the work tree has it), reading the conflict again when the status changes (its choices kept
     while its sides are the same), then, resolved, its staged changes. `MergeView`: "Conflict 2
@@ -1667,7 +1670,8 @@ writes paths), never `OsStrExt`.
     `src/tests/exporting.rs` picks two commits apart, copies them as separate patches and a
     changelog, saves them as one patch and as separate patches (a folder answering), then
     compares them (a file's diff opened, swapped, closed).
-    `src/tests/discard.rs` discards a hunk from a diff (nothing asked) and undoes it, a file
+    `src/tests/discard.rs` discards a hunk from a diff (nothing asked) and undoes it, stages a
+    line's hunk from a right click in the diff and unstages it from the staged one's, a file
     from its row's menu (asked first), an untracked file (deleted, then brought back by Undo),
     and everything not staged from a row's menu.
     `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the

@@ -1,5 +1,6 @@
 //! Discarding changes not staged, driven as a user drives it: a hunk from a file's diff (nothing
-//! asked) and Undo putting it back; a file from its row's menu, asked first; an untracked file
+//! asked) and Undo putting it back; a right click in the diff staging a line's hunk, and in the
+//! staged diff unstaging it; a file from its row's menu, asked first; an untracked file
 //! deleted from its menu and brought back by Undo; and everything not staged at once, from a
 //! row's menu.
 
@@ -31,6 +32,55 @@ fn notes(changed: &[u32]) -> String {
 
 fn read(repo: &Path, file: &str) -> Option<String> {
     std::fs::read_to_string(repo.join(file)).ok()
+}
+
+/// Right-clicks line `line` of the open file's diff (press and release in one frame).
+fn right_click_line(harness: &mut Harness<'_, EgitApp>, line: u32) {
+    let spot = harness.state_mut().state.repos[0]
+        .history_view
+        .file_spot(line, 2)
+        .unwrap();
+    harness.hover_at(spot);
+    harness.run_steps(1);
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: spot,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    harness.run_steps(2);
+}
+
+/// Clicks the menu's `item`, once it shows beside the bar's button of the same words (lower:
+/// by the pointer), after `before`.
+fn menu_beside_the_bar(
+    harness: &mut Harness<'_, EgitApp>,
+    item: &str,
+    before: impl FnOnce(&mut Harness<'_, EgitApp>),
+) {
+    for _ in 0..200 {
+        if harness.query_all_by_label(item).count() > 1 {
+            break;
+        }
+        harness.step();
+    }
+    before(harness);
+    harness
+        .query_all_by_label(item)
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+        .click();
+    harness.run_steps(2);
+}
+
+/// What the index holds that `HEAD` doesn't, as a patch.
+fn staged(sandbox: &Sandbox, repo: &Path) -> String {
+    let out = sandbox
+        .run(repo, "diff", &["--cached", "--no-color"])
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap()
 }
 
 /// Right-clicks the work list's row of `path`, then picks `item` in its menu.
@@ -86,6 +136,29 @@ fn changes_not_staged_are_discarded_and_brought_back() {
     click_when_enabled(&mut harness, "Undo");
     wait_for_label(&mut harness, "Undid discarding a hunk of notes.txt.");
     assert_eq!(read(&repo, "notes.txt"), Some(notes(&[5, 25])));
+
+    // A right click on a changed line (nothing selected): its menu stages the line's hunk,
+    // and the staged side's unstages it.
+    right_click_line(&mut harness, 5);
+    menu_beside_the_bar(&mut harness, "Stage hunk", |harness| {
+        render(harness, "diff-lines-menu");
+    });
+    settle(&mut harness, "the hunk staged", |_| {
+        staged(&sandbox, &repo).contains("+LINE 5")
+    });
+    let staged_row = harness
+        .query_all_by_role_and_label(Role::Button, "notes.txt")
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap();
+    staged_row.click();
+    settle(&mut harness, "the staged diff", |app| {
+        app.state.repos[0].history_view.diff_lines() == Some(9)
+    });
+    right_click_line(&mut harness, 5);
+    menu_beside_the_bar(&mut harness, "Unstage hunk", |_| {});
+    settle(&mut harness, "the hunk unstaged", |_| {
+        staged(&sandbox, &repo).is_empty()
+    });
 
     // A whole file, from its row's menu: asked first.
     harness

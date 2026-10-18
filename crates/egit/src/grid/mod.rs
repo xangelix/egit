@@ -288,6 +288,39 @@ impl TextGrid {
         self.selection = None;
     }
 
+    /// The line drawn under `pointer` (last frame), in the pane under it.
+    pub(crate) fn line_at(&self, pointer: Pos2) -> Option<u32> {
+        self.spot_at(pointer, None).map(|(_, spot)| spot.line)
+    }
+
+    /// Selects the whole line drawn under `pointer` (as a right click with nothing selected
+    /// does); returns whether one was.
+    pub(crate) fn select_line_at(&mut self, pointer: Pos2) -> bool {
+        let Some((pane, spot)) = self.spot_at(pointer, None) else {
+            return false;
+        };
+        self.selection = Some(Selection {
+            pane,
+            anchor: Spot {
+                line: spot.line,
+                cell: 0,
+            },
+            head: Spot {
+                line: spot.line.saturating_add(1),
+                cell: 0,
+            },
+        });
+        true
+    }
+
+    /// The text selected, of `panes` (as drawn), as ⌘C copies it.
+    pub(crate) fn selected_text(&self, panes: &[&dyn GridSource]) -> Option<String> {
+        let selection = self.selection?;
+        let source = panes.get(selection.pane)?;
+        let (start, end) = selection.ordered();
+        Some(selected_text(*source, start, end))
+    }
+
     /// Where on screen the place before cell `cell` of line `line` of pane `pane` was drawn
     /// (the middle of its row), if it was.
     #[cfg(test)]

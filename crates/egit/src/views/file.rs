@@ -510,7 +510,7 @@ pub(super) fn show(
         return open;
     }
     match file.shown {
-        Shown::Diff => show_diff(ui, shared, objects, file),
+        Shown::Diff => show_diff(ui, shared, objects, file, actions),
         Shown::File => show_file(ui, shared, objects, file),
     }
     open
@@ -1193,7 +1193,13 @@ fn lfs_placeholder(ui: &mut Ui, lfs: LfsChange) -> bool {
 }
 
 /// What the commit (or the work tree) changed in the file.
-fn show_diff(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut FileView) {
+fn show_diff(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    objects: &Objects,
+    file: &mut FileView,
+    actions: &mut Vec<Action>,
+) {
     // (A file in conflict shows the merge editor instead.)
     if let Some(sides) = file.submodule_move() {
         show_submodule_move(ui, shared, file, sides);
@@ -1266,9 +1272,106 @@ fn show_diff(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut Fil
         }
         Some(Ok(diff)) => {
             let diff = Arc::clone(diff);
-            file.diff_grid.show(ui, &*diff);
+            let response = file.diff_grid.show(ui, &*diff);
+            if let Some(work) = file.work().filter(|work| !work.conflict).cloned() {
+                lines_menu(&response, shared, file, (&work, &diff), actions);
+            }
         }
     }
+}
+
+/// What a right click in a work tree's file's diff asked for.
+enum LinesAsked {
+    Stage(StageRequest),
+    Discard(Discard),
+}
+
+/// A right click in a work tree's file's diff: a menu doing what its bar does to the lines
+/// selected (the line under the pointer, when the click isn't on a selection): stage or
+/// discard them, or unstage them on the staged side, a line or a hunk at a time; and copy them.
+fn lines_menu(
+    response: &egui::Response,
+    shared: &Shared<'_>,
+    file: &mut FileView,
+    (work, diff): (&WorkFile, &Arc<DiffDocument>),
+    actions: &mut Vec<Action>,
+) {
+    if response.secondary_clicked()
+        && let Some(pointer) = response.interact_pointer_pos()
+    {
+        let on_selection = file
+            .diff_grid
+            .selected_lines()
+            .zip(file.diff_grid.line_at(pointer))
+            .is_some_and(|((_, lines), line)| lines.contains(&line));
+        if !on_selection {
+            file.diff_grid.select_line_at(pointer);
+        }
+    }
+    let mut asked = None;
+    let grid = &file.diff_grid;
+    response.context_menu(|ui| {
+        asked = lines_menu_items(ui, shared, (work, diff), grid);
+    });
+    let Some(asked) = asked else {
+        return;
+    };
+    file.diff_grid.clear_selection();
+    actions.push(match asked {
+        LinesAsked::Stage(request) => Action::Stage(shared.id, request),
+        LinesAsked::Discard(discard) => Action::Task(shared.id, Task::Discard(discard)),
+    });
+}
+
+/// The lines menu's items; what is chosen.
+fn lines_menu_items(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    (work, diff): (&WorkFile, &Arc<DiffDocument>),
+    grid: &TextGrid,
+) -> Option<LinesAsked> {
+    use super::actions::{danger_item, item};
+    let picked = |hunks: bool| {
+        let (_, lines) = grid.selected_lines()?;
+        let picked = diff.changes_in(lines, hunks);
+        picked.contains(&true).then(|| (Arc::clone(diff), picked))
+    };
+    let none = Err("No changed line is selected");
+    let allowed = |picked: &Option<_>| if picked.is_some() { Ok(()) } else { none };
+    let (lines, hunks) = (picked(false), picked(true));
+    let mut asked = None;
+    let (glyph, verb) = match work.direction() {
+        Direction::Stage => (icon::PLUS, "Stage"),
+        Direction::Unstage => (icon::MINUS, "Unstage"),
+    };
+    if item(ui, (glyph, &format!("{verb} lines")), allowed(&lines)) {
+        asked = lines
+            .clone()
+            .map(|lines| LinesAsked::Stage(lines_request(work, lines)));
+    }
+    if item(ui, (glyph, &format!("{verb} hunk")), allowed(&hunks)) {
+        asked = hunks
+            .clone()
+            .map(|hunks| LinesAsked::Stage(lines_request(work, hunks)));
+    }
+    if work.direction() == Direction::Stage {
+        ui.separator();
+        let refused = discard_refusal(shared, work);
+        let discards = |picked: &Option<_>| refused.and_then(|()| allowed(picked));
+        if danger_item(ui, (icon::TRASH, "Discard lines"), discards(&lines)) {
+            asked = lines.map(|lines| LinesAsked::Discard(discard_lines(work, lines, false)));
+        }
+        if danger_item(ui, (icon::TRASH, "Discard hunk"), discards(&hunks)) {
+            asked = hunks.map(|hunks| LinesAsked::Discard(discard_lines(work, hunks, true)));
+        }
+    }
+    ui.separator();
+    if item(ui, (icon::COPY, "Copy"), Ok(()))
+        && let Some(text) = grid.selected_text(&[&**diff])
+    {
+        ui.ctx().copy_text(text);
+    }
+    asked
 }
 
 /// The whole file, read the first time it is shown: as the commit left it, or as the work
