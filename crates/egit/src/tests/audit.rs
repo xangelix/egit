@@ -1,9 +1,10 @@
 //! The checks every screen passes (after eshine's): no two widgets share an id, no text or
 //! control is drawn partly over another on the same layer, nothing moves while the window sits
 //! idle, and every control has a name made of words or numbers, not just an icon. Then, resting
-//! the pointer on each control the pointer can reach: it visibly responds, its cursor says what
-//! a click does (a text cursor over a field, a hand over the rest), it is big enough to hit
-//! (24 points each way, as WCAG 2.5.8 asks), and the keyboard focus shows on it. Each is
+//! the pointer on each control the pointer can reach: it visibly responds without moving
+//! anything (itself included: a control growing under the pointer shifts its row), its cursor
+//! says what a click does (a text cursor over a field, a hand over the rest), it is big enough
+//! to hit (24 points each way, as WCAG 2.5.8 asks), and the keyboard focus shows on it. Each is
 //! looked at with the focus elsewhere (given back after); a control that takes the focus back
 //! whenever nothing has it (a dialog's field) always shows it, and is left out of those two.
 //!
@@ -185,12 +186,14 @@ fn interaction(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<String> 
     {
         // As it is now: checking one control can move others (focusing a commit's row selects
         // it, and the details beside change).
-        let Some(control) = elements(harness)
-            .into_iter()
+        let shown = elements(harness);
+        let Some(control) = shown
+            .iter()
             .find(|element| element.node == listed.node)
             .filter(|element| {
                 element.visible.is_positive() && element.visible.area() >= 0.5 * element.rect.area()
             })
+            .cloned()
         else {
             continue;
         };
@@ -209,30 +212,7 @@ fn interaction(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<String> 
                 control.describe()
             ));
         }
-        let before = painted(harness, control.rect);
-        harness.hover_at(center);
-        harness.run_steps(3);
-        let after = painted(harness, control.rect);
-        let cursor = harness.output().platform_output.cursor_icon;
-        if after == before {
-            problems.push(format!(
-                "{screen}: no change on hover: {}",
-                control.describe()
-            ));
-        }
-        let fitting = if control.is_text_input() {
-            cursor == CursorIcon::Text
-        } else {
-            cursor != CursorIcon::Default
-        };
-        if !fitting {
-            problems.push(format!(
-                "{screen}: cursor {cursor:?} on hover: {}",
-                control.describe()
-            ));
-        }
-        harness.remove_cursor();
-        harness.run_steps(2);
+        problems.extend(hover(harness, screen, control, &shown));
         if control.focusable {
             let area = control.rect.expand(6.0);
             let unfocused = painted(harness, area);
@@ -263,6 +243,68 @@ fn interaction(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<String> 
         harness.run_steps(2);
     }
     problems
+}
+
+/// Rests the pointer on `control` (one of `shown`), then takes it away: whether it visibly
+/// responded, moved nothing, and showed a cursor that fits.
+fn hover(
+    harness: &mut Harness<'_, EgitApp>,
+    screen: &str,
+    control: &Element,
+    shown: &[Element],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let before = painted(harness, control.rect);
+    harness.hover_at(control.visible.center());
+    harness.run_steps(3);
+    let after = painted(harness, control.rect);
+    let cursor = harness.output().platform_output.cursor_icon;
+    if after == before {
+        problems.push(format!(
+            "{screen}: no change on hover: {}",
+            control.describe()
+        ));
+    }
+    if let Some(moved) = moved(shown, &elements(harness)) {
+        problems.push(format!(
+            "{screen}: the pointer on {} moves {}",
+            control.describe(),
+            moved.describe()
+        ));
+    }
+    let fitting = if control.is_text_input() {
+        cursor == CursorIcon::Text
+    } else {
+        cursor != CursorIcon::Default
+    };
+    if !fitting {
+        problems.push(format!(
+            "{screen}: cursor {cursor:?} on hover: {}",
+            control.describe()
+        ));
+    }
+    harness.remove_cursor();
+    harness.run_steps(2);
+    problems
+}
+
+/// The first element of `before` that `after` shows elsewhere or at another size: the pointer
+/// resting on a control must move nothing (a control growing under it pushes its neighbours).
+/// Handles are left out: a floating scroll bar widens under the pointer.
+fn moved<'a>(before: &[Element], after: &'a [Element]) -> Option<&'a Element> {
+    let was: std::collections::HashMap<u64, Rect> = before
+        .iter()
+        .map(|element| (element.node, element.rect))
+        .collect();
+    after
+        .iter()
+        .filter(|element| !element.is_handle())
+        .find(|element| {
+            was.get(&element.node).is_some_and(|rect| {
+                rect.min.distance(element.rect.min) > 0.5
+                    || rect.max.distance(element.rect.max) > 0.5
+            })
+        })
 }
 
 /// Asserts that `screen` passes every check.

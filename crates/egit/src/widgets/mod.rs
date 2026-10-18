@@ -239,9 +239,12 @@ impl Look {
 /// (a view it shows is open); named `text`, which a compact one shows on hover.
 pub(crate) fn tool(ui: &mut Ui, icon: &str, text: &str, selected: bool, look: Look) -> Response {
     let width = if look == Look::Compact { CONTROL } else { 0.0 };
-    let response = ui.add(
-        Button::selectable(selected, look.label(icon, text)).min_size(egui::vec2(width, CONTROL)),
-    );
+    let response = quiet(ui, |ui| {
+        ui.add(
+            Button::selectable(selected, look.label(icon, text))
+                .min_size(egui::vec2(width, CONTROL)),
+        )
+    });
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, response.enabled(), selected, text)
     });
@@ -268,8 +271,9 @@ pub(crate) fn tool_menu<R>(
     ))
     .frame_when_inactive(false)
     .min_size(egui::vec2(0.0, CONTROL));
-    let (response, inner) =
-        egui::containers::menu::MenuButton::from_button(button).ui(ui, add_contents);
+    let (response, inner) = quiet(ui, |ui| {
+        egui::containers::menu::MenuButton::from_button(button).ui(ui, add_contents)
+    });
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), text)
     });
@@ -284,14 +288,29 @@ pub(crate) fn tool_menu<R>(
 /// A toolbar's button of one icon (a whole control square), named `name` in words for those
 /// who don't see the icon.
 pub(crate) fn icon_tool(ui: &mut Ui, enabled: bool, glyph: &str, name: &str) -> Response {
-    let response = ui.add_enabled(
-        enabled,
-        Button::new(glyph)
-            .frame_when_inactive(false)
-            .min_size(egui::vec2(CONTROL, CONTROL)),
-    );
+    let response = quiet(ui, |ui| {
+        ui.add_enabled(
+            enabled,
+            Button::new(glyph)
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(CONTROL, CONTROL)),
+        )
+    });
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
     response
+}
+
+/// Draws `add`'s quiet buttons (no frame until the pointer is on them) the same size whether
+/// or not the pointer is on them. egui takes a button's edge out of its padding, yet leaves a
+/// frameless one's edge out of its size: where inactive buttons have edges, as here, a quiet
+/// one grew by its edge under the pointer, pushing everything after it. Without an inactive
+/// edge, it is the same size either way.
+pub(crate) fn quiet<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let edge = ui.visuals().widgets.inactive.bg_stroke;
+    ui.visuals_mut().widgets.inactive.bg_stroke = Stroke::NONE;
+    let inner = add(ui);
+    ui.visuals_mut().widgets.inactive.bg_stroke = edge;
+    inner
 }
 
 /// A button that reads as a link (a commit's name to go to): no frame until the pointer is on
@@ -299,11 +318,13 @@ pub(crate) fn icon_tool(ui: &mut Ui, enabled: bool, glyph: &str, name: &str) -> 
 pub(crate) fn link(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
-        ui.add(
-            Button::new(text)
-                .frame_when_inactive(false)
-                .min_size(egui::vec2(0.0, TARGET)),
-        )
+        quiet(ui, |ui| {
+            ui.add(
+                Button::new(text)
+                    .frame_when_inactive(false)
+                    .min_size(egui::vec2(0.0, TARGET)),
+            )
+        })
     })
     .inner
 }

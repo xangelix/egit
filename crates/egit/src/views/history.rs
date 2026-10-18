@@ -1446,10 +1446,12 @@ fn work_tree_summary(
             };
             let label =
                 RichText::new(format!("{}  {text}", icon::PENCIL_SIMPLE)).color(palette.warn);
-            let button = ui.add(
-                egui::Button::selectable(view.work_selected, label)
-                    .min_size(egui::vec2(0.0, crate::theme::CONTROL)),
-            );
+            let button = crate::widgets::quiet(ui, |ui| {
+                ui.add(
+                    egui::Button::selectable(view.work_selected, label)
+                        .min_size(egui::vec2(0.0, crate::theme::CONTROL)),
+                )
+            });
             // Named in words.
             button.widget_info(|| {
                 WidgetInfo::selected(WidgetType::Button, true, view.work_selected, &text)

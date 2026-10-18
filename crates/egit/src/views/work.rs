@@ -504,14 +504,15 @@ fn file_cell(
     let room = ui.available_size();
     let response = ui
         .allocate_ui_with_layout(room, Layout::right_to_left(Align::Center), |ui| {
-            let button = ui
-                .add_enabled(
+            let button = crate::widgets::quiet(ui, |ui| {
+                ui.add_enabled(
                     busy.then_some(false).is_none(),
                     egui::Button::new(glyph)
                         .frame_when_inactive(false)
                         .min_size(egui::vec2(crate::widgets::TARGET, crate::widgets::TARGET)),
                 )
-                .on_hover_text(verb);
+            })
+            .on_hover_text(verb);
             // Named for what it does to which file: a screen reader hears more than "+".
             let name = format!("{verb} {path}");
             button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, !busy, &name));

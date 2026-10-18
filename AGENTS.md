@@ -1098,7 +1098,9 @@ writes paths), never `OsStrExt`.
     alike: titles (`page_title` 22, `panel_title` 16, `heading`), buttons by kind (`primary`,
     `danger` for what loses something, `secondary`, `small`, `link`; a toolbar's quiet `tool`,
     `tool_menu` with its caret, and `icon_tool`, named in words, `Look::Full` or `Compact`;
-    words never wrap inside a button), `toolbar_separator`, `section_header` (a title, its
+    words never wrap inside a button; `quiet` draws frameless buttons without an inactive
+    edge, which egui leaves out of their size but takes out of their padding, so they don't
+    grow under the pointer), `toolbar_separator`, `section_header` (a title, its
     count, its buttons at the right), facts in aligned columns (`fact`, `fact_top`,
     `form_row` naming its field; `FACT_LABEL` on pages), `line_field` text fields as tall as
     buttons, `icon_button` exactly its place, `row_fill` a list row's background (a selected
@@ -1127,7 +1129,8 @@ writes paths), never `OsStrExt`.
     `double_click` puts both clicks in one frame (the harness's frames are a quarter second
     apart). After an action, wait for the history's rows to settle before aiming a click at
     one: a re-read moves them. Then, the pointer resting on each control it can reach: it
-    visibly responds, its cursor fits (a text cursor over a field, a hand over the rest:
+    visibly responds, moving nothing (itself included: a control growing under the pointer
+    pushes its row along), its cursor fits (a text cursor over a field, a hand over the rest:
     `pointing_hand` sets it for every enabled control that clicks), it is 24 points each way
     (WCAG 2.5.8), and the keyboard focus shows on it; each looked at with the focus elsewhere
     (given back after), but a field that takes the focus back whenever nothing has it (a
