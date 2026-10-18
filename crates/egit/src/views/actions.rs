@@ -19,6 +19,7 @@ use egui::{Response, RichText, Ui};
 
 use super::dialogs::{Dialog, WorktreeAsked};
 use super::history::ID_DIGITS;
+use crate::foresight::{Bringing, Foresight, Look};
 use crate::forge::{RepoForge, request_noun, request_number};
 use crate::format;
 use crate::history::{Refs, Scope};
@@ -101,9 +102,37 @@ pub(super) struct Menus<'a> {
     pub(super) work_tree: &'a Path,
     /// The user's home folder, shown as `~`.
     pub(super) home: Option<&'a Path>,
+    /// What bringing commits in would do is foreseen with these (none in a partial clone).
+    pub(super) foreseeing: Option<Foreseeing<'a>>,
 }
 
+/// What the menus foresee conflicts with.
+#[derive(Clone, Copy)]
+pub(super) struct Foreseeing<'a> {
+    pub(super) foresight: &'a Foresight,
+    pub(super) git: &'a egit_git::Git,
+    pub(super) repository: &'a std::sync::Arc<egit_git::Repository>,
+    /// The commit `HEAD` is at.
+    pub(super) head: ObjectId,
+}
+
+/// An item's words for bringing commits in, and what is foreseen of it: the bringing, and
+/// whether a merge commit is made anyway (no fast-forward), so a fast-forward reads as clean.
+type Foreseen = (Bringing, bool);
+
 impl Menus<'_> {
+    /// What bringing in would do, as far as it is worked out.
+    fn look(&self, ui: &Ui, bringing: Bringing) -> Look {
+        self.foreseeing.map_or(Look::Unknown, |seeing| {
+            seeing.foresight.look(
+                ui.ctx(),
+                (seeing.git, seeing.repository),
+                seeing.head,
+                bringing,
+            )
+        })
+    }
+
     /// The current branch, as menus name it.
     fn current(&self) -> String {
         self.branch.map_or_else(
@@ -215,7 +244,109 @@ fn split_remote<'n>(remotes: &[String], name: &'n BStr) -> Option<(&'n BStr, &'n
 /// A menu's item: its icon, in a column of its own, then its words (it is named by them); a
 /// click closes the menu. Disabled, it says why on hover.
 pub(crate) fn item(ui: &mut Ui, entry: (&str, &str), allowed: Result<(), &str>) -> bool {
-    menu_entry(ui, entry, allowed, (false, None))
+    menu_entry(ui, entry, allowed, (false, None), None)
+}
+
+/// An [`item`] bringing commits in, what it would do at its right once foreseen ("✓ clean",
+/// "⚠ 2 conflicts"; the files on hover).
+fn foreseen_item(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    entry: (&str, &str),
+    allowed: Result<(), &str>,
+    (bringing, merge_commit): Foreseen,
+) -> bool {
+    // Nothing is worked out for what can't be done now.
+    let hint = if allowed.is_ok() {
+        hint(
+            &Palette::of(ui.ctx()),
+            &menus.look(ui, bringing),
+            merge_commit,
+        )
+    } else {
+        None
+    };
+    menu_entry(ui, entry, allowed, (false, None), hint)
+}
+
+/// What a foreseen item says at its right, and on hover.
+fn hint(palette: &Palette, look: &Look, merge_commit: bool) -> Option<(RichText, String)> {
+    use egit_git::Foreseen as Seen;
+    // A merge commit is made even where the branch could only move forward.
+    let clean = Look::Seen(Seen::Clean);
+    let look = if merge_commit && matches!(look, Look::Seen(Seen::FastForward)) {
+        &clean
+    } else {
+        look
+    };
+    let (words, color, hover) = match look {
+        Look::Unknown | Look::Seen(Seen::TooLong(_)) => return None,
+        Look::Working => (
+            "checking…".to_owned(),
+            palette.muted,
+            "Working out whether it would conflict".to_owned(),
+        ),
+        Look::Seen(Seen::Clean) => (
+            format!("{} clean", icon::CHECK),
+            palette.ok,
+            "No conflicts (worked out without touching anything)".to_owned(),
+        ),
+        Look::Seen(Seen::FastForward) => (
+            "fast-forward".to_owned(),
+            palette.muted,
+            "The branch only moves forward: nothing to merge".to_owned(),
+        ),
+        Look::Seen(Seen::UpToDate) => (
+            "up to date".to_owned(),
+            palette.muted,
+            "Nothing to bring in: it is in already".to_owned(),
+        ),
+        Look::Seen(Seen::Empty) => (
+            "no changes".to_owned(),
+            palette.muted,
+            "Its changes are in already: it would change nothing".to_owned(),
+        ),
+        Look::Seen(Seen::Conflicts { files, at }) => (
+            if files.len() == 1 {
+                format!("{} 1 conflict", icon::WARNING)
+            } else {
+                format!(
+                    "{} {} conflicts",
+                    icon::WARNING,
+                    format::count(u64::try_from(files.len()).unwrap_or(u64::MAX))
+                )
+            },
+            palette.warn,
+            conflicts_hover(files, *at),
+        ),
+    };
+    Some((
+        RichText::new(words).size(crate::theme::SMALL).color(color),
+        hover,
+    ))
+}
+
+/// The files a foreseen conflict names (the first ten), and where a rebase would stop.
+fn conflicts_hover(files: &[BString], at: Option<ObjectId>) -> String {
+    const NAMED: usize = 10;
+    let mut named: Vec<String> = files
+        .iter()
+        .take(NAMED)
+        .map(|file| file.to_str_lossy().into_owned())
+        .collect();
+    if files.len() > NAMED {
+        named.push(format!("{} more", files.len().saturating_sub(NAMED)));
+    }
+    let named = named.join(", ");
+    at.map_or_else(
+        || format!("Would stop at conflicts in {named}"),
+        |commit| {
+            format!(
+                "Would stop at {} with conflicts in {named}",
+                commit.abbreviated(ID_DIGITS)
+            )
+        },
+    )
 }
 
 /// An [`item`] explained by the help topic `topic` rather than by its words, where a common
@@ -226,7 +357,7 @@ pub(crate) fn item_of(
     allowed: Result<(), &str>,
     topic: &'static str,
 ) -> bool {
-    menu_entry(ui, entry, allowed, (false, Some(topic)))
+    menu_entry(ui, entry, allowed, (false, Some(topic)), None)
 }
 
 /// A menu's item with a keyboard shortcut (written as a Mac writes it), shown at its right.
@@ -248,7 +379,7 @@ pub(crate) fn shortcut_item(ui: &mut Ui, (glyph, label): (&str, &str), keys: &'s
 
 /// A menu's item for what loses work (deleting, dropping, a hard reset): in the danger colour.
 pub(crate) fn danger_item(ui: &mut Ui, entry: (&str, &str), allowed: Result<(), &str>) -> bool {
-    menu_entry(ui, entry, allowed, (true, None))
+    menu_entry(ui, entry, allowed, (true, None), None)
 }
 
 /// A [`danger_item`] explained by the help topic `topic` rather than by its words.
@@ -258,7 +389,7 @@ pub(crate) fn danger_item_of(
     allowed: Result<(), &str>,
     topic: &'static str,
 ) -> bool {
-    menu_entry(ui, entry, allowed, (true, Some(topic)))
+    menu_entry(ui, entry, allowed, (true, Some(topic)), None)
 }
 
 /// Draws an item (in the danger colour, explained by a help topic of its own); returns whether
@@ -268,6 +399,7 @@ fn menu_entry(
     (glyph, label): (&str, &str),
     allowed: Result<(), &str>,
     (danger, topic): (bool, Option<&'static str>),
+    hint: Option<(RichText, String)>,
 ) -> bool {
     menu_rows(ui);
     let palette = Palette::of(ui.ctx());
@@ -282,7 +414,15 @@ fn menu_entry(
             RichText::new(label),
         )
     };
-    let response = ui.add_enabled(allowed.is_ok(), egui::Button::new((glyph, words)));
+    let (button, hover) = match hint {
+        Some((shown, said)) => (
+            egui::Button::new((glyph, words)).shortcut_text(shown),
+            Some(said),
+        ),
+        None => (egui::Button::new((glyph, words)), None),
+    };
+    let response = ui.add_enabled(allowed.is_ok(), button);
+    // Named by its words alone: what is foreseen is said on hover.
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, allowed.is_ok(), label)
     });
@@ -290,9 +430,10 @@ fn menu_entry(
     if let Some(topic) = topic {
         crate::help::note_topic(ui, response.rect, topic);
     }
-    let response = match allowed {
-        Err(why) => response.on_disabled_hover_text(why),
-        Ok(()) => response,
+    let response = match (allowed, hover) {
+        (Err(why), _) => response.on_disabled_hover_text(why),
+        (Ok(()), Some(said)) => response.on_hover_text(said),
+        (Ok(()), None) => response,
     };
     if response.clicked() {
         ui.close();
@@ -513,7 +654,8 @@ fn into_items(
             FastForward::Never,
         ),
     ] {
-        if item(ui, (icon::GIT_MERGE, &label), other) {
+        let foreseen = (Bringing::Merge(id), fast_forward == FastForward::Never);
+        if foreseen_item(ui, menus, (icon::GIT_MERGE, &label), other, foreseen) {
             ask(Ask::Task(Task::Merge {
                 what: merged.clone(),
                 shown: merged_shown.clone(),
@@ -521,35 +663,45 @@ fn into_items(
             }));
         }
     }
-    for (label, keep_merges) in [
-        (format!("Rebase {current} onto this commit"), false),
-        (
-            format!("Rebase {current} onto this commit, keeping merges"),
-            true,
-        ),
-    ] {
-        if item(ui, (icon::STACK, &label), other) {
-            ask(Ask::Task(Task::Rebase {
-                onto: what.clone(),
-                shown: shown.clone(),
-                keep_merges,
-            }));
-        }
-    }
-    if item(
+    let label = format!("Rebase {current} onto this commit");
+    if foreseen_item(
         ui,
-        (icon::CHERRIES, &format!("Cherry-pick onto {current}")),
+        menus,
+        (icon::STACK, &label),
         other,
+        (Bringing::Rebase(id), false),
+    ) {
+        ask(Ask::Task(Task::Rebase {
+            onto: what.clone(),
+            shown: shown.clone(),
+            keep_merges: false,
+        }));
+    }
+    let label = format!("Rebase {current} onto this commit, keeping merges");
+    if item(ui, (icon::STACK, &label), other) {
+        ask(Ask::Task(Task::Rebase {
+            onto: what,
+            shown,
+            keep_merges: true,
+        }));
+    }
+    let label = format!("Cherry-pick onto {current}");
+    if foreseen_item(
+        ui,
+        menus,
+        (icon::CHERRIES, &label),
+        other,
+        (Bringing::Pick(id), false),
     ) {
         ask(Ask::Task(Task::CherryPick(id)));
     }
-    if item(
+    let label = format!("Revert in {current}");
+    if foreseen_item(
         ui,
-        (
-            icon::ARROW_COUNTER_CLOCKWISE,
-            &format!("Revert in {current}"),
-        ),
+        menus,
+        (icon::ARROW_COUNTER_CLOCKWISE, &label),
         can,
+        (Bringing::Revert(id), false),
     ) {
         ask(Ask::Task(Task::Revert(id)));
     }
@@ -803,19 +955,28 @@ pub(super) fn drop_items(
     let from = dragged.short_name().to_str_lossy().into_owned();
     let to = onto.short_name().to_str_lossy().into_owned();
     menu_header(ui, &format!("{from} onto {to}"));
-    for (glyph, label, task, allowed) in drop_offers(menus, (dragged, onto), (&from, &to)) {
+    for (glyph, label, task, allowed, foreseen) in drop_offers(menus, (dragged, onto), (&from, &to))
+    {
         let allowed = allowed.as_ref().copied().map_err(String::as_str);
-        if item(ui, (glyph, &label), allowed)
-            && let Some(task) = task
-        {
+        let chosen = match foreseen {
+            Some(foreseen) => foreseen_item(ui, menus, (glyph, &label), allowed, foreseen),
+            None => item(ui, (glyph, &label), allowed),
+        };
+        if chosen && let Some(task) = task {
             ask(Ask::Task(task));
         }
     }
 }
 
-/// An item a drop offers: its icon, its words, its task (none: only said), and whether it can
-/// be done now (why not).
-type Offer = (&'static str, String, Option<Task>, Result<(), String>);
+/// An item a drop offers: its icon, its words, its task (none: only said), whether it can be
+/// done now (why not), and what is foreseen of it.
+type Offer = (
+    &'static str,
+    String,
+    Option<Task>,
+    Result<(), String>,
+    Option<Foreseen>,
+);
 
 /// What [`drop_items`] offers for `dragged` dropped onto `onto` (named `from` and `to`).
 fn drop_offers(
@@ -827,89 +988,119 @@ fn drop_offers(
         reference.kind == RefKind::Branch && menus.branch == Some(reference.short_name())
     };
     let allowed = menus.can_change().map_err(str::to_owned);
-    let merge = |what: &Reference, shown: &str, fast_forward| {
-        Some(Task::Merge {
-            what: what.name.clone(),
-            shown: shown.to_owned(),
-            fast_forward,
-        })
-    };
-    let rebase = |onto: &Reference, shown: &str, keep_merges| {
-        Some(Task::Rebase {
-            onto: onto.name.clone(),
-            shown: shown.to_owned(),
-            keep_merges,
-        })
-    };
-    let forward = |to: &Reference, shown: &str| {
-        Some(Task::FastForward {
-            to: to.name.clone(),
-            shown: shown.to_owned(),
-        })
-    };
     if current(onto) {
+        let (merged, rebased) = (
+            Bringing::Merge(dragged.target),
+            Bringing::Rebase(dragged.target),
+        );
         return vec![
             (
                 icon::GIT_MERGE,
                 format!("Merge {from} into {to}"),
-                merge(dragged, from, FastForward::AsConfigured),
+                Some(merge_task(dragged, from, FastForward::AsConfigured)),
                 allowed.clone(),
+                Some((merged, false)),
             ),
             (
                 icon::GIT_MERGE,
                 format!("Merge {from} into {to} (no fast-forward)"),
-                merge(dragged, from, FastForward::Never),
+                Some(merge_task(dragged, from, FastForward::Never)),
                 allowed.clone(),
+                Some((merged, true)),
             ),
             (
                 icon::STACK,
                 format!("Rebase {to} onto {from}"),
-                rebase(dragged, from, false),
+                Some(rebase_task(dragged, from, false)),
                 allowed.clone(),
+                Some((rebased, false)),
             ),
             (
                 icon::FAST_FORWARD,
                 format!("Fast-forward {to} to {from}"),
-                forward(dragged, from),
+                Some(forward_task(dragged, from)),
                 allowed,
+                None,
             ),
         ];
     }
     if current(dragged) {
-        return vec![
-            (
-                icon::STACK,
-                format!("Rebase {from} onto {to}"),
-                rebase(onto, to, false),
-                allowed.clone(),
-            ),
-            (
-                icon::STACK,
-                format!("Rebase {from} onto {to}, keeping merges"),
-                rebase(onto, to, true),
-                allowed.clone(),
-            ),
-            (
-                icon::GIT_MERGE,
-                format!("Merge {to} into {from}"),
-                merge(onto, to, FastForward::AsConfigured),
-                allowed.clone(),
-            ),
-            (
-                icon::GIT_MERGE,
-                format!("Merge {to} into {from} (no fast-forward)"),
-                merge(onto, to, FastForward::Never),
-                allowed.clone(),
-            ),
-            (
-                icon::FAST_FORWARD,
-                format!("Fast-forward {from} to {to}"),
-                forward(onto, to),
-                allowed,
-            ),
-        ];
+        return current_dropped_offers(onto, (from, to), &allowed);
     }
     elsewhere_offers(menus, (dragged, onto), (from, to))
+}
+
+/// What the current branch dropped onto `onto` offers: rebasing onto it (keeping merges or
+/// not), merging it in, fast-forwarding to it.
+fn current_dropped_offers(
+    onto: &Reference,
+    (from, to): (&str, &str),
+    allowed: &Result<(), String>,
+) -> Vec<Offer> {
+    let (merged, rebased) = (Bringing::Merge(onto.target), Bringing::Rebase(onto.target));
+    vec![
+        (
+            icon::STACK,
+            format!("Rebase {from} onto {to}"),
+            Some(rebase_task(onto, to, false)),
+            allowed.clone(),
+            Some((rebased, false)),
+        ),
+        (
+            icon::STACK,
+            format!("Rebase {from} onto {to}, keeping merges"),
+            Some(rebase_task(onto, to, true)),
+            allowed.clone(),
+            None,
+        ),
+        (
+            icon::GIT_MERGE,
+            format!("Merge {to} into {from}"),
+            Some(merge_task(onto, to, FastForward::AsConfigured)),
+            allowed.clone(),
+            Some((merged, false)),
+        ),
+        (
+            icon::GIT_MERGE,
+            format!("Merge {to} into {from} (no fast-forward)"),
+            Some(merge_task(onto, to, FastForward::Never)),
+            allowed.clone(),
+            Some((merged, true)),
+        ),
+        (
+            icon::FAST_FORWARD,
+            format!("Fast-forward {from} to {to}"),
+            Some(forward_task(onto, to)),
+            allowed.clone(),
+            None,
+        ),
+    ]
+}
+
+/// Merging `what` (named `shown`) into the current branch.
+fn merge_task(what: &Reference, shown: &str, fast_forward: FastForward) -> Task {
+    Task::Merge {
+        what: what.name.clone(),
+        shown: shown.to_owned(),
+        fast_forward,
+    }
+}
+
+/// Rebasing the current branch onto `onto` (named `shown`).
+fn rebase_task(onto: &Reference, shown: &str, keep_merges: bool) -> Task {
+    Task::Rebase {
+        onto: onto.name.clone(),
+        shown: shown.to_owned(),
+        keep_merges,
+    }
+}
+
+/// Fast-forwarding the current branch to `to` (named `shown`).
+fn forward_task(to: &Reference, shown: &str) -> Task {
+    Task::FastForward {
+        to: to.name.clone(),
+        shown: shown.to_owned(),
+    }
 }
 
 /// What a ref dropped onto a branch not checked out offers: fast-forwarding that branch, and
@@ -930,6 +1121,7 @@ fn elsewhere_offers(
                 shown: from.to_owned(),
             }),
             menus.idle().map_err(str::to_owned),
+            None,
         ));
     }
     offers.push((
@@ -939,6 +1131,7 @@ fn elsewhere_offers(
         Err(format!(
             "git merges into the branch checked out: switch to {to} first"
         )),
+        None,
     ));
     if let Some(switch) = menus.switch_to(onto) {
         offers.push((
@@ -946,6 +1139,7 @@ fn elsewhere_offers(
             format!("Switch to {to}"),
             Some(Task::Switch(switch)),
             menus.can_change().map_err(str::to_owned),
+            None,
         ));
     }
     offers
@@ -973,7 +1167,11 @@ fn ref_into_items(
             FastForward::Never,
         ),
     ] {
-        if item(ui, (icon::GIT_MERGE, &label), other) {
+        let foreseen = (
+            Bringing::Merge(reference.target),
+            fast_forward == FastForward::Never,
+        );
+        if foreseen_item(ui, menus, (icon::GIT_MERGE, &label), other, foreseen) {
             ask(Ask::Task(Task::Merge {
                 what: reference.name.clone(),
                 shown: name.clone().into_owned(),
@@ -988,7 +1186,14 @@ fn ref_into_items(
             true,
         ),
     ] {
-        if item(ui, (icon::STACK, &label), other) {
+        // A rebase keeping merges replays them too: not foreseen.
+        let chosen = if keep_merges {
+            item(ui, (icon::STACK, &label), other)
+        } else {
+            let foreseen = (Bringing::Rebase(reference.target), false);
+            foreseen_item(ui, menus, (icon::STACK, &label), other, foreseen)
+        };
+        if chosen {
             ask(Ask::Task(Task::Rebase {
                 onto: reference.name.clone(),
                 shown: name.clone().into_owned(),

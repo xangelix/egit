@@ -8,6 +8,7 @@ mod corpus;
 mod discard;
 mod dragging;
 mod exporting;
+mod foresight;
 mod help;
 mod ignoring;
 mod lfs;

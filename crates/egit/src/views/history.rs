@@ -150,6 +150,8 @@ pub(crate) struct HistoryPane<'a> {
 /// What the history pane remembers between frames.
 #[derive(Debug)]
 pub(crate) struct HistoryView {
+    /// What bringing commits in would do, foreseen for the menus.
+    foresight: crate::foresight::Foresight,
     selected: Option<Selected>,
     /// A row to scroll to next frame, and where to put it.
     scroll_to: Option<(u64, Option<Align>)>,
@@ -383,6 +385,7 @@ impl HistoryView {
     pub(crate) fn new(repo: RepoId) -> Self {
         Self {
             repo,
+            foresight: crate::foresight::Foresight::default(),
             selected: None,
             scroll_to: None,
             visible: 0..0,
@@ -851,6 +854,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         head: HeadAt::of(head),
         palette: Palette::of(ui.ctx()),
         partial_clone,
+        foresight: view.foresight.clone(),
         work_status: work_status.as_ref(),
         operation: operations.first().copied(),
         bisect,
@@ -1388,6 +1392,8 @@ pub(super) struct Shared<'a> {
     head: HeadAt<'a>,
     pub(super) palette: Palette,
     partial_clone: Option<bool>,
+    /// What bringing commits in would do, foreseen for the menus.
+    foresight: crate::foresight::Foresight,
     /// The working tree's latest status, once read.
     pub(super) work_status: Option<&'a Arc<Status>>,
     /// The operation git stopped in the middle of, if any (it names a conflict's sides).
@@ -1432,6 +1438,17 @@ impl Shared<'_> {
             scope: &self.scope,
             work_tree: self.repository.work_tree(),
             home: self.home,
+            // Never in a partial clone (git would fetch what it merges), nor before that is
+            // known.
+            foreseeing: (self.partial_clone == Some(false))
+                .then_some(self.git.zip(self.head.commit))
+                .flatten()
+                .map(|(git, head)| super::actions::Foreseeing {
+                    foresight: &self.foresight,
+                    git,
+                    repository: self.repository,
+                    head,
+                }),
         }
     }
 

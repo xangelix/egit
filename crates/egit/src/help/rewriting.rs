@@ -94,6 +94,10 @@ pub(super) const TOPICS: &[Topic] = &[
         git: "git rebase (--rebase-merges to keep merges)",
         cases: &[
             (
+                "What does “⚠ 1 conflict” beside it mean?",
+                "egit replays your commits onto the target as the menu opens (git merge-tree, one commit at a time: nothing touched); the hover names the commit the rebase would stop at and its files. Past 100 commits to replay, it isn't worked out; a rebase keeping merges never is.",
+            ),
+            (
                 "It stopped at a conflict?",
                 "It stopped while replaying one commit: resolve, stage, Continue; Skip leaves that commit out; Abort puts the branch back exactly where it was.",
             ),

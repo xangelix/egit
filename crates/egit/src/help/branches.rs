@@ -258,6 +258,10 @@ pub(super) const TOPICS: &[Topic] = &[
         git: "git merge --no-edit",
         cases: &[
             (
+                "What do “✓ clean” and “⚠ 2 conflicts” beside it mean?",
+                "egit works the merge out as the menu opens (git merge-tree: in memory, nothing touched): clean, how many files would conflict (named on hover), up to date, or a fast-forward. Not in a partial clone, where git would fetch to work it out.",
+            ),
+            (
                 "It stopped at conflicts?",
                 "Resolve each file (the merge editor), stage it, then Continue; or Abort to go back exactly to before the merge.",
             ),
@@ -852,6 +856,10 @@ pub(super) const TOPICS: &[Topic] = &[
         git: "git cherry-pick (a merge against its first parent: --mainline 1)",
         cases: &[
             (
+                "What does “⚠ 1 conflict” beside it mean?",
+                "egit works the pick out as the menu opens (git merge-tree from the commit's parent: nothing touched): clean, the files that would conflict (on hover), or no changes when its change is in already.",
+            ),
+            (
                 "Its change is already here?",
                 "The result would be empty: egit skips it and says so.",
             ),
@@ -872,6 +880,10 @@ pub(super) const TOPICS: &[Topic] = &[
                rewritten, so it's safe on pushed branches.",
         git: "git revert --no-edit (a merge against its first parent: --mainline 1)",
         cases: &[
+            (
+                "What does “⚠ 1 conflict” beside it mean?",
+                "egit works the revert out as the menu opens (git merge-tree: nothing touched). A later commit changed the same lines, so undoing this one would conflict there. The latest commit always reverts cleanly.",
+            ),
             (
                 "Reverted a merge, then want the branch again?",
                 "Merging it again brings nothing back: git thinks it's merged. Revert the revert instead.",

@@ -337,7 +337,7 @@ fn replay(
 
 /// A commit of `tree` alone, for `merge-tree` to merge onto: never referred to, by no one in
 /// particular, unsigned.
-fn commit_of(
+pub(crate) fn commit_of(
     git: &Git,
     repository: &Repository,
     tree: ObjectId,
@@ -345,7 +345,11 @@ fn commit_of(
 ) -> Result<ObjectId, GitError> {
     let made = git
         .write("commit-tree")
-        .args(["--no-gpg-sign", "-m", "egit: combining commits"])
+        .args([
+            "--no-gpg-sign",
+            "-m",
+            "egit: worked out, referred to by nothing",
+        ])
         .arg(tree.to_string())
         .env("GIT_AUTHOR_NAME", "egit")
         .env("GIT_AUTHOR_EMAIL", "egit@localhost")

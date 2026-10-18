@@ -26,6 +26,7 @@ mod discarding;
 mod exporting;
 mod file_tree;
 mod fonts;
+mod foresight;
 mod forge;
 mod format;
 mod grid;

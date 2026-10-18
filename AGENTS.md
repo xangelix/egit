@@ -487,6 +487,18 @@ writes paths), never `OsStrExt`.
     needs one left out). `tests/exporting.rs` lists commits, makes a series that `git am`
     applies, and combines commits that follow each other, commits apart, a root's, and refuses
     a conflict.
+  - `foresee.rs` — what bringing commits in would do, worked out without touching the work
+    tree, the index, or a ref (`Foreseen`: up to date, a fast-forward, clean, empty, the files
+    in conflict and the commit a rebase stops at, or too long): `foresee_merge` (`merge-base
+    --is-ancestor` both ways, then `merge-tree --write-tree -z --name-only --no-messages`),
+    `foresee_pick` (a cherry-pick, or a revert: the commit's first parent or the commit as
+    `--merge-base`; empty when the tree is `HEAD`'s; none for a root commit), and
+    `foresee_rebase` (the commits of `onto..head`, merges left out, at most `MAX_REPLAYED`
+    (100), replayed in turn onto unreferenced commits `commit_of` makes, as the combined patch
+    does: git 2.43's `merge-tree` takes commits, not trees). Trees, blobs, and those commits are
+    written, referred to by nothing; `GIT_NO_LAZY_FETCH`, never asking. `tests/foresee.rs`
+    holds each to what git's merge, revert, and rebase then do (the files, the commit a rebase
+    stops at).
   - `applying.rs` — patches to apply. `patch_kind`: a `Mailbox` (an mbox's `From ` line, or
     mail headers with a `Subject:`) or a `Diff`, or not a patch. `summarize_patch`, read
     without applying: a mailbox's commits (`mailsplit` into a temporary folder, `mailinfo`
@@ -1003,6 +1015,12 @@ writes paths), never `OsStrExt`.
     made in the `Progress`; `Outcome::Signed`: made, asked for, whether any was pushed),
     undone as any task moving `HEAD` is. `Discard` throws changes not staged away
     (`discarding.rs`; `Outcome::Discarded`, the files kept for Undo, or none).
+  - `foresight.rs` — `Foresight`, conflicts foreseen for the menus: a `Bringing` (a merge,
+    a rebase, a pick, a revert) from the commit `HEAD` is at, worked out in a detached job
+    the first time an item asks (`look`: `Working`, `Seen`, `Unknown`), at most four at once,
+    the window woken as each lands; the latest 64 kept, by `HEAD` and what is brought, so
+    `HEAD` moving asks again. Owned by the `HistoryView`; `Shared::menus` lends it (with git
+    and `HEAD`) only where the repository isn't a partial clone.
   - `ignoring.rs` — `Ignore`: a path and `IgnoreWhat` (the file, every file of its
     `extension`, or a folder: `folder_of`) and where (`IgnoreIn`), its words ("every .log
     file"), and `run`: the pattern added (`Outcome::Ignored`), then `ignored_paths` asking git
@@ -1305,7 +1323,12 @@ writes paths), never `OsStrExt`.
     8 points in). Long menus are grouped: a commit's (made here; into the current branch;
     rewriting it; bisect; reset; copy; patches) and a branch's (switch; into the current
     branch; its remote; renaming and deleting; copy; in the graph; its reflog). And what the
-    commit table offers (`Menus`, from `Shared::menus`: the
+    commit table offers (`Menus`, from `Shared::menus`: what bringing commits in would do,
+    `foreseen_item`'s hint at an item's right ("✓ clean", "⚠ 2 conflicts", "up to date",
+    "fast-forward", "no changes", "checking…"; the files, and where a rebase would stop, on
+    hover; the item's name its words alone; nothing worked out for an item disabled), on
+    merging, rebasing onto (not keeping merges), cherry-picking, and reverting a commit or a
+    ref, and in a drop's menu; the
     branch, `HEAD`, the configuration (its remotes read only when a menu needs them), the refs, whether a task runs or an operation is in progress,
     which disable what would change the branch, saying why): a commit's context menu (switch
     there detached, create a branch or tag there, merge it in (or always with a merge commit,
@@ -1713,6 +1736,9 @@ writes paths), never `OsStrExt`.
     lines show as they come, the output closing after it went well; refused (the output kept
     open with its words); skipped; cancelled part-way from the output's bar (no commit); and
     the Overview's Hooks card lists it.
+    `src/tests/foresight.rs` opens a side branch's commit's menu (merging, cherry-picking, and
+    rebasing onto it foreseen to conflict in g, said on hover), the commit before's (clean),
+    and the latest's (reverting it clean), nothing moved.
     `src/tests/stats.rs` opens the Stats page from the top bar on dated commits by two authors
     (one under two names, joined by the mailmap) and renders it, at its window's size and
     whole; closed and opened again, it shows at once.
