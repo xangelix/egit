@@ -1445,6 +1445,9 @@ writes paths), never `OsStrExt`.
   is lost. Colours come from `theme::Palette::of(ctx)`, icons from `theme::icon`, shared pieces
   from `widgets`. Text inside an `egui::Grid` is sized explicitly (`add_sized`): a grid sizes
   cells to their content. Names and paths come from people: assume them long, in any script.
+  Every `Bind` is made retained (`Bind::new(true)`), never by `Default`: egui-async aborts a
+  read under way in a `Bind` not polled the frame before, by a frame count it keeps for the
+  whole process (several windows, as the tests run, make that happen at random).
   Help: a new control built from `widgets` (or a menu's item) is explained by its words
   (`help::for_label`: add them to `EXACT` or `STARTS`); a custom one calls
   `help::note_topic`; a new feature gets a topic in `help::TOPICS`, at git's level, with the
