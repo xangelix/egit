@@ -1154,11 +1154,17 @@ fn top_bar(
                 - widgets::tool_width(ui, tool, Look::Compact, menu)
         })
         .sum();
-    let look = if view.bar.compact + words <= room.width() {
+    let measured = if view.bar.compact + words <= room.width() {
         Look::Full
     } else {
         Look::Compact
     };
+    // A running task (its progress where the buttons were) changes nothing to the left of it.
+    let look = match view.bar.look {
+        Some(look) if task_pane.tasks.is_busy() => look,
+        _ => measured,
+    };
+    view.bar.look = Some(look);
     let builder = UiBuilder::new()
         .id_salt("top-bar-left")
         .max_rect(room)
@@ -1219,6 +1225,8 @@ struct BarRoom {
     compact: f32,
     /// The task bar's width while no task runs.
     right: f32,
+    /// The look drawn last: kept while a task runs.
+    look: Option<Look>,
 }
 
 /// The top bar's left part: undo and redo, the views and menus (drawn as `look` says), the
