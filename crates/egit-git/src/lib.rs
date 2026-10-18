@@ -98,13 +98,16 @@ pub use discard::{
     discard_lines, put_back,
 };
 pub use error::{Failure, GitError};
-pub use format_patch::{Changes, changes_patch, format_patch, format_patches, patch_file_name};
+pub use format_patch::{
+    Changes, CombineError, Series, changes_patch, combined_patch, format_patch, format_patches,
+    format_series, format_series_into, patch_file_name,
+};
 pub use forward::{ForwardFrom, Forwarded, fast_forward_branch, fast_forward_current};
 pub use git::{Git, GitOptions};
 pub use history::{
-    ChangeKind, CountedFile, FileChange, LineCounts, RefKind, Reference, TreeEntry, Walked,
-    commit_changes, commits_between, count_between, history_tips, line_counts, list_references,
-    walk_history, walk_history_from, write_commit_graph,
+    ChangeKind, CountedFile, FileChange, LineCounts, ListedCommit, RefKind, Reference, TreeEntry,
+    Walked, commit_changes, commits_between, count_between, history_tips, line_counts,
+    list_commits, list_references, walk_history, walk_history_from, write_commit_graph,
 };
 pub use hooks::{Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
 pub use integrate::{

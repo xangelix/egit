@@ -650,6 +650,87 @@ pub fn write_commit_graph(
     command.output().map(drop)
 }
 
+/// A commit as a list names it: its name, its parents, and its subject.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedCommit {
+    /// Its name.
+    pub id: ObjectId,
+    /// Its parents, the first first (none for a root commit; two or more for a merge).
+    pub parents: Vec<ObjectId>,
+    /// Its subject (`%s`: the message's first paragraph on one line).
+    pub subject: String,
+}
+
+/// `commits` listed, in the order given (`log --no-walk=unsorted`, their names on standard
+/// input, so any number of them).
+///
+/// # Errors
+///
+/// When one isn't a commit here, or git fails or is cancelled.
+pub fn list_commits(
+    git: &Git,
+    repository: &Repository,
+    commits: &[ObjectId],
+    cancel: &CancelToken,
+) -> Result<Vec<ListedCommit>, GitError> {
+    if commits.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stdin = Vec::with_capacity(commits.len().saturating_mul(65));
+    for commit in commits {
+        stdin.extend_from_slice(commit.to_string().as_bytes());
+        stdin.push(b'\n');
+    }
+    let listed = git
+        .read("log")
+        // A signature's check would otherwise be printed among the records.
+        .config("log.showSignature", "false")
+        .args([
+            "--no-walk=unsorted",
+            "--stdin",
+            "-z",
+            "--format=%H%x1f%P%x1f%s",
+        ])
+        .current_dir(repository.work_tree())
+        .stdin(stdin)
+        .cancel_token(cancel)
+        .output()?;
+    parse_listed(&listed.stdout)
+}
+
+/// Parses `%H%x1f%P%x1f%s` records, each ended by a NUL.
+fn parse_listed(output: &[u8]) -> Result<Vec<ListedCommit>, GitError> {
+    let malformed = || GitError::unexpected("log", "a commit's name, parents, and subject");
+    output
+        .split_str(b"\0")
+        .filter(|record| !record.is_empty())
+        .map(|record| {
+            let mut fields = record.splitn_str(3, b"\x1f");
+            let id = fields
+                .next()
+                .and_then(ObjectId::from_hex)
+                .ok_or_else(malformed)?;
+            let parents = fields
+                .next()
+                .ok_or_else(malformed)?
+                .split_str(b" ")
+                .filter(|parent| !parent.is_empty())
+                .map(|parent| ObjectId::from_hex(parent).ok_or_else(malformed))
+                .collect::<Result<_, _>>()?;
+            let subject = fields
+                .next()
+                .ok_or_else(malformed)?
+                .to_str_lossy()
+                .into_owned();
+            Ok(ListedCommit {
+                id,
+                parents,
+                subject,
+            })
+        })
+        .collect()
+}
+
 /// The commits `tip` has that `base` hasn't (both full ref names, or commit names), newest
 /// first, at most `limit` of them: what a branch would bring into another.
 ///

@@ -247,6 +247,8 @@ writes paths), never `OsStrExt`.
     follows the list; `GIT_NO_LAZY_FETCH` where git honours it, never prompting),
     `write_commit_graph`, `commits_between` (`rev-list <tip> ^<base>`, newest first, at most
     a limit: what a branch would bring in), `count_between` (the same, `--count`);
+    `list_commits` (any commits, in the order given: `log --no-walk=unsorted --stdin -z`, each
+    `ListedCommit`'s name, parents, and subject);
     `Repository::has_commit_graph` (without one, a topological walk outputs nothing until
     git has read all history: 6 s for Linux's 1.5M commits).
   - `diff.rs` — `file_diff`: one file's patch from `diff-tree -p` (plumbing, so no colour,
@@ -442,7 +444,17 @@ writes paths), never `OsStrExt`.
     subject's letters, 64 bytes at most); `format_patches` (the commits from one, in `HEAD`'s
     history, up to `HEAD` into a folder, `--root` from the first; at most `MAX_PLANNED`);
     `changes_patch` (`Changes::Staged`, `git diff --cached`, or `All`, `git diff HEAD`:
-    `--binary`, prefixes, no external diff or textconv, from the top).
+    `--binary`, prefixes, no external diff or textconv, from the top). Any commits (the newest
+    first): `format_series` (one patch each, the oldest first, in one mailbox: `format-patch
+    --stdout --no-walk=unsorted --stdin`, git listing them the other way round; `Series`: the
+    text and how many, merges left out) and `format_series_into` (`-o` a folder);
+    `combined_patch`, their changes as one diff under a list of them: from the oldest's parent
+    (the empty tree for a root) to the newest when each is the next's parent, else each merged
+    in turn onto those before it (`merge-tree --write-tree --merge-base=<its parent>`, onto
+    unreferenced commits `commit-tree` makes; `CombineError::Conflict` names the commit that
+    needs one left out). `tests/exporting.rs` lists commits, makes a series that `git am`
+    applies, and combines commits that follow each other, commits apart, a root's, and refuses
+    a conflict.
   - `applying.rs` — patches to apply. `patch_kind`: a `Mailbox` (an mbox's `From ` line, or
     mail headers with a `Subject:`) or a `Diff`, or not a patch. `summarize_patch`, read
     without applying: a mailbox's commits (`mailsplit` into a temporary folder, `mailinfo`
