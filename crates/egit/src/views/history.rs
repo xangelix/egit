@@ -65,7 +65,7 @@ use crate::worktree::WorkTree;
 const ROW_HEIGHT: f32 = 24.0;
 
 /// The header's height.
-const HEADER_HEIGHT: f32 = 26.0;
+const HEADER_HEIGHT: f32 = widgets::HEAD;
 
 /// A lane's width in the graph column.
 const LANE_WIDTH: f32 = 14.0;
@@ -856,7 +856,7 @@ fn dropped_patches(ui: &Ui, id: RepoId, view: &mut HistoryView) {
                 Frame::new()
                     .fill(palette.surface)
                     .stroke(Stroke::new(1.0, palette.accent))
-                    .corner_radius(CornerRadius::same(8))
+                    .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
                     .inner_margin(Margin::same(16))
                     .show(ui, |ui| {
                         ui.label(
@@ -916,7 +916,13 @@ fn panels(
         .resizable(true)
         .default_size(380.0)
         .size_range(260.0..=900.0)
-        .frame(chrome(shared).inner_margin(Margin::same(12)))
+        // Its first row the window's head band, from the top.
+        .frame(chrome(shared).inner_margin(Margin {
+            left: 12,
+            right: 12,
+            top: 0,
+            bottom: 12,
+        }))
         .show(ui, |ui| {
             if view.work_selected {
                 let commit = CommitSide {
@@ -1910,6 +1916,13 @@ impl TableDelegate for CommitRows<'_> {
             3 => "Date".to_owned(),
             _ => "Commit".to_owned(),
         };
+        // A hairline under the titles, across every column.
+        let rect = ui.max_rect();
+        ui.painter().hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0, self.shared.palette.border),
+        );
         ui.add_space(GRAPH_MARGIN);
         ui.add(
             Label::new(
@@ -2210,6 +2223,8 @@ fn badges(
         refs.iter()
             .filter(|reference| scope.is_none_or(|scope| !scope.hides(reference.name.as_bstr())))
     };
+    let total = shown().count();
+    let mut drawn = 0;
     for reference in shown().take(MAX_BADGES) {
         let checked_out = menus.branch.is_some()
             && reference.kind == RefKind::Branch
@@ -2232,20 +2247,18 @@ fn badges(
             |(_, _, word)| word,
         );
         let label = format!("{glyph} {name}");
-        let badge = Frame::new()
-            .fill(fill)
-            .stroke(Stroke::new(1.0, color.gamma_multiply(0.7)))
-            .corner_radius(CornerRadius::same(4))
-            .inner_margin(Margin::symmetric(5, 0))
-            .show(ui, |ui| {
-                let text = RichText::new(label).size(12.0).color(text);
-                ui.add(
-                    Label::new(if checked_out { text.semibold() } else { text })
-                        .selectable(false)
-                        .sense(Sense::click()),
-                )
-            })
-            .inner;
+        let look = BadgeLook {
+            fill,
+            edge: color.gamma_multiply(0.7),
+            text,
+            strong: checked_out,
+        };
+        let galley = badge_galley(ui, &label, &look);
+        if !fits(ui, &galley, total.saturating_sub(drawn)) {
+            break;
+        }
+        let badge = paint_badge(ui, galley, &look, &label);
+        drawn = drawn.saturating_add(1);
         if badge.double_clicked() {
             if let Some(switch) = actions::ref_double_clicked(menus, reference) {
                 *asked = Some(switch);
@@ -2255,14 +2268,84 @@ fn badges(
         }
         badge.context_menu(|ui| actions::ref_menu(ui, menus, reference, asked));
     }
-    if let Some(more) = shown()
-        .count()
-        .checked_sub(MAX_BADGES)
-        .filter(|more| *more > 0)
-    {
+    more_badges(ui, total.saturating_sub(drawn));
+    clicked
+}
+
+/// A badge's height: a commit row's less a gap above and below, so badges in rows next to each
+/// other never touch.
+const BADGE_HEIGHT: f32 = 18.0;
+
+/// Between a badge's edge and its words.
+const BADGE_PAD: f32 = 5.0;
+
+/// Room kept after a badge for the count of those that didn't fit ("+3").
+const MORE_ROOM: f32 = 28.0;
+
+/// How a badge looks: its fill, edge, and words' colour, and whether its words lead.
+struct BadgeLook {
+    fill: Color32,
+    edge: Color32,
+    text: Color32,
+    strong: bool,
+}
+
+/// A badge's words, laid out to be measured, then drawn.
+fn badge_galley(ui: &Ui, label: &str, look: &BadgeLook) -> Arc<egui::Galley> {
+    let family = if look.strong {
+        crate::theme::Weight::SemiBold.family()
+    } else {
+        egui::FontFamily::Proportional
+    };
+    fonts::note_text(ui, &egui::FontId::new(12.0, family.clone()), label);
+    ui.painter()
+        .layout_no_wrap(label.to_owned(), egui::FontId::new(12.0, family), look.text)
+}
+
+/// Whether a badge of `galley` fits in what is left of its row, with room for the count of the
+/// `left` (it among them) should more follow. In a layout that wraps (the details), every
+/// badge fits: it moves to the next line.
+fn fits(ui: &Ui, galley: &egui::Galley, left: usize) -> bool {
+    if ui.layout().main_wrap {
+        return true;
+    }
+    let more = if left > 1 { MORE_ROOM } else { 0.0 };
+    galley.size().x + 2.0 * BADGE_PAD + more <= ui.available_width()
+}
+
+/// Draws a badge: its words in a rounded tag [`BADGE_HEIGHT`] tall, centred on its row; named
+/// `label`, it clicks.
+fn paint_badge(
+    ui: &mut Ui,
+    galley: Arc<egui::Galley>,
+    look: &BadgeLook,
+    label: &str,
+) -> egui::Response {
+    let size = egui::vec2(2.0f32.mul_add(BADGE_PAD, galley.size().x), BADGE_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, label));
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            crate::theme::RADIUS_INNER,
+            look.fill,
+            Stroke::new(1.0, look.edge),
+            egui::StrokeKind::Inside,
+        );
+        let at = egui::Align2::CENTER_CENTER
+            .align_size_within_rect(galley.size(), rect)
+            .min;
+        painter.galley(at, galley, look.text);
+    }
+    response
+}
+
+/// How many badges didn't fit, or were more than are shown: "+3".
+fn more_badges(ui: &mut Ui, more: usize) {
+    if more > 0 {
         ui.add(Label::new(muted(ui, format!("+{more}"))).selectable(false));
     }
-    clicked
 }
 
 /// A bisection's ref (`refs/bisect/bad`, `good-…`, `skip-…`) as its badge shows it: its icon,
@@ -2296,6 +2379,7 @@ fn pull_badges(
     asked: &mut Option<Ask>,
 ) {
     let palette = shared.palette;
+    let mut drawn = 0;
     for (_, badge) in pulls.iter().take(MAX_BADGES) {
         let (_, color, meaning) = pulls::check_look(badge.checks, palette);
         let kind = shared.forge.kind_of(badge.repository);
@@ -2304,19 +2388,18 @@ fn pull_badges(
             icon::GIT_PULL_REQUEST,
             request_number(kind, badge.number)
         );
-        let response = Frame::new()
-            .fill(color.gamma_multiply(0.16))
-            .stroke(Stroke::new(1.0, color.gamma_multiply(0.7)))
-            .corner_radius(CornerRadius::same(4))
-            .inner_margin(Margin::symmetric(5, 0))
-            .show(ui, |ui| {
-                ui.add(
-                    Label::new(RichText::new(label).size(12.0).color(palette.text))
-                        .selectable(false)
-                        .sense(Sense::click()),
-                )
-            })
-            .inner;
+        let look = BadgeLook {
+            fill: color.gamma_multiply(0.16),
+            edge: color.gamma_multiply(0.7),
+            text: palette.text,
+            strong: false,
+        };
+        let galley = badge_galley(ui, &label, &look);
+        if !fits(ui, &galley, pulls.len().saturating_sub(drawn)) {
+            break;
+        }
+        let response = paint_badge(ui, galley, &look, &label);
+        drawn = drawn.saturating_add(1);
         let selected = (badge.repository, badge.number);
         let response = response.on_hover_ui(|ui| {
             if let Some(title) = shared.forge.title_of(selected) {
@@ -2340,6 +2423,7 @@ fn pull_badges(
             }
         });
     }
+    more_badges(ui, pulls.len().saturating_sub(drawn));
 }
 
 /// The working tree's changes: what isn't staged and what is.
@@ -2355,8 +2439,8 @@ fn work_details(
         widgets::working(ui, "Reading the work tree…");
         return;
     };
-    widgets::panel_title(ui, "Working tree");
-    ui.add_space(8.0);
+    widgets::panel_head(ui, |ui| widgets::panel_title(ui, "Working tree"));
+    ui.add_space(4.0);
     let shown = egui::ScrollArea::vertical()
         .id_salt("work-details")
         .auto_shrink([false, false])
@@ -2374,7 +2458,9 @@ fn work_details(
 fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &mut HistoryView) {
     let peeked = view.peeked();
     let Some(id) = peeked.or_else(|| view.selected.map(|selected| selected.id)) else {
-        ui.label(muted(ui, "Select a commit to see what it changed."));
+        widgets::panel_head(ui, |ui| {
+            ui.label(muted(ui, "Select a commit to see what it changed."));
+        });
         return;
     };
     if view.details_for != Some(id)
@@ -2391,22 +2477,28 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
     let pending = view.details.is_pending();
     let shown = match view.details.read_as_ref() {
         None => {
-            widgets::working(ui, "Reading the commit…");
+            widgets::panel_head(ui, |ui| widgets::working(ui, "Reading the commit…"));
             return;
         }
         Some(Err(problem)) => {
             let problem = problem.clone();
+            widgets::panel_head(ui, |_| {});
             widgets::problem_box(ui, &problem, |_| {});
             return;
         }
         Some(Ok(details)) => Arc::clone(details),
     };
-    if pending {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(muted(ui, "Reading the commit…"));
-        });
-    }
+    // The subject, as the panel's title; while another commit's details are read, a spinner.
+    widgets::panel_head(ui, |ui| {
+        if pending {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spinner().on_hover_text("Reading the commit…");
+                widgets::panel_title(ui, shown.commit.subject().to_str_lossy());
+            });
+        } else {
+            widgets::panel_title(ui, shown.commit.subject().to_str_lossy());
+        }
+    });
     let mut go_to = None;
     let height = ui.available_height();
     egui::ScrollArea::vertical()
@@ -2513,14 +2605,12 @@ fn commit_info(
     let commit = &details.commit;
     let refs = all.at(&details.id);
     let mut go_to = None;
-    widgets::panel_title(ui, commit.subject().to_str_lossy());
-    // The description apart from the subject: a box of its own.
+    // The description apart from the subject (the panel's title): a box of its own.
     let body = commit.body().trim_ascii();
     if !body.is_empty() {
-        ui.add_space(6.0);
         widgets::text_box(ui, |ui| ui.add(Label::new(body.to_str_lossy()).wrap()));
+        ui.add_space(8.0);
     }
-    ui.add_space(12.0);
     ui.spacing_mut().item_spacing.y = 4.0;
     widgets::fact(ui, DETAIL_LABEL, "Commit", |ui| {
         // Within the room the copy button leaves: the details never push the panel wider.

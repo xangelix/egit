@@ -799,7 +799,7 @@ fn operation_banner(
     egui::Frame::new()
         .fill(palette.warn.gamma_multiply(0.12))
         .stroke(egui::Stroke::new(1.0, palette.warn))
-        .corner_radius(egui::CornerRadius::same(6))
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

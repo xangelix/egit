@@ -446,50 +446,46 @@ pub(super) fn show(
 /// history at the right; under them what to show and how.
 fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bool) {
     let palette = shared.palette;
-    Frame::new()
-        .fill(palette.panel)
-        .inner_margin(Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
-                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
-                    .on_hover_text("Back to the history (Escape)")
+    widgets::bar(ui, |ui| {
+        ui.horizontal(|ui| {
+            if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
+                .on_hover_text("Back to the history (Escape)")
+                .clicked()
+            {
+                *open = false;
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if widgets::tool(
+                    ui,
+                    icon::CLOCK_COUNTER_CLOCKWISE,
+                    "File history",
+                    false,
+                    widgets::Look::Full,
+                )
+                .on_hover_text("Every commit that changed it")
+                .clicked()
+                {
+                    file.wanted = Some(FileWanted::History(file.path().to_owned()));
+                }
+                if widgets::tool(ui, icon::USER_LIST, "Blame", false, widgets::Look::Full)
+                    .on_hover_text("Which commit each of its lines came from")
                     .clicked()
                 {
-                    *open = false;
+                    file.wanted = Some(file.blame_target(shared));
                 }
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if widgets::tool(
-                        ui,
-                        icon::CLOCK_COUNTER_CLOCKWISE,
-                        "File history",
-                        false,
-                        widgets::Look::Full,
-                    )
-                    .on_hover_text("Every commit that changed it")
-                    .clicked()
-                    {
-                        file.wanted = Some(FileWanted::History(file.path().to_owned()));
-                    }
-                    if widgets::tool(ui, icon::USER_LIST, "Blame", false, widgets::Look::Full)
-                        .on_hover_text("Which commit each of its lines came from")
-                        .clicked()
-                    {
-                        file.wanted = Some(file.blame_target(shared));
-                    }
-                    // A conflict's view has no other choices: its wrapping goes here.
-                    if file.merge.is_some() {
-                        wrap_toggle(ui, file);
-                    }
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        change_line(ui, palette, file);
-                    });
+                // A conflict's view has no other choices: its wrapping goes here.
+                if file.merge.is_some() {
+                    wrap_toggle(ui, file);
+                }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    change_line(ui, palette, file);
                 });
             });
-            if file.merge.is_none() {
-                ui.horizontal_wrapped(|ui| shown_controls(ui, shared, file));
-            }
         });
+        if file.merge.is_none() {
+            ui.horizontal_wrapped(|ui| shown_controls(ui, shared, file));
+        }
+    });
 }
 
 /// What the file view shows: its diff or the file, (for a diff) unified or side by side and
@@ -586,43 +582,39 @@ fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut
     let mut hunks = picked(file, true);
     let has_lines = lines.is_some();
     let mut request = None;
-    Frame::new()
-        .fill(shared.palette.panel)
-        .inner_margin(Margin::symmetric(8, 4))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
-                if widgets::secondary(ui, true, &format!("{verb} file")).clicked() {
-                    request = Some(StageRequest::Files {
-                        paths: work.paths(),
-                        direction,
-                    });
-                }
-                if work.conflict {
-                    ui.label(muted(ui, "Marks it resolved as it is now"));
-                    return;
-                }
-                if widgets::secondary(ui, has_lines, &format!("{verb} lines")).clicked() {
-                    request = lines.take().map(|picked| lines_request(&work, picked));
-                }
-                if widgets::secondary(ui, hunks.is_some(), &format!("{verb} hunk")).clicked() {
-                    request = hunks.take().map(|picked| lines_request(&work, picked));
-                }
-                let hint = if file.split && file.shown == Shown::Diff {
-                    "Lines are picked in the unified diff (side by side off).".to_owned()
-                } else if !has_lines {
-                    format!(
-                        "Select lines in the diff to {} only those.",
-                        verb.to_lowercase()
-                    )
-                } else {
-                    String::new()
-                };
-                if !hint.is_empty() {
-                    ui.label(muted(ui, hint));
-                }
-            });
+    widgets::bar(ui, |ui| {
+        ui.horizontal(|ui| {
+            if widgets::secondary(ui, true, &format!("{verb} file")).clicked() {
+                request = Some(StageRequest::Files {
+                    paths: work.paths(),
+                    direction,
+                });
+            }
+            if work.conflict {
+                ui.label(muted(ui, "Marks it resolved as it is now"));
+                return;
+            }
+            if widgets::secondary(ui, has_lines, &format!("{verb} lines")).clicked() {
+                request = lines.take().map(|picked| lines_request(&work, picked));
+            }
+            if widgets::secondary(ui, hunks.is_some(), &format!("{verb} hunk")).clicked() {
+                request = hunks.take().map(|picked| lines_request(&work, picked));
+            }
+            let hint = if file.split && file.shown == Shown::Diff {
+                "Lines are picked in the unified diff (side by side off).".to_owned()
+            } else if !has_lines {
+                format!(
+                    "Select lines in the diff to {} only those.",
+                    verb.to_lowercase()
+                )
+            } else {
+                String::new()
+            };
+            if !hint.is_empty() {
+                ui.label(muted(ui, hint));
+            }
         });
+    });
     if let Some(request) = request {
         file.diff_grid.clear_selection();
         actions.push(Action::Stage(shared.id, request));

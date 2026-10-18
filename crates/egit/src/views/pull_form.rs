@@ -11,7 +11,7 @@ use egit_forge::{ForgeRepository, NewPullRequest, repository_info};
 
 use crate::forge::request_noun;
 use egit_git::{CancelToken, Commit, ObjectKind, commits_between};
-use egui::{Id, Modal, TextEdit, Ui};
+use egui::{Id, Modal, Ui};
 use egui_async::Bind;
 
 use super::history::Shared;
@@ -188,7 +188,7 @@ pub(super) fn show(
     let frame = egui::Frame::new()
         .fill(palette.surface)
         .stroke(egui::Stroke::new(1.0, palette.border))
-        .corner_radius(egui::CornerRadius::same(12))
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CARD))
         .inner_margin(egui::Margin::same(20));
     let shown = Modal::new(Id::new(("pull-request-form", shared.id)))
         .frame(frame)
@@ -272,7 +272,7 @@ fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<
         field(ui, "Title", &mut form.title, true);
         let label = ui.label(muted(ui, "Description"));
         ui.add(
-            TextEdit::multiline(&mut form.body)
+            crate::widgets::text_area(&mut form.body)
                 .desired_rows(6)
                 .desired_width(f32::INFINITY),
         )

@@ -262,85 +262,80 @@ fn bar(
     );
     let selected = view.selected.and_then(|at| entries.get(at));
     let in_history = view.shown.and_then(|(_, row)| row).is_some();
-    Frame::new()
-        .fill(shared.palette.panel)
-        .inner_margin(Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
-                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
-                    .on_hover_text("Back to the history (Escape)")
-                    .clicked()
-                {
-                    event = Some(ReflogEvent::Close);
-                }
-                ui.label(RichText::new(format!("Reflog of {}", view.whose())).semibold());
-                let moves = match entries.len() {
-                    1 => "1 move".to_owned(),
-                    moves => format!("{} moves", count(u64::try_from(moves).unwrap_or(u64::MAX))),
-                };
-                ui.label(muted(ui, moves));
-            });
-            // What can be done from the move selected, on a row of its own.
-            ui.horizontal_wrapped(|ui| {
-                let Some(entry) = selected else {
-                    return;
-                };
-                ui.label(muted(ui, "This move:"));
-                let commit = entry.commit;
-                let show = widgets::secondary(ui, in_history, "Show the commit");
-                let show = show.on_disabled_hover_text(
-                    "It isn't in the history shown: no branch or tag reaches it. Create a \
-                     branch here to keep it.",
-                );
-                if show.clicked() {
-                    event = Some(ReflogEvent::ShowCommit(commit));
-                }
-                let mut ask = |asked| event = Some(ReflogEvent::Ask(asked));
-                if widgets::secondary(ui, menus.idle().is_ok(), "Create a branch here…").clicked()
-                {
-                    ask(Ask::Dialog(Dialog::CreateBranch {
-                        at: commit,
-                        name: String::new(),
-                        // Kept, where nothing else reaches: no need to go there.
-                        switch: false,
-                    }));
-                }
-                let can = menus.can_change();
-                ui.add_enabled_ui(can.is_ok(), |ui| {
-                    let name = format!("Reset {current} to here");
-                    let button = egui::Button::new(format!("{name}  {}", icon::CARET_DOWN))
-                        .wrap_mode(egui::TextWrapMode::Extend);
-                    let (response, _) =
-                        egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-                            for (label, mode) in [
-                                ("Soft: keep the changes staged", ResetMode::Soft),
-                                ("Mixed: keep the changes, unstaged", ResetMode::Mixed),
-                                (
-                                    "Keep: keep uncommitted changes (refused if in the way)",
-                                    ResetMode::Keep,
-                                ),
-                            ] {
-                                if actions::item(ui, (icon::ARROW_U_UP_LEFT, label), Ok(())) {
-                                    ask(Ask::Task(Task::Reset(commit, mode)));
-                                }
-                            }
-                            let hard = (icon::TRASH, "Hard: discard the changes…");
-                            if actions::danger_item(ui, hard, Ok(())) {
-                                ask(Ask::Dialog(Dialog::HardReset { at: commit }));
-                            }
-                        });
-                    // Named in words: the caret only shows it opens a menu.
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Button, can.is_ok(), &name)
-                    });
-                    response.on_disabled_hover_text(can.err().unwrap_or_default());
-                });
-                if widgets::secondary(ui, can.is_ok(), "Switch here, without a branch").clicked() {
-                    ask(Ask::Task(Task::Switch(SwitchTo::Detached(commit))));
-                }
-            });
+    widgets::bar(ui, |ui| {
+        ui.horizontal(|ui| {
+            if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
+                .on_hover_text("Back to the history (Escape)")
+                .clicked()
+            {
+                event = Some(ReflogEvent::Close);
+            }
+            ui.label(RichText::new(format!("Reflog of {}", view.whose())).semibold());
+            let moves = match entries.len() {
+                1 => "1 move".to_owned(),
+                moves => format!("{} moves", count(u64::try_from(moves).unwrap_or(u64::MAX))),
+            };
+            ui.label(muted(ui, moves));
         });
+        // What can be done from the move selected, on a row of its own.
+        ui.horizontal_wrapped(|ui| {
+            let Some(entry) = selected else {
+                return;
+            };
+            ui.label(muted(ui, "This move:"));
+            let commit = entry.commit;
+            let show = widgets::secondary(ui, in_history, "Show the commit");
+            let show = show.on_disabled_hover_text(
+                "It isn't in the history shown: no branch or tag reaches it. Create a \
+                     branch here to keep it.",
+            );
+            if show.clicked() {
+                event = Some(ReflogEvent::ShowCommit(commit));
+            }
+            let mut ask = |asked| event = Some(ReflogEvent::Ask(asked));
+            if widgets::secondary(ui, menus.idle().is_ok(), "Create a branch here…").clicked() {
+                ask(Ask::Dialog(Dialog::CreateBranch {
+                    at: commit,
+                    name: String::new(),
+                    // Kept, where nothing else reaches: no need to go there.
+                    switch: false,
+                }));
+            }
+            let can = menus.can_change();
+            ui.add_enabled_ui(can.is_ok(), |ui| {
+                let name = format!("Reset {current} to here");
+                let button = egui::Button::new(format!("{name}  {}", icon::CARET_DOWN))
+                    .wrap_mode(egui::TextWrapMode::Extend);
+                let (response, _) =
+                    egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                        for (label, mode) in [
+                            ("Soft: keep the changes staged", ResetMode::Soft),
+                            ("Mixed: keep the changes, unstaged", ResetMode::Mixed),
+                            (
+                                "Keep: keep uncommitted changes (refused if in the way)",
+                                ResetMode::Keep,
+                            ),
+                        ] {
+                            if actions::item(ui, (icon::ARROW_U_UP_LEFT, label), Ok(())) {
+                                ask(Ask::Task(Task::Reset(commit, mode)));
+                            }
+                        }
+                        let hard = (icon::TRASH, "Hard: discard the changes…");
+                        if actions::danger_item(ui, hard, Ok(())) {
+                            ask(Ask::Dialog(Dialog::HardReset { at: commit }));
+                        }
+                    });
+                // Named in words: the caret only shows it opens a menu.
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, can.is_ok(), &name)
+                });
+                response.on_disabled_hover_text(can.err().unwrap_or_default());
+            });
+            if widgets::secondary(ui, can.is_ok(), "Switch here, without a branch").clicked() {
+                ask(Ask::Task(Task::Switch(SwitchTo::Detached(commit))));
+            }
+        });
+    });
     event
 }
 

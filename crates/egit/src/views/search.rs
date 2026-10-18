@@ -10,7 +10,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use egit_git::ConfigSnapshot;
-use egui::{Align, Frame, Key, Layout, Margin, RichText, Ui};
+use egui::{Align, Key, Layout, RichText, Ui};
 
 use crate::format::count;
 use crate::history::History;
@@ -195,78 +195,73 @@ pub(super) fn bar(
     let palette = shared.palette;
     let mut step = None;
     let mut close = false;
-    Frame::new()
-        .fill(palette.panel)
-        .inner_margin(Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let label = ui.label(
-                    RichText::new(format!("{}  Search", icon::MAGNIFYING_GLASS))
-                        .color(palette.muted),
-                );
-                let before = search.kind;
-                egui::ComboBox::from_id_salt(("history-search-kind", shared.id))
-                    .width(96.0)
-                    .selected_text(search.kind.label())
-                    .show_ui(ui, |ui| {
-                        for kind in SearchKind::ALL {
-                            ui.selectable_value(&mut search.kind, kind, kind.label());
-                        }
-                    })
-                    .response
-                    .labelled_by(label.id);
-                // From the right: closing, stepping, how many; the field fills what is left.
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if widgets::icon_tool(ui, true, icon::X, "Close")
-                        .on_hover_text("Close the search (Escape)")
-                        .clicked()
-                    {
-                        close = true;
+    widgets::bar(ui, |ui| {
+        ui.horizontal(|ui| {
+            let label = ui.label(
+                RichText::new(format!("{}  Search", icon::MAGNIFYING_GLASS)).color(palette.muted),
+            );
+            let before = search.kind;
+            egui::ComboBox::from_id_salt(("history-search-kind", shared.id))
+                .width(96.0)
+                .selected_text(search.kind.label())
+                .show_ui(ui, |ui| {
+                    for kind in SearchKind::ALL {
+                        ui.selectable_value(&mut search.kind, kind, kind.label());
                     }
-                    let any = search.found().is_some_and(|found| found.count() > 0);
-                    if widgets::icon_tool(ui, any, icon::ARROW_DOWN, "Next")
-                        .on_hover_text("Next (Enter)")
-                        .clicked()
-                    {
-                        step = Some(Step::Next);
+                })
+                .response
+                .labelled_by(label.id);
+            // From the right: closing, stepping, how many; the field fills what is left.
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if widgets::icon_tool(ui, true, icon::X, "Close")
+                    .on_hover_text("Close the search (Escape)")
+                    .clicked()
+                {
+                    close = true;
+                }
+                let any = search.found().is_some_and(|found| found.count() > 0);
+                if widgets::icon_tool(ui, any, icon::ARROW_DOWN, "Next")
+                    .on_hover_text("Next (Enter)")
+                    .clicked()
+                {
+                    step = Some(Step::Next);
+                }
+                if widgets::icon_tool(ui, any, icon::ARROW_UP, "Previous")
+                    .on_hover_text("Previous (Shift+Enter)")
+                    .clicked()
+                {
+                    step = Some(Step::Previous);
+                }
+                status(ui, search, history, selected, palette);
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    let field = ui
+                        .add(
+                            widgets::line_field(&mut search.query)
+                                .hint_text(search.kind.hint())
+                                .desired_width(ui.available_width().max(120.0)),
+                        )
+                        .labelled_by(label.id);
+                    if field.changed() || search.kind != before {
+                        search.edited = Some(ui.input(|input| input.time));
+                        search.search = None;
+                        search.moved = false;
                     }
-                    if widgets::icon_tool(ui, any, icon::ARROW_UP, "Previous")
-                        .on_hover_text("Previous (Shift+Enter)")
-                        .clicked()
-                    {
-                        step = Some(Step::Previous);
+                    if std::mem::take(&mut search.focus) {
+                        field.request_focus();
                     }
-                    status(ui, search, history, selected, palette);
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        let field = ui
-                            .add(
-                                widgets::line_field(&mut search.query)
-                                    .hint_text(search.kind.hint())
-                                    .desired_width(ui.available_width().max(120.0)),
-                            )
-                            .labelled_by(label.id);
-                        if field.changed() || search.kind != before {
-                            search.edited = Some(ui.input(|input| input.time));
-                            search.search = None;
-                            search.moved = false;
+                    if field.lost_focus() {
+                        if ui.input(|input| input.key_pressed(Key::Escape)) {
+                            close = true;
+                        } else if ui.input(|input| input.key_pressed(Key::Enter)) {
+                            let back = ui.input(|input| input.modifiers.shift);
+                            step = Some(if back { Step::Previous } else { Step::Next });
+                            search.focus = true;
                         }
-                        if std::mem::take(&mut search.focus) {
-                            field.request_focus();
-                        }
-                        if field.lost_focus() {
-                            if ui.input(|input| input.key_pressed(Key::Escape)) {
-                                close = true;
-                            } else if ui.input(|input| input.key_pressed(Key::Enter)) {
-                                let back = ui.input(|input| input.modifiers.shift);
-                                step = Some(if back { Step::Previous } else { Step::Next });
-                                search.focus = true;
-                            }
-                        }
-                    });
+                    }
                 });
             });
         });
+    });
     if close {
         search.close();
         return None;

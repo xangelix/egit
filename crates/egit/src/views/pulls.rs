@@ -204,54 +204,49 @@ fn bar(
     let forge = shared.forge;
     let palette = shared.palette;
     let mut event = None;
-    Frame::new()
-        .fill(palette.panel)
-        .inner_margin(Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
-                {
-                    event = Some(PullRequestEvent::Close);
-                }
-                ui.label(RichText::new(capitalized(forge.nouns())).color(palette.muted));
-                let names: Vec<String> = forge
-                    .repositories
-                    .iter()
-                    .map(egit_forge::ForgeRepository::full_name)
-                    .collect();
-                ui.add(egui::Label::new(RichText::new(names.join(", ")).semibold()).truncate());
-                let shown = u64::try_from(count).unwrap_or(u64::MAX);
-                let open = if totals > shown {
-                    format!(
-                        "{} of {} open: the most recently updated",
-                        format::count(shown),
-                        format::count(totals)
-                    )
-                } else {
-                    format!("{} open", format::count(shown))
-                };
-                // Nothing read for a reason isn't none open.
-                if count > 0 || problem.is_none() {
-                    ui.label(muted(ui, open));
-                }
-                // What comes and goes follows the buttons.
-                if widgets::secondary(ui, !forge.is_reading(), "Refresh").clicked() {
-                    event = Some(PullRequestEvent::Refresh);
-                }
-                if forge.is_reading() {
-                    ui.spinner();
-                }
-                if count > 0
-                    && let Some(problem) = problem
-                {
-                    ui.label(
-                        RichText::new(format!("{}  {}", icon::WARNING_CIRCLE, said(problem)))
-                            .color(palette.danger),
-                    );
-                }
-            });
+    widgets::bar(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked() {
+                event = Some(PullRequestEvent::Close);
+            }
+            ui.label(RichText::new(capitalized(forge.nouns())).color(palette.muted));
+            let names: Vec<String> = forge
+                .repositories
+                .iter()
+                .map(egit_forge::ForgeRepository::full_name)
+                .collect();
+            ui.add(egui::Label::new(RichText::new(names.join(", ")).semibold()).truncate());
+            let shown = u64::try_from(count).unwrap_or(u64::MAX);
+            let open = if totals > shown {
+                format!(
+                    "{} of {} open: the most recently updated",
+                    format::count(shown),
+                    format::count(totals)
+                )
+            } else {
+                format!("{} open", format::count(shown))
+            };
+            // Nothing read for a reason isn't none open.
+            if count > 0 || problem.is_none() {
+                ui.label(muted(ui, open));
+            }
+            // What comes and goes follows the buttons.
+            if widgets::secondary(ui, !forge.is_reading(), "Refresh").clicked() {
+                event = Some(PullRequestEvent::Refresh);
+            }
+            if forge.is_reading() {
+                ui.spinner();
+            }
+            if count > 0
+                && let Some(problem) = problem
+            {
+                ui.label(
+                    RichText::new(format!("{}  {}", icon::WARNING_CIRCLE, said(problem)))
+                        .color(palette.danger),
+                );
+            }
         });
+    });
     event
 }
 
@@ -506,7 +501,7 @@ fn row(
 fn chip(ui: &mut Ui, text: &str, color: Color32) {
     Frame::new()
         .stroke(egui::Stroke::new(1.0, color))
-        .corner_radius(egui::CornerRadius::same(4))
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_INNER))
         .inner_margin(Margin::symmetric(4, 0))
         .show(ui, |ui| {
             ui.add(egui::Label::new(RichText::new(text).size(11.0).color(color)).selectable(false));
@@ -807,7 +802,7 @@ fn described(
     } else {
         Frame::new()
             .fill(palette.surface)
-            .corner_radius(egui::CornerRadius::same(4))
+            .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
             .inner_margin(Margin::same(8))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());

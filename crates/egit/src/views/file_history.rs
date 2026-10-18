@@ -241,53 +241,45 @@ fn bar(
         .selected
         .and_then(|at| view.found.commits.lock().get(at).cloned());
     let problem = view.found.problem.lock().clone();
-    Frame::new()
-        .fill(shared.palette.panel)
-        .inner_margin(Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
-                {
-                    event = Some(BlameEvent::Close);
-                }
-                ui.label(RichText::new("History of").color(shared.palette.muted));
-                ui.add(
-                    egui::Label::new(RichText::new(view.path.to_str_lossy()).medium()).truncate(),
+    widgets::bar(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked() {
+                event = Some(BlameEvent::Close);
+            }
+            ui.label(RichText::new("History of").color(shared.palette.muted));
+            ui.add(egui::Label::new(RichText::new(view.path.to_str_lossy()).medium()).truncate());
+            let commits = match count {
+                1 => "1 commit".to_owned(),
+                count => format!(
+                    "{} commits",
+                    format::count(u64::try_from(count).unwrap_or(u64::MAX))
+                ),
+            };
+            ui.label(muted(ui, commits));
+            if !done {
+                ui.spinner();
+            }
+            if let Some(problem) = problem {
+                ui.label(
+                    RichText::new(format!("{}  {problem}", icon::WARNING_CIRCLE))
+                        .color(shared.palette.danger),
                 );
-                let commits = match count {
-                    1 => "1 commit".to_owned(),
-                    count => format!(
-                        "{} commits",
-                        format::count(u64::try_from(count).unwrap_or(u64::MAX))
-                    ),
-                };
-                ui.label(muted(ui, commits));
-                if !done {
-                    ui.spinner();
+            }
+            if let Some(commit) = selected {
+                ui.add_space(12.0);
+                if widgets::secondary(ui, true, "Show the commit").clicked() {
+                    event = Some(BlameEvent::ShowCommit(commit.id));
                 }
-                if let Some(problem) = problem {
-                    ui.label(
-                        RichText::new(format!("{}  {problem}", icon::WARNING_CIRCLE))
-                            .color(shared.palette.danger),
-                    );
+                if commit.status != b'D' && widgets::secondary(ui, true, "Blame it here").clicked()
+                {
+                    event = Some(BlameEvent::Blame {
+                        at: commit.id,
+                        path: commit.path,
+                    });
                 }
-                if let Some(commit) = selected {
-                    ui.add_space(12.0);
-                    if widgets::secondary(ui, true, "Show the commit").clicked() {
-                        event = Some(BlameEvent::ShowCommit(commit.id));
-                    }
-                    if commit.status != b'D'
-                        && widgets::secondary(ui, true, "Blame it here").clicked()
-                    {
-                        event = Some(BlameEvent::Blame {
-                            at: commit.id,
-                            path: commit.path,
-                        });
-                    }
-                }
-            });
+            }
         });
+    });
     event
 }
 

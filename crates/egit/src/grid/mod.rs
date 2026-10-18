@@ -1197,7 +1197,8 @@ fn bar_thumb(ui: &Ui, response: &Response, rect: Rect, palette: Palette) {
     } else {
         palette.border
     };
-    ui.painter().rect_filled(rect, CornerRadius::same(4), color);
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(crate::theme::RADIUS_INNER), color);
 }
 
 /// Characters of one colour and one advance, spaced so each takes its cells.

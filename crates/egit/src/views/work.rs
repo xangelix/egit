@@ -14,9 +14,7 @@ use egit_git::{
     Change, Committed, Direction, EntryKind, Git, NewCommit, ObjectId, Repository, Status,
     StatusEntry, Uncommitted,
 };
-use egui::{
-    Align, Key, Label, Layout, Modifiers, Response, RichText, TextEdit, Ui, WidgetInfo, WidgetType,
-};
+use egui::{Align, Key, Label, Layout, Modifiers, Response, RichText, Ui};
 use egui_async::Bind;
 use egui_table_kit::error::TableError;
 use egui_table_kit::interaction::RowEventKind;
@@ -286,7 +284,7 @@ fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
     }
     let description_label = ui.label(muted(ui, "Description"));
     ui.add(
-        TextEdit::multiline(&mut form.description)
+        crate::widgets::text_area(&mut form.description)
             .hint_text("Why, and anything else worth knowing")
             .desired_rows(4)
             .desired_width(f32::INFINITY),
@@ -429,19 +427,22 @@ fn list_ui(
         }
     });
     if list.entries.is_empty() {
+        // A row of the list's own size, its words where a row's would start.
         widgets::list_box(ui, |ui| {
-            ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.add_space(6.0);
-                ui.label(muted(
-                    ui,
-                    match side {
-                        Side::Unstaged => "Nothing to stage.",
-                        Side::Staged => "Nothing staged yet.",
-                    },
-                ));
-            });
-            ui.add_space(4.0);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), crate::tables::ROW_HEIGHT),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.add_space(crate::tables::CELL_INSET);
+                    ui.label(muted(
+                        ui,
+                        match side {
+                            Side::Unstaged => "Nothing to stage.",
+                            Side::Staged => "Nothing staged yet.",
+                        },
+                    ));
+                },
+            );
         });
         return event;
     }
@@ -511,19 +512,16 @@ fn file_cell(
     let room = ui.available_size();
     let response = ui
         .allocate_ui_with_layout(room, Layout::right_to_left(Align::Center), |ui| {
-            let button = crate::widgets::quiet(ui, |ui| {
-                ui.add_enabled(
-                    busy.then_some(false).is_none(),
-                    egui::Button::new(glyph)
-                        .frame_when_inactive(false)
-                        .min_size(egui::vec2(crate::widgets::TARGET, crate::widgets::TARGET)),
-                )
-            })
-            .on_hover_text(verb);
-            // Named for what it does to which file: a screen reader hears more than "+".
+            // Exactly a target's size: a button egui sizes grows to a control's height, past
+            // the row into the next. Named for what it does to which file: a screen reader
+            // hears more than "+".
+            let target = egui::vec2(crate::widgets::TARGET, crate::widgets::TARGET);
+            let (place, _) = ui.allocate_exact_size(target, egui::Sense::hover());
             let name = format!("{verb} {path}");
-            button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, !busy, &name));
-            clicked = button.clicked();
+            let id = ui.id().with(("stage-file", entry.path));
+            let button =
+                crate::widgets::icon_button(ui, place, id, glyph, &name, !busy).on_hover_text(verb);
+            clicked = button.clicked() && !busy;
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let font = egui::TextStyle::Body.resolve(ui.style());
                 let shown = elided_start(ui, &path, &font, ui.available_width());

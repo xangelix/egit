@@ -150,7 +150,7 @@ impl Prompts {
         let frame = egui::Frame::new()
             .fill(palette.surface)
             .stroke(egui::Stroke::new(1.0, palette.border))
-            .corner_radius(egui::CornerRadius::same(12))
+            .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CARD))
             .inner_margin(egui::Margin::same(20));
         let modal = Modal::new(Id::new("askpass")).frame(frame).show(ctx, |ui| {
             ui.set_width(480.0);

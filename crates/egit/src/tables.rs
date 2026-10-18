@@ -344,7 +344,10 @@ impl ChangesTable {
 }
 
 /// The row height of egit's tables.
-pub(crate) const ROW_HEIGHT: f32 = 22.0;
+pub(crate) const ROW_HEIGHT: f32 = 24.0;
+
+/// Where a row's content starts in its cell: table-kit's cell padding.
+pub(crate) const CELL_INSET: f32 = 8.0;
 
 /// A list of files as egit draws them: a narrow column for how each changed (a coloured letter:
 /// `status_cell`), its path filling the rest, no header (the letters and paths explain
@@ -368,6 +371,8 @@ pub(crate) fn list<'a>(table: TableKit<'a>, ui: &Ui) -> TableKit<'a> {
         .with_selected_hover_color(palette.selected_hover)
         .with_selected_text_color(palette.text)
         .with_focus_outline(false)
+        // Inside a rounded box: the rows' corners follow its.
+        .with_row_rounding(crate::theme::RADIUS_INNER)
 }
 
 /// Every table egit draws, but its file lists: centred text, selected rows in the text's own
@@ -414,7 +419,7 @@ pub(crate) fn status_mark(ui: &mut Ui, word: &str, palette: Palette) -> Response
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
     ui.painter()
-        .rect_filled(rect, 4.0, color.gamma_multiply(0.16));
+        .rect_filled(rect, crate::theme::RADIUS_INNER, color.gamma_multiply(0.16));
     ui.painter().text(
         rect.center(),
         egui::Align2::CENTER_CENTER,

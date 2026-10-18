@@ -14,7 +14,7 @@ use egit_git::{
     current_patch, summarize_patch,
 };
 use egit_text::Text;
-use egui::{Frame, Key, Margin, Modifiers, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Frame, Key, Margin, Modifiers, RichText, ScrollArea, Ui};
 use egui_async::Bind;
 
 use super::history::Shared;
@@ -241,40 +241,34 @@ fn bar(ui: &mut Ui, shared: &Shared<'_>, view: &PatchView) -> Option<PatchEvent>
         || "HEAD".to_owned(),
         |branch| branch.to_str_lossy().into_owned(),
     );
-    Frame::new()
-        .fill(shared.palette.panel)
-        .inner_margin(Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
-                {
-                    event = Some(PatchEvent::Close);
-                }
-                let title = match &view.source {
-                    PatchSource::Files(_) => format!("Apply patches to {branch}"),
-                    PatchSource::Pasted => format!("Apply a pasted patch to {branch}"),
-                    PatchSource::Stopped => "The patch git am stopped at".to_owned(),
-                };
-                ui.label(RichText::new(title).semibold());
-                if let PatchSource::Files(files) = &view.source {
-                    let names: Vec<String> = files
-                        .iter()
-                        .map(|file| {
-                            file.file_name().map_or_else(String::new, |name| {
-                                name.to_string_lossy().into_owned()
-                            })
-                        })
-                        .collect();
-                    let paths: Vec<String> = files
-                        .iter()
-                        .map(|file| file.display().to_string())
-                        .collect();
-                    ui.label(muted(ui, names.join(", ")))
-                        .on_hover_text(paths.join("\n"));
-                }
-            });
+    widgets::bar(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked() {
+                event = Some(PatchEvent::Close);
+            }
+            let title = match &view.source {
+                PatchSource::Files(_) => format!("Apply patches to {branch}"),
+                PatchSource::Pasted => format!("Apply a pasted patch to {branch}"),
+                PatchSource::Stopped => "The patch git am stopped at".to_owned(),
+            };
+            ui.label(RichText::new(title).semibold());
+            if let PatchSource::Files(files) = &view.source {
+                let names: Vec<String> = files
+                    .iter()
+                    .map(|file| {
+                        file.file_name()
+                            .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+                    })
+                    .collect();
+                let paths: Vec<String> = files
+                    .iter()
+                    .map(|file| file.display().to_string())
+                    .collect();
+                ui.label(muted(ui, names.join(", ")))
+                    .on_hover_text(paths.join("\n"));
+            }
         });
+    });
     event
 }
 
@@ -287,7 +281,7 @@ fn paste(ui: &mut Ui, shared: &Shared<'_>, view: &mut PatchView) {
         ));
         let field = ui
             .add(
-                TextEdit::multiline(&mut view.pasted)
+                crate::widgets::text_area(&mut view.pasted)
                     .code_editor()
                     .desired_rows(20)
                     .desired_width(f32::INFINITY)

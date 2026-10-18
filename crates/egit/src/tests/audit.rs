@@ -1,6 +1,7 @@
 //! The checks every screen passes (after eshine's): no two widgets share an id, no text or
 //! control is drawn partly over another on the same layer, nothing moves while the window sits
-//! idle, and every control has a name made of words or numbers, not just an icon. Then, resting
+//! idle, every control has a name made of words or numbers, not just an icon, and every
+//! one-line field is a control's height with its text centred and inset alike. Then, resting
 //! the pointer on each control the pointer can reach: it visibly responds without moving
 //! anything (itself included: a control growing under the pointer shifts its row), its cursor
 //! says what a click does (a text cursor over a field, a hand over the rest), it is big enough
@@ -136,7 +137,47 @@ pub(crate) fn run(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<Strin
             }
         }
     }
+    problems.extend(fields(&after, screen));
     problems.extend(interaction(harness, screen));
+    problems
+}
+
+/// One-line fields: a control's height, their text centred top to bottom and inset from their
+/// side as every field's is (a text area's insets are its own: equal on every side).
+fn fields(shown: &[Element], screen: &str) -> Vec<String> {
+    const SIDE: f32 = 8.0;
+    let mut problems = Vec::new();
+    for field in shown
+        .iter()
+        .filter(|element| matches!(element.role, Role::TextInput | Role::SearchInput))
+        .filter(|element| element.visible.is_positive())
+    {
+        if (field.rect.height() - crate::theme::CONTROL).abs() > 0.5 {
+            problems.push(format!(
+                "{screen}: a field not a control's height: {}",
+                field.describe()
+            ));
+        }
+        let Some(text) = shown
+            .iter()
+            .filter(|run| {
+                run.role == Role::TextRun && field.rect.expand(0.5).contains_rect(run.rect)
+            })
+            .min_by(|a, b| a.rect.left().total_cmp(&b.rect.left()))
+        else {
+            continue;
+        };
+        let top = text.rect.top() - field.rect.top();
+        let bottom = field.rect.bottom() - text.rect.bottom();
+        let side = text.rect.left() - field.rect.left();
+        if (top - bottom).abs() > 1.0 || (side - SIDE).abs() > 0.5 {
+            problems.push(format!(
+                "{screen}: a field's text off its place (top {top:.1}, bottom {bottom:.1}, side \
+                 {side:.1}): {}",
+                field.describe()
+            ));
+        }
+    }
     problems
 }
 
@@ -320,6 +361,26 @@ fn moved<'a>(
                     || rect.max.distance(element.rect.max) > 0.5);
             moved.then_some((rect, element))
         })
+}
+
+/// Writes every element of what `harness` shows to `path`, a line each (its role, rectangle,
+/// and name), to measure a screen to the point.
+pub(crate) fn dump(harness: &Harness<'_, EgitApp>, path: &std::path::Path) {
+    let lines: Vec<String> = elements(harness)
+        .iter()
+        .map(|element| {
+            format!(
+                "{:?}\t{:.1}\t{:.1}\t{:.1}\t{:.1}\t{}",
+                element.role,
+                element.rect.min.x,
+                element.rect.min.y,
+                element.rect.width(),
+                element.rect.height(),
+                element.label
+            )
+        })
+        .collect();
+    let _written = std::fs::write(path, lines.join("\n"));
 }
 
 /// Asserts that `screen` passes every check.

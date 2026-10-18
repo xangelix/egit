@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use bstr::ByteSlice as _;
 use egit_git::{CancelToken, ObjectId, Planned, RebaseRange, Step, rebase_range};
-use egui::{Frame, Id, Key, Margin, Modifiers, RichText, Sense, TextEdit, Ui};
+use egui::{Frame, Id, Key, Margin, Modifiers, RichText, Sense, Ui};
 use egui_async::Bind;
 
 use super::history::{ID_DIGITS, Shared};
@@ -365,71 +365,66 @@ fn bar(
         |base| format!("onto {}", base.abbreviated(ID_DIGITS)),
     );
     let plan = view.plan(range);
-    Frame::new()
-        .fill(shared.palette.panel)
-        .inner_margin(Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
-                {
-                    event = Some(RebaseEvent::Close);
+    widgets::bar(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked() {
+                event = Some(RebaseEvent::Close);
+            }
+            ui.label(RichText::new(format!("Rebase {branch} interactively")).semibold());
+            ui.label(muted(
+                ui,
+                format!("{} commits, {onto}", range.commits.len()),
+            ));
+            let start = widgets::primary(ui, plan.is_ok(), "Start rebase");
+            let start = match &plan {
+                Err(why) => start.on_disabled_hover_text(*why),
+                Ok(_) => start,
+            };
+            if start.clicked()
+                && let Ok(plan) = &plan
+            {
+                event = Some(RebaseEvent::Start(Task::InteractiveRebase {
+                    base: range.base,
+                    plan: plan.clone(),
+                    keep_merges: range.merges() > 0,
+                }));
+            }
+            match &plan {
+                Err(why) => {
+                    ui.label(muted(ui, format!("{why}.")));
                 }
-                ui.label(RichText::new(format!("Rebase {branch} interactively")).semibold());
-                ui.label(muted(
-                    ui,
-                    format!("{} commits, {onto}", range.commits.len()),
-                ));
-                let start = widgets::primary(ui, plan.is_ok(), "Start rebase");
-                let start = match &plan {
-                    Err(why) => start.on_disabled_hover_text(*why),
-                    Ok(_) => start,
-                };
-                if start.clicked()
-                    && let Ok(plan) = &plan
-                {
-                    event = Some(RebaseEvent::Start(Task::InteractiveRebase {
-                        base: range.base,
-                        plan: plan.clone(),
-                        keep_merges: range.merges() > 0,
-                    }));
+                Ok(_) if range.merges() > 0 => {
+                    ui.label(muted(ui, "Keys: P R D."));
                 }
-                match &plan {
-                    Err(why) => {
-                        ui.label(muted(ui, format!("{why}.")));
-                    }
-                    Ok(_) if range.merges() > 0 => {
-                        ui.label(muted(ui, "Keys: P R D."));
-                    }
-                    Ok(_) => {
-                        // The arrows are icons: the text font has none.
-                        ui.label(muted(
-                            ui,
-                            format!(
-                                "Keys: P R S F D; Alt+{} and Alt+{} move.",
-                                icon::ARROW_UP,
-                                icon::ARROW_DOWN
-                            ),
-                        ));
-                    }
+                Ok(_) => {
+                    // The arrows are icons: the text font has none.
+                    ui.label(muted(
+                        ui,
+                        format!(
+                            "Keys: P R S F D; Alt+{} and Alt+{} move.",
+                            icon::ARROW_UP,
+                            icon::ARROW_DOWN
+                        ),
+                    ));
                 }
-            });
-            if range.merges() > 0 {
-                ui.label(muted(
-                    ui,
-                    format!(
-                        "{} {} kept, in git's order: commits are reworded or dropped, merges \
-                         reworded; nothing moves or melds.",
-                        crate::format::count(u64::try_from(range.merges()).unwrap_or(u64::MAX)),
-                        if range.merges() == 1 {
-                            "merge is"
-                        } else {
-                            "merges are"
-                        }
-                    ),
-                ));
             }
         });
+        if range.merges() > 0 {
+            ui.label(muted(
+                ui,
+                format!(
+                    "{} {} kept, in git's order: commits are reworded or dropped, merges \
+                         reworded; nothing moves or melds.",
+                    crate::format::count(u64::try_from(range.merges()).unwrap_or(u64::MAX)),
+                    if range.merges() == 1 {
+                        "merge is"
+                    } else {
+                        "merges are"
+                    }
+                ),
+            ));
+        }
+    });
     event
 }
 
@@ -601,7 +596,7 @@ fn message(ui: &mut Ui, view: &mut RebaseView, range: &RebaseRange) {
             let label = ui.label("Its new message:");
             let message = row.message.get_or_insert_with(|| commit.message.clone());
             ui.add(
-                TextEdit::multiline(message)
+                crate::widgets::text_area(message)
                     .desired_width(f32::INFINITY)
                     .desired_rows(5),
             )

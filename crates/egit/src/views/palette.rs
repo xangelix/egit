@@ -220,7 +220,7 @@ pub(crate) fn show(ctx: &egui::Context, view: &mut PaletteView) -> Option<Comman
     let frame = egui::Frame::new()
         .fill(palette.surface)
         .stroke(egui::Stroke::new(1.0, palette.border))
-        .corner_radius(egui::CornerRadius::same(12))
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CARD))
         .inner_margin(egui::Margin::same(14));
     let mut chosen = None;
     let shown = Modal::new(Id::new("command-palette"))

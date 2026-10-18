@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use bstr::BString;
 use egit_git::{CancelToken, Merge, Operation, Piece, WholeOnly};
-use egui::{Align, Frame, Key, Layout, Margin, Modifiers, RichText, TextEdit, Ui};
+use egui::{Align, Frame, Key, Layout, Margin, Modifiers, RichText, Ui};
 use egui_async::Bind;
 
 use super::actions;
@@ -383,14 +383,10 @@ fn bars(
     file: &Arc<ConflictFile>,
     actions: &mut Vec<Action>,
 ) {
-    Frame::new()
-        .fill(shared.palette.panel)
-        .inner_margin(Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal(|ui| step_bar(ui, shared, view, file, actions));
-            ui.horizontal_wrapped(|ui| pick_bar(ui, view, file));
-        });
+    widgets::bar(ui, |ui| {
+        ui.horizontal(|ui| step_bar(ui, shared, view, file, actions));
+        ui.horizontal_wrapped(|ui| pick_bar(ui, view, file));
+    });
 }
 
 /// Where the selected conflict is, stepping through them, and saving.
@@ -564,7 +560,7 @@ fn editor(ui: &mut Ui, view: &mut MergeView, file: &ConflictFile) {
             ));
             let field = ui
                 .add(
-                    TextEdit::multiline(&mut editing.text)
+                    crate::widgets::text_area(&mut editing.text)
                         .code_editor()
                         .desired_rows(8)
                         .desired_width(f32::INFINITY),

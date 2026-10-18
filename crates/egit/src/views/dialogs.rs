@@ -15,7 +15,7 @@ use bstr::{BString, ByteSlice as _};
 use egit_git::{
     ObjectId, Operation, PullMode, PushOptions, ResetMode, Stash, SwitchTo, check_ref_name,
 };
-use egui::{Id, Key, Modal, RichText, TextEdit, Ui};
+use egui::{Id, Key, Modal, RichText, Ui};
 
 use super::history::ID_DIGITS;
 use super::tasks::TaskPane;
@@ -141,7 +141,7 @@ pub(super) fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>, pane: &mut 
     let frame = egui::Frame::new()
         .fill(palette.surface)
         .stroke(egui::Stroke::new(1.0, palette.border))
-        .corner_radius(egui::CornerRadius::same(12))
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CARD))
         .inner_margin(egui::Margin::same(20));
     let shown = Modal::new(Id::new(("task-dialog", pane.id)))
         .frame(frame)
@@ -748,7 +748,7 @@ fn create_tag(
         "Message (makes it an annotated tag, with its author and date)",
     ));
     ui.add(
-        TextEdit::multiline(message)
+        crate::widgets::text_area(message)
             .desired_rows(3)
             .desired_width(f32::INFINITY),
     )

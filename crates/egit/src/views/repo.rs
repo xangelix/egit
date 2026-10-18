@@ -94,31 +94,25 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
 /// The bar over a page of the repository's: back to the history, and which page (the other a
 /// click away). Returns whether "History" was clicked, and the page switched to.
 fn page_bar(ui: &mut Ui, panel: RepoPanel) -> (bool, Option<RepoPanel>) {
-    let palette = Palette::of(ui.ctx());
-    egui::Frame::new()
-        .fill(palette.panel)
-        .inner_margin(egui::Margin::symmetric(12, 6))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let back = widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
-                    .on_hover_text("Back to the history (Escape)")
-                    .clicked();
-                let mut shown = panel;
-                let switched = widgets::segmented(
-                    ui,
-                    &mut shown,
-                    &[
-                        (RepoPanel::Overview, "Overview"),
-                        (RepoPanel::Configuration, "Settings"),
-                    ],
-                )
-                .then_some(shown);
-                (back, switched)
-            })
-            .inner
+    widgets::bar(ui, |ui| {
+        ui.horizontal(|ui| {
+            let back = widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
+                .on_hover_text("Back to the history (Escape)")
+                .clicked();
+            let mut shown = panel;
+            let switched = widgets::segmented(
+                ui,
+                &mut shown,
+                &[
+                    (RepoPanel::Overview, "Overview"),
+                    (RepoPanel::Configuration, "Settings"),
+                ],
+            )
+            .then_some(shown);
+            (back, switched)
         })
         .inner
+    })
 }
 
 /// What a repository's panels share while they are drawn.
@@ -257,7 +251,7 @@ fn operations_banner(ui: &mut Ui, operations: &[Operation], palette: Palette) {
         egui::Frame::new()
             .fill(palette.warn.gamma_multiply(0.12))
             .stroke(egui::Stroke::new(1.0, palette.warn.gamma_multiply(0.6)))
-            .corner_radius(egui::CornerRadius::same(8))
+            .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());

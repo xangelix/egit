@@ -189,6 +189,17 @@ pub(crate) const CODE: f32 = 12.5;
 pub(crate) const TITLE: f32 = 18.0;
 /// A card's or a section's heading.
 pub(crate) const HEADING: f32 = 14.0;
+/// Corner radii, from the inside out: each container a step rounder than what sits inside
+/// it, so their corners follow one another. What sits inside a control or a box: a row's
+/// highlight, a segment, a badge, a section's band, a checkbox.
+pub(crate) const RADIUS_INNER: u8 = 4;
+/// Controls: buttons, fields, segmented controls (and the focus ring inside them).
+pub(crate) const RADIUS_CONTROL: u8 = 6;
+/// Boxes and menus: a list's or a text's box, a menu, a banner, a problem's box.
+pub(crate) const RADIUS_BOX: u8 = 8;
+/// Cards, dialogs, and windows.
+pub(crate) const RADIUS_CARD: u8 = 12;
+
 /// A control's height: buttons, fields, menus' buttons.
 pub(crate) const CONTROL: f32 = 28.0;
 
@@ -314,8 +325,8 @@ fn shape(style: &mut egui::Style, palette: &Palette, dark: bool) {
     visuals.extreme_bg_color = palette.background;
     visuals.code_bg_color = palette.surface_alt;
     visuals.window_stroke = Stroke::new(1.0, palette.border);
-    visuals.window_corner_radius = CornerRadius::same(10);
-    visuals.menu_corner_radius = CornerRadius::same(8);
+    visuals.window_corner_radius = CornerRadius::same(RADIUS_CARD);
+    visuals.menu_corner_radius = CornerRadius::same(RADIUS_BOX);
     visuals.hyperlink_color = palette.accent;
     visuals.warn_fg_color = palette.warn;
     visuals.error_fg_color = palette.danger;
@@ -327,7 +338,7 @@ fn shape(style: &mut egui::Style, palette: &Palette, dark: bool) {
 
     // Every control has an edge: a field shows where to type before it is clicked, a button
     // where it ends; the pointer darkens (or lightens) it, a press marks it with the accent.
-    let radius = CornerRadius::same(6);
+    let radius = CornerRadius::same(RADIUS_CONTROL);
     for (state, fill, edge) in [
         (
             &mut visuals.widgets.noninteractive,

@@ -26,7 +26,9 @@ use crate::theme::{CONTROL, HEADING, Palette, SMALL, Weight};
 pub(crate) const TARGET: f32 = 24.0;
 
 /// A one-line field's margin, which makes it as tall as a button.
-const FIELD_MARGIN: Margin = Margin::symmetric(8, 6);
+/// Between a field's edge and its text: the same on every side of a text area, at the sides
+/// of a one-line field (whose text is centred in a control's height).
+const FIELD_INSET: i8 = 8;
 
 /// A page's title (Home's, the profile's, a repository's overview).
 const PAGE_TITLE: f32 = 22.0;
@@ -43,7 +45,7 @@ pub(crate) fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R
     Frame::new()
         .fill(palette.surface)
         .stroke(Stroke::new(1.0, palette.border))
-        .corner_radius(CornerRadius::same(10))
+        .corner_radius(CornerRadius::same(crate::theme::RADIUS_CARD))
         .inner_margin(Margin::same(16))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -60,6 +62,24 @@ pub(crate) fn heading(ui: &mut Ui, text: &str) -> Response {
 /// A page's title.
 pub(crate) fn page_title(ui: &mut Ui, text: &str) -> Response {
     ui.label(RichText::new(text).size(PAGE_TITLE).semibold())
+}
+
+/// The height of a panel's first row (the sidebar's filter, the commit table's column titles,
+/// the details' title): one band across the window, so the panels' first rows line up.
+pub(crate) const HEAD: f32 = 32.0;
+
+/// A panel's first row: [`HEAD`] tall (taller only for what wraps), `add_contents` laid out
+/// from the left, centred on it.
+pub(crate) fn panel_head<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), HEAD),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(HEAD);
+            add_contents(ui)
+        },
+    )
+    .inner
 }
 
 /// A panel's or a dialog's title.
@@ -175,6 +195,33 @@ pub(crate) fn paint_section(
     width
 }
 
+/// Between a bar's edges and its controls: 12 points at its sides, 6 above and below.
+const BAR_MARGIN: Margin = Margin::symmetric(12, 6);
+
+/// A bar over a view (its back button, what it shows, its controls): the chrome's tone, its
+/// controls [`BAR_MARGIN`] from its edges, a hairline under it. Nothing is spaced from it:
+/// bars stacked one under another make one strip, and what follows meets the hairline.
+pub(crate) fn bar<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    let palette = Palette::of(ui.ctx());
+    let spacing = ui.spacing().item_spacing.y;
+    ui.spacing_mut().item_spacing.y = 0.0;
+    let shown = Frame::new()
+        .fill(palette.panel)
+        .inner_margin(BAR_MARGIN)
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = spacing;
+            add_contents(ui)
+        });
+    let rect = shown.response.rect;
+    ui.painter().hline(
+        rect.x_range(),
+        rect.bottom() - 0.5,
+        Stroke::new(1.0, palette.border),
+    );
+    shown.inner
+}
+
 /// A box around a list (a commit's files): its rows on the window's background inside a
 /// border, filling the rest of the panel.
 pub(crate) fn list_box<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
@@ -182,7 +229,7 @@ pub(crate) fn list_box<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) 
     Frame::new()
         .fill(palette.background)
         .stroke(Stroke::new(1.0, palette.border))
-        .corner_radius(CornerRadius::same(8))
+        .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
         .inner_margin(Margin::same(4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -198,7 +245,7 @@ pub(crate) fn text_box<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) 
     Frame::new()
         .fill(palette.background)
         .stroke(Stroke::new(1.0, palette.border))
-        .corner_radius(CornerRadius::same(8))
+        .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
         .inner_margin(Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -226,20 +273,32 @@ pub(crate) fn fact<R>(
     .inner
 }
 
-/// A fact whose value may take several lines: the label beside the value's first line.
+/// A fact whose value may take several lines: the label beside the value's first line, both
+/// as far below the row's top (and the last line as far above its bottom) as a one-line
+/// [`fact`]'s text, so facts keep one rhythm.
 pub(crate) fn fact_top<R>(
     ui: &mut Ui,
     width: f32,
     label: &str,
     add_value: impl FnOnce(&mut Ui) -> R,
 ) -> R {
-    ui.horizontal_top(|ui| {
-        fact_label(ui, width, label, egui::Align::Min);
-        ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = 2.0;
-            add_value(ui)
-        })
-        .inner
+    let line = ui.text_style_height(&egui::TextStyle::Body);
+    let inset = ((CONTROL - line) / 2.0).max(0.0);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.add_space(inset);
+        let inner = ui
+            .horizontal_top(|ui| {
+                fact_label(ui, width, label, egui::Align::Min);
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    add_value(ui)
+                })
+                .inner
+            })
+            .inner;
+        ui.add_space(inset);
+        inner
     })
     .inner
 }
@@ -457,10 +516,12 @@ pub(crate) fn quiet<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 }
 
 /// A button that reads as a link (a commit's name to go to): no frame until the pointer is on
-/// it, and a slim inset, so it lines up with text beside or above it.
+/// it, and a slim inset, which it hangs into, so its words line up with text beside or above
+/// it.
 pub(crate) fn link(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
     ui.scope(|ui| {
-        ui.spacing_mut().button_padding = egui::vec2(4.0, 2.0);
+        ui.spacing_mut().button_padding = egui::vec2(LINK_INSET, 2.0);
+        ui.add_space(-LINK_INSET);
         quiet(ui, |ui| {
             ui.add(
                 Button::new(text)
@@ -471,6 +532,9 @@ pub(crate) fn link(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
     })
     .inner
 }
+
+/// A link's inset from its hover's edge, which it hangs into.
+const LINK_INSET: f32 = 4.0;
 
 /// A thin upright line between a toolbar's groups.
 pub(crate) fn toolbar_separator(ui: &mut Ui) {
@@ -545,7 +609,18 @@ pub(crate) fn row_fill(ui: &Ui, rect: egui::Rect, rounding: f32, selected: bool,
 
 /// A one-line text field, as tall as a button.
 pub(crate) fn line_field(text: &mut dyn TextBuffer) -> TextEdit<'_> {
-    TextEdit::singleline(text).margin(FIELD_MARGIN)
+    TextEdit::singleline(text)
+        .margin(Margin::symmetric(FIELD_INSET, 0))
+        .min_size(egui::vec2(0.0, CONTROL))
+        .vertical_align(egui::Align::Center)
+}
+
+/// A text field of several lines, filling its width, its text [`FIELD_INSET`] from every
+/// edge.
+pub(crate) fn text_area(text: &mut dyn TextBuffer) -> TextEdit<'_> {
+    TextEdit::multiline(text)
+        .margin(Margin::same(FIELD_INSET))
+        .desired_width(f32::INFINITY)
 }
 
 /// Shows which control has the keyboard focus, as a browser's `:focus-visible` does: a ring
@@ -600,7 +675,7 @@ pub(crate) fn focus_ring(ctx: &egui::Context) {
         .with_clip_rect(focused.interact_rect)
         .rect_stroke(
             focused.rect,
-            CornerRadius::same(4),
+            CornerRadius::same(crate::theme::RADIUS_CONTROL),
             Stroke::new(2.0, Palette::of(ctx).accent),
             StrokeKind::Inside,
         );
@@ -661,7 +736,7 @@ pub(crate) fn problem_box(ui: &mut Ui, problem: &Problem, add_actions: impl FnOn
     Frame::new()
         .fill(palette.danger.gamma_multiply(0.08))
         .stroke(Stroke::new(1.0, palette.danger.gamma_multiply(0.6)))
-        .corner_radius(CornerRadius::same(8))
+        .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
         .inner_margin(Margin::same(12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

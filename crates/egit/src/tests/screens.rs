@@ -74,6 +74,10 @@ pub(super) fn harness(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
 
 /// Checks the screen (`audit`) and renders it into `name.png` (where screens are rendered).
 pub(super) fn render(harness: &mut Harness<'_, EgitApp>, name: &str) {
+    // Every element's place, to measure a screen to the point (`<name>.rects`).
+    if std::env::var_os("EGIT_GUI_RECTS").is_some() {
+        super::audit::dump(harness, &screens().join(format!("{name}.rects")));
+    }
     super::audit::assert_clean(harness, name);
     if !rendering() {
         return;

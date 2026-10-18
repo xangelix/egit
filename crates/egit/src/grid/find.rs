@@ -234,7 +234,7 @@ impl Find {
                 Frame::new()
                     .fill(palette.panel)
                     .stroke(Stroke::new(1.0, palette.border))
-                    .corner_radius(egui::CornerRadius::same(6))
+                    .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
                     .inner_margin(Margin::symmetric(8, 4))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {

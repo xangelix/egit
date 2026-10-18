@@ -8,7 +8,7 @@ use egui::{
     WidgetInfo, WidgetText, WidgetType, pos2, vec2,
 };
 
-use crate::theme::{CONTROL, Palette};
+use crate::theme::{CONTROL, Palette, RADIUS_CONTROL, RADIUS_INNER};
 
 /// The box's (or the circle's) size.
 const BOX: f32 = 16.0;
@@ -115,7 +115,7 @@ fn paint_mark(ui: &Ui, boxed: egui::Rect, on: bool, mark: Mark, hovered: bool, p
     };
     match mark {
         Mark::Check => {
-            painter.rect(boxed, 4.0, fill, stroke, StrokeKind::Inside);
+            painter.rect(boxed, RADIUS_INNER, fill, stroke, StrokeKind::Inside);
             if on {
                 let at = |x: f32, y: f32| {
                     pos2(
@@ -142,46 +142,87 @@ fn paint_mark(ui: &Ui, boxed: egui::Rect, on: bool, mark: Mark, hovered: bool, p
 }
 
 /// A segmented control: `options` side by side in one frame, the one `current` holds filled;
-/// a click picks another. Returns whether it changed.
+/// a click picks another. Returns whether it changed. Sized from its words before it is
+/// drawn, so it is placed as any widget of a control's height is (centred on its row).
 pub(crate) fn segmented<T: PartialEq + Copy>(
     ui: &mut Ui,
     current: &mut T,
     options: &[(T, &str)],
 ) -> bool {
     let palette = Palette::of(ui.ctx());
+    let galleys: Vec<_> = options
+        .iter()
+        .map(|&(_, text)| {
+            WidgetText::from(text).into_galley(
+                ui,
+                Some(TextWrapMode::Extend),
+                f32::INFINITY,
+                TextStyle::Button,
+            )
+        })
+        .collect();
+    let edge = SEGMENTED_MARGIN + 1.0;
+    let segments: f32 = galleys
+        .iter()
+        .map(|galley| galley.size().x + SEGMENT_PAD)
+        .sum();
+    let gaps = SEGMENT_GAP * f32::from(u16::try_from(options.len().saturating_sub(1)).unwrap_or(0));
+    let size = vec2(segments + gaps + 2.0 * edge, CONTROL);
+    let (id, rect) = ui.allocate_space(size);
+    ui.painter().rect(
+        rect,
+        RADIUS_CONTROL,
+        palette.field,
+        Stroke::new(1.0, palette.border),
+        StrokeKind::Inside,
+    );
     let mut changed = false;
-    egui::Frame::new()
-        .fill(palette.field)
-        .stroke(Stroke::new(1.0, palette.border))
-        .corner_radius(6)
-        .inner_margin(2)
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.horizontal(|ui| {
-                for &(value, text) in options {
-                    let picked = *current == value;
-                    let segment = segment(ui, picked, text, &palette);
-                    if segment.clicked() && !picked {
-                        *current = value;
-                        changed = true;
-                    }
-                }
-            });
-        });
+    let mut left = rect.left() + edge;
+    for (index, (&(value, text), galley)) in options.iter().zip(galleys).enumerate() {
+        let width = galley.size().x + SEGMENT_PAD;
+        let place = egui::Rect::from_min_size(
+            pos2(left, rect.top() + edge),
+            vec2(width, CONTROL - 2.0 * edge),
+        );
+        left += width + SEGMENT_GAP;
+        let picked = *current == value;
+        if segment(
+            ui,
+            (id.with(index), place),
+            (picked, text),
+            galley,
+            &palette,
+        )
+        .clicked()
+            && !picked
+        {
+            *current = value;
+            changed = true;
+        }
+    }
     changed
 }
 
-/// One segment: its words on the accent's tint when picked, a hover's fill otherwise.
-fn segment(ui: &mut Ui, picked: bool, text: &str, palette: &Palette) -> Response {
-    let galley = WidgetText::from(text).into_galley(
-        ui,
-        Some(TextWrapMode::Extend),
-        f32::INFINITY,
-        TextStyle::Button,
-    );
-    let height = CONTROL - 4.0;
-    let size = vec2(galley.size().x + 20.0, height);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+/// Between a segmented control's edge and its segments: a radius of [`RADIUS_CONTROL`] less
+/// it and the edge leaves [`RADIUS_INNER`], the segments' own, so their corners follow.
+const SEGMENTED_MARGIN: f32 = 1.0;
+
+/// A segment's words' room on either side, together.
+const SEGMENT_PAD: f32 = 20.0;
+
+/// Between two segments.
+const SEGMENT_GAP: f32 = 2.0;
+
+/// One segment, in `place`: its words on the accent's tint when picked, a hover's fill
+/// otherwise.
+fn segment(
+    ui: &Ui,
+    (id, place): (egui::Id, egui::Rect),
+    (picked, text): (bool, &str),
+    galley: std::sync::Arc<egui::Galley>,
+    palette: &Palette,
+) -> Response {
+    let response = ui.interact(place, id, Sense::click());
     response.widget_info(|| {
         WidgetInfo::selected(WidgetType::SelectableLabel, ui.is_enabled(), picked, text)
     });
@@ -197,11 +238,11 @@ fn segment(ui: &mut Ui, picked: bool, text: &str, palette: &Palette) -> Response
     } else {
         Color32::TRANSPARENT
     };
-    ui.painter().rect_filled(rect, 4.0, fill);
+    ui.painter().rect_filled(place, RADIUS_INNER, fill);
     let color = if picked { palette.text } else { palette.muted };
     ui.painter().galley(
         Align2::CENTER_CENTER
-            .align_size_within_rect(galley.size(), rect)
+            .align_size_within_rect(galley.size(), place)
             .min,
         galley,
         color,

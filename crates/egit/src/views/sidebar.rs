@@ -43,7 +43,7 @@ use crate::history::{Refs, Scope};
 use crate::jobs;
 use crate::problem::Problem;
 use crate::tasks::{Task, remote_names};
-use crate::theme::{Palette, SMALL, Weight, icon};
+use crate::theme::{Palette, RADIUS_INNER, SMALL, Weight, icon};
 use crate::widgets::{TARGET, muted};
 
 /// A row's height: a whole target to hit, and rows touch (no gap where the pointer finds
@@ -862,8 +862,8 @@ pub(super) fn show(
 
 /// The filter, and the button hiding the sidebar.
 fn header(ui: &mut Ui, view: &mut Sidebar) {
-    ui.add_space(6.0);
-    ui.horizontal(|ui| {
+    // In the window's head band, level with the commit table's column titles.
+    crate::widgets::panel_head(ui, |ui| {
         let (_, place) = ui.allocate_space(vec2(TARGET, TARGET));
         let hide = crate::widgets::icon_button(
             ui,
@@ -926,7 +926,13 @@ fn row_area(ui: &mut Ui, id: Id, name: &str, selected: bool, right: f32) -> (Rec
     let response = ui.interact(body, id, Sense::click());
     response
         .widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, name));
-    crate::widgets::row_fill(ui, rect, 0.0, selected, response.hovered());
+    crate::widgets::row_fill(
+        ui,
+        rect.shrink2(vec2(0.0, 1.0)),
+        f32::from(RADIUS_INNER),
+        selected,
+        response.hovered(),
+    );
     (rect, response)
 }
 
@@ -1078,11 +1084,7 @@ fn section_row(
         Section::Worktrees => Some("Create a worktree"),
         _ => None,
     };
-    let right = if adding.is_some() {
-        ROW_HEIGHT + 4.0
-    } else {
-        0.0
-    };
+    let right = if adding.is_some() { EYE } else { 0.0 };
     let key = (section, BString::default());
     let id = Id::new(("sidebar-section", drawing.shared.id, section));
     let named = format!("{title}: {count}");
@@ -1095,10 +1097,8 @@ fn section_row(
     let mut event = None;
     response.context_menu(|ui| event = section_menu(ui, drawing, section));
     if let Some(name) = adding {
-        let button = Rect::from_center_size(
-            pos2(rect.right() - ROW_HEIGHT / 2.0 - 2.0, rect.center().y),
-            vec2(ROW_HEIGHT, ROW_HEIGHT),
-        );
+        // In the column of the branches' eyes below.
+        let button = Rect::from_min_max(pos2(rect.right() - EYE, rect.top()), rect.max);
         let enabled = adding_allowed(drawing, section).is_ok();
         let plus =
             crate::widgets::icon_button(ui, button, id.with("add"), icon::PLUS, name, enabled);
@@ -1126,7 +1126,7 @@ fn paint_section(
     } else {
         (palette.surface, palette.surface_alt)
     };
-    painter.rect_filled(rect.shrink2(vec2(0.0, 1.0)), 4.0, band);
+    painter.rect_filled(rect.shrink2(vec2(0.0, 1.0)), RADIUS_INNER, band);
     paint_caret(ui, drawing, rect, 0, folded);
     let x = icon_x(rect, 0);
     painter.text(
@@ -1432,7 +1432,7 @@ fn eye(ui: &Ui, drawing: &Drawing<'_>, rect: Rect, id: Id, seen: bool) -> Respon
     let hovered = response.hovered();
     if hovered {
         ui.painter()
-            .rect_filled(place.shrink2(vec2(0.0, 2.0)), 4.0, palette.border);
+            .rect_filled(place.shrink2(vec2(0.0, 2.0)), RADIUS_INNER, palette.border);
     }
     let (glyph, color) = match (seen, hovered) {
         (true, false) => (icon::EYE, palette.muted),

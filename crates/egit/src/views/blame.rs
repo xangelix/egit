@@ -208,58 +208,51 @@ fn bar(ui: &mut Ui, shared: &Shared<'_>, view: &mut BlameView, done: bool) -> Op
         _ => None,
     };
     let problem = view.blaming.problem.lock().clone();
-    Frame::new()
-        .fill(shared.palette.panel)
-        .inner_margin(Margin::symmetric(8, 6))
-        .show(ui, |ui| {
-            ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
-                {
-                    event = Some(BlameEvent::Close);
-                }
-                ui.label(RichText::new("Blame").color(shared.palette.muted));
-                ui.add(
-                    egui::Label::new(RichText::new(view.path.to_str_lossy()).medium()).truncate(),
-                );
-                let at = view.at.map_or_else(
-                    || "in the work tree".to_owned(),
-                    |at| format!("at {}", at.abbreviated(ID_DIGITS)),
-                );
-                ui.label(muted(ui, at));
-                ui.add_space(8.0);
-                let mut follow = view.moves == Moves::Writing;
-                if crate::widgets::checkbox(ui, &mut follow, "Follow moved lines")
-                    .on_hover_text(
-                        "A line moved within the file is the commit's that wrote it, not the \
+    widgets::bar(ui, |ui| {
+        ui.horizontal_wrapped(|ui| {
+            if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked() {
+                event = Some(BlameEvent::Close);
+            }
+            ui.label(RichText::new("Blame").color(shared.palette.muted));
+            ui.add(egui::Label::new(RichText::new(view.path.to_str_lossy()).medium()).truncate());
+            let at = view.at.map_or_else(
+                || "in the work tree".to_owned(),
+                |at| format!("at {}", at.abbreviated(ID_DIGITS)),
+            );
+            ui.label(muted(ui, at));
+            ui.add_space(8.0);
+            let mut follow = view.moves == Moves::Writing;
+            if crate::widgets::checkbox(ui, &mut follow, "Follow moved lines")
+                .on_hover_text(
+                    "A line moved within the file is the commit's that wrote it, not the \
                          one that moved it. Slower on a large file.",
-                    )
-                    .changed()
-                {
-                    view.moves = if follow {
-                        Moves::Writing
-                    } else {
-                        Moves::Moving
-                    };
-                    restart = true;
-                }
-                if let Some(problem) = problem {
-                    ui.label(
-                        RichText::new(format!("{}  {problem}", icon::WARNING_CIRCLE))
-                            .color(shared.palette.danger),
-                    );
-                } else if !done {
-                    ui.spinner();
-                    let of = lines.map_or_else(String::new, |lines| {
-                        format!(" of {}", format::count(u64::from(lines)))
-                    });
-                    ui.label(muted(
-                        ui,
-                        format!("Blaming… {}{of} lines", format::count(u64::from(found))),
-                    ));
-                }
-            });
+                )
+                .changed()
+            {
+                view.moves = if follow {
+                    Moves::Writing
+                } else {
+                    Moves::Moving
+                };
+                restart = true;
+            }
+            if let Some(problem) = problem {
+                ui.label(
+                    RichText::new(format!("{}  {problem}", icon::WARNING_CIRCLE))
+                        .color(shared.palette.danger),
+                );
+            } else if !done {
+                ui.spinner();
+                let of = lines.map_or_else(String::new, |lines| {
+                    format!(" of {}", format::count(u64::from(lines)))
+                });
+                ui.label(muted(
+                    ui,
+                    format!("Blaming… {}{of} lines", format::count(u64::from(found))),
+                ));
+            }
         });
+    });
     if restart {
         view.restart(shared);
     }
