@@ -1236,7 +1236,10 @@ fn filter_many_refs(harness: &mut Harness<'_, EgitApp>) -> Duration {
     let started = Instant::now();
     let counted = format!("Branches: {matching}");
     while harness.query_by_label(&counted).is_none() {
-        assert!(started.elapsed() < Duration::from_secs(2), "{counted} never shown");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{counted} never shown"
+        );
         harness.step();
         std::thread::sleep(Duration::from_millis(1));
     }

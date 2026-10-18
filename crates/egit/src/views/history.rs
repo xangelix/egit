@@ -2142,9 +2142,7 @@ impl CommitRows<'_> {
             )
         };
         let response = ui.interact(rect, ui.id().with("work-in-progress"), Sense::click());
-        response.widget_info(|| {
-            WidgetInfo::selected(WidgetType::Button, true, selected, &files)
-        });
+        response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, &files));
         if response.clicked() {
             self.view.select_work();
         }

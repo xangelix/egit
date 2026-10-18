@@ -586,8 +586,9 @@ impl Sidebar {
         self.filtered = false;
         if in_a_job {
             let generation = self.generation;
-            self.making
-                .request(jobs::blocking(move || Ok((generation, Self::make_rows(&input)))));
+            self.making.request(jobs::blocking(move || {
+                Ok((generation, Self::make_rows(&input)))
+            }));
         } else {
             self.rows = Self::make_rows(&input);
         }
