@@ -344,7 +344,7 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
 }
 
 #[test]
-fn a_merge_fast_forwards_as_configured_or_never() {
+fn a_merge_fast_forwards_as_configured_or_never_and_names_a_branch_as_people_do() {
     let sandbox = Sandbox::new().unwrap();
     let path = sandbox.init("repo").unwrap();
     sandbox.commit_file(&path, "f", "one\n", "One").unwrap();
@@ -390,6 +390,38 @@ fn a_merge_fast_forwards_as_configured_or_never() {
         Integrated::Done
     );
     assert_eq!(rev(&sandbox, &path, "HEAD"), ahead);
+
+    // By its full name: git's message names it as people do.
+    let merge_full = |sandbox: &Sandbox| {
+        sandbox
+            .run(&path, "reset", &["--hard", "--quiet", &one.to_string()])
+            .unwrap();
+        merge(
+            git,
+            &repository,
+            BStr::new("refs/heads/ahead"),
+            FastForward::Never,
+            &cancel(),
+        )
+        .unwrap();
+    };
+    merge_full(&sandbox);
+    assert_eq!(subject(&sandbox, &path, "HEAD"), "Merge branch 'ahead'");
+    // Beside a tag of its name (elsewhere), still the branch, named apart from the tag.
+    sandbox
+        .run(&path, "tag", &["ahead", &one.to_string()])
+        .unwrap();
+    merge_full(&sandbox);
+    assert_eq!(
+        subject(&sandbox, &path, "HEAD"),
+        "Merge branch 'heads/ahead'"
+    );
+    let parents = sandbox.run(&path, "log", &["-1", "--format=%P"]).unwrap();
+    assert!(
+        String::from_utf8(parents.stdout)
+            .unwrap()
+            .contains(&ahead.to_string())
+    );
 }
 
 #[test]

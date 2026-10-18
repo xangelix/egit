@@ -349,27 +349,41 @@ fn a_branch_or_a_commit_is_merged_without_fast_forward() {
     wait_for_label(&mut harness, "Merged ahead, with a merge commit.");
     let ahead = rev(&sandbox, &repo, "ahead").unwrap();
     assert_eq!(parents(&sandbox), format!("{one} {ahead}"));
+    let head_subject = |sandbox: &Sandbox| {
+        let out = sandbox.run(&repo, "log", &["-1", "--format=%s"]).unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    assert_eq!(head_subject(&sandbox), "Merge branch 'ahead'");
 
-    // Taken back, then from a commit's menu: its parent merged the same way.
-    settle(
-        &mut harness,
-        "the merge shown",
-        shown(&sandbox, &repo, "main"),
-    );
-    click_when_enabled(&mut harness, "Undo");
-    wait_for_label(&mut harness, "Undid the merge of ahead.");
-    assert_eq!(rev(&sandbox, &repo, "main"), Some(one));
-    settle(&mut harness, "the history after undoing", history_of(3));
+    // Taken back, then from commits' menus: the branch's tip merged as the branch, a commit
+    // below it as a commit.
+    let undo = |harness: &mut Harness<'_, EgitApp>, what: &str| {
+        settle(harness, "the merge shown", shown(&sandbox, &repo, "main"));
+        click_when_enabled(harness, "Undo");
+        wait_for_label(harness, &format!("Undid the merge of {what}."));
+        assert_eq!(rev(&sandbox, &repo, "main"), Some(one));
+        settle(harness, "the history after undoing", history_of(3));
+    };
+    let merge_from_row = |harness: &mut Harness<'_, EgitApp>, subject: &str| {
+        harness
+            .get_by_role_and_label(Role::Button, subject)
+            .click_secondary();
+        let item = "Merge into main (no fast-forward)";
+        wait_for_label(harness, item);
+        harness.get_by_label(item).click();
+    };
+    undo(&mut harness, "ahead");
+    merge_from_row(&mut harness, "Three");
+    wait_for_label(&mut harness, "Merged ahead, with a merge commit.");
+    assert_eq!(head_subject(&sandbox), "Merge branch 'ahead'");
+
+    undo(&mut harness, "ahead");
     let two = rev(&sandbox, &repo, "ahead^").unwrap();
-    harness
-        .get_by_role_and_label(Role::Button, "Two")
-        .click_secondary();
-    let item = "Merge into main (no fast-forward)";
-    wait_for_label(&mut harness, item);
-    harness.get_by_label(item).click();
+    merge_from_row(&mut harness, "Two");
     wait_for_label(
         &mut harness,
         &format!("Merged {}, with a merge commit.", two.abbreviated(8)),
     );
     assert_eq!(parents(&sandbox), format!("{one} {two}"));
+    assert_eq!(head_subject(&sandbox), format!("Merge commit '{two}'"));
 }

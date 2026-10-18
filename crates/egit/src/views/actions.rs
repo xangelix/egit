@@ -488,6 +488,24 @@ fn into_items(
     menu_header(ui, &format!("Into {current}"));
     let shown = id.abbreviated(ID_DIGITS).to_string();
     let what = BString::from(id.to_string());
+    // A branch's tip is merged as the branch (a local one first, never the current one), so
+    // git's message says "Merge branch 'topic'" rather than naming the commit.
+    let tip = menus
+        .refs
+        .at(&id)
+        .iter()
+        .find(|reference| match reference.kind {
+            RefKind::Branch => menus.branch != Some(reference.short_name()),
+            RefKind::RemoteBranch => true,
+            _ => false,
+        });
+    let (merged, merged_shown) = tip.map_or_else(
+        || (what.clone(), shown.clone()),
+        |branch| {
+            let name = branch.short_name().to_str_lossy().into_owned();
+            (branch.name.clone(), name)
+        },
+    );
     for (label, fast_forward) in [
         (format!("Merge into {current}"), FastForward::AsConfigured),
         (
@@ -497,8 +515,8 @@ fn into_items(
     ] {
         if item(ui, (icon::GIT_MERGE, &label), other) {
             ask(Ask::Task(Task::Merge {
-                what: what.clone(),
-                shown: shown.clone(),
+                what: merged.clone(),
+                shown: merged_shown.clone(),
                 fast_forward,
             }));
         }

@@ -456,7 +456,10 @@ writes paths), never `OsStrExt`.
     `info`'s subject), `current_patch` (`am --show-current-patch=diff`), `looks_like_patch`
     (`.patch`, `.diff`, `.mbox`, `.eml`).
   - `integrate.rs` — commits brought into the current branch: `merge` (`--no-edit`; `FastForward`: as `merge.ff`
-    says, or never, `--no-ff`: a merge commit even where the branch could just move forward),
+    says, or never, `--no-ff`: a merge commit even where the branch could just move forward; a
+    ref's full name shortened as far as it stays unambiguous, `rev-parse --abbrev-ref=strict`,
+    since git's message names what it is given: "Merge branch 'topic'", not
+    "'refs/heads/topic'"),
     `rebase` (keeping merges, `--rebase-merges`, when asked), `cherry_pick`, `revert` (`--no-edit`; a merge's against its first parent, by
     `rev-list --parents`), each `Integrated::Done`, `Conflicts` (failed with the operation in
     progress and `ls-files -u` not empty), `Empty` (a pick that is "now empty", skipped), or
@@ -1208,7 +1211,8 @@ writes paths), never `OsStrExt`.
     branch, `HEAD`, the configuration (its remotes read only when a menu needs them), the refs, whether a task runs or an operation is in progress,
     which disable what would change the branch, saying why): a commit's context menu (switch
     there detached, create a branch or tag there, merge it in (or always with a merge commit,
-    "(no fast-forward)"), rebase onto it, cherry-pick,
+    "(no fast-forward)"; a branch's tip merged as the branch, a local one first, so git's message
+    names it), rebase onto it, cherry-pick,
     revert, reset soft or mixed, hard after a dialog, a worktree there, its Bisect submenu (mark
     it bad or good in the bisection's terms, starting one; skip it), copy a link to it on
     its forge; and in the row's menu, its name, subject, or "Save as a patch…"), a ref badge's

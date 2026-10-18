@@ -38,8 +38,12 @@ pub enum FastForward {
     Never,
 }
 
-/// Merges `what` (a branch's name, or a commit's) into the current branch (`git merge
-/// --no-edit`: git's message), fast-forwarding as `fast_forward` says.
+/// Merges `what` (a ref's full name, a branch's, or a commit's) into the current branch (`git
+/// merge --no-edit`: git's message), fast-forwarding as `fast_forward` says.
+///
+/// git's message names what it was given as it was typed, so a ref's full name is shortened
+/// first, as far as it stays unambiguous (`rev-parse --abbrev-ref=strict`): "Merge branch
+/// 'topic'", or "'heads/topic'" beside a tag called `topic`, never "'refs/heads/topic'".
 ///
 /// # Errors
 ///
@@ -51,6 +55,20 @@ pub fn merge(
     fast_forward: FastForward,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
+    let short = if what.starts_with(b"refs/") {
+        let named = git
+            .read("rev-parse")
+            // It starts with `refs/`: never an option.
+            .args(["--verify", "--abbrev-ref=strict"])
+            .arg(what.to_os_str_lossy())
+            .current_dir(repository.work_tree())
+            .cancel_token(cancel)
+            .output()?;
+        Some(named.stdout.trim_ascii().to_owned())
+            .filter(|short| !short.is_empty() && !short.contains(&b'\n'))
+    } else {
+        None
+    };
     let mut command = git
         .write("merge")
         .args(["--no-edit", "--no-stat", "--quiet"]);
@@ -58,7 +76,7 @@ pub fn merge(
         command = command.arg("--no-ff");
     }
     let done = command
-        .arg(what.to_os_str_lossy())
+        .arg(short.as_deref().unwrap_or(what).to_os_str_lossy())
         .prompt_context("Merging")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
