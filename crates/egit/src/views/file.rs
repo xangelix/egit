@@ -144,6 +144,8 @@ pub(super) struct FileView {
     /// An image's sides, read the first time they are shown, and their textures.
     pictures: Bind<Arc<Pictures>, Problem>,
     textures: Option<Textures>,
+    /// A submodule's move and the commits it brings, read the first time it is shown.
+    moved: Bind<Arc<crate::submodules::Moved>, Problem>,
     /// What its bar asked to see of the file instead: its blame, or its history.
     pub(super) wanted: Option<FileWanted>,
 }
@@ -217,6 +219,7 @@ impl FileView {
             merge: None,
             pictures: Bind::new(true),
             textures: None,
+            moved: Bind::new(true),
             wanted: None,
         };
         match &file.source {
@@ -319,7 +322,39 @@ impl FileView {
         self.content = Bind::new(true);
         self.pictures = Bind::new(true);
         self.textures = None;
+        self.moved = Bind::new(true);
         self.read_diff(shared);
+    }
+
+    /// Where a submodule's change takes it, when the file is one (a gitlink on either side): a
+    /// commit's two commits, or for the work tree `HEAD`'s and the index's (staged), the
+    /// index's and its `HEAD` now (`None`: not staged).
+    fn submodule_move(&self) -> Option<(Option<ObjectId>, Option<ObjectId>)> {
+        let link =
+            |entry: Option<TreeEntry>| entry.filter(|entry| entry.mode == TreeEntry::SUBMODULE);
+        match &self.source {
+            Source::Commit { change, .. } => {
+                (link(change.old).is_some() || link(change.new).is_some()).then(|| {
+                    (
+                        change.old.map(|entry| entry.id),
+                        change.new.map(|entry| entry.id),
+                    )
+                })
+            }
+            Source::WorkTree(work) => {
+                if link(work.entry).is_none() && link(work.head).is_none() {
+                    return None;
+                }
+                match work.which {
+                    Uncommitted::Staged => Some((
+                        work.head.map(|entry| entry.id),
+                        work.entry.map(|entry| entry.id),
+                    )),
+                    Uncommitted::Unstaged => Some((work.entry.map(|entry| entry.id), None)),
+                    Uncommitted::Untracked => None,
+                }
+            }
+        }
     }
 
     /// Where an image's sides are: a commit's blobs, or for the work tree, `HEAD`'s and the
@@ -741,6 +776,98 @@ pub(super) fn placeholder(ui: &mut Ui, text: String) {
         .show(ui, |ui| ui.label(muted(ui, text)));
 }
 
+/// A submodule's change: from which commit to which, and the commits that brings (as far as it
+/// is here to tell), with the way to open it.
+fn show_submodule_move(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    file: &mut FileView,
+    sides: (Option<ObjectId>, Option<ObjectId>),
+) {
+    let path = file.path().to_owned();
+    if file.moved.is_idle()
+        && let Some(git) = shared.git
+    {
+        file.moved.request(crate::submodules::read_move(
+            git.clone(),
+            Arc::clone(shared.repository),
+            path.clone(),
+            sides,
+        ));
+    }
+    let palette = shared.palette;
+    // Where it is now, for a change not staged: its HEAD, once read.
+    let now = file.moved.ok_ref().and_then(|moved| moved.to);
+    Frame::new().inner_margin(Margin::same(16)).show(ui, |ui| {
+        let short = |id: Option<ObjectId>| id.map(|id| id.abbreviated(ID_DIGITS).to_string());
+        let headline = match (short(sides.0), short(sides.1)) {
+            (Some(from), None) if file.work().is_some() && now.is_some() => format!(
+                "The submodule {} moved from the commit recorded, {from}, to {} (its HEAD now).",
+                path.to_str_lossy(),
+                short(now).unwrap_or_default()
+            ),
+            (None, Some(to)) => format!("The submodule {} was added, at {to}.", path.to_str_lossy()),
+            (Some(from), None) if file.work().is_none() => {
+                format!("The submodule {} was removed (it was at {from}).", path.to_str_lossy())
+            }
+            (Some(from), None) => format!(
+                "The submodule {} moved from the commit recorded, {from}, to where it is now.",
+                path.to_str_lossy()
+            ),
+            (Some(from), Some(to)) => {
+                format!("The submodule {} moved from {from} to {to}.", path.to_str_lossy())
+            }
+            (None, None) => format!("The submodule {}.", path.to_str_lossy()),
+        };
+        ui.add(Label::new(RichText::new(headline).semibold()).wrap());
+        ui.add(
+            Label::new(muted(
+                ui,
+                "A submodule is another repository: this one records which of its commits to check out, and changing that is all a change here holds.",
+            ))
+            .wrap(),
+        );
+        ui.add_space(8.0);
+        match file.moved.read_as_ref() {
+            None => widgets::working(ui, "Reading its commits…"),
+            Some(Err(problem)) => {
+                let problem = problem.clone();
+                widgets::problem_box(ui, &problem, |_| {});
+            }
+            Some(Ok(moved)) => match &moved.commits {
+                None => {
+                    ui.add(
+                        Label::new(muted(
+                            ui,
+                            "Its commits can't be listed: it isn't set up here, or doesn't have                              them. Set it up (the Submodules menu) to see them.",
+                        ))
+                        .wrap(),
+                    );
+                }
+                Some(commits) if commits.is_empty() => {
+                    ui.label(muted(ui, "No commit of its own: it moved back, or to an older one."));
+                }
+                Some(commits) => {
+                    ui.label(muted(ui, match commits.len() {
+                        1 => "The commit it brings:".to_owned(),
+                        n => format!("The {n} commits it brings, newest first:"),
+                    }));
+                    for (id, subject) in commits {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(id.abbreviated(ID_DIGITS).to_string())
+                                    .monospace()
+                                    .color(palette.muted),
+                            );
+                            ui.add(Label::new(subject.to_str_lossy().as_ref()).truncate());
+                        });
+                    }
+                }
+            },
+        }
+    });
+}
+
 /// An image's sides as textures, made once decoded (egui frees them with the view), and a
 /// checkerboard drawn behind them so transparency shows.
 struct Textures {
@@ -982,6 +1109,10 @@ fn lfs_placeholder(ui: &mut Ui, lfs: LfsChange) -> bool {
 /// What the commit (or the work tree) changed in the file.
 fn show_diff(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut FileView) {
     // (A file in conflict shows the merge editor instead.)
+    if let Some(sides) = file.submodule_move() {
+        show_submodule_move(ui, shared, file, sides);
+        return;
+    }
     let work = file.work().map(|work| work.which);
     let image = is_image(file.path());
     match file.diff.read_as_ref() {

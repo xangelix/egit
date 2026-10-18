@@ -23,6 +23,7 @@ pub(crate) mod repo;
 mod search;
 mod sidebar;
 pub(crate) mod status_bar;
+mod submodules;
 mod tasks;
 mod work;
 

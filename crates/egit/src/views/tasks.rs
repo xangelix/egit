@@ -646,6 +646,7 @@ fn done_text(task: &Task) -> String {
         Task::Undo(undo) => format!("Undid {}.", undo.what),
         Task::Redo(undo) => format!("Redid {}.", undo.what),
         Task::Lfs(lfs) => lfs.done(),
+        Task::Submodules(task) => task.done(),
         _ => "Done.".to_owned(),
     }
 }

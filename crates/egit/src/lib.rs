@@ -37,6 +37,7 @@ mod repo;
 mod search;
 mod settings;
 mod staging;
+mod submodules;
 mod syntax;
 mod tables;
 mod tabs;

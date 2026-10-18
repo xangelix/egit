@@ -622,6 +622,7 @@ impl AppState {
         let mut wait = None;
         for repo in &mut self.repos {
             wait = sooner(wait, repo.follow_changes(git, now));
+            repo.follow_submodules(git);
         }
 
         if let Some(snapshot) = self.user_config.ok_ref() {

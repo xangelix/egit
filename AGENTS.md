@@ -639,8 +639,10 @@ writes paths), never `OsStrExt`.
   - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head, operations, a stopped
     `git am`'s progress, and a bisection's `Bisection`) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
-    lands) and its stash list, worktrees, submodules, and Git LFS (`lfs`: `refresh_lists`, read
-    at once, when refs change, and after each task), its
+    lands) and its stash list, worktrees, submodules and where they stand
+    (`submodule_states`, read again too whenever a new status of the work tree lands:
+    `follow_submodules`), and Git LFS (`lfs`: `refresh_lists`, read at once, when refs change,
+    and after each task), its
     `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph), its
     `Journal` (what to undo and redo; `undo` runs the next as a task, and a commit made notes
     how to take it back),
@@ -862,6 +864,20 @@ writes paths), never `OsStrExt`.
     `Task::Lfs`, run by `lfs::run`, its words (`doing`, `done`: what to do next, "commit
     .gitattributes to share it"). A banner under the top bar where LFS is used but its files
     can't be whole here (`lfs_banner`: why, and "Set up Git LFS here" or "Open Git LFS").
+  - `submodules.rs` — a tab's submodules: `read_states` (nothing run without `.gitmodules`;
+    `submodule_status --recursive`, then, for those elsewhere, `submodule_details`: a
+    `Standing`'s `behind`, those lacking commits recorded, which a pull or switch here moved
+    on, apart from those only past them, someone's work to record); `OutOfStep` (not set up,
+    behind, past, in conflict, addresses out of date by `url_is_stale`, a relative one
+    resolved against `remote.origin.url` as git resolves it; `any` leaves out those only
+    past: no fault) and its words; `read_details` (a selected one's inside, and its commits
+    the commit recorded lacks) and `read_move` (a gitlink's change: the commits it brings,
+    none known when it isn't here); `SubmoduleTask` (update to the commits recorded or the
+    latest, sync, `Mend`: sync then update `--init --recursive`, deinit, add, remove, change
+    an address or a branch, `submodule.recurse` on or off), `Task::Submodules`, its words
+    (what to do next: "record the new commits here", "commit .gitmodules"). A banner under
+    the top bar where any is out of step (`submodules_banner`: what, "Mend everything",
+    "Show them", dismissed until what it says changes).
   - `forge.rs` — `RepoForge`, a tab's forge side: `configured` (whenever new configuration
     lands) works out in a job which remotes are GitHub repositories or GitLab projects
     (`remote_urls`, as git rewrites them, else as `remote.<name>.url` writes them; the hosts
@@ -899,8 +915,10 @@ writes paths), never `OsStrExt`.
     the panel tone) around the commit table on the window's background. The top bar: Undo and
     Redo, then the views and menus as quiet tools
     (Search, Reflog, Stash, Patches, LFS where the repository keeps files in it (its state;
-    pull, fetch, check out, push to each remote, prune; its page), and Repository: its
-    Overview, Settings, Git LFS's page, and reading it again), their words beside their icons where the bar has room for all it shows
+    pull, fetch, check out, push to each remote, prune; its page), Submodules where it has
+    some (how they stand; mend everything, update all to the commits recorded or their
+    branches' latest, sync addresses; their page), and Repository: its Overview, Settings,
+    the submodules' and Git LFS's pages, and reading it again), their words beside their icons where the bar has room for all it shows
     (`Look::Full`), their icons alone elsewhere (`Look::Compact`, their words on hover), the
     commit count (a spinner beside it while the history is read), why the work tree couldn't
     be read (when it couldn't), the requests; at its right `views/tasks.rs`'s bar (drawn first,
@@ -963,7 +981,9 @@ writes paths), never `OsStrExt`.
     fit (never up) over a checkerboard (a 32-texel patch laid as quads: transparency shows),
     read the first time (`read_pictures`, a job: a commit's blobs, or for the work tree
     `HEAD`'s, the index's, and the file) and kept as textures (`Textures`) until the status
-    changes. A `FileView` of a work tree's
+    changes. A submodule's change (a gitlink either side) says where it moved from and to
+    (its `HEAD` now, for a change not staged) and lists the commits that brings
+    (`read_move`), in place of git's "Subproject commit" lines. A `FileView` of a work tree's
     file (`WorkFile`: a path, which `Uncommitted` changes, the index entry its diff was read
     against) reads its diff again whenever the status changes, and has a second bar: stage
     or unstage the file, the lines selected in its unified diff, or their hunks. A file in
@@ -1134,6 +1154,20 @@ writes paths), never `OsStrExt`.
     not downloaded or pointers; each here, downloaded, or a pointer, with its size; drawn as
     far as they show), and the locks (read when asked: they need a server; each to unlock or
     force; a path to lock). It reads the whole state itself, again when the tab's lands anew.
+    `views/submodules.rs` — `SubmodulesView`, the submodules' page in the commit table's
+    place (their menu, the Repository menu's "Submodules…", the banner, the sidebar's section
+    menu; Escape or History goes back): what submodules are and how they stand altogether
+    (mend everything, update all either way, sync addresses, "Update them on every switch and
+    pull": `submodule.recurse`), each one (nested ones indented under theirs; its state's
+    icon, word, and colour, its commit and describe; rows named with their state), the one
+    selected (what its state means and what to do about it; name, addresses (the one set up
+    here when out of date), the branch it follows, the commits recorded and checked out, on a
+    branch or detached "as submodules usually are", ahead and behind, the commits between;
+    set it up or update it to the commit recorded, to its branch's latest, record its commit
+    here (stage its path), sync its address, open it in a tab, change its address or branch
+    in place, forget it here, remove it after a confirmation; in a `Ui` of its own id, as
+    what is above comes and goes; a nested one's: open it, its parent changes it), and adding
+    one (address, folder named from it as git names it, branch).
     `views/reflog.rs` — `ReflogView`, a ref's reflog in the commit table's place (the top
     bar's Reflog: `HEAD`'s; a branch badge's "Show <name>'s reflog"): read in a job (10,000
     moves at most), read again when the history is (`follow`) or `HEAD` moves, the selection
@@ -1352,6 +1386,9 @@ writes paths), never `OsStrExt`.
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
     series saved. `src/tests/people.rs` drives co-authors: picked from the recent authors and
     typed, committed as trailers, shown in the details, taken back into the form to amend.
+    `src/tests/submodules.rs` meets a fresh clone's submodule not set up (the banner mends
+    it), updates it to its branch's latest from its page (the commit it brings shown), records
+    it, shows its change in the work tree; and adds one from the page.
     `src/tests/lfs.rs` meets Git LFS not set up (the banner sets it up), its menu and page,
     a file listed, a pattern tracked and untracked (skipped without git-lfs unless
     `EGIT_REQUIRE_LFS`).

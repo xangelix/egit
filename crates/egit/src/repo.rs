@@ -65,6 +65,10 @@ pub(crate) struct RepoTab {
     pub(crate) submodules: Bind<Arc<[Submodule]>, Problem>,
     /// Its Git LFS: installed, set up, the patterns it tracks.
     pub(crate) lfs: Bind<Arc<crate::lfs::LfsState>, Problem>,
+    /// Where its submodules stand, nested ones too.
+    pub(crate) submodule_states: Bind<Arc<crate::submodules::Standing>, Problem>,
+    /// The work tree's status they were last read after (its address).
+    submodules_seen: Option<usize>,
     pub(crate) config_table: SnapshotTable,
     pub(crate) history: HistoryState,
     pub(crate) history_view: HistoryView,
@@ -125,6 +129,8 @@ impl RepoTab {
             worktrees: Bind::new(true),
             submodules: Bind::new(true),
             lfs: Bind::new(true),
+            submodule_states: Bind::new(true),
+            submodules_seen: None,
             config_table: SnapshotTable::new(format!("repo-config-{id}")),
             writing_commit_graph: Bind::new(true),
             staging: Bind::new(true),
@@ -476,9 +482,37 @@ impl RepoTab {
                 .map_err(|error| Problem::git("The submodules couldn't be read", &error))
         }));
         let (git_, repository) = read(&self.repository);
+        self.submodule_states
+            .request(crate::submodules::read_states(git_, repository));
+        let (git_, repository) = read(&self.repository);
         self.lfs.request(jobs::blocking(move || {
             crate::lfs::read_lfs(&git_, &repository, crate::lfs::Reading::WhereUsed).map(Arc::new)
         }));
+    }
+
+    /// Reads where the submodules stand again whenever a new status of the work tree lands (a
+    /// pointer staged, a commit made in one, a checkout in one), where there are any.
+    pub(crate) fn follow_submodules(&mut self, git: &Git) {
+        let status = self
+            .work_tree
+            .status()
+            .and_then(Result::ok)
+            .map(|status| Arc::as_ptr(status).addr());
+        if status == self.submodules_seen {
+            return;
+        }
+        self.submodules_seen = status;
+        let any = self
+            .submodule_states
+            .ok_ref()
+            .is_some_and(|standing| !standing.states.is_empty());
+        if any && !self.submodule_states.is_pending() {
+            self.submodule_states
+                .request(crate::submodules::read_states(
+                    git.clone(),
+                    Arc::clone(&self.repository),
+                ));
+        }
     }
 
     /// Reads where `HEAD` points and what is in progress.

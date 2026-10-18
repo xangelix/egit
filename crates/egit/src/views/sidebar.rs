@@ -73,6 +73,8 @@ pub(crate) struct Lists<'a> {
     pub(crate) submodules: Option<Result<&'a Arc<[Submodule]>, &'a Problem>>,
     /// Its Git LFS, once read.
     pub(crate) lfs: Option<Result<&'a Arc<crate::lfs::LfsState>, &'a Problem>>,
+    /// Where its submodules stand, nested ones too, once read.
+    pub(crate) submodule_states: Option<Result<&'a Arc<crate::submodules::Standing>, &'a Problem>>,
     pub(crate) config: Option<&'a Arc<ConfigSnapshot>>,
 }
 
@@ -198,6 +200,8 @@ pub(super) enum SidebarEvent {
     Show(ObjectId),
     /// Open this folder's repository in a tab.
     Open(PathBuf),
+    /// Show the submodules' page.
+    Submodules,
 }
 
 /// The filter: what is typed, and what it asks next frame.
@@ -1338,8 +1342,16 @@ fn section_menu(ui: &mut Ui, drawing: &Drawing<'_>, section: Section) -> Option<
             }
         }
         Section::Submodules => {
+            if actions::item(ui, (icon::FIRST_AID_KIT, "Mend everything"), idle) {
+                ask(Ask::Task(Task::Submodules(
+                    crate::submodules::SubmoduleTask::Mend,
+                )));
+            }
             if actions::item(ui, (icon::ARROWS_CLOCKWISE, "Update every submodule"), idle) {
                 ask(Ask::Task(Task::UpdateSubmodules(Vec::new())));
+            }
+            if actions::item(ui, (icon::PACKAGE, "Each one, and adding one…"), Ok(())) {
+                event = Some(SidebarEvent::Submodules);
             }
         }
         _ => {
@@ -1868,10 +1880,22 @@ fn submodule_row(
     let (rect, response) = row_area(ui, id, &path, selected, 0.0);
     let palette = drawing.palette;
     let recorded = submodule.recorded.abbreviated(ID_DIGITS).to_string();
-    let state = if submodule.initialized {
-        recorded.as_str()
-    } else {
-        "not set up"
+    let standing = drawing
+        .lists
+        .submodule_states
+        .and_then(Result::ok)
+        .and_then(|standing| {
+            standing
+                .states
+                .iter()
+                .find(|state| state.path == submodule.path)
+        });
+    let state = match standing.map(|state| state.checkout) {
+        Some(egit_git::Checkout::Elsewhere) => "at another commit",
+        Some(egit_git::Checkout::Conflict) => "in conflict",
+        Some(egit_git::Checkout::NotInitialized) => "not set up",
+        _ if !submodule.initialized => "not set up",
+        _ => recorded.as_str(),
     };
     paint_row(
         ui,

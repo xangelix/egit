@@ -16,5 +16,6 @@ mod screens;
 mod scrolling;
 mod search;
 mod sidebar;
+mod submodules;
 mod tree;
 mod undo;

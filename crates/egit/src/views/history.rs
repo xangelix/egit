@@ -39,6 +39,7 @@ use super::rebase::{self, RebaseEvent, RebaseView};
 use super::reflog::{self, ReflogEvent, ReflogView};
 use super::search::{self, HistorySearch};
 use super::sidebar::{self, Lists, Sidebar, SidebarEvent};
+use super::submodules::SubmodulesEvent;
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::Action;
@@ -203,6 +204,8 @@ pub(crate) struct HistoryView {
     work_counts: WorkCounts,
     /// A ref dropped onto another, while what it can do is asked.
     dropped: Option<Dropped>,
+    /// What the submodules' banner said when dismissed: it shows again when that changes.
+    submodules_dismissed: Option<crate::submodules::OutOfStep>,
 }
 
 /// A ref dropped onto another, where.
@@ -267,6 +270,7 @@ enum Tool {
     Patch(PatchView),
     Reflog(Box<ReflogView>),
     Lfs(Box<super::lfs::LfsView>),
+    Submodules(Box<super::submodules::SubmodulesView>),
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -363,6 +367,7 @@ impl HistoryView {
             keep_row: false,
             work_counts: WorkCounts::default(),
             dropped: None,
+            submodules_dismissed: None,
         }
     }
 
@@ -587,6 +592,12 @@ impl HistoryView {
         self.tool = Some(Tool::Lfs(Box::default()));
     }
 
+    /// Shows the submodules' page in the commit table's place.
+    fn show_submodules(&mut self) {
+        self.file = None;
+        self.tool = Some(Tool::Submodules(Box::default()));
+    }
+
     /// Shows the sidebar or hides it.
     pub(crate) const fn show_sidebar(&mut self, open: bool) {
         self.sidebar.open = open;
@@ -772,6 +783,8 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         home,
         journal,
         lfs: lists.lfs.and_then(Result::ok),
+        submodules: lists.submodules.and_then(Result::ok),
+        submodule_states: lists.submodule_states.and_then(Result::ok),
     };
     // Before the first commit, the work tree is all there is to look at.
     if history.shown.rows() == 0 && !history.shown.is_loading() {
@@ -943,6 +956,9 @@ fn bar_panel(
             if lfs_banner(ui, shared, pane) {
                 view.show_lfs();
             }
+            if submodules_banner(ui, shared, view, pane) {
+                view.show_submodules();
+            }
             let brought = tasks::brought(ui, pane);
             match tasks::banner(ui, &mut view.tasks, pane).or(brought) {
                 Some(TaskEvent::WorkTree) => view.select_work(),
@@ -955,6 +971,70 @@ fn bar_panel(
                 None => {}
             }
         });
+}
+
+/// Where submodules are out of step (not set up, at other commits than recorded, in conflict,
+/// with stale addresses), a banner saying so and mending them in a click, until dismissed for
+/// what it said; returns whether their page was asked.
+fn submodules_banner(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    view: &mut HistoryView,
+    pane: &mut TaskPane<'_>,
+) -> bool {
+    let Some(standing) = shared
+        .submodule_states
+        .filter(|standing| !standing.states.is_empty())
+    else {
+        return false;
+    };
+    let modules = shared.submodules.map_or(&[][..], |modules| &**modules);
+    let out = crate::submodules::OutOfStep::of(modules, standing, shared.config);
+    if !out.any()
+        || view.submodules_dismissed == Some(out)
+        || matches!(view.tool, Some(Tool::Submodules(_)))
+    {
+        return false;
+    }
+    let palette = shared.palette;
+    let mut open_page = false;
+    ui.scope_builder(
+        UiBuilder::new().id(Id::new(("submodules-banner", shared.id))),
+        |ui| {
+            ui.add_space(4.0);
+            Frame::new()
+                .fill(palette.warn.gamma_multiply(0.10))
+                .stroke(Stroke::new(1.0, palette.warn.gamma_multiply(0.7)))
+                .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
+                .inner_margin(Margin::symmetric(12, 6))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let headline = format!("{}  Submodules: {}", icon::PACKAGE, out.words());
+                        ui.add(
+                            Label::new(RichText::new(headline).color(palette.warn).semibold())
+                                .truncate(),
+                        );
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if widgets::icon_tool(ui, true, icon::X, "Dismiss").clicked() {
+                                view.submodules_dismissed = Some(out);
+                            }
+                            open_page = widgets::secondary(ui, true, "Show them").clicked();
+                            if widgets::primary(ui, !shared.busy, "Mend everything")
+                            .on_hover_text(
+                                "Sync their addresses, then set up every one and bring it to the \
+                                 commit recorded, nested ones too",
+                            )
+                            .clicked()
+                        {
+                            pane.start(Task::Submodules(crate::submodules::SubmoduleTask::Mend));
+                        }
+                        });
+                    });
+                });
+        },
+    );
+    open_page
 }
 
 /// Where the repository keeps files in Git LFS but they can't be whole here (git-lfs missing,
@@ -1193,6 +1273,7 @@ fn side_panel(
             view.show_commit(&history.shown, commit);
         }
         Some(SidebarEvent::Open(path)) => actions.push(Action::Open(path)),
+        Some(SidebarEvent::Submodules) => view.show_submodules(),
         None => {}
     }
 }
@@ -1229,6 +1310,9 @@ pub(super) struct Shared<'a> {
     journal: &'a Journal,
     /// Its Git LFS, once read.
     pub(super) lfs: Option<&'a Arc<crate::lfs::LfsState>>,
+    /// Its submodules, and where they stand (nested ones too), once read.
+    pub(super) submodules: Option<&'a Arc<[egit_git::Submodule]>>,
+    pub(super) submodule_states: Option<&'a Arc<crate::submodules::Standing>>,
 }
 
 impl Shared<'_> {
@@ -1330,14 +1414,20 @@ fn top_bar(
         ((icon::GIT_DIFF, "Patches"), true),
         ((icon::INFO, "Repository"), true),
     ];
-    // Git LFS's menu, where the repository keeps files in it.
+    // Git LFS's menu, where the repository keeps files in it; the submodules', where it has
+    // some.
     let lfs = shared
         .lfs
         .is_some_and(|lfs| lfs.used())
         .then_some(((icon::HARD_DRIVES, "LFS"), true));
+    let modules = shared
+        .submodule_states
+        .is_some_and(|standing| !standing.states.is_empty())
+        .then_some(((icon::PACKAGE, "Submodules"), true));
     let words: f32 = tools
         .iter()
         .chain(lfs.as_ref())
+        .chain(modules.as_ref())
         .map(|&(tool, menu)| {
             widgets::tool_width(ui, tool, Look::Full, menu)
                 - widgets::tool_width(ui, tool, Look::Compact, menu)
@@ -1457,8 +1547,11 @@ fn left_bar(
         carry_out(asked, shared, view, task_pane.actions);
     }
     lfs_menu(ui, shared, view, look, task_pane.actions);
-    if repository_menu(ui, shared, look, task_pane.actions) {
-        view.show_lfs();
+    submodules_menu(ui, shared, view, look, task_pane.actions);
+    match repository_menu(ui, shared, look, task_pane.actions) {
+        Some(Page::Lfs) => view.show_lfs(),
+        Some(Page::Submodules) => view.show_submodules(),
+        None => {}
     }
     // What comes and goes follows the buttons: ids are counted in order, and a click
     // pressed on one id and released on another is lost.
@@ -1486,15 +1579,22 @@ fn left_bar(
 /// The top bar's spinner's size, while the history is read.
 const SPINNER: f32 = 16.0;
 
+/// A page the Repository menu shows in the commit table's place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Page {
+    Lfs,
+    Submodules,
+}
+
 /// The repository's menu: its overview and settings (each a page in place of the history), Git
-/// LFS's page, and reading it all again; returns whether Git LFS's page was asked for.
+/// LFS's and the submodules' pages, and reading it all again; returns the page asked for.
 fn repository_menu(
     ui: &mut Ui,
     shared: &Shared<'_>,
     look: Look,
     actions: &mut Vec<Action>,
-) -> bool {
-    let mut lfs = false;
+) -> Option<Page> {
+    let mut page = None;
     widgets::tool_menu(ui, icon::INFO, "Repository", look, |ui| {
         ui.set_min_width(220.0);
         for (entry, panel) in [
@@ -1508,13 +1608,85 @@ fn repository_menu(
                 actions.push(Action::ShowPanel(shared.id, panel));
             }
         }
-        lfs = actions::item(ui, (icon::HARD_DRIVES, "Git LFS"), Ok(()));
+        if actions::item(ui, (icon::PACKAGE, "Submodules…"), Ok(())) {
+            page = Some(Page::Submodules);
+        }
+        if actions::item(ui, (icon::HARD_DRIVES, "Git LFS"), Ok(())) {
+            page = Some(Page::Lfs);
+        }
         ui.separator();
         if actions::shortcut_item(ui, (icon::ARROWS_CLOCKWISE, "Read it again"), "⌘R") {
             actions.push(Action::Refresh(shared.id));
         }
     });
-    lfs
+    page
+}
+
+/// The submodules' menu, where the repository has some: how they stand, mending and updating
+/// them all, and their page.
+fn submodules_menu(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    view: &mut HistoryView,
+    look: Look,
+    actions: &mut Vec<Action>,
+) {
+    let Some(standing) = shared
+        .submodule_states
+        .filter(|standing| !standing.states.is_empty())
+    else {
+        return;
+    };
+    let modules = shared.submodules.map_or(&[][..], |modules| &**modules);
+    let out = crate::submodules::OutOfStep::of(modules, standing, shared.config);
+    let mut page = false;
+    widgets::tool_menu(ui, icon::PACKAGE, "Submodules", look, |ui| {
+        ui.set_min_width(280.0);
+        let header = if out.any() {
+            out.words()
+        } else {
+            "All set up, at the commits recorded".to_owned()
+        };
+        actions::menu_header(ui, &header);
+        let idle = if shared.busy {
+            Err("Another task is running")
+        } else {
+            Ok(())
+        };
+        let mut task = |task| {
+            actions.push(Action::Task(shared.id, Task::Submodules(task)));
+        };
+        if actions::item(ui, (icon::FIRST_AID_KIT, "Mend everything"), idle) {
+            task(crate::submodules::SubmoduleTask::Mend);
+        }
+        for (glyph, label, to) in [
+            (
+                icon::ARROWS_CLOCKWISE,
+                "Update all to the commits recorded",
+                egit_git::UpdateTo::Recorded,
+            ),
+            (
+                icon::ARROW_FAT_LINES_UP,
+                "Update all to their branches' latest",
+                egit_git::UpdateTo::Latest,
+            ),
+        ] {
+            if actions::item(ui, (glyph, label), idle) {
+                task(crate::submodules::SubmoduleTask::Update {
+                    paths: Vec::new(),
+                    to,
+                });
+            }
+        }
+        if actions::item(ui, (icon::LINK, "Sync addresses"), idle) {
+            task(crate::submodules::SubmoduleTask::Sync(Vec::new()));
+        }
+        ui.separator();
+        page = actions::item(ui, (icon::PACKAGE, "Each one, and adding one…"), Ok(()));
+    });
+    if page {
+        view.show_submodules();
+    }
 }
 
 /// Git LFS's menu, where the repository keeps files in it: its state, moving its files, and its
@@ -1942,6 +2114,8 @@ fn tool(
             }
             None => None,
         },
+        Some(Tool::Submodules(page)) => super::submodules::show(ui, shared, page)
+            .and_then(|event| submodules_event(event, shared, actions)),
         Some(Tool::Lfs(page)) => match super::lfs::show(ui, shared, shared.lfs, page) {
             Some(LfsEvent::Close) => Some(BlameEvent::Close),
             Some(LfsEvent::Task(task)) => {
@@ -1992,6 +2166,28 @@ fn tool(
         }
         None => {}
     }
+}
+
+/// Does what the submodules' page asked: its tasks, a tab opened, a submodule's commit
+/// recorded; returns whether it closes.
+fn submodules_event(
+    event: SubmodulesEvent,
+    shared: &Shared<'_>,
+    actions: &mut Vec<Action>,
+) -> Option<BlameEvent> {
+    match event {
+        SubmodulesEvent::Close => return Some(BlameEvent::Close),
+        SubmodulesEvent::Task(task) => actions.push(Action::Task(shared.id, task)),
+        SubmodulesEvent::Open(folder) => actions.push(Action::Open(folder)),
+        SubmodulesEvent::Record(path) => actions.push(Action::Stage(
+            shared.id,
+            crate::staging::StageRequest::Files {
+                paths: vec![path],
+                direction: egit_git::Direction::Stage,
+            },
+        )),
+    }
+    None
 }
 
 /// Does what a menu asked: starts its task, asks its dialog's question first, or opens the
