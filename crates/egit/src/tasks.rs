@@ -142,6 +142,8 @@ pub(crate) enum Task {
     },
     /// Throw changes not staged away: whole files, or some lines of one.
     Discard(crate::discarding::Discard),
+    /// Ignore a file git doesn't track (or its extension, or folder).
+    Ignore(crate::ignoring::Ignore),
     /// Export commits picked together (the newest first): as patches, their changes as one
     /// patch, or a changelog.
     Export {
@@ -424,6 +426,7 @@ impl Task {
             Self::Reword { .. } => "Rewording",
             Self::SignCommits { .. } => "Signing the commits",
             Self::Discard(_) => "Discarding",
+            Self::Ignore(_) => "Ignoring",
             Self::Export { how, .. } => how.doing(),
             Self::CherryPick(_) => "Cherry-picking",
             Self::Revert(_) => "Reverting",
@@ -511,6 +514,12 @@ pub(crate) enum Outcome {
     /// Changes discarded: each file as it was and as it is now, kept for Undo (`None`: too
     /// many, or too large, to keep).
     Discarded(Option<Vec<egit_git::DiscardedFile>>),
+    /// A pattern added to an ignore file (or there already), and whether git still lists the
+    /// path (a later `!` pattern bringing it back).
+    Ignored {
+        ignored: egit_git::Ignored,
+        listed: bool,
+    },
     /// Commits exported: how many patches (or changelog lines) were made, and the text to copy,
     /// when it is copied.
     Exported {
@@ -847,6 +856,7 @@ fn run(
         | Task::Reword { .. } => rewrite(git, repository, task, cancel),
         Task::SignCommits { commits } => sign(git, repository, commits, progress, cancel),
         Task::Discard(discard) => crate::discarding::run(git, repository, discard, cancel),
+        Task::Ignore(ignore) => crate::ignoring::run(git, repository, ignore, cancel),
         Task::Export { commits, how } => {
             crate::exporting::run(git, repository, commits, how, cancel)
         }

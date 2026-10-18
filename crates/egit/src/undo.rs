@@ -12,10 +12,11 @@ use std::sync::Arc;
 
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
-    CancelToken, DiscardError, DiscardSide, DiscardedFile, Forwarded, Git, GitError, Integrated,
-    ObjectId, Pulled, Repository, ResetMode, Stash, SwitchError, SwitchTo, create_branch,
-    create_ref, delete_branch, delete_ref, move_branch, put_back, ref_target, rename_branch, reset,
-    stash_apply, stash_drop, stash_push, stash_store, stashes, switch,
+    CancelToken, DiscardError, DiscardSide, DiscardedFile, Forwarded, Git, GitError, IgnoreError,
+    Ignored, Integrated, ObjectId, Pulled, Repository, ResetMode, Stash, SwitchError, SwitchTo,
+    create_branch, create_ref, delete_branch, delete_ref, ignore_again, move_branch, put_back,
+    ref_target, rename_branch, reset, stash_apply, stash_drop, stash_push, stash_store, stashes,
+    switch, unignore,
 };
 use parking_lot::Mutex;
 
@@ -115,6 +116,8 @@ pub(crate) enum Change {
     StashDropped { id: ObjectId, message: String },
     /// Changes not staged discarded: each file as it was, and as the discard left it.
     Discarded(Vec<DiscardedFile>),
+    /// A pattern added to an ignore file: what was added at its end.
+    Ignored(Ignored),
 }
 
 /// An action that can be taken back: what it was, in words, and its changes, in the order made.
@@ -377,6 +380,18 @@ fn reverse(
         Change::Discarded(files) => {
             put_back(git, repository, files, DiscardSide::Before, cancel).map_err(discard_halt)
         }
+        Change::Ignored(ignored) => unignore(ignored).map_err(ignore_halt),
+    }
+}
+
+/// Why patterns couldn't be taken back (or added again).
+fn ignore_halt(error: IgnoreError) -> Halt {
+    match error {
+        IgnoreError::Changed(file) => moved_on(format!("{} changed since.", file.display())),
+        error => Halt {
+            moved_on: false,
+            detail: format!("{error}."),
+        },
     }
 }
 
@@ -469,6 +484,11 @@ fn redo(
         }
         Change::Discarded(files) => {
             put_back(git, repository, files, DiscardSide::After, cancel).map_err(discard_halt)?;
+        }
+        Change::Ignored(ignored) => {
+            return ignore_again(ignored)
+                .map(Change::Ignored)
+                .map_err(ignore_halt);
         }
     }
     Ok(change.clone())
@@ -686,6 +706,16 @@ pub(crate) fn noted(
                 mode,
             });
         }
+        Task::Ignore(ignore) => {
+            let Outcome::Ignored { ignored, .. } = outcome else {
+                return None;
+            };
+            if ignored.added.is_empty() {
+                return None;
+            }
+            what = format!("ignoring {}", ignore.words());
+            changes.push(Change::Ignored(ignored.clone()));
+        }
         Task::Discard(discard) => {
             let Outcome::Discarded(Some(files)) = outcome else {
                 return None;
@@ -801,6 +831,7 @@ const fn went_through(outcome: &Outcome) -> bool {
             | Outcome::Stashed(true)
             | Outcome::Signed { .. }
             | Outcome::Discarded(Some(_))
+            | Outcome::Ignored { .. }
     )
 }
 

@@ -31,6 +31,7 @@ mod format;
 mod grid;
 mod help;
 mod history;
+mod ignoring;
 mod jobs;
 mod lfs;
 mod merge;

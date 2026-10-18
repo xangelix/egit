@@ -3632,6 +3632,9 @@ fn work_details(
         Some(WorkEvent::AskDiscard(discard)) => {
             view.tasks.dialog = Some(super::dialogs::Dialog::Discard(discard));
         }
+        Some(WorkEvent::Ignore(ignore)) => {
+            actions.push(Action::Task(shared.id, crate::tasks::Task::Ignore(ignore)));
+        }
         None => {}
     }
 }

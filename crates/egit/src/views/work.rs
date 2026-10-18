@@ -26,6 +26,7 @@ use super::file::WorkFile;
 use crate::discarding::Discard;
 use crate::format::count;
 use crate::history::{Objects, read_message};
+use crate::ignoring::{Ignore, IgnoreWhat, extension, folder_of};
 use crate::preferences::Preferences;
 use crate::problem::Problem;
 use crate::repo::RepoId;
@@ -52,6 +53,8 @@ pub(super) enum WorkEvent {
     Preferences(Preferences),
     /// Ask whether to discard whole files' changes not staged.
     AskDiscard(Discard),
+    /// Ignore a file git doesn't track (or its extension, or folder).
+    Ignore(Ignore),
 }
 
 /// What the commit form needs of the repository.
@@ -185,11 +188,33 @@ struct List {
 }
 
 /// A row's menu: the list's files when it opened (a status read since doesn't change what it
-/// names), and the file or folder right-clicked.
+/// names), the file or folder right-clicked, and whether git tracks none of it (which then
+/// can be ignored).
 #[derive(Debug)]
 struct RowMenu {
     files: Arc<ListFiles>,
     target: TreeMenu,
+    untracked: bool,
+}
+
+impl RowMenu {
+    /// The menu of `target` among `files`.
+    fn new(files: &Arc<ListFiles>, target: TreeMenu) -> Self {
+        let entries = match &target {
+            TreeMenu::File(entry) => std::slice::from_ref(entry),
+            TreeMenu::Folder { entries, .. } => entries.as_slice(),
+        };
+        let untracked = entries.iter().all(|entry| {
+            files
+                .entry(*entry)
+                .is_some_and(|entry| entry.kind == EntryKind::Untracked)
+        });
+        Self {
+            files: Arc::clone(files),
+            target,
+            untracked,
+        }
+    }
 }
 
 /// A list's files: entries of a status (indices into it), shared with the job arranging them
@@ -967,6 +992,16 @@ fn row_menu_items(
         if danger_item(ui, (icon::TRASH, words), allowed) {
             event = crate::discarding::of_entries(each()).map(WorkEvent::AskDiscard);
         }
+        if menu.untracked {
+            let allowed = if task {
+                Err("Another task is running")
+            } else {
+                Ok(())
+            };
+            if let Some(ignore) = ignore_menu(ui, path.as_bstr(), folder, allowed) {
+                event = Some(WorkEvent::Ignore(ignore));
+            }
+        }
     }
     ui.separator();
     if !folder
@@ -991,6 +1026,56 @@ fn row_menu_items(
         }
     }
     event
+}
+
+/// The Ignore submenu of a file or folder git doesn't track: the file, every file of its
+/// extension, or its folder (or the folder), in `.gitignore` or `info/exclude`.
+fn ignore_menu(
+    ui: &mut Ui,
+    path: &BStr,
+    folder: bool,
+    allowed: Result<(), &str>,
+) -> Option<Ignore> {
+    use super::actions::{item, menu_header, submenu};
+    let mut offers = Vec::with_capacity(3);
+    if folder {
+        offers.push((
+            IgnoreWhat::Folder,
+            path,
+            icon::FOLDER_SIMPLE,
+            "This folder".to_owned(),
+        ));
+    } else {
+        offers.push((IgnoreWhat::File, path, icon::FILE, "This file".to_owned()));
+        if let Some(extension) = extension(path) {
+            let words = format!("Every .{} file", extension.to_str_lossy());
+            offers.push((IgnoreWhat::Extension, path, icon::ASTERISK, words));
+        }
+        if let Some(parent) = folder_of(path) {
+            let words = format!("Its folder, {}/", parent.to_str_lossy());
+            offers.push((IgnoreWhat::Folder, parent, icon::FOLDER_SIMPLE, words));
+        }
+    }
+    let mut chosen = None;
+    submenu(ui, (icon::EYE_SLASH, "Ignore"), |ui| {
+        let places = [
+            (egit_git::IgnoreIn::Shared, "In .gitignore, shared"),
+            (egit_git::IgnoreIn::Private, "In info/exclude, only here"),
+        ];
+        for (place, header) in places {
+            menu_header(ui, header);
+            for (what, path, glyph, words) in &offers {
+                if item(ui, (glyph, words), allowed) {
+                    chosen = Some(Ignore {
+                        path: BString::from(*path),
+                        what: *what,
+                        place,
+                    });
+                }
+            }
+        }
+    });
+    chosen
 }
 
 /// A list's files as a tree of their folders, a button on each file and folder.
@@ -1034,10 +1119,7 @@ fn tree_ui(
         })
     });
     if let Some(target) = shown.menu {
-        list.menu = Some(RowMenu {
-            files: Arc::clone(files),
-            target,
-        });
+        list.menu = Some(RowMenu::new(files, target));
         list.open_menu = true;
     }
     if let Some(row) = shown.opened
@@ -1100,10 +1182,7 @@ fn table_ui(
                 .iter()
                 .find(|event| event.kind == RowEventKind::SecondaryClicked)
             {
-                list.menu = Some(RowMenu {
-                    files: Arc::clone(files),
-                    target: TreeMenu::File(right.row_index),
-                });
+                list.menu = Some(RowMenu::new(files, TreeMenu::File(right.row_index)));
                 list.open_menu = true;
             }
         }

@@ -31,6 +31,7 @@ mod forward;
 mod git;
 mod history;
 mod hooks;
+mod ignore;
 mod integrate;
 mod lfs;
 mod lines;
@@ -111,6 +112,9 @@ pub use history::{
     write_commit_graph,
 };
 pub use hooks::{Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
+pub use ignore::{
+    IgnoreError, IgnoreIn, Ignored, extension_pattern, ignore, ignore_again, path_pattern, unignore,
+};
 pub use integrate::{
     FastForward, Integrated, ResetMode, cherry_pick, merge, rebase, reset, revert,
 };

@@ -122,8 +122,10 @@ writes paths), never `OsStrExt`.
   process through gitoxide (references, the walk's tips, objects), each only where it gives
   git's answers (checked against git's in its tests) and was measured faster; gix never
   writes, and a repository it wouldn't read as git does is left to git. Never read or write
-  files under `.git` directly, except to watch them and to read the few state files git
-  documents (`MERGE_HEAD`, `rebase-merge/`, …). No libgit2 (`deny.toml` bans it).
+  files under `.git` directly, except to watch them, to read the few state files git
+  documents (`MERGE_HEAD`, `rebase-merge/`, …), and to add ignore patterns to `info/exclude`
+  (found by `rev-parse --git-path`), which gitignore(5) documents for people to edit. No
+  libgit2 (`deny.toml` bans it).
 - Machine-readable output only: `-z`, `--porcelain`, explicit `--format`s, and `-c` overrides
   for any setting that changes a format the parser reads.
 - Reads pass `--no-optional-locks`, so a background refresh never takes `index.lock` from the
@@ -294,6 +296,17 @@ writes paths), never `OsStrExt`.
     `restore --staged`, works before the first commit) of whole files: paths on standard
     input (`--pathspec-from-file`, NUL-separated) as literal pathspecs; no paths do nothing
     (`reset` would otherwise unstage everything).
+  - `ignore.rs` — ignoring files git doesn't track: `path_pattern` (anchored at the top, a
+    folder's ending with `/`) and `extension_pattern` (`*.log`), each escaping what git would
+    read as a glob (`*`, `?`, `[`, `\`) and trailing spaces, a line break refused; `ignore`
+    appends those not held already to the top `.gitignore` (`IgnoreIn::Shared`) or
+    `info/exclude` (`Private`: `rev-parse --path-format=absolute --git-path`), in the file's
+    own line endings, after a newline the file lacked; `Ignored` (the file, what was added,
+    whether it was made) for `unignore` (its end cut off, the file removed if made for it;
+    `IgnoreError::Changed` when it no longer ends so) and `ignore_again`. `tests/ignore.rs`:
+    names with glob characters, `#`, `!`, trailing spaces, a backslash, each ignored alone
+    while a look-alike stays listed (by `git status`); an extension and a folder in a CRLF
+    `.gitignore`; taken back, refused once changed, a file made for them removed.
   - `discard.rs` — discarding changes not staged. `discard_files`: tracked files back to what
     the index holds (`restore --worktree`, literal paths on standard input), untracked ones
     removed (`clean --force`, 16 KiB of paths a command); `discard_lines`: the lines a diff's
@@ -990,6 +1003,11 @@ writes paths), never `OsStrExt`.
     made in the `Progress`; `Outcome::Signed`: made, asked for, whether any was pushed),
     undone as any task moving `HEAD` is. `Discard` throws changes not staged away
     (`discarding.rs`; `Outcome::Discarded`, the files kept for Undo, or none).
+  - `ignoring.rs` — `Ignore`: a path and `IgnoreWhat` (the file, every file of its
+    `extension`, or a folder: `folder_of`) and where (`IgnoreIn`), its words ("every .log
+    file"), and `run`: the pattern added (`Outcome::Ignored`), then `ignored_paths` asking git
+    whether the path is ignored now (a later `!` pattern may bring it back: said so). Undone
+    as `Change::Ignored` (`unignore`, `ignore_again`).
   - `discarding.rs` — `Discard`: whole files (tracked back to what the index holds, untracked
     deleted) or `DiscardLines` (a path, its diff shared, the lines picked, the index's entry,
     whether whole hunks), its words ("a hunk of src/main.rs", "the changes to 3 files"), and
@@ -1214,7 +1232,10 @@ writes paths), never `OsStrExt`.
     src", every file it holds), a file clicked opened in the `FileView`, a right click opening
     its row's menu (an `egui::Popup` at the pointer, over the list's files as they were then:
     stage or unstage it or the folder, "Discard changes…" or "Discard the folder's changes…",
-    Show changes, Copy path; "Discard all…"; each item's paths gathered only when chosen); then
+    for what git doesn't track an Ignore submenu (`ignore_menu`: this file, every file of its
+    extension, its folder, or this folder; under a header each for .gitignore and
+    info/exclude; `RowMenu::untracked` worked out once as it opens), Show changes, Copy path;
+    "Discard all…"; each item's paths gathered only when chosen); then
     the commit form: summary
     (warned past 72 characters), description (⌘Enter commits from either, or from anywhere
     while no other field or dialog has the keys; the keys shown beside the commit button, not
@@ -1693,6 +1714,9 @@ writes paths), never `OsStrExt`.
     line's hunk from a right click in the diff and unstages it from the staged one's, a file
     from its row's menu (asked first), an untracked file (deleted, then brought back by Undo),
     and everything not staged from a row's menu.
+    `src/tests/ignoring.rs` ignores a file from its row's menu in a `.gitignore` made for it
+    (Undo removes it), then every `.log` file in `info/exclude`; a tracked file's menu offers
+    none.
     `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
     current one onto another (rebased), between the sidebar and the graph either way.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the

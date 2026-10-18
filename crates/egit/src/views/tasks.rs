@@ -434,6 +434,24 @@ fn asks_next(task: Option<&Task>, outcome: &Outcome) -> Option<Dialog> {
     })
 }
 
+/// How ignoring ended, in words: where, or that it was there already, and whether git still
+/// lists it.
+fn ignored_text(ignore: &crate::ignoring::Ignore, already: bool, listed: bool) -> String {
+    let words = ignore.words();
+    let file = ignore.file_name();
+    let mut text = match (already, ignore.place) {
+        (true, _) => format!("{file} names {words} already."),
+        (false, egit_git::IgnoreIn::Shared) => {
+            format!("Ignored {words} in {file}: commit it to share that.")
+        }
+        (false, egit_git::IgnoreIn::Private) => format!("Ignored {words} here only ({file})."),
+    };
+    if listed {
+        text.push_str(" git still lists it: a later pattern starting with ! brings it back.");
+    }
+    text
+}
+
 /// How a pull ended, in words.
 fn pulled_text(task: &Task, pulled: &Pulled) -> String {
     match (task, pulled) {
@@ -558,6 +576,9 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
                 pushed,
             },
         ) => signed_text(*made, *asked, *pushed),
+        (Task::Ignore(ignore), Outcome::Ignored { ignored, listed }) => {
+            ignored_text(ignore, ignored.added.is_empty(), *listed)
+        }
         (Task::Discard(discard), Outcome::Discarded(kept)) => {
             discarded_text(discard, kept.is_some())
         }

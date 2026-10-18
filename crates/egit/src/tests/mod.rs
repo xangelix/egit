@@ -9,6 +9,7 @@ mod discard;
 mod dragging;
 mod exporting;
 mod help;
+mod ignoring;
 mod lfs;
 mod long_text;
 mod menus;

@@ -397,6 +397,47 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "ignore",
+        group: Group::Everyday,
+        title: "Ignoring files",
+        on: &[
+            "Ignore",
+            "This file",
+            "This folder",
+            "Every * file",
+            "Its folder, *",
+            "In .gitignore, shared",
+            "In info/exclude, only here",
+        ],
+        what: "Tells git to stop listing files it doesn't track: a pattern naming the file, \
+               every file of its extension (in any folder), or a folder and all it holds. In \
+               .gitignore (the work tree's top one) it is shared: commit the .gitignore and \
+               everyone's git ignores them. In info/exclude it stays in this clone alone. egit \
+               writes the pattern so it names exactly that path (characters like * and [ \
+               escaped), then asks git whether the file is ignored now. Undo takes the line \
+               back off.",
+        git: "a line added to .gitignore or to the file git rev-parse --git-path info/exclude \
+              names; git check-ignore",
+        cases: &[
+            (
+                "Only offered for some files?",
+                "Ignoring changes nothing for a file git already tracks: it stays tracked. Stop tracking it first (git rm --cached), then ignore it.",
+            ),
+            (
+                "Still listed after ignoring it?",
+                "A later pattern starting with ! (in .gitignore, a folder's own .gitignore, or info/exclude) brings it back: that one wins.",
+            ),
+            (
+                "Where did .gitignore come from?",
+                "egit made it at the work tree's top: it shows as a new file to commit.",
+            ),
+            (
+                "Ignore it on every repository of mine?",
+                "That is core.excludesFile (by default ~/.config/git/ignore): add the pattern there.",
+            ),
+        ],
+    },
+    Topic {
         id: "discard-lines",
         group: Group::Everyday,
         title: "Discarding lines or a hunk",
