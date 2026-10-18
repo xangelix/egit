@@ -8,6 +8,7 @@ use std::sync::{Arc, OnceLock};
 use crate::command::{Access, GitCommand};
 use crate::env::Environment;
 use crate::error::GitError;
+use crate::transcript::Transcript;
 use crate::version::GitVersion;
 
 /// How to find and run git.
@@ -21,11 +22,15 @@ pub struct GitOptions {
     pub unset: Vec<OsString>,
 }
 
-/// The git binary egit drives: where it is, its version, and the environment it runs in.
+/// The git binary egit drives: where it is, its version, and the environment it runs in; and,
+/// given one ([`Self::with_transcript`]), the transcript its writing commands print into.
 ///
 /// Cheap to clone: clones share one description.
 #[derive(Clone)]
-pub struct Git(Arc<Inner>);
+pub struct Git {
+    inner: Arc<Inner>,
+    transcript: Option<Transcript>,
+}
 
 #[derive(Clone)]
 struct Inner {
@@ -62,7 +67,10 @@ impl Git {
             environment,
         };
 
-        let unchecked = Self(Arc::new(inner.clone()));
+        let unchecked = Self {
+            inner: Arc::new(inner.clone()),
+            transcript: None,
+        };
         let reported = unchecked.read("version").output()?;
         let version =
             GitVersion::parse(&reported.stdout).map_err(|_| GitError::UnknownVersion {
@@ -72,7 +80,10 @@ impl Git {
             return Err(GitError::Unsupported { found: version });
         }
         inner.version = version;
-        Ok(Self(Arc::new(inner)))
+        Ok(Self {
+            inner: Arc::new(inner),
+            transcript: None,
+        })
     }
 
     /// A command that only reads (see [`Access::Read`]).
@@ -85,28 +96,44 @@ impl Git {
         GitCommand::new(self.clone(), Access::Write, subcommand)
     }
 
+    /// The same git, its every command that may write printing into `transcript` as it runs:
+    /// its command line, what it prints (hooks' output among it), and how it ended.
+    #[must_use]
+    pub fn with_transcript(&self, transcript: &Transcript) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            transcript: Some(transcript.clone()),
+        }
+    }
+
+    /// The transcript its writing commands print into, if any.
+    #[must_use]
+    pub const fn transcript(&self) -> Option<&Transcript> {
+        self.transcript.as_ref()
+    }
+
     /// The executable.
     #[must_use]
     pub fn program(&self) -> &Path {
-        &self.0.program
+        &self.inner.program
     }
 
     /// Its version.
     #[must_use]
     pub fn version(&self) -> GitVersion {
-        self.0.version
+        self.inner.version
     }
 
     pub(crate) fn environment(&self) -> &Environment {
-        &self.0.environment
+        &self.inner.environment
     }
 }
 
 impl fmt::Debug for Git {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Git")
-            .field("program", &self.0.program)
-            .field("version", &self.0.version)
+            .field("program", &self.inner.program)
+            .field("version", &self.inner.version)
             .finish_non_exhaustive()
     }
 }

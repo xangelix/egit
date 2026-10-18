@@ -344,6 +344,7 @@ fn commit_form(
                 sign_off: form.sign_off,
                 sign: Some(form.sign.unwrap_or(side.sign_by_default)),
                 trailers: form.trailers(),
+                no_verify: false,
             });
         }
         if side.committing.is_pending() {

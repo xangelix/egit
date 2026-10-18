@@ -19,6 +19,7 @@ use crate::git::Git;
 use crate::output::{Completed, Stderr, TailBuffer};
 use crate::process::{self, Group};
 use crate::progress::{Progress, ProgressReader};
+use crate::transcript::{Stream, Transcript};
 
 /// Whether a command only reads the repository or may change it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,6 +121,8 @@ pub struct GitCommand {
     stdout_limit: usize,
     /// Where git's `--progress` lines are reported, if anywhere.
     progress: Option<Progress>,
+    /// Whether what it reads or prints is a secret (kept out of any transcript).
+    secret: bool,
 }
 
 /// A streamed command that finished, or was stopped by its consumer.
@@ -163,6 +166,7 @@ impl GitCommand {
             cancel: None,
             stdout_limit: Self::DEFAULT_STDOUT_LIMIT,
             progress: None,
+            secret: false,
         }
     }
 
@@ -326,7 +330,9 @@ impl GitCommand {
     /// # Errors
     ///
     /// The errors of [`Self::output_unchecked`].
-    pub fn secret_output(self) -> Result<SecretOutput, GitError> {
+    pub fn secret_output(mut self) -> Result<SecretOutput, GitError> {
+        // Nothing of it in a transcript.
+        self.secret = true;
         let (attempt, stdout) = self.run_once(|stdout| {
             let mut collected = Zeroizing::new(Vec::with_capacity(4096));
             let mut chunk = Zeroizing::new([0_u8; 4096]);
@@ -382,6 +388,9 @@ impl GitCommand {
                     Err(error) => return Err(ReadError::Io(error)),
                 };
                 let chunk = buffer.get(..read).unwrap_or_default();
+                if let Some(transcript) = self.transcript() {
+                    transcript.feed(Stream::Out, chunk);
+                }
                 if consume(chunk).is_break() {
                     return Ok(((), true));
                 }
@@ -430,7 +439,7 @@ impl GitCommand {
         let drain = thread::Builder::new()
             .name(format!("git {} stderr", self.subcommand))
             .stack_size(HELPER_STACK)
-            .spawn(move || drain(stderr, reader));
+            .spawn(move || drain(stderr, reader, None));
         match drain {
             Ok(drain) => Ok(GitProcess::new(
                 self.subcommand,
@@ -449,10 +458,16 @@ impl GitCommand {
     /// Runs git once, collecting standard output up to the limit.
     fn collect_once(&self) -> Result<Completed, GitError> {
         let limit = self.stdout_limit;
+        let transcript = self.transcript();
         let (attempt, stdout) = self.run_once(|stdout| {
             let mut collected = Vec::new();
             let allowed = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
-            match stdout.take(allowed).read_to_end(&mut collected) {
+            let read = match transcript {
+                // Read as it comes, so the transcript shows it as it comes.
+                Some(transcript) => read_teeing(stdout.take(allowed), &mut collected, transcript),
+                None => stdout.take(allowed).read_to_end(&mut collected),
+            };
+            match read {
                 Ok(_) if collected.len() > limit => Err(ReadError::TooLarge(limit)),
                 Ok(_) => Ok((collected, false)),
                 Err(error) => Err(ReadError::Io(error)),
@@ -477,6 +492,10 @@ impl GitCommand {
             return Err(self.cancelled());
         }
         tracing::debug!(subcommand = self.subcommand, access = ?self.access, "running git");
+        let transcript = self.transcript();
+        if let Some(transcript) = transcript {
+            transcript.command(self.command_line());
+        }
 
         let mut command = self.build();
         let mut child = process::spawn_in_new_session(&mut command)
@@ -513,6 +532,14 @@ impl GitCommand {
         let status = status.map_err(|error| self.io_error(error))?;
 
         let cancelled = self.cancel.as_ref().is_some_and(CancelToken::is_cancelled);
+        if let Some(transcript) = transcript {
+            transcript.finish(Stream::Out);
+            if cancelled && !status.success() {
+                transcript.ended(false, "Cancelled.".to_owned());
+            } else if !status.success() {
+                transcript.ended(false, format!("git {} ended: {status}.", self.subcommand));
+            }
+        }
         if cancelled && !status.success() {
             return Err(self.cancelled());
         }
@@ -542,10 +569,17 @@ impl GitCommand {
     /// Starts the threads that feed git's standard input and drain its standard error.
     fn start_helpers(&self, stdin: Option<ChildStdin>, stderr: ChildStderr) -> io::Result<Helpers> {
         let reader = self.progress.as_ref().map(Progress::reader);
+        let transcript = self.transcript().cloned();
         let drain = thread::Builder::new()
             .name(format!("git {} stderr", self.subcommand))
             .stack_size(HELPER_STACK)
-            .spawn(move || drain(stderr, reader))?;
+            .spawn(move || {
+                let tail = drain(stderr, reader, transcript.as_ref());
+                if let Some(transcript) = &transcript {
+                    transcript.finish(Stream::Err);
+                }
+                tail
+            })?;
         let feed = match (stdin, &self.stdin) {
             (Some(pipe), Some(input)) => {
                 let input = input.clone();
@@ -572,6 +606,10 @@ impl GitCommand {
             command
                 .env("GIT_OPTIONAL_LOCKS", "0")
                 .arg("--no-optional-locks");
+        }
+        // Shown in a transcript, which draws colours: the pre-commit framework's in colour.
+        if self.transcript().is_some() {
+            command.env("PRE_COMMIT_COLOR", "always");
         }
         for setting in DEFAULT_CONFIG {
             command.arg("-c").arg(setting);
@@ -604,6 +642,33 @@ impl GitCommand {
                 source,
             },
         }
+    }
+
+    /// The transcript this command prints into: its git's, if it may write and carries no
+    /// secret.
+    fn transcript(&self) -> Option<&Transcript> {
+        let secret = self.secret || matches!(self.stdin, Some(Input::Secret(_)));
+        (self.access == Access::Write && !secret)
+            .then(|| self.git.transcript())
+            .flatten()
+    }
+
+    /// The command as a terminal would show it: `git` and its arguments (egit's own `-c`
+    /// settings left out), any with a space quoted.
+    fn command_line(&self) -> String {
+        let mut line = format!("git {}", self.subcommand);
+        for arg in &self.args {
+            let arg = arg.to_string_lossy();
+            line.push(' ');
+            if arg.contains([' ', '\'', '"']) || arg.is_empty() {
+                line.push('\'');
+                line.push_str(&arg.replace('\'', "'\\''"));
+                line.push('\'');
+            } else {
+                line.push_str(&arg);
+            }
+        }
+        line
     }
 
     const fn io_error(&self, source: io::Error) -> GitError {
@@ -655,8 +720,13 @@ impl Helpers {
     }
 }
 
-/// Reads standard error to its end, keeping the tail and reporting progress to `reader`.
-fn drain(mut stderr: ChildStderr, mut reader: Option<ProgressReader>) -> Stderr {
+/// Reads standard error to its end, keeping the tail and reporting progress to `reader` (and
+/// everything to `transcript`).
+fn drain(
+    mut stderr: ChildStderr,
+    mut reader: Option<ProgressReader>,
+    transcript: Option<&Transcript>,
+) -> Stderr {
     let mut tail = TailBuffer::default();
     let mut buffer = [0; 4096];
     loop {
@@ -668,6 +738,9 @@ fn drain(mut stderr: ChildStderr, mut reader: Option<ProgressReader>) -> Stderr 
                 if let Some(reader) = &mut reader {
                     reader.feed(chunk);
                 }
+                if let Some(transcript) = transcript {
+                    transcript.feed(Stream::Err, chunk);
+                }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
             Err(error) => {
@@ -677,6 +750,27 @@ fn drain(mut stderr: ChildStderr, mut reader: Option<ProgressReader>) -> Stderr 
         }
     }
     tail.finish()
+}
+
+/// Reads `stdout` to its end into `collected`, each chunk into `transcript` too as it comes.
+fn read_teeing(
+    mut stdout: impl io::Read,
+    collected: &mut Vec<u8>,
+    transcript: &Transcript,
+) -> io::Result<usize> {
+    let mut buffer = [0; 4096];
+    loop {
+        match stdout.read(&mut buffer) {
+            Ok(0) => return Ok(collected.len()),
+            Ok(read) => {
+                let chunk = buffer.get(..read).unwrap_or_default();
+                transcript.feed(Stream::Out, chunk);
+                collected.extend_from_slice(chunk);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 /// Writes `input` to git's standard input and closes it. Git may stop reading early (it failed,

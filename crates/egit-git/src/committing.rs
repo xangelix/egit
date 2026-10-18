@@ -24,6 +24,9 @@ pub struct NewCommit {
     /// Trailers to add (`Co-authored-by: Name <email>`), each by `--trailer`: git places them
     /// with any the message ends with, after a blank line.
     pub trailers: Vec<String>,
+    /// Skip the `pre-commit` and `commit-msg` hooks (`--no-verify`); `prepare-commit-msg` and
+    /// `post-commit` run whatever this says, as git runs them.
+    pub no_verify: bool,
 }
 
 /// A commit made.
@@ -55,6 +58,9 @@ pub fn create_commit(
         .cancel_token(cancel);
     if commit.amend {
         command = command.arg("--amend");
+    }
+    if commit.no_verify {
+        command = command.arg("--no-verify");
     }
     if commit.sign_off {
         command = command.arg("--signoff");

@@ -29,6 +29,7 @@ mod format_patch;
 mod forward;
 mod git;
 mod history;
+mod hooks;
 mod integrate;
 mod lfs;
 mod lines;
@@ -55,6 +56,7 @@ mod status;
 mod submodule;
 #[cfg(feature = "testing")]
 pub mod testing;
+mod transcript;
 mod tree;
 mod version;
 mod worktree;
@@ -99,6 +101,7 @@ pub use history::{
     commit_changes, commits_between, count_between, history_tips, line_counts, list_references,
     walk_history, walk_history_from, write_commit_graph,
 };
+pub use hooks::{Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
 pub use integrate::{Integrated, ResetMode, cherry_pick, merge, rebase, reset, revert};
 pub use lfs::{
     LfsFile, LfsLock, LfsPattern, LfsTransfer, LfsVersion, lfs_files, lfs_install, lfs_lock,
@@ -139,6 +142,7 @@ pub use submodule::{
     submodule_commits, submodule_details, submodule_status, submodules, update_submodules,
     update_submodules_to,
 };
+pub use transcript::{Color, Line, LineKind, Log, MAX_LINE, MAX_LINES, Span, Style, Transcript};
 pub use tree::{git_path, ignored_paths, tree_entry, tree_folders};
 pub use version::{GitVersion, VersionParseError};
 pub use worktree::{

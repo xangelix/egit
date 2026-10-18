@@ -146,7 +146,22 @@ writes paths), never `OsStrExt`.
     `-c color.ui=never -c core.quotePath=false`. Stderr is drained on a helper thread into a
     64 KiB tail (`output.rs`), and into a `Progress` when the command has one (`progress`);
     stdin is fed from another. Secrets: `secret_stdin` and `secret_output` keep them in
-    zeroizing buffers (growing never leaves a copy), never shown in debug output.
+    zeroizing buffers (growing never leaves a copy), never shown in debug output. A writing
+    command run through a `Git` given a transcript (`Git::with_transcript`) writes into it: its
+    command line (`git commit --file=-`, egit's own `-c` left out), standard output and error
+    as they come (teed from the threads reading them), and how it failed or was cancelled; with
+    `PRE_COMMIT_COLOR=always`. A secret's command (`secret_stdin`, `secret_output`) never.
+  - `transcript.rs` — `Transcript`: lines (`LineKind`: command, out, err (hooks' output: git
+    sends it there), ended), a `\r` rewriting the line under way as a terminal does (shown live),
+    SGR colours turned into `Span`s (`Style`: 16, 256, or exact colours, bold, faint; a colour
+    lasting across lines until reset), other escapes dropped; at most 20,000 lines (the oldest
+    dropped) of 16 KiB; `read` lends the `Log` (only the lines shown are touched).
+  - `hooks.rs` — `installed_hooks`: the folder git runs hooks from (`rev-parse --git-path
+    hooks`, which follows `core.hooksPath`) and those of `KNOWN` there that it would run
+    (executable on Unix; never a `.sample`); `Hooks::of` picks a task's. `tests/hooks.rs`
+    lists them (an unrunnable one and a sample left out; `core.hooksPath`), and transcribes a
+    commit's hook: its colours and `PRE_COMMIT_COLOR`, a refusal and its end, `--no-verify`
+    skipping it, and one cancelled part-way (no commit, quickly).
   - `progress.rs` — `Progress`: a long command's `--progress` lines read as they come, each
     replacing the last (git rewrites them with `\r`): the phase, done and total, the transfer
     (`1.20 MiB | 2.30 MiB/s`), whether the remote is doing it (`remote: `), and the other
@@ -285,7 +300,8 @@ writes paths), never `OsStrExt`.
     starting with `#` is kept), `NewCommit`'s amend, sign-off, trailers (`--trailer`, placed
     by git's rules: co-authors), and signing (`-S`,
     `--no-gpg-sign`, or the configuration's choice); a passphrase is asked through askpass,
-    labelled "Signing the commit"; `Committed::output` is what git and its hooks printed (a
+    labelled "Signing the commit"; `no_verify` skips `pre-commit` and `commit-msg`;
+    `Committed::output` is what git and its hooks printed (a
     refusal's whole standard error is on the failure). `reword_head`: `HEAD`'s message alone
     (`commit --amend --only --allow-empty`: what is staged stays staged, out of it).
   - `signatures.rs` — `check_signatures`: some commits' signatures checked as `git log
