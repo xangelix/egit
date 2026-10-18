@@ -30,5 +30,5 @@ pub use model::{
     Check, CheckState, Mergeable, NewPullRequest, Opened, PullRequest, PullRequestDetails,
     PullRequestPage, RepositoryInfo, Review, ReviewDecision, ReviewState,
 };
-pub use pictures::{Fetched, PictureSources, Pictures};
+pub use pictures::{Fetched, PictureSources, Pictures, Source as PictureSource};
 pub use repository::{ForgeRepository, forge_repository, resolve_ssh_alias};

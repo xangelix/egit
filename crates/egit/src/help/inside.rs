@@ -1430,11 +1430,12 @@ pub(super) const TOPICS: &[Topic] = &[
         title: "People's pictures",
         on: &["People", "Their pictures", "Their initials"],
         what: "With Their pictures, each author's picture is fetched once and drawn in place of \
-               their initials: GitHub's for its no-reply addresses (12345+login@users.\
-               noreply.github.com), else Gravatar's. Those services are sent the author's email \
-               (Gravatar, its SHA-256), never anything else. Each picture is kept on this \
-               computer, 128 pixels square; someone without one keeps their initials, asked again \
-               after a week. Their initials fetches nothing.",
+               their initials: GitHub's first, for the account the email belongs to (as GitHub \
+               shows commits' authors: any address the account verified, shown on its profile \
+               or not; a no-reply address by its account's number), else Gravatar's. GitHub is \
+               sent the email, Gravatar its SHA-256, never anything else. Each picture is kept \
+               on this computer, 128 pixels square; someone without one keeps their initials, \
+               asked again after a week. Their initials fetches nothing.",
         git: "",
         cases: &[
             (

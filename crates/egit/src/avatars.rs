@@ -1,6 +1,6 @@
 //! People's pictures, drawn in place of their initials once fetched (the preferences can keep
-//! to initials): GitHub's for its no-reply addresses, else Gravatar's, by their email
-//! (`egit_forge::PictureSources`).
+//! to initials): GitHub's (the account an email belongs to, as GitHub shows commits' authors),
+//! else Gravatar's (`egit_forge::PictureSources`).
 //!
 //! A picture is fetched once, on a worker thread (two of them, the newest request first: the
 //! rows on screen), cropped square and scaled to 128 × 128 at once, and kept in a cache on disk
@@ -150,6 +150,9 @@ pub(crate) fn install(ctx: &Context, sources: &PictureSources, cache: Option<&Pa
     };
     let pictures = Pictures::new(sources);
     let cache = cache.map(Path::to_path_buf);
+    if let Some(cache) = &cache {
+        forget_older(cache);
+    }
     for worker in 0..2 {
         let (queue, sender, ctx) = (Arc::clone(&queue), sender.clone(), ctx.clone());
         let (sources, pictures, cache) = (sources.clone(), pictures.clone(), cache.clone());
@@ -384,8 +387,7 @@ impl Fetching<'_> {
                 };
             }
         }
-        let url = self.sources.url(&request.email, MASTER);
-        match self.pictures.fetch(&url) {
+        match self.pictures.find(self.sources, &request.email, MASTER) {
             Ok(Fetched::Found(bytes)) => {
                 let Some(master) = decode(&bytes) else {
                     return Landed::Missing(key);
@@ -508,7 +510,12 @@ fn coverage((x, y): (usize, usize), size: u16) -> f32 {
     (half - 1.0 - distance + 0.5).clamp(0.0, 1.0)
 }
 
-/// Where pictures are kept on this computer: the platform's cache folder's `egit/pictures`.
+/// The cache's version: what a picture is (GitHub's first, since 2) has changed, so earlier
+/// answers aren't taken (and are removed, `forget_older`).
+const CACHE_VERSION: &str = "2";
+
+/// Where pictures are kept on this computer: the platform's cache folder's
+/// `egit/pictures/<version>`.
 pub(crate) fn cache_folder(home: Option<&Path>) -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let base = home.map(|home| home.join("Library/Caches"));
@@ -522,7 +529,34 @@ pub(crate) fn cache_folder(home: Option<&Path>) -> Option<PathBuf> {
         .map(PathBuf::from)
         .filter(|folder| folder.is_absolute())
         .or_else(|| home.map(|home| home.join(".cache")));
-    base.map(|base| base.join("egit").join("pictures"))
+    base.map(|base| base.join("egit").join("pictures").join(CACHE_VERSION))
+}
+
+/// Removes the pictures an earlier version kept (in the folder above `cache`), in the
+/// background.
+fn forget_older(cache: &Path) {
+    let Some(pictures) = cache.parent().map(Path::to_path_buf) else {
+        return;
+    };
+    let spawned = std::thread::Builder::new()
+        .name("avatars' clean-up".to_owned())
+        .spawn(move || {
+            let Ok(entries) = std::fs::read_dir(&pictures) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let kept = path
+                    .extension()
+                    .is_some_and(|extension| extension == "png" || extension == "none");
+                if kept && path.is_file() {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::debug!(%error, "the old pictures couldn't be cleared");
+    }
 }
 
 #[cfg(test)]

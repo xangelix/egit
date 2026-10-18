@@ -568,12 +568,16 @@ writes paths), never `OsStrExt`.
     project it was forked from) and opening one (in the branch's own project; from a fork,
     aimed at the target's id; a draft by GitLab's own `Draft:` mark).
   - `pictures.rs` — `PictureSources` (`public`: GitHub's avatars by account number, its
-    profiles by login, Gravatar's): `url` for an email, GitHub's for its no-reply addresses
-    (`12345+login@users.noreply.github.com`; an older `login@…` by its profile), else
-    Gravatar's by the trimmed lower-case address's SHA-256 (`sha2`), `d=404` so someone without
-    one says so. `Pictures::fetch`: no credential, so redirects are followed, HTTPS only (but
-    every source on the loopback address, for tests), 1 MiB at most; `Fetched::Found` or
-    `Missing` (404).
+    profiles by login, its lookup by email, Gravatar's): `urls` for an email, in order: a
+    GitHub no-reply address's account alone (`12345+login@users.noreply.github.com`; an older
+    `login@…` by its profile); else GitHub's lookup by email (`avatars.githubusercontent.com/
+    u/e?email=`: the account that verified the address, as GitHub shows commits' authors,
+    public or not), then Gravatar's by the trimmed lower-case address's SHA-256 (`sha2`),
+    `d=404` so someone without one says so. GitHub answers an address of no account with a
+    placeholder (`is_github_placeholder`: its known SHA-256, or a PNG wider than asked for),
+    which counts as none. `Pictures::find` asks them in order; `fetch`: no credential, so
+    redirects are followed, HTTPS only (but every source on the loopback address, for tests),
+    1 MiB at most; `Fetched::Found` or `Missing` (404).
   - `testing.rs` (feature `testing`) — `FakeForge`: either forge's API on the loopback address
     (pages, details, repository, who is signed in, opening; the bearer token checked; a rate
     limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each
@@ -984,8 +988,9 @@ writes paths), never `OsStrExt`.
     real application only: tests fetch nothing) starts two worker threads taking the newest
     request first (the rows on screen; past 128 waiting, the oldest dropped), each picture read
     from the cache folder (`cache_folder`: XDG's, macOS's `Library/Caches`, `LOCALAPPDATA`;
-    `egit/pictures/<key>.png`, or `.none` for someone without one, believed a week) or fetched
-    (`egit_forge::Pictures`), cropped square, scaled to 128 × 128 (Lanczos) and kept, then
+    `egit/pictures/2/<key>.png`, or `.none` for someone without one, believed a week; an
+    earlier version's left in `pictures/` are removed) or fetched (`egit_forge::Pictures::find`:
+    GitHub's, then Gravatar's), cropped square, scaled to 128 × 128 (Lanczos) and kept, then
     scaled to 64, 32, and 16 too (egui's renderer makes no mipmaps), each masked to a circle a
     pixel inside its edge, in one tile (192 × 128) of an atlas of 80 (2048 × 1024, one texture:
     `set_partial`, up to 8 a frame in `poll`), the one drawn least recently making room.
@@ -1528,9 +1533,11 @@ writes paths), never `OsStrExt`.
     `EGIT_REQUIRE_LFS`).
     `src/tests/picked.rs` picks two commits by ⇧-click, adds and takes away a third by ⌘-click,
     signs the two from their menu (the one after them made again too, the first left alone;
-    their signatures good in `git log`), and undoes it. `src/tests/avatars.rs` serves pictures from a stand-in for Gravatar on the
-    loopback address: one drawn, one without (404) kept to initials, both kept on disk and a
-    window opened after asking nothing; and keeps to initials when the preferences say so.
+    their signatures good in `git log`), and undoes it. `src/tests/avatars.rs` serves pictures from stand-ins for
+    GitHub and Gravatar on the loopback address: one GitHub knows drawn from it (Gravatar not
+    asked), one it answers its placeholder for drawn from Gravatar, one neither has kept to
+    initials; all kept on disk, a window opened after asking nothing; and keeps to initials
+    when the preferences say so.
     `src/tests/output.rs` commits through a pre-commit hook: the form says it runs first; its
     lines show as they come, the output closing after it went well; refused (the output kept
     open with its words); skipped; cancelled part-way from the output's bar (no commit); and

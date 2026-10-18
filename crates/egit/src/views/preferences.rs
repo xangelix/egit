@@ -91,8 +91,9 @@ fn appearance(ui: &mut Ui, state: &mut AppState, preferences: &mut Preferences) 
         ui.add(
             Label::new(muted(
                 ui,
-                "Pictures come from GitHub (for its no-reply addresses) and Gravatar, which are \
-                 sent each author's email, hashed; they are kept on this computer.",
+                "Pictures come from GitHub (the account each author's email belongs to), else \
+                 Gravatar: GitHub is sent the email, Gravatar its hash. They are kept on this \
+                 computer.",
             ))
             .wrap(),
         );
