@@ -686,7 +686,11 @@ fn options(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
                 head,
             ));
         }
-        crate::widgets::checkbox(ui, &mut form.sign_off, "Sign off");
+        crate::widgets::checkbox(ui, &mut form.sign_off, "Sign off").on_hover_text(
+            "Add “Signed-off-by:” with your name and email at the message's end: a statement \
+             that you may submit the change, as some projects ask (a Developer Certificate of \
+             Origin), not a signature",
+        );
         let mut sign = form.sign.unwrap_or(side.sign_by_default);
         if crate::widgets::checkbox(ui, &mut sign, "Sign")
             .on_hover_text("With the key and program your git configuration names")
