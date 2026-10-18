@@ -28,7 +28,7 @@ pub(super) enum LfsEvent {
 }
 
 /// The LFS page's state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct LfsView {
     /// The whole of the repository's LFS, read for the page (the tab reads only where LFS is
     /// used).
@@ -47,6 +47,24 @@ pub(super) struct LfsView {
     lockable: bool,
     /// A path being typed, to lock.
     lock_path: String,
+}
+
+impl Default for LfsView {
+    fn default() -> Self {
+        // Retained: egui-async drops what a `Bind` not drawn the frame before holds, aborting
+        // a read under way, and it counts frames for the whole process.
+        Self {
+            state: Bind::new(true),
+            state_for: None,
+            stale: false,
+            files: Bind::new(true),
+            files_for: 0,
+            locks: Bind::new(true),
+            pattern: String::new(),
+            lockable: false,
+            lock_path: String::new(),
+        }
+    }
 }
 
 /// The height of a file's row.

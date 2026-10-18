@@ -35,7 +35,7 @@ pub(super) enum SubmodulesEvent {
 type Details = Arc<(SubmoduleDetails, Option<Vec<(ObjectId, BString)>>)>;
 
 /// The page's state.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct SubmodulesView {
     /// The submodule selected, by path.
     selected: Option<BString>,
@@ -49,6 +49,21 @@ pub(super) struct SubmodulesView {
     branch: Option<String>,
     /// Removing the selected one, asked to confirm.
     removing: bool,
+}
+
+impl Default for SubmodulesView {
+    fn default() -> Self {
+        // Retained: egui-async drops what a `Bind` not drawn the frame before holds.
+        Self {
+            selected: None,
+            details: Bind::new(true),
+            details_for: None,
+            adding: None,
+            url: None,
+            branch: None,
+            removing: false,
+        }
+    }
 }
 
 /// A row's height.
