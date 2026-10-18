@@ -538,7 +538,7 @@ pub(crate) fn icon_tool(ui: &mut Ui, enabled: bool, glyph: &str, name: &str) -> 
 /// every list: a preference); returns the preferences changed when clicked.
 pub(crate) fn tree_toggle(ui: &mut Ui) -> Option<crate::preferences::Preferences> {
     let mut preferences = crate::preferences::Preferences::of(ui.ctx());
-    let (glyph, name) = if preferences.files.tree {
+    let (glyph, name) = if preferences.files.lists.is_tree() {
         (crate::theme::icon::LIST_BULLETS, "Show the files as a list")
     } else {
         (
@@ -550,7 +550,11 @@ pub(crate) fn tree_toggle(ui: &mut Ui) -> Option<crate::preferences::Preferences
         .on_hover_text(name)
         .clicked();
     clicked.then(|| {
-        preferences.files.tree = !preferences.files.tree;
+        preferences.files.lists = if preferences.files.lists.is_tree() {
+            crate::preferences::FileLists::List
+        } else {
+            crate::preferences::FileLists::Tree
+        };
         preferences
     })
 }

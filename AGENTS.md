@@ -598,8 +598,9 @@ writes paths), never `OsStrExt`.
     settings read): the text's size (70–200%, egui's zoom, which ⌘+ ⌘− ⌘0 change too: followed
     back), the background fetch (`FetchEvery`: never, every minute, 5 (the default), 15, or 30
     minutes), the sidebar shown when a repository opens, a file's first look (`FilePreferences`:
-    diffs side by side, lines wrapped, a tab's width of 2, 4, or 8 cells, and lists of changed
-    files as a tree of their folders: `tree`, chosen too by each list's header), and commit dates
+    diffs side by side, lines wrapped, a tab's width of 2, 4, or 8 cells, lists of changed
+    files as a list or a tree of their folders (`FileLists`, chosen too by each list's header),
+    and the merge editor's sides above its merged file: `merge_panes`), and commit dates
     written or as how long ago (`Dates`). `apply` puts them into egui (the zoom, and the context
     the views read them from: `Preferences::of`), and the tab width where every text measured
     from then on takes it (`text_options`).
@@ -764,6 +765,10 @@ writes paths), never `OsStrExt`.
     numbered as the resolved file will be, `<`/`|`/`>` in the gutter, the current side's lines
     through the old parser and the incoming side's through the new; `start` and `conflict_at`
     map conflicts and lines. `Shown` draws it with its selected conflict's headers stronger.
+    `SideDocuments` (`build_sides`, a job, once per conflict read): each side whole, every
+    conflict taking that side (`SideDocument`: its lines numbered as that side's file, each
+    line's conflict, each conflict's first line); `SideShown` marks a side's conflicts in its
+    colour, the selected one stronger, `<` or `>` in the gutter.
   - `blame.rs` — `start_blame`: `blame` in a detached job, its runs handed over in batches
     (every 256 runs or 50 ms) into a `Blaming`'s `BlameState` (each line's commit and whether
     a run starts there, the commits found, their time span) that the view reads each frame,
@@ -937,8 +942,12 @@ writes paths), never `OsStrExt`.
     base", "Save resolution" (at the right) once none is open; then "Take" Current, Incoming,
     Both (current first), or Base (moving on to the next open conflict), "Edit…" (its text in
     a code field, Apply or Cancel; a line ending is added unless it ends the file), and More:
-    both incoming first, Reopen, All current, All incoming; lines selected in a conflict
-    select it. A conflict that isn't two texts says
+    both incoming first, Reopen, All current, All incoming, and "Both sides above" (the
+    preference `merge_panes`, on by default); lines selected in a conflict select it. With
+    both sides above: the current side and the incoming one whole, side by side over the
+    merged file (45% of the height), each under a header ("The current side", where it comes
+    from, "Take current"), each scrolled to the selected conflict as it changes, lines
+    selected in either selecting theirs. A conflict that isn't two texts says
     what each side did and offers keeping a side or deleting the file. `Shared::operation`
     and `branch` label the sides.
     `views/work.rs` — `WorkPanel`: "Not staged" and "Staged", each a table-kit list (indices

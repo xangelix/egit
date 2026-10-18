@@ -748,7 +748,7 @@ fn list_ui(ui: &mut Ui, list: &mut List, side: Side, busy: bool, height: f32) ->
         });
         return event;
     }
-    let asked = if Preferences::of(ui.ctx()).files.tree {
+    let asked = if Preferences::of(ui.ctx()).files.lists.is_tree() {
         tree_ui(ui, list, &files, busy, height)
     } else {
         table_ui(ui, list, &files, busy, height)

@@ -5,6 +5,10 @@
 //! again, in a job, whenever a choice changes ([`build`]): the merged text copied once with each
 //! conflict shown or resolved, measured, and highlighted (the current side's lines through one
 //! parser, the incoming side's through the other, so neither side's syntax breaks the other's).
+//!
+//! Above it, each side whole ([`SideDocument`], made once per conflict read): the file with every
+//! conflict taking that side, its conflicts' lines marked, so a conflict is read in its place in
+//! either version.
 
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -371,6 +375,175 @@ fn open(
         }
         builder.add(header.as_bytes(), Kind::Header(side), conflict);
         builder.add(bytes, Kind::Side(side), conflict);
+    }
+}
+
+/// Both sides of a file in conflict, whole.
+#[derive(Debug)]
+pub(crate) struct SideDocuments {
+    pub(crate) current: SideDocument,
+    pub(crate) incoming: SideDocument,
+}
+
+/// One side of a file in conflict, whole: what merged, and every conflict as that side has it.
+#[derive(Debug)]
+pub(crate) struct SideDocument {
+    text: Text,
+    measure: Measure,
+    /// Each line's conflict ([`NO_CONFLICT`] for merged lines).
+    conflicts: Vec<u32>,
+    /// Each conflict's first line (where one without lines on this side would be).
+    starts: Vec<u32>,
+    /// Digits of the largest line number.
+    digits: u32,
+    syntax: Option<Syntax>,
+    /// Whether it is the current side (else the incoming one).
+    current: bool,
+}
+
+/// Makes both sides' documents of `file`, in a job.
+pub(crate) async fn build_sides(file: Arc<ConflictFile>) -> Result<Arc<SideDocuments>, Problem> {
+    jobs::blocking(move || {
+        let text = file.text().ok_or_else(|| {
+            Problem::new(
+                "There is nothing to merge",
+                "The file's sides aren't two texts.",
+            )
+        })?;
+        let path = file.path.as_ref();
+        Ok(Arc::new(SideDocuments {
+            current: SideDocument::new(text, path, true),
+            incoming: SideDocument::new(text, path, false),
+        }))
+    })
+    .await
+}
+
+impl SideDocument {
+    /// `merged` with every conflict taking the `current` side (else the incoming one),
+    /// highlighted as the file at `path`.
+    fn new(merged: &MergedText, path: &BStr, current: bool) -> Self {
+        let mut bytes = Vec::new();
+        let mut conflicts = Vec::new();
+        let mut starts = Vec::with_capacity(merged.conflicts());
+        let mut index = 0_u32;
+        let add =
+            |text: &[u8], conflict: u32, (bytes, conflicts): (&mut Vec<u8>, &mut Vec<u32>)| {
+                for line in text.lines_with_terminator() {
+                    bytes.extend_from_slice(line);
+                    if !line.ends_with(b"\n") {
+                        bytes.push(b'\n');
+                    }
+                    conflicts.push(conflict);
+                }
+            };
+        for piece in merged.pieces() {
+            match piece {
+                Piece::Merged(range) => {
+                    add(
+                        merged.bytes(range),
+                        NO_CONFLICT,
+                        (&mut bytes, &mut conflicts),
+                    );
+                }
+                Piece::Conflict(lines) => {
+                    starts.push(u32::try_from(conflicts.len()).unwrap_or(u32::MAX));
+                    let side = if current {
+                        &lines.current
+                    } else {
+                        &lines.incoming
+                    };
+                    add(merged.bytes(side), index, (&mut bytes, &mut conflicts));
+                    index = index.saturating_add(1);
+                }
+            }
+        }
+        let lines = u32::try_from(conflicts.len()).unwrap_or(u32::MAX);
+        let text = Text::new(bytes).unwrap_or_default();
+        let measure = Measure::all(&text, crate::preferences::text_options());
+        Self {
+            syntax: Syntax::start(path, &text, Feeds::All(Feed::New)),
+            text,
+            measure,
+            conflicts,
+            starts,
+            digits: lines.max(1).ilog10().saturating_add(1),
+            current,
+        }
+    }
+
+    /// Conflict `index`'s first line.
+    pub(crate) fn start(&self, index: usize) -> Option<u32> {
+        self.starts.get(index).copied()
+    }
+
+    /// The conflict line `line` is in, if any.
+    pub(crate) fn conflict_at(&self, line: u32) -> Option<usize> {
+        let conflict = *self.conflicts.get(usize::try_from(line).ok()?)?;
+        (conflict != NO_CONFLICT)
+            .then(|| usize::try_from(conflict).ok())
+            .flatten()
+    }
+}
+
+/// A side shown above the merged file, its selected conflict stronger.
+pub(crate) struct SideShown<'a> {
+    pub(crate) document: &'a SideDocument,
+    pub(crate) selected: Option<usize>,
+}
+
+impl GridSource for SideShown<'_> {
+    fn text(&self) -> &Text {
+        &self.document.text
+    }
+
+    fn measure(&self) -> &Measure {
+        &self.document.measure
+    }
+
+    fn colors(&self, line: u32, palette: &Palette, out: &mut Vec<Span>) {
+        if let Some(syntax) = &self.document.syntax {
+            syntax.colors(&self.document.text, line, palette.dark, palette.text, out);
+        }
+    }
+
+    fn begin_frame(&self) {
+        if let Some(syntax) = &self.document.syntax {
+            syntax.begin_frame();
+        }
+    }
+
+    fn needs_repaint(&self) -> bool {
+        self.document
+            .syntax
+            .as_ref()
+            .is_some_and(Syntax::needs_repaint)
+    }
+
+    fn background(&self, line: u32, palette: &Palette) -> Option<Color32> {
+        let conflict = self.document.conflict_at(line)?;
+        let selected = self.selected == Some(conflict);
+        Some(match (self.document.current, selected) {
+            (true, true) => palette.current_header,
+            (true, false) => palette.current,
+            (false, true) => palette.incoming_header,
+            (false, false) => palette.incoming,
+        })
+    }
+
+    fn gutter(&self, line: u32, out: &mut String) {
+        let width = usize::try_from(self.document.digits).unwrap_or(1);
+        let _ = write!(out, "{:>width$}", line.saturating_add(1));
+        out.push(' ');
+        out.push(match self.document.conflict_at(line) {
+            Some(_) if self.document.current => '<',
+            Some(_) => '>',
+            None => ' ',
+        });
+    }
+
+    fn gutter_cells(&self) -> u32 {
+        self.document.digits.saturating_add(3)
     }
 }
 

@@ -7,7 +7,7 @@ use egui::{ComboBox, Grid, RichText, Ui};
 
 use crate::app::{Action, AppState};
 use crate::commands::{Command, keys_text};
-use crate::preferences::{Dates, FetchEvery, Preferences, TAB_WIDTHS, ZOOM};
+use crate::preferences::{Dates, FetchEvery, FileLists, Preferences, TAB_WIDTHS, ZOOM};
 use crate::theme::ThemeChoice;
 use crate::widgets::{self, muted};
 
@@ -134,8 +134,18 @@ fn files(ui: &mut Ui, preferences: &mut Preferences) {
         widgets::fact(ui, LABEL, "Changed files", |ui| {
             widgets::segmented(
                 ui,
-                &mut preferences.files.tree,
-                &[(false, "A list"), (true, "A tree of folders")],
+                &mut preferences.files.lists,
+                &[
+                    (FileLists::List, "A list"),
+                    (FileLists::Tree, "A tree of folders"),
+                ],
+            );
+        });
+        widgets::fact(ui, LABEL, "Conflicts", |ui| {
+            widgets::checkbox(
+                ui,
+                &mut preferences.files.merge_panes,
+                "Both sides whole above the merged file",
             );
         });
         widgets::form_row(ui, LABEL, "Tab width", |ui| {

@@ -75,5 +75,10 @@ fn changed_files_show_as_a_tree_of_their_folders() {
     // Back to a list: kept for every list.
     harness.get_by_label("Show the files as a list").click();
     wait_for_label(&mut harness, "src/core/a.c");
-    assert!(!crate::preferences::Preferences::of(&harness.ctx).files.tree);
+    assert!(
+        !crate::preferences::Preferences::of(&harness.ctx)
+            .files
+            .lists
+            .is_tree()
+    );
 }

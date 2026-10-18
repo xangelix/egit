@@ -335,7 +335,7 @@ impl ChangesTable {
         let counts = counts
             .filter(|counts| counts.id == details.id)
             .map(|counts| counts.files.as_slice());
-        if Preferences::of(ui.ctx()).files.tree {
+        if Preferences::of(ui.ctx()).files.lists.is_tree() {
             let palette = Palette::of(ui.ctx());
             return self
                 .tree

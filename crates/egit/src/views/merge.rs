@@ -2,8 +2,11 @@
 //!
 //! Its conflicts are stepped through (the buttons, or Alt+↓ and Alt+↑; selecting lines in one
 //! selects it), each resolved by taking a side, both in either order, the base, or text edited
-//! by hand, and the resolution saved once none is left open. A conflict that isn't two texts
-//! (a side deleted, binary contents, a symbolic link, a submodule) offers whole sides instead.
+//! by hand, and the resolution saved once none is left open. Above the merged file (as the
+//! preferences say), each side whole, side by side: the current one and the incoming one, each
+//! scrolled to the selected conflict, a side taken from its own header. A conflict that isn't two
+//! texts (a side deleted, binary contents, a symbolic link, a submodule) offers whole sides
+//! instead.
 
 use std::fmt::Write as _;
 use std::ops::RangeInclusive;
@@ -18,7 +21,11 @@ use super::actions;
 use super::history::{ID_DIGITS, Shared};
 use crate::app::Action;
 use crate::grid::TextGrid;
-use crate::merge::{Choice, ConflictFile, Labels, MergeDocument, Shown, build, read_conflict};
+use crate::merge::{
+    Choice, ConflictFile, Labels, MergeDocument, Shown, SideDocuments, SideShown, build,
+    build_sides, read_conflict,
+};
+use crate::preferences::Preferences;
 use crate::problem::Problem;
 use crate::staging::{Resolve, ResolveRequest, StageRequest};
 use crate::theme::Weighted as _;
@@ -50,6 +57,15 @@ pub(super) struct MergeView {
     scroll_to: Option<usize>,
     /// The grid's selection last frame (a new one selects its conflict).
     selection_seen: Option<(usize, RangeInclusive<u32>)>,
+    /// Each side whole, for the conflict read (made once per read), shown above.
+    sides: Bind<Arc<SideDocuments>, Problem>,
+    sides_for: Option<Arc<ConflictFile>>,
+    current_grid: TextGrid,
+    incoming_grid: TextGrid,
+    /// A conflict the sides scroll to once they are made.
+    sides_scroll_to: Option<usize>,
+    /// The sides' selections last frame.
+    sides_seen: [Option<(usize, RangeInclusive<u32>)>; 2],
     cancel: CancelToken,
 }
 
@@ -65,6 +81,11 @@ impl MergeView {
     pub(super) fn new(shared: &Shared<'_>, path: BString, wrap: bool) -> Self {
         let mut grid = TextGrid::new(("merge", shared.id));
         grid.set_wrap(wrap);
+        let side_grid = |name: &str| {
+            let mut grid = TextGrid::new((name, shared.id));
+            grid.set_wrap(wrap);
+            grid
+        };
         let mut view = Self {
             path,
             file: Bind::new(true),
@@ -80,6 +101,12 @@ impl MergeView {
             editing: None,
             scroll_to: Some(0),
             selection_seen: None,
+            sides: Bind::new(true),
+            sides_for: None,
+            current_grid: side_grid("merge-current"),
+            incoming_grid: side_grid("merge-incoming"),
+            sides_scroll_to: Some(0),
+            sides_seen: [None, None],
             cancel: CancelToken::new(),
         };
         view.read(shared);
@@ -104,7 +131,11 @@ impl MergeView {
 
     /// Whether Escape belongs to it (a selection, the find bar, or text being edited).
     pub(super) const fn takes_escape(&self) -> bool {
-        self.grid.has_selection() || self.grid.is_finding() || self.editing.is_some()
+        self.grid.has_selection()
+            || self.grid.is_finding()
+            || self.current_grid.has_selection()
+            || self.incoming_grid.has_selection()
+            || self.editing.is_some()
     }
 
     /// Takes in the conflict read: a new one (its sides changed) starts its choices over.
@@ -146,12 +177,14 @@ impl MergeView {
             self.selected = next;
         }
         self.scroll_to = Some(self.selected);
+        self.sides_scroll_to = Some(self.selected);
     }
 
-    /// Selects conflict `index`, and scrolls to it.
+    /// Selects conflict `index`, and scrolls to it (the sides too).
     const fn select(&mut self, index: usize) {
         self.selected = index;
         self.scroll_to = Some(index);
+        self.sides_scroll_to = Some(index);
     }
 
     fn open_conflicts(&self) -> usize {
@@ -367,11 +400,137 @@ fn text(
         }
         view.selection_seen = selection;
     }
+    if Preferences::of(ui.ctx()).files.merge_panes {
+        sides(ui, shared, view, file);
+    }
     let shown = Shown {
         document: &document,
         selected: Some(view.selected),
     };
     view.grid.show(ui, &shown);
+}
+
+/// Each side whole, side by side over the merged file (made in a job once per conflict read),
+/// each scrolled to the selected conflict; lines selected in one select their conflict.
+fn sides(ui: &mut Ui, shared: &Shared<'_>, view: &mut MergeView, file: &Arc<ConflictFile>) {
+    let fresh = view
+        .sides_for
+        .as_ref()
+        .is_none_or(|made| !Arc::ptr_eq(made, file));
+    if fresh {
+        view.sides_for = Some(Arc::clone(file));
+        view.sides.request(build_sides(Arc::clone(file)));
+        view.sides_scroll_to = Some(view.selected);
+    }
+    let room = egui::vec2(
+        ui.available_width(),
+        (ui.available_height() * 0.45).max(140.0),
+    );
+    let Some(Ok(documents)) = view.sides.read_as_ref().map(|made| made.map(Arc::clone)) else {
+        ui.allocate_ui(room, |ui| widgets::working(ui, "Laying out both sides…"));
+        return;
+    };
+    if let Some(index) = view.sides_scroll_to.take() {
+        for (grid, document) in [
+            (&mut view.current_grid, &documents.current),
+            (&mut view.incoming_grid, &documents.incoming),
+        ] {
+            if let Some(start) = document.start(index) {
+                grid.scroll_to_line(start.saturating_sub(ABOVE));
+            }
+        }
+    }
+    let labels = labels(shared, file);
+    let mut picked = None;
+    ui.allocate_ui(room, |ui| {
+        ui.columns(2, |columns| {
+            let [left, right] = columns else {
+                return;
+            };
+            let sides = [
+                (
+                    left,
+                    &documents.current,
+                    ("current", labels.current.as_str(), Choice::Current),
+                ),
+                (
+                    right,
+                    &documents.incoming,
+                    ("incoming", labels.incoming.as_str(), Choice::Incoming),
+                ),
+            ];
+            for (at, (column, document, (title, label, choice))) in sides.into_iter().enumerate() {
+                if side_header(column, (title, label), view.editing.is_none()) {
+                    picked = Some(choice);
+                }
+                let grid = if at == 0 {
+                    &mut view.current_grid
+                } else {
+                    &mut view.incoming_grid
+                };
+                let shown = SideShown {
+                    document,
+                    selected: Some(view.selected),
+                };
+                grid.show(column, &shown);
+                let selection = grid.selected_lines();
+                let seen = view.sides_seen.get_mut(at);
+                if let Some(seen) = seen
+                    && selection != *seen
+                {
+                    if let Some(conflict) = selection
+                        .as_ref()
+                        .and_then(|(_, lines)| document.conflict_at(*lines.start()))
+                    {
+                        view.selected = conflict;
+                        view.scroll_to = Some(conflict);
+                    }
+                    *seen = selection;
+                }
+            }
+        });
+    });
+    if let Some(choice) = picked {
+        view.choose(choice);
+    }
+    // A hairline between the sides and what they merge into.
+    let (line, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+    ui.painter().hline(
+        line.x_range(),
+        line.center().y,
+        egui::Stroke::new(1.0, shared.palette.border),
+    );
+}
+
+/// A side's header: its name (`side`: "current", "incoming") and where it comes from, and
+/// taking it for the selected conflict; returns whether that was asked.
+fn side_header(ui: &mut Ui, (side, label): (&str, &str), ready: bool) -> bool {
+    let mut take = false;
+    // Inset as the bars' contents are.
+    Frame::new()
+        .inner_margin(Margin {
+            left: 12,
+            right: 8,
+            top: 2,
+            bottom: 2,
+        })
+        .show(ui, |ui| {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), crate::theme::CONTROL),
+                Layout::left_to_right(Align::Center),
+                |ui| {
+                    ui.label(RichText::new(format!("The {side} side")).semibold());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        take = widgets::secondary(ui, ready, &format!("Take {side}"))
+                            .on_hover_text("Resolve the selected conflict with this side's lines")
+                            .clicked();
+                        ui.add(egui::Label::new(muted(ui, label)).truncate());
+                    });
+                },
+            );
+        });
+    take
 }
 
 /// The bars over the merged file: where the selected conflict is, stepping through them, and
@@ -385,7 +544,17 @@ fn bars(
 ) {
     widgets::bar(ui, |ui| {
         ui.horizontal(|ui| step_bar(ui, shared, view, file, actions));
-        ui.horizontal_wrapped(|ui| pick_bar(ui, view, file));
+        ui.horizontal_wrapped(|ui| {
+            pick_bar(ui, view, file);
+            widgets::toolbar_separator(ui);
+            let mut preferences = Preferences::of(ui.ctx());
+            if widgets::checkbox(ui, &mut preferences.files.merge_panes, "Both sides above")
+                .on_hover_text("Each side whole, side by side, over the merged file")
+                .changed()
+            {
+                actions.push(Action::SetPreferences(preferences));
+            }
+        });
     });
 }
 
@@ -625,12 +794,19 @@ mod tests {
             editing: None,
             scroll_to: None,
             selection_seen: None,
+            sides: Bind::new(true),
+            sides_for: None,
+            current_grid: TextGrid::new("current"),
+            incoming_grid: TextGrid::new("incoming"),
+            sides_scroll_to: None,
+            sides_seen: [None, None],
             cancel: CancelToken::new(),
         };
         view.choose(Choice::Incoming);
         // Past the resolved one.
         assert_eq!(view.selected, 2);
         assert_eq!(view.scroll_to, Some(2));
+        assert_eq!(view.sides_scroll_to, Some(2), "the sides follow");
         view.choose(Choice::Base);
         // None left: it stays.
         assert_eq!(view.selected, 2);

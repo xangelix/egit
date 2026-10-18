@@ -78,6 +78,23 @@ pub(crate) enum Dates {
     Ago,
 }
 
+/// How lists of changed files show.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum FileLists {
+    /// Each file's path, in a list.
+    #[default]
+    List,
+    /// A tree of their folders.
+    Tree,
+}
+
+impl FileLists {
+    /// Whether it is a tree.
+    pub(crate) const fn is_tree(self) -> bool {
+        matches!(self, Self::Tree)
+    }
+}
+
 /// How diffs and files show at first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -88,8 +105,10 @@ pub(crate) struct FilePreferences {
     pub(crate) wrap: bool,
     /// Cells between tab stops.
     pub(crate) tab_width: u8,
-    /// Whether lists of changed files show as a tree of their folders.
-    pub(crate) tree: bool,
+    /// How lists of changed files show.
+    pub(crate) lists: FileLists,
+    /// Whether the merge editor shows each side whole above the merged file.
+    pub(crate) merge_panes: bool,
 }
 
 impl Default for FilePreferences {
@@ -98,7 +117,8 @@ impl Default for FilePreferences {
             split_diffs: false,
             wrap: false,
             tab_width: 8,
-            tree: false,
+            lists: FileLists::List,
+            merge_panes: true,
         }
     }
 }
