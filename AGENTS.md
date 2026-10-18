@@ -233,7 +233,8 @@ writes paths), never `OsStrExt`.
     is `%s`; `co_authors`, each `Person` its `Co-authored-by` trailers name, in any case,
     once). `people.rs` — `recent_authors`: who wrote the last commits of every branch (`log
     --all --no-merges`, the stash left out), through the mailmap (`%aN`, `%aE`), most commits
-    first, each email once.
+    first, each email once; `map_contacts`, any number of `Name <email>` through the mailmap
+    (`check-mailmap --stdin`; one it can't read passed through as it is).
   - `history.rs` — `walk_history` (`rev-list --topo-order --parents`, streamed, lines split
     across chunks without copying; with a commit-graph it starts from `merge-base
     --independent` of `--all`'s tips, since git's topological walk first reads down to the
@@ -248,7 +249,9 @@ writes paths), never `OsStrExt`.
     `write_commit_graph`, `commits_between` (`rev-list <tip> ^<base>`, newest first, at most
     a limit: what a branch would bring in), `count_between` (the same, `--count`);
     `list_commits` (any commits, in the order given: `log --no-walk=unsorted --stdin -z`, each
-    `ListedCommit`'s name, parents, and subject);
+    `ListedCommit`'s name, parents, and subject); `commit_lines` (each commit's lines added and
+    removed, `CommitLines` with its time and mailmapped email, streamed: `log --no-walk=unsorted
+    --stdin --shortstat`, never fetching in a partial clone);
     `Repository::has_commit_graph` (without one, a topological walk outputs nothing until
     git has read all history: 6 s for Linux's 1.5M commits).
   - `diff.rs` — `file_diff`: one file's patch from `diff-tree -p` (plumbing, so no colour,
@@ -264,7 +267,8 @@ writes paths), never `OsStrExt`.
     its prefix (hunk headers as lines), its `DiffLineKind`, old and new numbers, and a
     missing final newline; a binary file is flagged and has no lines; `blobs`, its `index`
     line's (the work tree's side as git would store it). `lines.rs` — `Lines`,
-    the streamed-output splitter `walk_history` and `file_diff` share.
+    the streamed-output splitter `walk_history` and `file_diff` share (`ended_by(0)` for `-z`
+    records).
   - `patch.rs` — staging or unstaging picked lines. `apply_lines`: the index's blob with the
     picked lines of a diff moved across (`Direction::Stage`: the index against the work tree,
     picked additions go in and removals go out; `Unstage`: `HEAD` against the index, the other
@@ -307,7 +311,11 @@ writes paths), never `OsStrExt`.
   - `tree.rs` — for watching a work tree's folders: `tree_folders` (a commit's folders,
     `ls-tree -r -d`) and `ignored_paths` (`check-ignore -z --stdin`, which exits 1 when none
     is; folders end with `/` so folder-only patterns match them); and `tree_entry`, one path's
-    entry at a commit (`ls-tree -z --full-tree`, a literal pathspec), or none. `git_path`: a
+    entry at a commit (`ls-tree -z --full-tree`, a literal pathspec), or none; `tree_files`,
+    every file at a commit streamed with its size (`ls-tree -r -z -l`; sizes left out in a
+    partial clone, where they'd be fetched; submodules left out; `tests/stats.rs` lists them
+    (a name holding a newline), counts each commit's lines (a merge's and an empty one's none,
+    an email through the mailmap), and maps contacts). `git_path`: a
     path relative to a work tree as git writes it (`/` between folders, on Windows too).
   - `lfs.rs` — Git LFS through `git lfs`: `lfs_version` (none when it isn't installed),
     `lfs_set_up` (its filters in a configuration), `lfs_patterns` (`track --json`, git-lfs 3.4

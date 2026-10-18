@@ -105,9 +105,10 @@ pub use format_patch::{
 pub use forward::{ForwardFrom, Forwarded, fast_forward_branch, fast_forward_current};
 pub use git::{Git, GitOptions};
 pub use history::{
-    ChangeKind, CountedFile, FileChange, LineCounts, ListedCommit, RefKind, Reference, TreeEntry,
-    Walked, commit_changes, commits_between, count_between, history_tips, line_counts,
-    list_commits, list_references, walk_history, walk_history_from, write_commit_graph,
+    ChangeKind, CommitLines, CountedFile, FileChange, LineCounts, ListedCommit, RefKind, Reference,
+    TreeEntry, Walked, commit_changes, commit_lines, commits_between, count_between, history_tips,
+    line_counts, list_commits, list_references, walk_history, walk_history_from,
+    write_commit_graph,
 };
 pub use hooks::{Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
 pub use integrate::{
@@ -122,7 +123,7 @@ pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};
 pub use patch::{Direction, LinesError, apply_lines, write_index_content};
-pub use people::{Author, recent_authors};
+pub use people::{Author, map_contacts, recent_authors};
 pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use progress::{Progress, ProgressReport};
 pub use rebase::{
@@ -153,7 +154,7 @@ pub use submodule::{
     update_submodules_to,
 };
 pub use transcript::{Color, Line, LineKind, Log, MAX_LINE, MAX_LINES, Span, Style, Transcript};
-pub use tree::{git_path, ignored_paths, tree_entry, tree_folders};
+pub use tree::{git_path, ignored_paths, tree_entry, tree_files, tree_folders};
 pub use version::{GitVersion, VersionParseError};
 pub use worktree::{
     RemoveWorktreeError, Worktree, WorktreeFrom, add_worktree, lock_worktree, prune_worktrees,

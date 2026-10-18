@@ -650,6 +650,127 @@ pub fn write_commit_graph(
     command.output().map(drop)
 }
 
+/// The lines one commit added and removed (against its first parent; none for a merge).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommitLines<'a> {
+    /// When its author made it (seconds since the Unix epoch).
+    pub time: i64,
+    /// Its author's email, through the mailmap.
+    pub email: &'a BStr,
+    /// Lines added.
+    pub added: u64,
+    /// Lines removed.
+    pub removed: u64,
+}
+
+/// How many lines each of `commits` added and removed, handed to `each` as git counts them.
+///
+/// In the order given (`log --no-walk=unsorted --stdin --shortstat`): the diff against its
+/// first parent, a root's whole content, a merge's nothing. `each` may stop it.
+///
+/// Every commit is diffed, so many take a while; in a partial clone git fails rather than fetch
+/// the blobs it lacks (`GIT_NO_LAZY_FETCH`, where git honours it): don't count there.
+///
+/// # Errors
+///
+/// When git fails or is cancelled.
+pub fn commit_lines(
+    git: &Git,
+    repository: &Repository,
+    commits: &[ObjectId],
+    cancel: &CancelToken,
+    mut each: impl FnMut(CommitLines<'_>) -> ControlFlow<()>,
+) -> Result<(), GitError> {
+    if commits.is_empty() {
+        return Ok(());
+    }
+    let mut stdin = Vec::with_capacity(commits.len().saturating_mul(65));
+    for commit in commits {
+        stdin.extend_from_slice(commit.to_string().as_bytes());
+        stdin.push(b'\n');
+    }
+    // A commit's header line, until its counts (if any) or the next commit's header.
+    let mut pending: Option<(i64, BString)> = None;
+    let mut lines = Lines::default();
+    let mut flow = ControlFlow::Continue(());
+    git.read("log")
+        .config("log.showSignature", "false")
+        .args([
+            "--no-walk=unsorted",
+            "--stdin",
+            "--shortstat",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--format=%x00%at%x1f%aE",
+        ])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .non_interactive()
+        .current_dir(repository.work_tree())
+        .stdin(stdin)
+        .cancel_token(cancel)
+        .stream(|chunk| {
+            lines.feed(chunk, &mut |line| {
+                if let Some(header) = line.strip_prefix(b"\0") {
+                    if let Some((time, email)) = pending.take() {
+                        flow = each(CommitLines {
+                            time,
+                            email: email.as_bstr(),
+                            added: 0,
+                            removed: 0,
+                        });
+                        flow?;
+                    }
+                    let (time, email) = header.split_once_str(b"\x1f").unwrap_or((header, b""));
+                    let time = time.to_str().ok().and_then(|time| time.parse().ok());
+                    pending = time.map(|time| (time, BString::from(email)));
+                } else if line.contains_str("changed")
+                    && let Some((time, email)) = pending.take()
+                {
+                    let (added, removed) = shortstat(line);
+                    flow = each(CommitLines {
+                        time,
+                        email: email.as_bstr(),
+                        added,
+                        removed,
+                    });
+                    flow?;
+                }
+                // Any other line (the blank one before the counts) leaves the commit waiting.
+                ControlFlow::Continue(())
+            })
+        })?;
+    if flow.is_continue()
+        && let Some((time, email)) = pending
+    {
+        let _ = each(CommitLines {
+            time,
+            email: email.as_bstr(),
+            added: 0,
+            removed: 0,
+        });
+    }
+    Ok(())
+}
+
+/// The insertions and deletions of a `--shortstat` line (` 3 files changed, 10 insertions(+),
+/// 2 deletions(-)`; either may be missing).
+fn shortstat(line: &[u8]) -> (u64, u64) {
+    let (mut added, mut removed) = (0, 0);
+    for part in line.split_str(b",") {
+        let mut words = part.fields_with(char::is_whitespace);
+        let number = words
+            .next()
+            .and_then(|number| number.to_str().ok()?.parse().ok())
+            .unwrap_or(0);
+        match words.next() {
+            Some(word) if word.starts_with(b"insertion") => added = number,
+            Some(word) if word.starts_with(b"deletion") => removed = number,
+            _ => {}
+        }
+    }
+    (added, removed)
+}
+
 /// A commit as a list names it: its name, its parents, and its subject.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListedCommit {

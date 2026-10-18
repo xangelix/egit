@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use bstr::{BString, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _};
 
 use crate::cancel::CancelToken;
 use crate::commit::Person;
@@ -70,4 +70,54 @@ pub fn recent_authors(
     authors
         .sort_by(|(a_first, a), (b_first, b)| b.commits.cmp(&a.commits).then(a_first.cmp(b_first)));
     Ok(authors.into_iter().map(|(_, author)| author).collect())
+}
+
+/// Each of `contacts` (`Name <email>`) as the repository's mailmap names its person, in order
+/// (`check-mailmap --stdin`): one the mailmap doesn't know, or that isn't a contact git can
+/// read, comes back as it is.
+///
+/// # Errors
+///
+/// When git fails or is cancelled.
+pub fn map_contacts(
+    git: &Git,
+    repository: &Repository,
+    contacts: &[&BStr],
+    cancel: &CancelToken,
+) -> Result<Vec<BString>, GitError> {
+    // `check-mailmap` refuses (and stops at) a line that isn't `Name <email>`.
+    let readable = |contact: &BStr| {
+        contact.ends_with(b">") && contact.contains(&b'<') && !contact.contains(&b'\n')
+    };
+    let mut stdin = Vec::new();
+    for contact in contacts.iter().filter(|contact| readable(contact)) {
+        stdin.extend_from_slice(contact);
+        stdin.push(b'\n');
+    }
+    if stdin.is_empty() {
+        return Ok(contacts
+            .iter()
+            .map(|contact| (*contact).to_owned())
+            .collect());
+    }
+    let mapped = git
+        .read("check-mailmap")
+        .arg("--stdin")
+        .current_dir(repository.work_tree())
+        .stdin(stdin)
+        .cancel_token(cancel)
+        .output()?;
+    let mut answers = mapped.stdout.lines();
+    contacts
+        .iter()
+        .map(|contact| {
+            if !readable(contact) {
+                return Ok((*contact).to_owned());
+            }
+            answers
+                .next()
+                .map(BString::from)
+                .ok_or_else(|| GitError::unexpected("check-mailmap", "a contact for each given"))
+        })
+        .collect()
 }

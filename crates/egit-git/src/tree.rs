@@ -1,5 +1,5 @@
-//! A commit's tree: what it holds at a path, and its folders; and which of some paths git
-//! ignores (for watching a work tree's folders).
+//! A commit's tree: what it holds at a path, its folders, and its files with their sizes; and
+//! which of some paths git ignores (for watching a work tree's folders).
 
 use std::path::Path;
 
@@ -85,6 +85,55 @@ pub fn tree_folders(
         .filter(|path| !path.is_empty())
         .map(BString::from)
         .collect())
+}
+
+/// Every file `at` (a commit, or a name such as `HEAD`) holds, streamed to `each`.
+///
+/// Each with its path from the top and, when `sizes` is asked for, its size in bytes (`ls-tree
+/// -r -z --full-tree`, `-l`). Submodules aren't files: they are left out.
+///
+/// Sizes need every blob's header: in a partial clone without them, git fails rather than
+/// fetch them (`GIT_NO_LAZY_FETCH`, where git honours it), so leave sizes out there.
+///
+/// # Errors
+///
+/// When `at` names no commit, or git fails or is cancelled.
+pub fn tree_files(
+    git: &Git,
+    repository: &Repository,
+    at: &str,
+    sizes: bool,
+    cancel: &CancelToken,
+    mut each: impl FnMut(&BStr, Option<u64>),
+) -> Result<(), GitError> {
+    let mut command = git.read("ls-tree").args(["-r", "-z", "--full-tree"]);
+    if sizes {
+        command = command.arg("-l");
+    }
+    let mut records = crate::lines::Lines::ended_by(0);
+    command
+        .args(["--end-of-options", at])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .non_interactive()
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .stream(|chunk| {
+            records.feed(chunk, &mut |record| {
+                // `<mode> <type> <object>[ <size>]\t<path>`.
+                if let Some((meta, path)) = record.split_once_str(b"\t") {
+                    let mut fields = meta.fields_with(char::is_whitespace);
+                    let kind = fields.nth(1);
+                    let size = fields
+                        .nth(1)
+                        .and_then(|size| size.to_str().ok()?.parse().ok());
+                    if kind == Some(b"blob".as_slice()) {
+                        each(BStr::new(path), size);
+                    }
+                }
+                std::ops::ControlFlow::Continue(())
+            })
+        })
+        .map(drop)
 }
 
 /// Which of `paths` (from the top of the work tree) git ignores: those `.gitignore` and the
