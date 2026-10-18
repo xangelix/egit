@@ -311,6 +311,13 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         .result
         .read_as_ref()
         .map(|result| result.cloned().map_err(Clone::clone));
+    if let Some(Ok(outcome)) = &result
+        && let Some(dialog) = asks_next(pane.tasks.task.as_ref(), outcome)
+    {
+        view.dialog = Some(dialog);
+        view.seen = started;
+        return;
+    }
     let mut dismiss = false;
     match result {
         None => {}
@@ -322,56 +329,6 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
                 }
             });
         }
-        Some(Ok(Outcome::Pulled(Pulled::Diverged))) => {
-            view.dialog = Some(Dialog::Diverged { remember: false });
-            dismiss = true;
-        }
-        Some(Ok(Outcome::WouldOverwrite { paths, untracked })) => {
-            // A pull request's head is fetched by then: stashing and switching is what's left.
-            if let Some(Task::Switch(to) | Task::CheckOutPullRequest { to, .. }) = &pane.tasks.task
-            {
-                view.dialog = Some(Dialog::StashAndSwitch {
-                    to: to.clone(),
-                    paths,
-                    untracked,
-                });
-            }
-            dismiss = true;
-        }
-        Some(Ok(Outcome::NotMerged)) => {
-            match &pane.tasks.task {
-                Some(Task::DeleteBranch { name, .. }) => {
-                    view.dialog = Some(Dialog::DeleteBranch {
-                        name: name.clone(),
-                        unmerged: true,
-                        remote: None,
-                    });
-                }
-                Some(Task::DeleteBranchEverywhere {
-                    name,
-                    remote,
-                    remote_branch,
-                    ..
-                }) => {
-                    view.dialog = Some(Dialog::DeleteBranch {
-                        name: name.clone(),
-                        unmerged: true,
-                        remote: Some((remote.clone(), remote_branch.clone())),
-                    });
-                }
-                _ => {}
-            }
-            dismiss = true;
-        }
-        Some(Ok(Outcome::WorktreeChanges)) => {
-            if let Some(Task::RemoveWorktree { path, .. }) = &pane.tasks.task {
-                view.dialog = Some(Dialog::RemoveWorktree {
-                    path: path.clone(),
-                    changes: true,
-                });
-            }
-            dismiss = true;
-        }
         Some(Ok(Outcome::Pushed(pushed))) if !pushed.succeeded() => {
             refused(ui, view, pane, &pushed, &mut dismiss);
         }
@@ -382,7 +339,7 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
                 Outcome::Cancelled => palette.muted,
                 Outcome::Forwarded(Forwarded::NotFastForward)
                 | Outcome::Integrated(Integrated::Conflicts | Integrated::Stopped)
-                | Outcome::Pulled(Pulled::Conflicts) => palette.warn,
+                | Outcome::Pulled(Pulled::Conflicts | Pulled::ChangesConflicted) => palette.warn,
                 _ => palette.ok,
             };
             ui.horizontal_wrapped(|ui| {
@@ -428,6 +385,95 @@ fn follow_up(ui: &Ui, view: &mut TasksView, pane: &mut TaskPane<'_>, outcome: &O
     }
 }
 
+/// The dialog an outcome leads to, in place of words: diverged branches, changes in a
+/// switch's or pull's way, a branch not merged, a worktree with changes.
+fn asks_next(task: Option<&Task>, outcome: &Outcome) -> Option<Dialog> {
+    Some(match (outcome, task) {
+        (Outcome::Pulled(Pulled::Diverged), _) => Dialog::Diverged { remember: false },
+        (Outcome::Pulled(Pulled::ChangesInTheWay { paths, untracked }), Some(task)) => {
+            Dialog::PullStashing {
+                mode: pull_mode(task)?,
+                paths: paths.clone(),
+                untracked: *untracked,
+            }
+        }
+        // A pull request's head is fetched by then: stashing and switching is what's left.
+        (
+            Outcome::WouldOverwrite { paths, untracked },
+            Some(Task::Switch(to) | Task::CheckOutPullRequest { to, .. }),
+        ) => Dialog::StashAndSwitch {
+            to: to.clone(),
+            paths: paths.clone(),
+            untracked: *untracked,
+        },
+        (Outcome::NotMerged, Some(Task::DeleteBranch { name, .. })) => Dialog::DeleteBranch {
+            name: name.clone(),
+            unmerged: true,
+            remote: None,
+        },
+        (
+            Outcome::NotMerged,
+            Some(Task::DeleteBranchEverywhere {
+                name,
+                remote,
+                remote_branch,
+                ..
+            }),
+        ) => Dialog::DeleteBranch {
+            name: name.clone(),
+            unmerged: true,
+            remote: Some((remote.clone(), remote_branch.clone())),
+        },
+        (Outcome::WorktreeChanges, Some(Task::RemoveWorktree { path, .. })) => {
+            Dialog::RemoveWorktree {
+                path: path.clone(),
+                changes: true,
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// How a pull ended, in words.
+fn pulled_text(task: &Task, pulled: &Pulled) -> String {
+    match (task, pulled) {
+        (
+            Task::PullStashing {
+                untracked: true, ..
+            },
+            Pulled::Updated,
+        ) => "Pulled. Your changes wait in the stash list (the latest stash): apply it once your \
+              own files are out of the way."
+            .to_owned(),
+        (Task::PullStashing { .. }, Pulled::Updated) => {
+            "Pulled, and put your changes back.".to_owned()
+        }
+        (_, Pulled::Updated) => "Pulled.".to_owned(),
+        (_, Pulled::ChangesConflicted) => "Pulled, but your changes came back with conflicts: \
+             resolve the files marked Conflict and stage them. git kept your changes in the \
+             stash list too: drop that stash once you're done."
+            .to_owned(),
+        (_, Pulled::ChangesInTheWay { .. }) => {
+            "Your changes are in the pull's way: nothing was pulled.".to_owned()
+        }
+        (_, Pulled::Diverged) => "The branches have diverged: nothing was pulled.".to_owned(),
+        (_, Pulled::Conflicts) => {
+            "The pull stopped at conflicts: resolve the conflicts, stage them, then Continue."
+                .to_owned()
+        }
+    }
+}
+
+/// How a pull that changes were in the way of was asked to bring the upstream in.
+const fn pull_mode(task: &Task) -> Option<PullMode> {
+    match task {
+        Task::Pull(mode) | Task::PullStashing { mode, .. } => Some(*mode),
+        Task::PullAndRemember { rebase: true } => Some(PullMode::Rebase),
+        Task::PullAndRemember { rebase: false } => Some(PullMode::Merge),
+        _ => None,
+    }
+}
+
 /// How `task` ended, in words.
 fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String {
     const CONFLICTS: &str = "resolve the conflicts, stage them, then Continue.";
@@ -437,8 +483,7 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
     match (task, outcome) {
         (_, Outcome::Cancelled) => "Cancelled.".to_owned(),
         (_, Outcome::Fetched) => "Fetched.".to_owned(),
-        (_, Outcome::Pulled(Pulled::Updated)) => "Pulled.".to_owned(),
-        (_, Outcome::Pulled(_)) => format!("The pull stopped at conflicts: {CONFLICTS}"),
+        (task, Outcome::Pulled(pulled)) => pulled_text(task, pulled),
         (_, Outcome::Pushed(pushed)) => pushed_text(pushed),
         (_, Outcome::Aborted) => "Aborted: everything is as it was before.".to_owned(),
         (_, Outcome::Continued) => "Carried on.".to_owned(),

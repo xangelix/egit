@@ -165,11 +165,17 @@ pub fn switch(
     }
 }
 
-/// The files git said a switch would overwrite, if that is why it failed: the indented lines
-/// after `… would be overwritten by checkout:`.
+/// The files git said a switch would overwrite, if that is why it failed.
 fn would_overwrite(error: &GitError) -> Option<SwitchError> {
-    let said = error.failure()?.stderr.as_bytes();
-    let at = said.find("would be overwritten by checkout")?;
+    let (paths, untracked) = overwritten(error.failure()?.stderr.as_bytes())?;
+    Some(SwitchError::WouldOverwrite { paths, untracked })
+}
+
+/// The files git said a switch, merge, or pull would overwrite (`said`, its standard error),
+/// and whether they are files it doesn't track: the indented lines after `… would be
+/// overwritten by checkout:` (or `merge:`).
+pub(crate) fn overwritten(said: &[u8]) -> Option<(Vec<BString>, bool)> {
+    let at = said.find("would be overwritten by ")?;
     let before = said.get(..at)?;
     let untracked = before.rfind("untracked").is_some_and(|untracked| {
         before
@@ -183,7 +189,7 @@ fn would_overwrite(error: &GitError) -> Option<SwitchError> {
         .take_while(|line| line.starts_with(b"\t"))
         .map(|line| BString::from(line.trim_start_with(|c| c == '\t')))
         .collect();
-    Some(SwitchError::WouldOverwrite { paths, untracked })
+    Some((paths, untracked))
 }
 
 /// Makes a branch `name` at `at` (`git branch`), without switching to it.

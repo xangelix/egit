@@ -54,6 +54,13 @@ const NO_FETCH_DUE: Duration = Duration::from_secs(3600);
 pub(crate) enum Task {
     Fetch,
     Pull(PullMode),
+    /// Pull with changes not committed in its way: stashed first and put back after
+    /// (`--autostash`), or, when files git doesn't track are in the way (which that leaves
+    /// alone), stashed with them and left in the stash list.
+    PullStashing {
+        mode: PullMode,
+        untracked: bool,
+    },
     Push(PushOptions),
     Abort(Operation),
     Continue(Operation),
@@ -330,7 +337,10 @@ impl Task {
             | Self::PushTag { .. }
             | Self::DeleteRemoteBranch { .. }
             | Self::DeleteBranchEverywhere { .. } => &["pre-push", "reference-transaction"],
-            Self::Pull(_) | Self::PullAndRemember { .. } | Self::Continue(_) => &[
+            Self::Pull(_)
+            | Self::PullStashing { .. }
+            | Self::PullAndRemember { .. }
+            | Self::Continue(_) => &[
                 "pre-merge-commit",
                 "prepare-commit-msg",
                 "commit-msg",
@@ -391,9 +401,10 @@ impl Task {
                 from: ForwardSource::Here(_),
                 ..
             } => "Fast-forwarding",
-            Self::Pull(_) | Self::PullAndRemember { .. } | Self::FastForwardBranch { .. } => {
-                "Pulling"
-            }
+            Self::Pull(_)
+            | Self::PullStashing { .. }
+            | Self::PullAndRemember { .. }
+            | Self::FastForwardBranch { .. } => "Pulling",
             Self::Push(_) | Self::PushTag { .. } => "Pushing",
             Self::Abort(_) => "Aborting",
             Self::Continue(_) => "Continuing",
@@ -506,6 +517,23 @@ pub(crate) enum Outcome {
         made: usize,
         copied: Option<Arc<str>>,
     },
+}
+
+impl Outcome {
+    /// Whether git refused or stopped part-way (diverged branches, changes in the way,
+    /// conflicts, a refused push): nothing failed, but it didn't go all the way either.
+    pub(crate) fn stopped(&self) -> bool {
+        match self {
+            Self::Pulled(pulled) => !matches!(pulled, Pulled::Updated),
+            Self::Pushed(pushed) => !pushed.succeeded(),
+            Self::Integrated(integrated) => {
+                matches!(integrated, Integrated::Conflicts | Integrated::Stopped)
+            }
+            Self::Forwarded(forwarded) => matches!(forwarded, Forwarded::NotFastForward),
+            Self::WouldOverwrite { .. } | Self::NotMerged | Self::WorktreeChanges => true,
+            _ => false,
+        }
+    }
 }
 
 /// What background fetches brought the current branch's upstream, since the user last looked.
@@ -795,6 +823,7 @@ fn run(
         Task::Submodules(task) => crate::submodules::run(git, repository, task, progress, cancel),
         Task::Fetch
         | Task::Pull(_)
+        | Task::PullStashing { .. }
         | Task::PullAndRemember { .. }
         | Task::Push(_)
         | Task::PushTag { .. }
@@ -929,6 +958,70 @@ fn forge(
     }
 }
 
+/// Runs a pull task.
+fn pulling(
+    git: &Git,
+    repository: &Repository,
+    task: &Task,
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
+    match task {
+        Task::Pull(mode) => pull(git, repository, (*mode, false), progress, cancel)
+            .map(Outcome::Pulled)
+            .or_else(failed("Pulling failed")),
+        Task::PullStashing {
+            mode,
+            untracked: false,
+        } => pull(git, repository, (*mode, true), progress, cancel)
+            .map(Outcome::Pulled)
+            .or_else(failed("Pulling failed")),
+        Task::PullStashing {
+            mode,
+            untracked: true,
+        } => {
+            let stashed = stash_push(git, repository, "Before pulling", true, cancel)
+                .map(Outcome::Stashed)
+                .or_else(failed("Your changes couldn't be stashed"))?;
+            if stashed == Outcome::Cancelled {
+                return Ok(stashed);
+            }
+            pull(git, repository, (*mode, false), progress, cancel)
+                .map(Outcome::Pulled)
+                .or_else(failed("Pulling failed"))
+                .map_err(|problem| {
+                    Problem::new(
+                        problem.title.clone(),
+                        format!(
+                            "{} Your changes are in the stash list (the latest stash): apply it \
+                             once you are ready.",
+                            problem.detail
+                        ),
+                    )
+                })
+        }
+        Task::PullAndRemember { rebase } => {
+            let value = if *rebase { "true" } else { "false" };
+            set_config(
+                git,
+                ConfigTarget::Repository(repository.work_tree()),
+                "pull.rebase",
+                value,
+            )
+            .map_err(|error| Problem::git("The choice couldn't be remembered", &error))?;
+            let mode = if *rebase {
+                PullMode::Rebase
+            } else {
+                PullMode::Merge
+            };
+            pull(git, repository, (mode, false), progress, cancel)
+                .map(Outcome::Pulled)
+                .or_else(failed("Pulling failed"))
+        }
+        _ => Ok(Outcome::Done),
+    }
+}
+
 /// Exchanges with a remote.
 fn remote(
     git: &Git,
@@ -948,26 +1041,8 @@ fn remote(
                 .map(|()| Outcome::Fetched)
                 .or_else(failed("Fetching failed"))
         }
-        Task::Pull(mode) => pull(git, repository, *mode, progress, cancel)
-            .map(Outcome::Pulled)
-            .or_else(failed("Pulling failed")),
-        Task::PullAndRemember { rebase } => {
-            let value = if *rebase { "true" } else { "false" };
-            set_config(
-                git,
-                ConfigTarget::Repository(repository.work_tree()),
-                "pull.rebase",
-                value,
-            )
-            .map_err(|error| Problem::git("The choice couldn't be remembered", &error))?;
-            let mode = if *rebase {
-                PullMode::Rebase
-            } else {
-                PullMode::Merge
-            };
-            pull(git, repository, mode, progress, cancel)
-                .map(Outcome::Pulled)
-                .or_else(failed("Pulling failed"))
+        Task::Pull(_) | Task::PullStashing { .. } | Task::PullAndRemember { .. } => {
+            pulling(git, repository, task, progress, cancel)
         }
         Task::Push(options) => push(git, repository, options, progress, cancel)
             .map(Outcome::Pushed)

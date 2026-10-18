@@ -1347,6 +1347,58 @@ fn fetches_pulls_and_pushes_from_the_history() {
 }
 
 #[test]
+fn changes_in_a_pulls_way_are_stashed_and_put_back() {
+    let sandbox = Sandbox::new().unwrap();
+    let (colleague, mine) = shared_remote(&sandbox);
+    colleague_pushes(&sandbox, &colleague, "notes", "one\ntwo\nthree\n");
+    sandbox.run(&mine, "pull", &["--quiet"]).unwrap();
+    colleague_pushes(&sandbox, &colleague, "notes", "ONE\ntwo\nthree\n");
+    std::fs::write(mine.join("notes"), "one\ntwo\nTHREE\n").unwrap();
+    let read = |file: &str| std::fs::read_to_string(mine.join(file)).unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &mine);
+    settle(&mut harness, "the history", history_shown);
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+
+    // A change of mine to a file the pull changes: stashed, pulled, put back.
+    click_when_enabled(&mut harness, &format!("{}  Pull", icon::ARROW_DOWN));
+    wait_for_label(&mut harness, "Your changes are in the way");
+    render(&mut harness, "pull-in-the-way");
+    harness.get_by_label("Stash, pull, and put back").click();
+    wait_for_label(&mut harness, "Pulled, and put your changes back.");
+    assert_eq!(read("notes"), "ONE\ntwo\nTHREE\n");
+    assert_eq!(
+        commit_of(&sandbox, &mine, "HEAD"),
+        commit_of(&sandbox, &mine, "origin/main")
+    );
+
+    // A file the pull brings that I have untracked: everything stashed, then pulled.
+    colleague_pushes(&sandbox, &colleague, "new", "theirs\n");
+    std::fs::write(mine.join("new"), "mine\n").unwrap();
+    click_when_enabled(&mut harness, &format!("{}  Pull", icon::ARROW_DOWN));
+    wait_for_label(&mut harness, "Your files are in the way");
+    harness.get_by_label("Stash and pull").click();
+    wait_for_label(
+        &mut harness,
+        "Pulled. Your changes wait in the stash list (the latest stash): apply it once your \
+         own files are out of the way.",
+    );
+    assert_eq!(read("new"), "theirs\n");
+    assert_eq!(read("notes"), "ONE\ntwo\nthree\n");
+
+    // Undone: the pull taken back, the stash popped.
+    click_when_enabled(&mut harness, "Undo");
+    wait_for_label(&mut harness, "Undid the pull.");
+    assert_eq!(read("new"), "mine\n");
+    assert_eq!(read("notes"), "ONE\ntwo\nTHREE\n");
+    let stashes = sandbox.run(&mine, "stash", &["list"]).unwrap().stdout;
+    assert!(stashes.is_empty(), "{}", String::from_utf8_lossy(&stashes));
+}
+
+#[test]
 fn a_pull_stopped_at_conflicts_is_shown_and_aborted() {
     let sandbox = Sandbox::new().unwrap();
     let (colleague, mine) = shared_remote(&sandbox);

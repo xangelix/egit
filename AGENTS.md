@@ -371,7 +371,13 @@ writes paths), never `OsStrExt`.
     `fetch` (`FetchOptions`: `--all`, `--prune`, and in the background `non_interactive` and
     `--no-auto-maintenance`), `pull` (`PullMode`: as configured, merge, rebase, fast-forward
     only; `Pulled::Diverged` when git says the branches diverged, `Pulled::Conflicts` when a
-    merge or rebase stopped (from the repository's state)), `push` (`--porcelain`, one branch
+    merge or rebase stopped (from the repository's state); with `autostash`, `--autostash`:
+    changes put back after (staged ones not staged), or once a stopped merge or rebase is
+    continued or aborted; `Pulled::ChangesInTheWay` when they are, as git names them (none
+    when a rebase wants the work tree clean; untracked ones, which `--autostash` leaves, said
+    so: `branch::overwritten`, shared with the switch), `ChangesConflicted` when they came back
+    with conflicts (seen as a new `refs/stash`: git's words for it differ between versions)),
+    `push` (`--porcelain`, one branch
     to a remote branch; `--set-upstream`; `force` is `--force-with-lease
     --force-if-includes`; each ref's `PushFlag` and git's reason for a refusal, other lines as
     notes; a refusal isn't an error), `remotes`, `remote_urls` (each remote's URL as git
@@ -385,7 +391,8 @@ writes paths), never `OsStrExt`.
     `push_tag` and `delete_remote_branch` push one refspec the same way (`Push::run`).
     `tests/remote.rs` runs each against a bare repository through `file://` (and a clone
     cancelled while its remote, git's `ext::` transport running `sleep`, hasn't answered:
-    git removes its folder).
+    git removes its folder; a pull with changes in its way: named, put back, put back with
+    conflicts, untracked).
   - `conflict.rs` — a file in conflict. `conflict_sides`: its `ConflictSides` from
     `ls-files -u` (stage 1 the base, 2 current, 3 incoming; a side missing where it deleted
     the file; `merged_mode`). `merge_sides`: two texts merged as `git merge` merges them
@@ -941,7 +948,9 @@ writes paths), never `OsStrExt`.
     `reword_head`, which uncommitted changes don't stop, an earlier one's by a rebase) (their
     plans made in the job from
     `rebase_range`; `range_problem` says why a range won't do); stash, apply or pop or drop a
-    stash; `Action::Task`), run by `run` through five groups (remotes, history, rewriting,
+    stash; `PullStashing`, a pull with changes in its way: `--autostash`, or for files git
+    doesn't track a stash first (untracked too), left in the list and undone with the pull;
+    `Action::Task`), run by `run` through five groups (remotes, history, rewriting,
     references, stashes), under the `WriteLock`, its `Progress` shown and
     `CancelToken` stopped by `Action::CancelTask` (`Outcome::Cancelled`, not a failure).
     Besides git's results, an `Outcome` can be `Done`, `Integrated` (done, conflicts, empty),
@@ -994,7 +1003,9 @@ writes paths), never `OsStrExt`.
     each's words (`done`: "Saved 2 patches to ~/out.", merges left out said).
   - `output.rs` — a tab's output: `Run`s (a task or commit each: its title, `Transcript`, the
     hooks it was expected to run (`Task::hooks`, `commit_hooks`, among those installed), its
-    start and end (`Ended`: done, failed, cancelled), its `CancelToken` while it runs), the last
+    start and end (`Ended`: done, stopped (refused or stopped part-way, `Outcome::stopped`:
+    asked or shown elsewhere, so the panel doesn't open for it), failed, cancelled), its
+    `CancelToken` while it runs), the last
     16 kept. `RepoTab::run_task` and `commit` begin one and give git its transcript;
     `follow` (each frame) opens the panel while the latest's hooks have run 0.4 s, or when it
     failed saying something (once a run: closed, it stays so), and closes it 1.5 s after a run
@@ -1238,7 +1249,9 @@ writes paths), never `OsStrExt`.
     `views/dialogs.rs` — the `Dialog` asked (`TasksView::dialog`), one at a time in a modal,
     what is typed kept in its variant, ending by starting a task or closing: diverged
     branches (Rebase or Merge, optionally remembered as `pull.rebase`), a force push's
-    confirmation (`--force-with-lease --force-if-includes`), a branch's first push (remote and
+    confirmation (`--force-with-lease --force-if-includes`), changes in a pull's way ("Stash,
+    pull, and put back", or for files git doesn't track "Stash and pull"; `asks_next` picks
+    the dialog an outcome leads to), a branch's first push (remote and
     name; `--set-upstream`), an abort; a new branch's name (and "Switch to it"), a branch's new
     name, a tag's name and message (annotated with one), each checked by `check_ref_name` as
     it is typed (Enter confirms); and what is lost before deleting a branch (again, saying

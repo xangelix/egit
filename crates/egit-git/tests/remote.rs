@@ -268,7 +268,7 @@ fn pulls_forward_and_asks_when_branches_diverged() {
         pull(
             sandbox.git(),
             &repository,
-            mode,
+            (mode, false),
             &Progress::new(),
             &CancelToken::new(),
         )
@@ -295,6 +295,91 @@ fn pulls_forward_and_asks_when_branches_diverged() {
 }
 
 #[test]
+fn changes_in_a_pulls_way_are_named_or_stashed_and_put_back() {
+    let sandbox = Sandbox::new().unwrap();
+    let (_, url) = origin(&sandbox);
+    let (colleague, _) = cloned(&sandbox, &url, "colleague");
+    let (mine, repository) = cloned(&sandbox, &url, "mine");
+    let pulled = |mode, autostash| {
+        pull(
+            sandbox.git(),
+            &repository,
+            (mode, autostash),
+            &Progress::new(),
+            &CancelToken::new(),
+        )
+        .unwrap()
+    };
+    let stashes = || {
+        let out = sandbox.run(&mine, "stash", &["list"]).unwrap();
+        out.stdout
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .count()
+    };
+    commit_and_push(&sandbox, &colleague, "notes", "one\ntwo\nthree\n", "Notes");
+    assert_eq!(pulled(PullMode::AsConfigured, false), Pulled::Updated);
+
+    // Their change to a file mine changes too: named, nothing pulled; a rebase names nothing.
+    commit_and_push(&sandbox, &colleague, "notes", "ONE\ntwo\nthree\n", "Shout");
+    std::fs::write(mine.join("notes"), "one\ntwo\nTHREE\n").unwrap();
+    let in_the_way = Pulled::ChangesInTheWay {
+        paths: vec!["notes".into()],
+        untracked: false,
+    };
+    assert_eq!(pulled(PullMode::Merge, false), in_the_way);
+    assert_eq!(pulled(PullMode::FastForwardOnly, false), in_the_way);
+    assert_eq!(
+        pulled(PullMode::Rebase, false),
+        Pulled::ChangesInTheWay {
+            paths: Vec::new(),
+            untracked: false
+        }
+    );
+    assert_ne!(
+        rev(&sandbox, &mine, "HEAD"),
+        rev(&sandbox, &colleague, "HEAD")
+    );
+
+    // Stashed first, then put back: theirs and mine both, no stash left.
+    assert_eq!(pulled(PullMode::AsConfigured, true), Pulled::Updated);
+    assert_eq!(
+        rev(&sandbox, &mine, "HEAD"),
+        rev(&sandbox, &colleague, "HEAD")
+    );
+    assert_eq!(
+        std::fs::read_to_string(mine.join("notes")).unwrap(),
+        "ONE\ntwo\nTHREE\n"
+    );
+    assert_eq!(stashes(), 0);
+
+    // Put back over a change of theirs to the same line: conflicts, the stash kept.
+    commit_and_push(&sandbox, &colleague, "notes", "ONE\ntwo\n3\n", "Count");
+    assert_eq!(pulled(PullMode::Rebase, true), Pulled::ChangesConflicted);
+    assert_eq!(
+        rev(&sandbox, &mine, "HEAD"),
+        rev(&sandbox, &colleague, "HEAD")
+    );
+    assert_eq!(stashes(), 1);
+    sandbox
+        .run(&mine, "checkout", &["--theirs", "--", "notes"])
+        .unwrap();
+    sandbox.run(&mine, "reset", &["--quiet"]).unwrap();
+    sandbox.run(&mine, "stash", &["drop", "--quiet"]).unwrap();
+
+    // A file of theirs that mine has untracked: named, and a stash first doesn't help.
+    commit_and_push(&sandbox, &colleague, "new", "theirs\n", "New");
+    std::fs::write(mine.join("new"), "mine\n").unwrap();
+    assert_eq!(
+        pulled(PullMode::AsConfigured, true),
+        Pulled::ChangesInTheWay {
+            paths: vec!["new".into()],
+            untracked: true
+        }
+    );
+}
+
+#[test]
 fn a_conflicted_pull_is_aborted_or_continued() {
     let sandbox = Sandbox::new().unwrap();
     let (_, url) = origin(&sandbox);
@@ -306,7 +391,15 @@ fn a_conflicted_pull_is_aborted_or_continued() {
         .unwrap();
     let before = rev(&sandbox, &mine, "HEAD");
     let cancel = CancelToken::new();
-    let pulled = |mode| pull(sandbox.git(), &repository, mode, &Progress::new(), &cancel);
+    let pulled = |mode| {
+        pull(
+            sandbox.git(),
+            &repository,
+            (mode, false),
+            &Progress::new(),
+            &cancel,
+        )
+    };
 
     assert_eq!(pulled(PullMode::Merge).unwrap(), Pulled::Conflicts);
     assert_eq!(repository.operations().unwrap(), [Operation::Merge]);

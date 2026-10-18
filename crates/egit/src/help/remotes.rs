@@ -140,7 +140,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "Uncommitted changes in the way?",
-                "git refuses when the pull would overwrite them: commit or stash them first. Changes to other files are kept.",
+                "git refuses when the pull would overwrite them, and egit offers to stash them, pull, and put them back. Changes to other files are kept as they are.",
             ),
             (
                 "Conflicts?",
@@ -157,6 +157,37 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "Can I undo a pull?",
                 "Undo takes back what moved your branch (the merge or the rebase); the fetched commits stay as remote-tracking branches, which is harmless.",
+            ),
+        ],
+    },
+    Topic {
+        id: "pull-stashing",
+        group: Group::Remotes,
+        title: "Pulling with changes in the way",
+        on: &["Stash, pull, and put back", "Stash and pull"],
+        what: "Your uncommitted changes touch files the pull changes (or a rebasing pull wants \
+               the work tree clean), so git refused it. Stash, pull, and put back stashes them \
+               (staged and not), pulls, and applies them again. Files you have that git doesn't \
+               track, where the pull brings files of the same names, can't be put back over \
+               them: Stash and pull stashes everything (untracked files too) and leaves it in \
+               the stash list.",
+        git: "git pull --autostash; or git stash push --include-untracked, then git pull",
+        cases: &[
+            (
+                "My changes came back with conflicts?",
+                "They met the pull's changes to the same lines: resolve the files marked Conflict and stage them. git keeps your changes in the stash list too, until you drop that stash.",
+            ),
+            (
+                "What I staged is no longer staged?",
+                "git puts stashed changes back into the work tree only: stage them again.",
+            ),
+            (
+                "The pull stopped at conflicts of its own?",
+                "Your changes wait while you resolve them: Continue or Abort puts them back.",
+            ),
+            (
+                "Undo?",
+                "Undo takes back the pull and keeps your changes, unless they touch files the pull changed (git says which: stash them first). After Stash and pull it also pops the stash it made, as long as it is still the latest.",
             ),
         ],
     },

@@ -556,7 +556,10 @@ pub(crate) fn before(git: &Git, repository: &Repository, task: &Task) -> Before 
             tag: named(format!("refs/tags/{name}")),
             ..Before::default()
         },
-        Task::StashAndSwitch(_) => Before {
+        Task::StashAndSwitch(_)
+        | Task::PullStashing {
+            untracked: true, ..
+        } => Before {
             head: head(),
             stash: latest_stash(git, repository, &CancelToken::new())
                 .ok()
@@ -589,6 +592,7 @@ const fn moves_head(task: &Task) -> bool {
             | Task::FastForward { .. }
             | Task::ApplyPatch { .. }
             | Task::Pull(_)
+            | Task::PullStashing { .. }
             | Task::PullAndRemember { .. }
             | Task::Switch(_)
             | Task::StashAndSwitch(_)
@@ -650,12 +654,25 @@ pub(crate) fn noted(
             changes.push(Change::Switched { from, to: to_place });
         }
         task if moves_head(task) => {
+            let stashed_before = before.stash;
             let (from, to) = (before.head?, head()?);
             let (before, after) = (from.commit()?, to.commit()?);
             if before == after || !from.same_as(&to) {
                 return None;
             }
             what = moved_words(task);
+            // Only a stash this made, put back after the pull is taken back.
+            if let Task::PullStashing {
+                untracked: true, ..
+            } = task
+                && let Some(made) = latest().filter(|stash| Some(stash.id) != stashed_before)
+            {
+                changes.push(Change::Stashed {
+                    id: made.id,
+                    message: "Before pulling".to_owned(),
+                    untracked: true,
+                });
+            }
             // A soft or mixed reset is taken back the same way (its changes are uncommitted
             // ones, in the way of keeping them); anything else keeps what is uncommitted.
             let mode = match task {

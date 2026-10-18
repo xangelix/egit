@@ -119,7 +119,7 @@ pub fn stash_push(
 }
 
 /// The latest stash's commit, if there is one.
-fn latest(
+pub(crate) fn latest(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,

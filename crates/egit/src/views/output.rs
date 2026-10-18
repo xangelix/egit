@@ -100,6 +100,11 @@ fn status(ui: &mut Ui, run: &Run, now: Instant, palette: Palette) {
             palette.ok,
             format!("{} · done in {seconds:.1} s", run.title),
         ),
+        Some(Ended::Stopped) => (
+            Some(icon::WARNING_CIRCLE),
+            palette.warn,
+            format!("{} · stopped after {seconds:.1} s", run.title),
+        ),
         Some(Ended::Failed) => (
             Some(icon::X_CIRCLE),
             palette.danger,
@@ -184,6 +189,7 @@ fn how(run: &Run) -> &'static str {
     match run.ended.map(|(_, ended)| ended) {
         None => "running",
         Some(Ended::Done) => "done",
+        Some(Ended::Stopped) => "stopped",
         Some(Ended::Failed) => "failed",
         Some(Ended::Cancelled) => "cancelled",
     }

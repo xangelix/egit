@@ -183,31 +183,52 @@ pub enum PullMode {
 }
 
 /// How a pull ended, when git didn't fail outright.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pulled {
     /// The branch has the upstream's commits (or had them already).
     Updated,
+    /// The branch has the upstream's commits, but the changes stashed first (`autostash`)
+    /// came back with conflicts: they are in the work tree to resolve, and stay in the stash
+    /// list too until dropped.
+    ChangesConflicted,
     /// The branch and its upstream each have commits the other hasn't, and nothing says how
     /// to bring them together (or only fast-forwards are allowed): ask.
     Diverged,
     /// The merge or rebase stopped at conflicts: the user resolves them, then continues or
     /// aborts.
     Conflicts,
+    /// Changes not committed are in the way, and nothing was pulled: changes to `paths`
+    /// (none named when a rebase wants the work tree clean), or files of theirs git doesn't
+    /// track (`untracked`), which a stash first (`autostash`) doesn't take.
+    ChangesInTheWay {
+        /// The files, as git names them.
+        paths: Vec<BString>,
+        /// Whether they are files git doesn't track.
+        untracked: bool,
+    },
 }
 
 /// Pulls the current branch's upstream, as `mode` says.
 ///
+/// With `autostash`, the changes not committed are stashed first and put back after
+/// (`--autostash`: what was staged comes back not staged); a merge or rebase that stops puts
+/// them back once continued or aborted.
+///
 /// # Errors
 ///
-/// When git fails otherwise (no upstream, a remote that can't be reached, uncommitted changes
-/// in the way) or is cancelled.
+/// When git fails otherwise (no upstream, a remote that can't be reached) or is cancelled.
 pub fn pull(
     git: &Git,
     repository: &Repository,
-    mode: PullMode,
+    (mode, autostash): (PullMode, bool),
     progress: &Progress,
     cancel: &CancelToken,
 ) -> Result<Pulled, GitError> {
+    let stashed_before = if autostash {
+        crate::stash::latest(git, repository, cancel)?
+    } else {
+        None
+    };
     let mut command = git
         .write("pull")
         .arg("--progress")
@@ -221,7 +242,15 @@ pub fn pull(
         PullMode::Rebase => command.arg("--rebase"),
         PullMode::FastForwardOnly => command.arg("--ff-only"),
     };
+    if autostash {
+        command = command.arg("--autostash");
+    }
     let Err(error) = command.output() else {
+        // Changes that came back with conflicts are kept as a stash (git's words for it differ
+        // between versions; the stash list doesn't).
+        if autostash && crate::stash::latest(git, repository, cancel)? != stashed_before {
+            return Ok(Pulled::ChangesConflicted);
+        }
         return Ok(Pulled::Updated);
     };
     let Some(failure) = error.failure() else {
@@ -231,6 +260,15 @@ pub fn pull(
     if said.contains_str("divergent branches") || said.contains_str("Not possible to fast-forward")
     {
         return Ok(Pulled::Diverged);
+    }
+    if let Some((paths, untracked)) = crate::branch::overwritten(said) {
+        return Ok(Pulled::ChangesInTheWay { paths, untracked });
+    }
+    if said.contains_str("cannot pull with rebase") {
+        return Ok(Pulled::ChangesInTheWay {
+            paths: Vec::new(),
+            untracked: false,
+        });
     }
     let stopped = repository
         .operations()

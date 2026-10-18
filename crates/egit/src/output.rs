@@ -23,6 +23,9 @@ const CLOSE_AFTER: Duration = Duration::from_millis(1500);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ended {
     Done,
+    /// Refused or stopped part-way, as git may (diverged branches, changes in the way,
+    /// conflicts): what to do next is asked or shown elsewhere.
+    Stopped,
     Failed,
     Cancelled,
 }

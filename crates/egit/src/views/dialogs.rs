@@ -91,6 +91,13 @@ pub(crate) enum Dialog {
         paths: Vec<BString>,
         untracked: bool,
     },
+    /// Whether to stash the changes in the way of a pull, then pull (putting them back, unless
+    /// they are files git doesn't track).
+    PullStashing {
+        mode: PullMode,
+        paths: Vec<BString>,
+        untracked: bool,
+    },
     /// The work tree's changes to stash: a message, and whether untracked files go too.
     Stash { message: String, untracked: bool },
     /// Whether to drop a stash.
@@ -223,6 +230,11 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
             paths,
             untracked,
         } => stash_and_switch(ui, to, paths, *untracked),
+        Dialog::PullStashing {
+            mode,
+            paths,
+            untracked,
+        } => pull_stashing(ui, *mode, paths, *untracked),
         Dialog::Stash { message, untracked } => stash(ui, message, untracked),
         Dialog::DropStash(stash) => confirm_danger(
             ui,
@@ -910,16 +922,7 @@ fn stash_and_switch(
     paths: &[BString],
     untracked: bool,
 ) -> Option<Answer> {
-    const NAMED: usize = 5;
-    let mut named: Vec<String> = paths
-        .iter()
-        .take(NAMED)
-        .map(|path| path.to_str_lossy().into_owned())
-        .collect();
-    if paths.len() > NAMED {
-        named.push(format!("{} more", paths.len().saturating_sub(NAMED)));
-    }
-    let named = named.join(", ");
+    let named = named_paths(paths);
     let what = if untracked {
         format!("{named}, which git doesn't track")
     } else {
@@ -935,6 +938,66 @@ fn stash_and_switch(
         "Stash and switch",
         || Task::StashAndSwitch(to.clone()),
     )
+}
+
+/// Whether to stash the changes in a pull's way, then pull: put back after (`--autostash`),
+/// or, for files git doesn't track (which that leaves alone), kept in the stash list.
+fn pull_stashing(
+    ui: &mut Ui,
+    mode: PullMode,
+    paths: &[BString],
+    untracked: bool,
+) -> Option<Answer> {
+    let named = named_paths(paths);
+    if untracked {
+        return confirm(
+            ui,
+            "Your files are in the way",
+            &format!(
+                "The pull brings {named}, which you have too, but git doesn't track. Stash your \
+                 changes (untracked files too), then pull? They wait in the stash list: move \
+                 your own files aside before you apply it."
+            ),
+            "Stash and pull",
+            || Task::PullStashing {
+                mode,
+                untracked: true,
+            },
+        );
+    }
+    let what = if paths.is_empty() {
+        "A pull that rebases needs the work tree clean, and you have changes not committed."
+            .to_owned()
+    } else {
+        format!("Pulling would overwrite your changes to {named}.")
+    };
+    confirm(
+        ui,
+        "Your changes are in the way",
+        &format!(
+            "{what} Stash them, pull, and put them back? Where they meet the pull's changes, \
+             you resolve the conflicts as after a merge. What you staged comes back not staged."
+        ),
+        "Stash, pull, and put back",
+        || Task::PullStashing {
+            mode,
+            untracked: false,
+        },
+    )
+}
+
+/// Up to five paths by name, and how many more.
+fn named_paths(paths: &[BString]) -> String {
+    const NAMED: usize = 5;
+    let mut named: Vec<String> = paths
+        .iter()
+        .take(NAMED)
+        .map(|path| path.to_str_lossy().into_owned())
+        .collect();
+    if paths.len() > NAMED {
+        named.push(format!("{} more", paths.len().saturating_sub(NAMED)));
+    }
+    named.join(", ")
 }
 
 /// The work tree's changes to stash: a message, and whether untracked files go too.

@@ -302,6 +302,7 @@ impl RepoTab {
         if finished && let Some(run) = self.task_run.take() {
             let ended = match self.tasks.result.read_as_ref() {
                 Some(Ok(Outcome::Cancelled)) => Ended::Cancelled,
+                Some(Ok(outcome)) if outcome.stopped() => Ended::Stopped,
                 Some(Ok(_)) => Ended::Done,
                 _ => Ended::Failed,
             };
@@ -478,6 +479,7 @@ impl RepoTab {
                 Some(
                     Task::Fetch
                         | Task::Pull(_)
+                        | Task::PullStashing { .. }
                         | Task::PullAndRemember { .. }
                         | Task::Push(_)
                         | Task::PushTag { .. }
