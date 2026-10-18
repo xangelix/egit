@@ -8,6 +8,7 @@ mod patches;
 mod polish;
 mod scale;
 mod screens;
+mod scrolling;
 mod search;
 mod sidebar;
 mod undo;

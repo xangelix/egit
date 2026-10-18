@@ -690,7 +690,11 @@ writes paths), never `OsStrExt`.
     spacing for the previous one's; thin spaces take half a cell, egui's rule). The view keeps
     the `Position` at its top and an offset: wheel, keys (↑ ↓ PgUp PgDn Space, ⌘Home/End;
     ← → Home End sideways), and its own scroll bars (from `Rows`, rebuilt when the width or
-    text changes). Advances are cached per character until egui's font count changes
+    text changes; the thumb follows the part of a row scrolled too). It stops at its end with
+    the last row resting on the bottom edge (`end_of`, each frame; a text that fits stays at
+    its start): the wheel at the end moves nothing, rather than creeping a part of a row and
+    snapping back. Rows' backgrounds and gutters are clipped where the text is (above the
+    sideways bar). Advances are cached per character until egui's font count changes
     (`fonts::generation`). `show_panes` draws sources side by side, scrolled as one (one
     position, input, and scroll bar; the first pane's measure moves the rows). Dragging
     selects in one pane between cells (`selected_lines` gives the lines it covers; hit-tested
@@ -1216,7 +1220,10 @@ writes paths), never `OsStrExt`.
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
     series saved. `src/tests/search.rs` drives the search bar
     (by message, author, path, and name; both themes) and holds egit's own reading of messages
-    and authors to what `find_commits` finds on 300 assorted commits. `src/tests/scale.rs`
+    and authors to what `find_commits` finds on 300 assorted commits. `src/tests/scrolling.rs`
+    turns the wheel through a commit's 300 files and 300 files to stage, past their ends,
+    failing anything that moves back while scrolling down or moves once the wheel stops.
+    `src/tests/scale.rs`
     and `src/tests/corpus.rs` are the opt-in measurements (see Scale and Text corpus above).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
 - `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older

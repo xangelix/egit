@@ -179,6 +179,9 @@ pub(crate) struct TextGrid {
     font: Option<(FontId, usize)>,
     /// The rows a screen holds (paging moves by as many).
     screen_rows: u32,
+    /// The furthest it scrolls: the top row and its offset that rest the last row on the view's
+    /// bottom edge (worked out each frame, from the view's height).
+    end: (u64, f32),
     /// What is selected, if anything.
     selection: Option<Selection>,
     /// The rows drawn last frame, and each pane's text, for finding what the pointer is over.
@@ -248,6 +251,7 @@ impl TextGrid {
             advances: HashMap::new(),
             font: None,
             screen_rows: 1,
+            end: (0, 0.0),
             selection: None,
             drawn: Vec::new(),
             drawn_texts: Vec::new(),
@@ -373,6 +377,7 @@ impl TextGrid {
         };
         self.screen_rows = fit_cells(bottom - outer.top(), row).max(1);
         self.index_rows(measure, wrap);
+        self.end = self.end_of(row, bottom - outer.top());
 
         // The top stays on a row start, in the text.
         if measure.lines() > 0 {
@@ -526,6 +531,8 @@ impl TextGrid {
             .filter(|selection| selection.pane == pane.index)
             .map(Selection::ordered);
         let measure = source.measure();
+        // Rows' backgrounds and gutters stop where the text does: above the sideways bar.
+        let row_painter = painter.with_clip_rect(pane.rect.intersect(painter.clip_rect()));
         let text_painter = painter.with_clip_rect(
             text.expand2(vec2(
                 frame.cell * f32::from(u16::try_from(OVERHANG).unwrap_or(1)),
@@ -543,7 +550,7 @@ impl TextGrid {
         while let Some(at) = position
             && y < text.bottom()
         {
-            paint_row_frame(painter, pane, at, y, frame, font, palette, &mut gutter);
+            paint_row_frame(&row_painter, pane, at, y, frame, font, palette, &mut gutter);
             let cells = match frame.wrap {
                 Wrap::At(width) => at.cell..at.cell.saturating_add(width),
                 Wrap::Off => self.sideways..self.sideways.saturating_add(frame.visible_cells),
@@ -756,16 +763,35 @@ impl TextGrid {
         };
     }
 
-    /// Keeps the last row from scrolling above the bottom.
+    /// The furthest the view scrolls, `height` tall in rows of `row`: the top row and offset
+    /// with the last row resting on its bottom edge, or the start when it all fits.
+    fn end_of(&self, row: f32, height: f32) -> (u64, f32) {
+        let Some((rows, _)) = &self.rows else {
+            return (0, 0.0);
+        };
+        let fit = u64::from(fit_cells(height, row));
+        let spare = row.mul_add(-rows_length(fit), height);
+        let total = rows.total();
+        if total <= fit || row <= 0.0 {
+            (0, 0.0)
+        } else if spare > 0.5 {
+            (total.saturating_sub(fit).saturating_sub(1), row - spare)
+        } else {
+            (total.saturating_sub(fit), 0.0)
+        }
+    }
+
+    /// Keeps the text from scrolling past its end (see [`Self::end_of`]): at the end, wheel
+    /// turns move nothing, rather than creeping a part of a row and snapping back.
     fn clamp(&mut self, measure: &Measure) {
         let Some((rows, _)) = &self.rows else {
             return;
         };
-        let last_top = rows.total().saturating_sub(u64::from(self.screen_rows));
-        if rows.row_of(measure, self.top) > last_top {
-            let top = rows.at(measure, last_top);
-            self.top = top;
-            self.offset = 0.0;
+        let (last_top, last_offset) = self.end;
+        let at = rows.row_of(measure, self.top);
+        if at > last_top || (at == last_top && self.offset > last_offset) {
+            self.top = rows.at(measure, last_top);
+            self.offset = last_offset;
         }
     }
 
@@ -968,11 +994,26 @@ impl TextGrid {
         };
         let track = Rect::from_min_max(pos2(outer.right() - BAR, outer.top()), outer.max);
         let screen = u64::from(self.screen_rows);
-        let scrollable = rows.total().saturating_sub(screen);
+        let (last_top, last_offset) = self.end;
+        let scrollable = if last_offset > 0.0 {
+            last_top.saturating_add(1)
+        } else {
+            last_top
+        };
         let thumb = (ratio(screen, rows.total().max(1)) * track.height())
             .max(24.0)
             .min(track.height());
-        let at = ratio(rows.row_of(measure, self.top), scrollable.max(1));
+        // Where the top is, its part of a row too: the thumb glides as the text does.
+        let row = self.drawn_size.1.max(1.0);
+        let end = last_offset.mul_add(row.recip(), rows_length(last_top));
+        let now = self
+            .offset
+            .mul_add(row.recip(), rows_length(rows.row_of(measure, self.top)));
+        let at = if end > 0.0 {
+            (now / end).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
         let thumb_rect = Rect::from_min_size(
             pos2(
                 track.left() + 2.0,
@@ -991,9 +1032,10 @@ impl TextGrid {
         {
             let fraction = ((pointer.y - track.top() - thumb / 2.0) / (track.height() - thumb))
                 .clamp(0.0, 1.0);
-            let row = part(scrollable, fraction);
+            let row = part(last_top, fraction);
             self.top = rows.at(measure, row);
-            self.offset = 0.0;
+            // Dragged to the bottom: the very end, its last row on the edge.
+            self.offset = if row >= last_top { last_offset } else { 0.0 };
         }
         bar_thumb(ui, &response, thumb_rect, palette);
         self.rows = Some((rows, size));
@@ -1311,6 +1353,17 @@ fn ratio(part: u64, whole: u64) -> f32 {
     ((part as f64) / (whole as f64)).clamp(0.0, 1.0) as f32
 }
 
+/// A count of rows as a length in rows (past 2^24 rows a fraction of a row is lost: the thumb
+/// still moves a pixel at most a row on any screen).
+#[expect(
+    clippy::as_conversions,
+    clippy::cast_precision_loss,
+    reason = "a row count as a float, exact to 16 million rows"
+)]
+const fn rows_length(rows: u64) -> f32 {
+    rows as f32
+}
+
 /// `fraction` (0 to 1) of `whole`.
 #[expect(
     clippy::as_conversions,
@@ -1325,6 +1378,8 @@ fn part(whole: u64, fraction: f32) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
 
     #[test]
@@ -1367,6 +1422,82 @@ mod tests {
         assert_eq!(copied((1, 9), (1, 13)), "漢字");
         // Past a line's end, the whole line; a selection may end past the text.
         assert_eq!(copied((2, 0), (9, 0)), "last");
+    }
+
+    /// How far down (in points) a grid of `lines` numbered lines, in a window `height` tall,
+    /// stands after each frame while the wheel turns down `turns` times by `step`; the row's
+    /// height, and the last row drawn's line and bottom against the text's bottom edge.
+    fn wheeled(lines: u32, height: f32, step: f32, turns: usize) -> (Vec<f32>, f32, (u32, f32)) {
+        let text = (0..lines).fold(String::new(), |mut text, line| {
+            let _ = writeln!(text, "line {line}");
+            text
+        });
+        let state = (TextGrid::new("wheeled"), plain(&text));
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([400.0, height])
+            .build_ui_state(
+                |ui, (grid, source): &mut (TextGrid, Plain)| {
+                    grid.show(ui, source);
+                },
+                state,
+            );
+        harness.run_steps(2);
+        harness.hover_at(egui::pos2(200.0, height / 2.0));
+        let mut stood = Vec::new();
+        for _ in 0..turns {
+            harness.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -step),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            for _ in 0..3 {
+                harness.step();
+                let (grid, source) = harness.state();
+                let row = grid.drawn_size.1;
+                let first = grid
+                    .rows
+                    .as_ref()
+                    .map_or(0, |(rows, _)| rows.row_of(source.measure(), grid.top));
+                stood.push(row.mul_add(rows_length(first), grid.offset));
+            }
+        }
+        let (grid, _) = harness.state();
+        let row = grid.drawn_size.1;
+        let last = grid
+            .drawn
+            .last()
+            .map_or((0, 0.0), |drawn| (drawn.line, drawn.top + row));
+        let bottom = grid.drawn_texts.first().map_or(0.0, egui::Rect::bottom);
+        (stood, row, (last.0, last.1 - bottom))
+    }
+
+    #[test]
+    fn the_wheel_scrolls_smoothly_to_the_end_and_rests_there() {
+        let (stood, row, (last, past)) = wheeled(200, 300.0, 37.0, 120);
+        assert!(row > 0.0);
+        // Never back up while going down.
+        for pair in stood.windows(2) {
+            assert!(pair[1] >= pair[0] - 0.01, "backed up: {pair:?}");
+        }
+        // At the end: further turns move nothing (no creeping and snapping back), the last
+        // line drawn, resting on the bottom edge.
+        let tail = &stood[stood.len() - 30..];
+        assert!(
+            tail.iter().all(|at| (at - tail[0]).abs() < 0.01),
+            "moves at the end: {tail:?}"
+        );
+        assert_eq!(last, 199);
+        assert!(
+            past.abs() < 0.5,
+            "the last row ends {past} from the bottom edge"
+        );
+    }
+
+    #[test]
+    fn a_text_shorter_than_the_view_doesnt_move() {
+        let (stood, _, _) = wheeled(5, 300.0, 37.0, 10);
+        assert!(stood.iter().all(|at| at.abs() < 0.01), "{stood:?}");
     }
 
     #[test]
