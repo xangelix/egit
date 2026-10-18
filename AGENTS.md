@@ -37,6 +37,7 @@ it.
 | 23 | Alignment: to the point, edges, corners, padding | done; awaiting the owner's review |
 | 24 | Follow-ups: scrolling, tabs, the details' head, rewording in place | done; awaiting the owner's review |
 | 25 | The work in progress, people, trees, pictures, LFS, submodules, and Help | done; awaiting the owner's review |
+| 26 | Follow-ups: columns, long text, dates, Help for every word, signing commits picked together | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
