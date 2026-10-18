@@ -14,12 +14,14 @@ use egit_git::{CancelToken, Merge, Operation, Piece, WholeOnly};
 use egui::{Align, Frame, Key, Layout, Margin, Modifiers, RichText, TextEdit, Ui};
 use egui_async::Bind;
 
+use super::actions;
 use super::history::{ID_DIGITS, Shared};
 use crate::app::Action;
 use crate::grid::TextGrid;
 use crate::merge::{Choice, ConflictFile, Labels, MergeDocument, Shown, build, read_conflict};
 use crate::problem::Problem;
 use crate::staging::{Resolve, ResolveRequest, StageRequest};
+use crate::theme::Weighted as _;
 use crate::theme::icon;
 use crate::widgets::{self, muted};
 
@@ -422,7 +424,7 @@ fn step_bar(
             "Conflict {} of {count}",
             view.selected.saturating_add(1).min(count)
         ))
-        .strong(),
+        .semibold(),
     );
     ui.label(muted(ui, choice));
     let left = match open {
@@ -493,18 +495,25 @@ fn pick_bar(ui: &mut Ui, view: &mut MergeView, file: &ConflictFile) {
     // The rarer choices, a menu away.
     widgets::tool_menu(ui, icon::DOTS_THREE, "More", widgets::Look::Full, |ui| {
         ui.set_min_width(240.0);
-        if ui
-            .add_enabled(ready, egui::Button::new("Both, incoming first"))
-            .clicked()
-        {
+        let free = if editing {
+            Err("Finish editing this conflict first")
+        } else {
+            Ok(())
+        };
+        let can_pick = if ready { Ok(()) } else { free };
+        if actions::item(
+            ui,
+            (icon::ARROWS_LEFT_RIGHT, "Both, incoming first"),
+            can_pick,
+        ) {
             view.choose(Choice::IncomingThenCurrent);
         }
-        if ui
-            .add_enabled(
-                resolved && !editing,
-                egui::Button::new("Reopen this conflict"),
-            )
-            .clicked()
+        let reopen = if resolved {
+            free
+        } else {
+            Err("It is open already")
+        };
+        if actions::item(ui, (icon::ARROW_ARC_LEFT, "Reopen this conflict"), reopen)
             && let Some(slot) = view.choices.get_mut(view.selected)
         {
             *slot = Choice::Open;
@@ -512,11 +521,12 @@ fn pick_bar(ui: &mut Ui, view: &mut MergeView, file: &ConflictFile) {
             view.scroll_to = Some(view.selected);
         }
         ui.separator();
+        actions::menu_header(ui, "Every conflict");
         for (label, choice) in [
             ("All current", Choice::Current),
             ("All incoming", Choice::Incoming),
         ] {
-            if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
+            if actions::item(ui, (icon::CHECK_CIRCLE, label), can_pick) {
                 view.choices.fill(choice);
                 view.changed();
                 view.scroll_to = Some(view.selected);

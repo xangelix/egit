@@ -15,7 +15,7 @@ use egit_git::{
     BisectMark, BisectTerms, Bisection, Changes, ConfigSnapshot, ObjectId, PullMode, PushOptions,
     RefKind, Reference, ResetMode, Stash, SwitchTo, patch_file_name,
 };
-use egui::{Response, Ui};
+use egui::{Response, RichText, Ui};
 
 use super::dialogs::{Dialog, WorktreeAsked};
 use super::history::ID_DIGITS;
@@ -23,6 +23,8 @@ use crate::forge::{RepoForge, request_noun, request_number};
 use crate::format;
 use crate::history::{Refs, Scope};
 use crate::tasks::{ForwardSource, Task, remote_names, upstream_of};
+use crate::theme::Weighted as _;
+use crate::theme::{Palette, icon};
 use crate::widgets::muted;
 
 /// What a menu asked for.
@@ -202,9 +204,57 @@ fn split_remote<'n>(remotes: &[String], name: &'n BStr) -> Option<(&'n BStr, &'n
     Some((remote.as_bstr(), rest.get(1..)?.as_bstr()))
 }
 
-/// An item that may be disabled (with why on hover).
-pub(super) fn item(ui: &mut Ui, label: &str, allowed: Result<(), &str>) -> bool {
-    let response = ui.add_enabled(allowed.is_ok(), egui::Button::new(label));
+/// A menu's item: its icon, in a column of its own, then its words (it is named by them); a
+/// click closes the menu. Disabled, it says why on hover.
+pub(crate) fn item(ui: &mut Ui, entry: (&str, &str), allowed: Result<(), &str>) -> bool {
+    menu_entry(ui, entry, allowed, false)
+}
+
+/// A menu's item with a keyboard shortcut (written as a Mac writes it), shown at its right.
+pub(crate) fn shortcut_item(ui: &mut Ui, (glyph, label): (&str, &str), keys: &'static str) -> bool {
+    menu_rows(ui);
+    let palette = Palette::of(ui.ctx());
+    let button = egui::Button::new((RichText::new(glyph).color(palette.muted), label))
+        .shortcut_text(crate::commands::keys_text(keys));
+    let response = ui.add(button);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    if response.clicked() {
+        ui.close();
+        true
+    } else {
+        false
+    }
+}
+
+/// A menu's item for what loses work (deleting, dropping, a hard reset): in the danger colour.
+pub(crate) fn danger_item(ui: &mut Ui, entry: (&str, &str), allowed: Result<(), &str>) -> bool {
+    menu_entry(ui, entry, allowed, true)
+}
+
+/// Draws an item; returns whether it was clicked.
+fn menu_entry(
+    ui: &mut Ui,
+    (glyph, label): (&str, &str),
+    allowed: Result<(), &str>,
+    danger: bool,
+) -> bool {
+    menu_rows(ui);
+    let palette = Palette::of(ui.ctx());
+    let (glyph, words) = if danger {
+        (
+            RichText::new(glyph).color(palette.danger),
+            RichText::new(label).color(palette.danger),
+        )
+    } else {
+        (
+            RichText::new(glyph).color(palette.muted),
+            RichText::new(label),
+        )
+    };
+    let response = ui.add_enabled(allowed.is_ok(), egui::Button::new((glyph, words)));
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, allowed.is_ok(), label)
+    });
     let response = match allowed {
         Err(why) => response.on_disabled_hover_text(why),
         Ok(()) => response,
@@ -217,6 +267,53 @@ pub(super) fn item(ui: &mut Ui, label: &str, allowed: Result<(), &str>) -> bool 
     }
 }
 
+/// A menu's submenu: its icon and words, like an item's, then an arrow; `add_contents` in the
+/// submenu it opens.
+pub(crate) fn submenu(
+    ui: &mut Ui,
+    (glyph, label): (&str, &str),
+    add_contents: impl FnOnce(&mut Ui),
+) {
+    use egui::containers::menu::SubMenuButton;
+
+    menu_rows(ui);
+    let palette = Palette::of(ui.ctx());
+    let button = egui::Button::new((RichText::new(glyph).color(palette.muted), label))
+        .right_text(SubMenuButton::RIGHT_ARROW);
+    let (response, _) = SubMenuButton::from_button(button).ui(ui, add_contents);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+}
+
+/// A group's header in a menu: its name in small capitals, muted, over its items, which it
+/// lines up with.
+pub(crate) fn menu_header(ui: &mut Ui, title: &str) {
+    menu_rows(ui);
+    let palette = Palette::of(ui.ctx());
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.add_space(ui.spacing().button_padding.x);
+        ui.add(
+            egui::Label::new(
+                RichText::new(title.to_uppercase())
+                    .size(crate::theme::SMALL)
+                    .semibold()
+                    .extra_letter_spacing(0.6)
+                    .color(palette.muted),
+            )
+            .selectable(false),
+        );
+    });
+    ui.add_space(4.0);
+}
+
+/// Lays a menu's rows out: touching (each a whole target, the pointer never between two),
+/// their icons and words inset from the highlight's edge.
+pub(crate) fn menu_rows(ui: &mut Ui) {
+    let spacing = ui.spacing_mut();
+    spacing.item_spacing.y = 0.0;
+    spacing.button_padding = egui::vec2(8.0, 0.0);
+}
+
 /// A commit's context menu.
 pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &mut Option<Ask>) {
     let current = menus.current();
@@ -227,24 +324,89 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
         can
     };
     let mut ask = |what| *asked = Some(what);
-    if item(ui, "Switch here, without a branch", other) {
+    here_items(ui, menus, id, other, &mut ask);
+    ui.separator();
+    into_items(ui, menus, id, (other, can), &mut ask);
+    rewrite_items(ui, menus, id, &mut ask);
+    bisect_menu(ui, menus, id, &mut ask);
+    let reset = format!("Reset {current} to this commit");
+    submenu(ui, (icon::ARROW_U_UP_LEFT, &reset), |ui| {
+        if item(
+            ui,
+            (icon::ARROW_U_UP_LEFT, "Soft: keep the changes staged"),
+            other,
+        ) {
+            ask(Ask::Task(Task::Reset(id, ResetMode::Soft)));
+        }
+        if item(
+            ui,
+            (icon::ARROW_U_UP_LEFT, "Mixed: keep the changes, unstaged"),
+            other,
+        ) {
+            ask(Ask::Task(Task::Reset(id, ResetMode::Mixed)));
+        }
+        if danger_item(ui, (icon::TRASH, "Hard: discard the changes…"), can) {
+            ask(Ask::Dialog(Dialog::HardReset { at: id }));
+        }
+    });
+    if let Some(repository) = menus.forge.repositories.first() {
+        ui.separator();
+        let forge = repository.host().kind().name();
+        if item(
+            ui,
+            (icon::ARROW_SQUARE_OUT, &format!("Open on {forge}")),
+            Ok(()),
+        ) {
+            ask(Ask::Open(repository.commit_url(id)));
+        }
+        if item(
+            ui,
+            (icon::LINK, &format!("Copy link to this commit on {forge}")),
+            Ok(()),
+        ) {
+            ui.ctx().copy_text(repository.commit_url(id));
+        }
+    }
+}
+
+/// What can be made at a commit: switching there detached, a branch, a tag, a worktree.
+fn here_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    id: ObjectId,
+    other: Result<(), &str>,
+    ask: &mut impl FnMut(Ask),
+) {
+    if item(
+        ui,
+        (icon::GIT_COMMIT, "Switch here, without a branch"),
+        other,
+    ) {
         ask(Ask::Task(Task::Switch(SwitchTo::Detached(id))));
     }
-    if item(ui, "Create a branch here…", menus.idle()) {
+    if item(
+        ui,
+        (icon::GIT_BRANCH, "Create a branch here…"),
+        menus.idle(),
+    ) {
         ask(Ask::Dialog(Dialog::CreateBranch {
             at: id,
             name: String::new(),
             switch: true,
         }));
     }
-    if item(ui, "Create a tag here…", menus.idle()) {
+    if item(ui, (icon::TAG, "Create a tag here…"), menus.idle()) {
         ask(Ask::Dialog(Dialog::CreateTag {
             at: id,
             name: String::new(),
             message: String::new(),
         }));
     }
-    if item(ui, "Create a worktree here…", menus.idle()) {
+    if item(
+        ui,
+        (icon::TREE_STRUCTURE, "Create a worktree here…"),
+        menus.idle(),
+    ) {
         ask(Ask::Dialog(Dialog::AddWorktree {
             from: WorktreeAsked::Commit(id),
             path: menus.worktree_path(&id.abbreviated(ID_DIGITS).to_string()),
@@ -252,10 +414,27 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             open: true,
         }));
     }
-    ui.separator();
+}
+
+/// Bringing a commit into the current branch: merging it, rebasing onto it (keeping merges or
+/// not), cherry-picking it, reverting it (`other` allows all but reverting, which `can`
+/// allows: reverting HEAD itself is fine).
+fn into_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    id: ObjectId,
+    (other, can): (Result<(), &str>, Result<(), &str>),
+    ask: &mut impl FnMut(Ask),
+) {
+    let current = menus.current();
+    menu_header(ui, &format!("Into {current}"));
     let shown = id.abbreviated(ID_DIGITS).to_string();
     let what = BString::from(id.to_string());
-    if item(ui, &format!("Merge into {current}"), other) {
+    if item(
+        ui,
+        (icon::GIT_MERGE, &format!("Merge into {current}")),
+        other,
+    ) {
         ask(Ask::Task(Task::Merge {
             what: what.clone(),
             shown: shown.clone(),
@@ -268,7 +447,7 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             true,
         ),
     ] {
-        if item(ui, &label, other) {
+        if item(ui, (icon::STACK, &label), other) {
             ask(Ask::Task(Task::Rebase {
                 onto: what.clone(),
                 shown: shown.clone(),
@@ -276,34 +455,22 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             }));
         }
     }
-    if item(ui, &format!("Cherry-pick onto {current}"), other) {
+    if item(
+        ui,
+        (icon::CHERRIES, &format!("Cherry-pick onto {current}")),
+        other,
+    ) {
         ask(Ask::Task(Task::CherryPick(id)));
     }
-    if item(ui, &format!("Revert in {current}"), can) {
+    if item(
+        ui,
+        (
+            icon::ARROW_COUNTER_CLOCKWISE,
+            &format!("Revert in {current}"),
+        ),
+        can,
+    ) {
         ask(Ask::Task(Task::Revert(id)));
-    }
-    rewrite_items(ui, menus, id, &mut ask);
-    bisect_menu(ui, menus, id, &mut ask);
-    ui.menu_button(format!("Reset {current} to this commit"), |ui| {
-        if item(ui, "Soft: keep the changes staged", other) {
-            ask(Ask::Task(Task::Reset(id, ResetMode::Soft)));
-        }
-        if item(ui, "Mixed: keep the changes, unstaged", other) {
-            ask(Ask::Task(Task::Reset(id, ResetMode::Mixed)));
-        }
-        if item(ui, "Hard: discard the changes…", can) {
-            ask(Ask::Dialog(Dialog::HardReset { at: id }));
-        }
-    });
-    if let Some(repository) = menus.forge.repositories.first() {
-        ui.separator();
-        let forge = repository.host().kind().name();
-        if item(ui, &format!("Open on {forge}"), Ok(())) {
-            ask(Ask::Open(repository.commit_url(id)));
-        }
-        if item(ui, &format!("Copy link to this commit on {forge}"), Ok(())) {
-            ui.ctx().copy_text(repository.commit_url(id));
-        }
     }
 }
 
@@ -311,27 +478,36 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
 /// its parent, or dropping it.
 fn rewrite_items(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, ask: &mut impl FnMut(Ask)) {
     ui.separator();
+    menu_header(ui, &format!("Rewrite {}", menus.current()));
     let can = if menus.branch.is_none() {
         Err("Switch to a branch first: rewriting history needs one")
     } else {
         menus.can_change()
     };
-    if item(ui, "Rebase interactively from here…", can) {
+    if item(
+        ui,
+        (icon::LIST_NUMBERS, "Rebase interactively from here…"),
+        can,
+    ) {
         ask(Ask::Rebase {
             from: id,
             reword: None,
         });
     }
-    if item(ui, "Edit the message…", can) {
+    if item(ui, (icon::PENCIL_SIMPLE, "Edit the message…"), can) {
         ask(Ask::Rebase {
             from: id,
             reword: Some(id),
         });
     }
-    if item(ui, "Squash into its parent", can) {
+    if item(
+        ui,
+        (icon::ARROWS_IN_LINE_VERTICAL, "Squash into its parent"),
+        can,
+    ) {
         ask(Ask::Task(Task::SquashIntoParent(id)));
     }
-    if item(ui, "Drop this commit…", can) {
+    if danger_item(ui, (icon::TRASH, "Drop this commit…"), can) {
         ask(Ask::Dialog(Dialog::DropCommit(id)));
     }
     ui.separator();
@@ -340,15 +516,27 @@ fn rewrite_items(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, ask: &mut impl Fn
 /// Bisecting from a commit: marking it bad or good (the bisection's own words for them, when
 /// it has some), which starts one when none is under way; or skipping it.
 fn bisect_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, ask: &mut impl FnMut(Ask)) {
-    ui.menu_button("Bisect", |ui| {
+    submenu(ui, (icon::BUG, "Bisect"), |ui| {
         let (terms, allowed) = menus.bisect.map_or_else(
             || (BisectTerms::default(), menus.can_change()),
             |bisection| (bisection.terms.clone(), menus.idle()),
         );
         let marks = [
-            (BisectMark::Bad, format!("Mark as {}", terms.bad)),
-            (BisectMark::Good, format!("Mark as {}", terms.good)),
-            (BisectMark::Skip, "Skip it (it can't be tested)".to_owned()),
+            (
+                BisectMark::Bad,
+                icon::X_CIRCLE,
+                format!("Mark as {}", terms.bad),
+            ),
+            (
+                BisectMark::Good,
+                icon::CHECK_CIRCLE,
+                format!("Mark as {}", terms.good),
+            ),
+            (
+                BisectMark::Skip,
+                icon::SKIP_FORWARD,
+                "Skip it (it can't be tested)".to_owned(),
+            ),
         ];
         if menus.bisect.is_none() {
             ui.label(muted(
@@ -357,13 +545,13 @@ fn bisect_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, ask: &mut impl FnMu
                  checks out commits between them for you to test.",
             ));
         }
-        for (mark, label) in marks {
+        for (mark, glyph, label) in marks {
             let allowed = if mark == BisectMark::Skip && menus.bisect.is_none() {
                 Err("Skipping is for a bisection under way")
             } else {
                 allowed
             };
-            if item(ui, &label, allowed) {
+            if item(ui, (glyph, &label), allowed) {
                 ask(Ask::Task(Task::Bisect { mark, commit: id }));
             }
         }
@@ -380,7 +568,6 @@ pub(super) fn ref_menu(
 ) {
     let short = reference.short_name();
     let name = short.to_str_lossy();
-    let current = menus.current();
     let is_current = reference.kind == RefKind::Branch && menus.branch == Some(short);
     let can = menus.can_change();
     let other = if is_current {
@@ -399,32 +586,12 @@ pub(super) fn ref_menu(
                     SwitchTo::Branch(local) => format!("Switch to {}", local.to_str_lossy()),
                     SwitchTo::NewBranch { .. } | SwitchTo::Detached(_) => String::new(),
                 };
-                if item(ui, &label, other) {
+                if item(ui, (icon::CHECK_CIRCLE, &label), other) {
                     ask(Ask::Task(Task::Switch(to)));
                 }
             }
-            if item(ui, &format!("Merge {name} into {current}"), other) {
-                ask(Ask::Task(Task::Merge {
-                    what: reference.name.clone(),
-                    shown: name.clone().into_owned(),
-                }));
-            }
-            for (label, keep_merges) in [
-                (format!("Rebase {current} onto {name}"), false),
-                (
-                    format!("Rebase {current} onto {name}, keeping merges"),
-                    true,
-                ),
-            ] {
-                if item(ui, &label, other) {
-                    ask(Ask::Task(Task::Rebase {
-                        onto: reference.name.clone(),
-                        shown: name.clone().into_owned(),
-                        keep_merges,
-                    }));
-                }
-            }
-            forward_items(ui, menus, reference, is_current, &mut ask);
+            ui.separator();
+            ref_into_items(ui, menus, reference, (is_current, other), &mut ask);
             if reference.kind == RefKind::Branch {
                 ui.separator();
                 remote_items(ui, menus, short, is_current, &mut ask);
@@ -438,7 +605,15 @@ pub(super) fn ref_menu(
             copy_items(ui, menus, reference);
             ui.separator();
             graph_items(ui, menus, reference, &mut ask);
-            if item(ui, &format!("Show {name}'s reflog"), Ok(())) {
+            ui.separator();
+            if item(
+                ui,
+                (
+                    icon::CLOCK_COUNTER_CLOCKWISE,
+                    &format!("Show {name}'s reflog"),
+                ),
+                Ok(()),
+            ) {
                 ask(Ask::Reflog(reference.name.clone()));
             }
         }
@@ -449,14 +624,18 @@ pub(super) fn ref_menu(
                 .iter()
                 .find(|remote| *remote == "origin")
                 .or_else(|| remotes.first())
-                && item(ui, &format!("Push {name} to {remote}"), busy)
+                && item(
+                    ui,
+                    (icon::ARROW_UP, &format!("Push {name} to {remote}")),
+                    busy,
+                )
             {
                 ask(Ask::Task(Task::PushTag {
                     remote: remote.as_str().into(),
                     tag: short.to_owned(),
                 }));
             }
-            if item(ui, &format!("Delete the tag {name}…"), busy) {
+            if danger_item(ui, (icon::TRASH, &format!("Delete the tag {name}…")), busy) {
                 ask(Ask::Dialog(Dialog::DeleteTag(short.to_owned())));
             }
         }
@@ -500,13 +679,13 @@ fn pull_request_items(
                 request_noun(kind),
                 request_number(kind, open.1)
             );
-            if item(ui, &shown, Ok(())) {
+            if item(ui, (icon::GIT_PULL_REQUEST, &shown), Ok(())) {
                 ask(Ask::PullRequest(Some(open)));
             }
         }
         Some((remote, branch, head)) if reference.kind == RefKind::Branch => {
             let create = format!("Create {}…", request_noun(head.host().kind()));
-            if item(ui, &create, menus.idle()) {
+            if item(ui, (icon::GIT_PULL_REQUEST, &create), menus.idle()) {
                 ask(Ask::CreatePullRequest {
                     branch: short.to_owned(),
                     remote: remote.clone(),
@@ -518,12 +697,55 @@ fn pull_request_items(
         None if reference.kind == RefKind::Branch => {
             item(
                 ui,
-                &format!("Create {}…", request_noun(forge.kind())),
+                (
+                    icon::GIT_PULL_REQUEST,
+                    &format!("Create {}…", request_noun(forge.kind())),
+                ),
                 Err("Push it to a remote on GitHub or GitLab first"),
             );
         }
         Some(_) | None => {}
     }
+}
+
+/// Bringing a branch into the current one: merging it, rebasing onto it (keeping merges or
+/// not), fast-forwarding to it; `other` allows them (not for the current branch itself).
+fn ref_into_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    reference: &Reference,
+    (is_current, other): (bool, Result<(), &str>),
+    ask: &mut impl FnMut(Ask),
+) {
+    let current = menus.current();
+    let name = reference.short_name().to_str_lossy();
+    menu_header(ui, &format!("Into {current}"));
+    if item(
+        ui,
+        (icon::GIT_MERGE, &format!("Merge {name} into {current}")),
+        other,
+    ) {
+        ask(Ask::Task(Task::Merge {
+            what: reference.name.clone(),
+            shown: name.clone().into_owned(),
+        }));
+    }
+    for (label, keep_merges) in [
+        (format!("Rebase {current} onto {name}"), false),
+        (
+            format!("Rebase {current} onto {name}, keeping merges"),
+            true,
+        ),
+    ] {
+        if item(ui, (icon::STACK, &label), other) {
+            ask(Ask::Task(Task::Rebase {
+                onto: reference.name.clone(),
+                shown: name.clone().into_owned(),
+                keep_merges,
+            }));
+        }
+    }
+    forward_items(ui, menus, reference, is_current, ask);
 }
 
 /// Renaming and deleting a branch (on its remote, for a remote's).
@@ -539,12 +761,15 @@ fn branch_items(
     let busy = menus.idle();
     if reference.kind == RefKind::RemoteBranch {
         if let Some((remote, branch)) = menus.split_remote(short)
-            && item(
+            && danger_item(
                 ui,
-                &format!(
-                    "Delete {} on {}…",
-                    branch.to_str_lossy(),
-                    remote.to_str_lossy()
+                (
+                    icon::TRASH,
+                    &format!(
+                        "Delete {} on {}…",
+                        branch.to_str_lossy(),
+                        remote.to_str_lossy()
+                    ),
                 ),
                 busy,
             )
@@ -562,9 +787,12 @@ fn branch_items(
             } else {
                 busy
             };
-            if item(
+            if danger_item(
                 ui,
-                &format!("Delete {} and {name}…", local.to_str_lossy()),
+                (
+                    icon::TRASH,
+                    &format!("Delete {} and {name}…", local.to_str_lossy()),
+                ),
                 allowed,
             ) {
                 ask(Ask::Dialog(Dialog::DeleteBranch {
@@ -576,7 +804,7 @@ fn branch_items(
         }
         return;
     }
-    if item(ui, &format!("Rename {name}…"), busy) {
+    if item(ui, (icon::PENCIL_SIMPLE, &format!("Rename {name}…")), busy) {
         ask(Ask::Dialog(Dialog::RenameBranch {
             old: short.to_owned(),
             name: name.clone().into_owned(),
@@ -587,7 +815,7 @@ fn branch_items(
     } else {
         busy
     };
-    if item(ui, &format!("Delete {name}…"), deletable) {
+    if danger_item(ui, (icon::TRASH, &format!("Delete {name}…")), deletable) {
         ask(Ask::Dialog(Dialog::DeleteBranch {
             name: short.to_owned(),
             unmerged: false,
@@ -600,9 +828,12 @@ fn branch_items(
                 .as_bytes()
                 .as_bstr(),
         )
-        && item(
+        && danger_item(
             ui,
-            &format!("Delete {name} and {remote}/{branch}…"),
+            (
+                icon::TRASH,
+                &format!("Delete {name} and {remote}/{branch}…"),
+            ),
             deletable,
         )
     {
@@ -627,7 +858,10 @@ fn forward_items(
     if !is_current
         && item(
             ui,
-            &format!("Fast-forward {} to {name}", menus.current()),
+            (
+                icon::FAST_FORWARD,
+                &format!("Fast-forward {} to {name}", menus.current()),
+            ),
             menus.can_change(),
         )
     {
@@ -641,7 +875,10 @@ fn forward_items(
         && menus.branch != Some(local)
         && item(
             ui,
-            &format!("Fast-forward {} to {name}", local.to_str_lossy()),
+            (
+                icon::FAST_FORWARD,
+                &format!("Fast-forward {} to {name}", local.to_str_lossy()),
+            ),
             menus.idle(),
         )
     {
@@ -672,7 +909,7 @@ fn remote_items(
         } else {
             no_upstream
         };
-        if item(ui, "Pull", allowed) {
+        if item(ui, (icon::ARROW_DOWN, "Pull"), allowed) {
             ask(Ask::Task(Task::Pull(PullMode::AsConfigured)));
         }
     } else {
@@ -681,8 +918,14 @@ fn remote_items(
         } else {
             no_upstream
         };
-        if item(ui, &format!("Pull {name} (fast-forward only)"), allowed)
-            && let Some((remote, remote_branch)) = &upstream
+        if item(
+            ui,
+            (
+                icon::ARROW_DOWN,
+                &format!("Pull {name} (fast-forward only)"),
+            ),
+            allowed,
+        ) && let Some((remote, remote_branch)) = &upstream
         {
             ask(Ask::Task(Task::FastForwardBranch {
                 branch: branch.to_owned(),
@@ -698,7 +941,10 @@ fn remote_items(
     if let Some((remote, remote_branch)) = &upstream {
         if item(
             ui,
-            &format!("Push {name} to {remote}/{remote_branch}"),
+            (
+                icon::ARROW_UP,
+                &format!("Push {name} to {remote}/{remote_branch}"),
+            ),
             menus.idle(),
         ) {
             ask(Ask::Task(Task::Push(PushOptions {
@@ -715,7 +961,7 @@ fn remote_items(
         } else {
             menus.idle()
         };
-        if item(ui, &format!("Push {name}…"), allowed) {
+        if item(ui, (icon::ARROW_UP, &format!("Push {name}…")), allowed) {
             let remote = remotes
                 .iter()
                 .find(|remote| *remote == "origin")
@@ -731,7 +977,7 @@ fn remote_items(
             })));
         }
     }
-    if item(ui, "Set upstream…", menus.idle()) {
+    if item(ui, (icon::LINK, "Set upstream…"), menus.idle()) {
         let had = upstream.map(|(remote, branch)| format!("{remote}/{branch}"));
         let choices: Vec<String> = menus
             .refs
@@ -768,7 +1014,14 @@ fn worktree_item(
     } else {
         menus.idle()
     };
-    if !item(ui, &format!("Create a worktree from {name}…"), allowed) {
+    if !item(
+        ui,
+        (
+            icon::TREE_STRUCTURE,
+            &format!("Create a worktree from {name}…"),
+        ),
+        allowed,
+    ) {
         return;
     }
     let (from, branch) = match reference.kind {
@@ -803,7 +1056,7 @@ fn worktree_item(
 /// GitLab: a local branch's upstream's).
 fn copy_items(ui: &mut Ui, menus: &Menus<'_>, reference: &Reference) {
     let short = reference.short_name();
-    if item(ui, "Copy branch name", Ok(())) {
+    if item(ui, (icon::COPY, "Copy branch name"), Ok(())) {
         ui.ctx().copy_text(short.to_str_lossy().into_owned());
     }
     let on_remote = match reference.kind {
@@ -818,9 +1071,12 @@ fn copy_items(ui: &mut Ui, menus: &Menus<'_>, reference: &Reference) {
         && let Some(repository) = menus.forge.repository_of(remote.as_bstr())
         && item(
             ui,
-            &format!(
-                "Copy link to {branch} on {}",
-                repository.host().kind().name()
+            (
+                icon::LINK,
+                &format!(
+                    "Copy link to {branch} on {}",
+                    repository.host().kind().name()
+                ),
             ),
             Ok(()),
         )
@@ -836,14 +1092,19 @@ fn graph_items(ui: &mut Ui, menus: &Menus<'_>, reference: &Reference, ask: &mut 
     let full = &reference.name;
     let name = reference.short_name().to_str_lossy();
     let mut asked = |scope: Scope| ask(Ask::Scope(scope));
+    menu_header(ui, "In the graph");
     if scope.pinned.as_ref() == Some(full) {
-        if item(ui, &format!("Unpin {name}"), Ok(())) {
+        if item(ui, (icon::PUSH_PIN_SLASH, &format!("Unpin {name}")), Ok(())) {
             asked(Scope {
                 pinned: None,
                 ..scope.clone()
             });
         }
-    } else if item(ui, &format!("Pin {name} to the left"), Ok(())) {
+    } else if item(
+        ui,
+        (icon::PUSH_PIN, &format!("Pin {name} to the left")),
+        Ok(()),
+    ) {
         asked(Scope {
             pinned: Some(full.clone()),
             ..scope.clone()
@@ -857,17 +1118,21 @@ fn graph_items(ui: &mut Ui, menus: &Menus<'_>, reference: &Reference, ask: &mut 
         } else {
             Ok(())
         };
-        if item(ui, &format!("Hide {name} from the graph"), hiding) {
+        if item(
+            ui,
+            (icon::EYE_SLASH, &format!("Hide {name} from the graph")),
+            hiding,
+        ) {
             asked(scope.with_hidden(full.as_bstr(), true));
         }
-        if item(ui, &format!("Show only {name}"), Ok(())) {
+        if item(ui, (icon::FUNNEL, &format!("Show only {name}")), Ok(())) {
             asked(Scope {
                 only: vec![full.clone()],
                 ..scope.clone()
             });
         }
     } else if scope.only.contains(full) {
-        if item(ui, &format!("Hide {name}"), Ok(())) {
+        if item(ui, (icon::EYE_SLASH, &format!("Hide {name}")), Ok(())) {
             let only = scope
                 .only
                 .iter()
@@ -879,7 +1144,7 @@ fn graph_items(ui: &mut Ui, menus: &Menus<'_>, reference: &Reference, ask: &mut 
                 ..scope.clone()
             });
         }
-    } else if item(ui, &format!("Show {name} too"), Ok(())) {
+    } else if item(ui, (icon::EYE, &format!("Show {name} too")), Ok(())) {
         let mut only = scope.only.clone();
         only.push(full.clone());
         asked(Scope {
@@ -887,7 +1152,7 @@ fn graph_items(ui: &mut Ui, menus: &Menus<'_>, reference: &Reference, ask: &mut 
             ..scope.clone()
         });
     }
-    if !scope.only.is_empty() && item(ui, "Show every branch", Ok(())) {
+    if !scope.only.is_empty() && item(ui, (icon::EYE, "Show every branch"), Ok(())) {
         asked(Scope {
             only: Vec::new(),
             ..scope.clone()
@@ -916,17 +1181,21 @@ pub(super) fn patch_items(
     subject: Option<&str>,
     asked: &mut Option<Ask>,
 ) {
-    if item(ui, "Save as a patch…", menus.idle()) {
+    if item(ui, (icon::FLOPPY_DISK, "Save as a patch…"), menus.idle()) {
         let subject = subject.map_or_else(|| id.abbreviated(ID_DIGITS).to_string(), str::to_owned);
         *asked = Some(Ask::SavePatch {
             commit: id,
             name: patch_file_name(&subject),
         });
     }
-    if item(ui, "Copy as a patch", menus.idle()) {
+    if item(ui, (icon::COPY, "Copy as a patch"), menus.idle()) {
         *asked = Some(Ask::Task(Task::CopyPatch(id)));
     }
-    if item(ui, "Save this and later commits as patches…", menus.idle()) {
+    if item(
+        ui,
+        (icon::FLOPPY_DISK, "Save this and later commits as patches…"),
+        menus.idle(),
+    ) {
         *asked = Some(Ask::SavePatches { from: id });
     }
 }
@@ -956,10 +1225,18 @@ pub(super) fn patches_menu(
         } else {
             menus.idle()
         };
-        if item(ui, "Apply patches from files…", applying) {
+        if item(
+            ui,
+            (icon::FILE_ARROW_DOWN, "Apply patches from files…"),
+            applying,
+        ) {
             *asked = Some(Ask::ApplyFiles);
         }
-        if item(ui, "Paste a patch to apply…", applying) {
+        if item(
+            ui,
+            (icon::CLIPBOARD_TEXT, "Paste a patch to apply…"),
+            applying,
+        ) {
             *asked = Some(Ask::Paste);
         }
         ui.separator();
@@ -975,16 +1252,28 @@ pub(super) fn patches_menu(
         } else {
             Err("No tracked file changed (new files aren't in it until staged)")
         };
-        if item(ui, "Copy the staged changes as a patch", staged) {
+        if item(
+            ui,
+            (icon::COPY, "Copy the staged changes as a patch"),
+            staged,
+        ) {
             *asked = Some(Ask::Task(Task::CopyChanges(Changes::Staged)));
         }
-        if item(ui, "Copy every change as a patch", all) {
+        if item(ui, (icon::COPY, "Copy every change as a patch"), all) {
             *asked = Some(Ask::Task(Task::CopyChanges(Changes::All)));
         }
-        if item(ui, "Save the staged changes as a patch…", staged) {
+        if item(
+            ui,
+            (icon::FLOPPY_DISK, "Save the staged changes as a patch…"),
+            staged,
+        ) {
             *asked = Some(Ask::SaveChanges(Changes::Staged));
         }
-        if item(ui, "Save every change as a patch…", all) {
+        if item(
+            ui,
+            (icon::FLOPPY_DISK, "Save every change as a patch…"),
+            all,
+        ) {
             *asked = Some(Ask::SaveChanges(Changes::All));
         }
     })
@@ -1001,10 +1290,7 @@ pub(super) fn stash_menu(
     look: crate::widgets::Look,
     asked: &mut Option<Ask>,
 ) -> Response {
-    let label = match stashes.len() {
-        0 => "Stash".to_owned(),
-        count => format!("Stashes · {count}"),
-    };
+    let label = stash_label(stashes.len());
     let busy = menus.idle();
     let can_stash = if has_changes {
         busy
@@ -1014,7 +1300,7 @@ pub(super) fn stash_menu(
     let now = format::now();
     crate::widgets::tool_menu(ui, crate::theme::icon::ARCHIVE, &label, look, |ui| {
         ui.set_width(STASH_MENU_WIDTH);
-        if item(ui, "Stash the changes…", can_stash) {
+        if item(ui, (icon::ARCHIVE, "Stash the changes…"), can_stash) {
             *asked = Some(Ask::Dialog(Dialog::Stash {
                 message: String::new(),
                 untracked: true,
@@ -1024,7 +1310,7 @@ pub(super) fn stash_menu(
             return;
         }
         ui.separator();
-        ui.label(muted(ui, "Stashed, latest first").small());
+        menu_header(ui, "Stashes, latest first");
         // A row each, touching, in a list that scrolls once it is longer than a screenful:
         // only the rows in view are drawn. Its scroll bar takes room of its own, beside the
         // rows' ages rather than over them.
@@ -1041,6 +1327,14 @@ pub(super) fn stash_menu(
             });
     })
     .0
+}
+
+/// The stash menu's button's words: "Stash", or how many there are.
+pub(super) fn stash_label(stashes: usize) -> String {
+    match stashes {
+        0 => "Stash".to_owned(),
+        count => format!("Stashes · {count}"),
+    }
 }
 
 /// The stash menu's width: a stash's message is cut to fit.
@@ -1066,7 +1360,9 @@ fn stash_row(
 
     let when =
         u64::try_from(stash.time).map_or_else(|_| String::new(), |time| format::ago(time, now));
-    let button = egui::Button::new(egui::RichText::new(&stash.message).atom_shrink(true))
+    let glyph = RichText::new(icon::ARCHIVE).color(Palette::of(ui.ctx()).muted);
+    let message = RichText::new(&stash.message).atom_shrink(true);
+    let button = egui::Button::new((glyph, message))
         .right_text((muted(ui, &when), SubMenuButton::RIGHT_ARROW))
         .wrap_mode(egui::TextWrapMode::Truncate)
         .min_size(egui::vec2(ui.available_width(), crate::theme::CONTROL));
@@ -1076,14 +1372,14 @@ fn stash_row(
         ui.label(&stash.message);
         ui.separator();
         for (label, pop) in [("Apply", false), ("Pop", true)] {
-            if item(ui, label, busy) {
+            if item(ui, (icon::TRAY_ARROW_UP, label), busy) {
                 *asked = Some(Ask::Task(Task::ApplyStash {
                     stash: stash.clone(),
                     pop,
                 }));
             }
         }
-        if item(ui, "Drop…", busy) {
+        if danger_item(ui, (icon::TRASH, "Drop…"), busy) {
             *asked = Some(Ask::Dialog(Dialog::DropStash(stash.clone())));
         }
     });

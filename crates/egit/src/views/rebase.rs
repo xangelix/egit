@@ -22,6 +22,7 @@ use super::history::{ID_DIGITS, Shared};
 use crate::jobs;
 use crate::problem::Problem;
 use crate::tasks::{Task, range_problem};
+use crate::theme::Weighted as _;
 use crate::theme::icon;
 use crate::widgets::{self, muted};
 
@@ -374,7 +375,7 @@ fn bar(
                 {
                     event = Some(RebaseEvent::Close);
                 }
-                ui.label(RichText::new(format!("Rebase {branch} interactively")).strong());
+                ui.label(RichText::new(format!("Rebase {branch} interactively")).semibold());
                 ui.label(muted(
                     ui,
                     format!("{} commits, {onto}", range.commits.len()),

@@ -19,8 +19,8 @@ use egit_git::{
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
 use egui::{
-    Align, Color32, CornerRadius, Frame, Id, Key, KeyboardShortcut, Label, Margin, Modifiers, Pos2,
-    RichText, Sense, Stroke, Ui, WidgetInfo, WidgetType, pos2,
+    Align, Color32, CornerRadius, Frame, Id, Key, KeyboardShortcut, Label, Layout, Margin,
+    Modifiers, Pos2, Rect, RichText, Sense, Stroke, Ui, UiBuilder, WidgetInfo, WidgetType, pos2,
 };
 use egui_async::Bind;
 use egui_table_kit::layout::{
@@ -55,6 +55,7 @@ use crate::problem::Problem;
 use crate::repo::{RepoId, RepoPanel};
 use crate::tables::ChangesTable;
 use crate::tasks::Tasks;
+use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::undo::Journal;
 use crate::widgets::{self, Look, muted};
@@ -190,6 +191,8 @@ pub(crate) struct HistoryView {
     peek: Option<ObjectId>,
     /// Commands asked from the keyboard or the palette, carried out next frame.
     queued: Vec<RepoCommand>,
+    /// What the top bar measured last frame.
+    bar: BarRoom,
 }
 
 /// What can take the commit table's place, besides a changed file.
@@ -292,6 +295,7 @@ impl HistoryView {
             sidebar: Sidebar::default(),
             peek: None,
             queued: Vec::new(),
+            bar: BarRoom::default(),
         }
     }
 
@@ -810,7 +814,7 @@ fn bar_panel(
     pane: &mut TaskPane<'_>,
 ) {
     egui::Panel::top(Id::new(("history-bar", shared.id)))
-        .frame(Frame::new().inner_margin(Margin::symmetric(12, 8)))
+        .frame(chrome(shared).inner_margin(Margin::symmetric(12, 8)))
         .show(ui, |ui| {
             top_bar(ui, shared, history, work_tree, view, writing, pane);
             tasks::outcome(ui, &mut view.tasks, pane);
@@ -860,7 +864,7 @@ fn dropped_patches(ui: &Ui, id: RepoId, view: &mut HistoryView) {
                                 "{}  Drop patches to look at them, then apply them",
                                 icon::GIT_DIFF
                             ))
-                            .strong(),
+                            .semibold(),
                         );
                     });
             });
@@ -912,7 +916,7 @@ fn panels(
         .resizable(true)
         .default_size(380.0)
         .size_range(260.0..=900.0)
-        .frame(Frame::new().inner_margin(Margin::same(12)))
+        .frame(chrome(shared).inner_margin(Margin::same(12)))
         .show(ui, |ui| {
             if view.work_selected {
                 let commit = CommitSide {
@@ -960,6 +964,12 @@ fn panels(
         });
 }
 
+/// The frame of the history's chrome (its bar, the sidebar, the details): a tone of its own
+/// around the commit table, which shows on the window's background.
+fn chrome(shared: &Shared<'_>) -> Frame {
+    Frame::new().fill(shared.palette.panel)
+}
+
 /// The sidebar at the left (or the strip showing it again), and what it asks.
 fn side_panel(
     ui: &mut Ui,
@@ -975,7 +985,7 @@ fn side_panel(
             .resizable(true)
             .default_size(260.0)
             .size_range(180.0..=520.0)
-            .frame(Frame::new().inner_margin(Margin::symmetric(6, 0)))
+            .frame(chrome(shared).inner_margin(Margin::symmetric(6, 0)))
             .show(ui, |ui| {
                 sidebar::show(ui, shared, history.shown.refs(), lists, &mut view.sidebar)
             })
@@ -984,7 +994,7 @@ fn side_panel(
         egui::Panel::left(id)
             .resizable(false)
             .exact_size(28.0)
-            .frame(Frame::new().inner_margin(Margin::symmetric(4, 0)))
+            .frame(chrome(shared).inner_margin(Margin::symmetric(4, 0)))
             .show(ui, |ui| sidebar::hidden(ui, &mut view.sidebar));
         None
     };
@@ -1103,64 +1113,57 @@ fn top_bar(
     task_pane: &mut TaskPane<'_>,
 ) {
     let palette = shared.palette;
-    ui.horizontal(|ui| {
-        // Where the bar is narrow for all it shows, the views' and menus' buttons keep only
-        // their icons.
-        let has_changes = matches!(work_tree.status(), Some(Ok(status)) if !status.is_empty());
-        let has_requests = !shared.forge.repositories.is_empty();
-        let wanted = WIDE_TOP_BAR
-            + if has_changes { CHANGES_BUTTON } else { 0.0 }
-            + if has_requests { REQUESTS_BUTTON } else { 0.0 };
-        let look = if ui.available_width() < wanted {
-            Look::Compact
-        } else {
-            Look::Full
-        };
-        // First: nothing before them changes width (a count would), so they stay put.
-        undo_buttons(ui, shared, view, task_pane.actions);
-        widgets::toolbar_separator(ui);
-        search_button(ui, view, look);
-        reflog_button(ui, view, look);
-        let mut asked = None;
-        let has_changes = shared.work_status.is_some_and(|status| !status.is_empty());
-        let menus = shared.menus(history.shown.refs());
-        actions::stash_menu(ui, &menus, task_pane.stashes, has_changes, look, &mut asked);
-        let changes = shared
-            .work_status
-            .map_or_else(actions::WorkChanges::default, |status| {
-                actions::WorkChanges {
-                    staged: status
-                        .entries()
-                        .any(|entry| entry.staged() != egit_git::Change::Unmodified),
-                    tracked: status
-                        .entries()
-                        .any(|entry| entry.kind != egit_git::EntryKind::Untracked),
-                    has_commit: shared.head_commit().is_some(),
-                }
-            });
-        actions::patches_menu(ui, &menus, changes, look, &mut asked);
-        if let Some(asked) = asked {
-            carry_out(asked, shared, view, task_pane.actions);
-        }
-        repository_menu(ui, shared, look, task_pane.actions);
-        // What comes and goes follows the buttons: ids are counted in order, and a click
-        // pressed on one id and released on another is lost.
-        let rows = history.shown.rows();
-        let commits = if rows == 1 {
-            "1 commit".to_owned()
-        } else {
-            format!("{} commits", count(rows))
-        };
-        widgets::toolbar_separator(ui);
-        ui.label(muted(ui, commits));
-        work_tree_summary(ui, work_tree, view, palette);
-        pull_requests_button(ui, shared, view);
-        if history.is_loading() {
-            ui.spinner();
-            ui.label(muted(ui, "Reading the history…"));
-        }
-        tasks::bar(ui, &mut view.tasks, task_pane);
+    let row = ui
+        .allocate_space(egui::vec2(ui.available_width(), crate::theme::CONTROL))
+        .1;
+    // The task bar first, from the right: what is left of it is the views' and menus' room.
+    let right = tasks::bar(ui, &mut view.tasks, task_pane, row);
+    if !task_pane.tasks.is_busy() {
+        view.bar.right = right.width();
+    }
+    // A running task's progress takes no more than the bar did while idle: the look stays.
+    let taken = view.bar.right.max(right.width());
+    let room = Rect::from_min_max(
+        row.min,
+        pos2(
+            (row.right() - taken - BAR_GAP).max(row.left()),
+            row.bottom(),
+        ),
+    );
+    // Where the room is short for all the bar shows, the views' and menus' buttons keep only
+    // their icons. Decided from what the words would add to the bar drawn compact, which
+    // doesn't depend on the look drawn: it never flips back and forth.
+    let stash = actions::stash_label(task_pane.stashes.len());
+    let tools = [
+        ((icon::MAGNIFYING_GLASS, "Search"), false),
+        ((icon::CLOCK_COUNTER_CLOCKWISE, "Reflog"), false),
+        ((icon::ARCHIVE, stash.as_str()), true),
+        ((icon::GIT_DIFF, "Patches"), true),
+        ((icon::INFO, "Repository"), true),
+    ];
+    let words: f32 = tools
+        .iter()
+        .map(|&(tool, menu)| {
+            widgets::tool_width(ui, tool, Look::Full, menu)
+                - widgets::tool_width(ui, tool, Look::Compact, menu)
+        })
+        .sum();
+    let look = if view.bar.compact + words <= room.width() {
+        Look::Full
+    } else {
+        Look::Compact
+    };
+    let builder = UiBuilder::new()
+        .id_salt("top-bar-left")
+        .max_rect(room)
+        .layout(Layout::left_to_right(Align::Center));
+    let drawn = ui.scope_builder(builder, |ui| {
+        // Never over the task bar, however wide.
+        ui.set_clip_rect(room.intersect(ui.clip_rect()));
+        left_bar(ui, shared, history, work_tree, view, task_pane, look)
     });
+    let full = if look == Look::Full { words } else { 0.0 };
+    view.bar.compact = drawn.response.rect.width() + drawn.inner - full;
     let actions = &mut *task_pane.actions;
     if !history.shown.scope().is_everything() {
         scope_line(ui, shared, history.shown.scope(), actions);
@@ -1199,31 +1202,105 @@ fn top_bar(
     }
 }
 
-/// The width from which the top bar's views and menus show their words beside their icons,
-/// and what the uncommitted files' and the requests' buttons add to it when shown.
-const WIDE_TOP_BAR: f32 = 1140.0;
-const CHANGES_BUTTON: f32 = 170.0;
-const REQUESTS_BUTTON: f32 = 150.0;
+/// Between the top bar's left part and its task bar.
+const BAR_GAP: f32 = 16.0;
+
+/// What the top bar measured last frame, to choose its look before drawing it.
+#[derive(Clone, Copy, Debug, Default)]
+struct BarRoom {
+    /// Its left part's width with every view and menu compact, room kept for what comes and
+    /// goes (the uncommitted files' button, the spinner while the history is read).
+    compact: f32,
+    /// The task bar's width while no task runs.
+    right: f32,
+}
+
+/// The top bar's left part: undo and redo, the views and menus (drawn as `look` says), the
+/// commit count, the uncommitted files, and the requests. Returns the room kept for what
+/// isn't shown now but may come, so its coming never changes the look.
+fn left_bar(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    work_tree: &mut WorkTree,
+    view: &mut HistoryView,
+    task_pane: &mut TaskPane<'_>,
+    look: Look,
+) -> f32 {
+    // First: nothing before them changes width (a count would), so they stay put.
+    undo_buttons(ui, shared, view, task_pane.actions);
+    widgets::toolbar_separator(ui);
+    search_button(ui, view, look);
+    reflog_button(ui, view, look);
+    let mut asked = None;
+    let has_changes = shared.work_status.is_some_and(|status| !status.is_empty());
+    let menus = shared.menus(history.shown.refs());
+    actions::stash_menu(ui, &menus, task_pane.stashes, has_changes, look, &mut asked);
+    let changes = shared
+        .work_status
+        .map_or_else(actions::WorkChanges::default, |status| {
+            actions::WorkChanges {
+                staged: status
+                    .entries()
+                    .any(|entry| entry.staged() != egit_git::Change::Unmodified),
+                tracked: status
+                    .entries()
+                    .any(|entry| entry.kind != egit_git::EntryKind::Untracked),
+                has_commit: shared.head_commit().is_some(),
+            }
+        });
+    actions::patches_menu(ui, &menus, changes, look, &mut asked);
+    if let Some(asked) = asked {
+        carry_out(asked, shared, view, task_pane.actions);
+    }
+    repository_menu(ui, shared, look, task_pane.actions);
+    // What comes and goes follows the buttons: ids are counted in order, and a click
+    // pressed on one id and released on another is lost.
+    let rows = history.shown.rows();
+    let commits = if rows == 1 {
+        "1 commit".to_owned()
+    } else {
+        format!("{} commits", count(rows))
+    };
+    widgets::toolbar_separator(ui);
+    ui.label(muted(ui, commits));
+    let spacing = ui.spacing().item_spacing.x;
+    let mut kept = 0.0;
+    if history.is_loading() {
+        ui.add(egui::Spinner::new().size(SPINNER))
+            .on_hover_text("Reading the history…");
+    } else {
+        kept += SPINNER + spacing;
+    }
+    if !work_tree_summary(ui, work_tree, view, shared.palette) {
+        let button = (icon::PENCIL_SIMPLE, "1 uncommitted file");
+        kept += widgets::tool_width(ui, button, Look::Full, false) + spacing;
+    }
+    pull_requests_button(ui, shared, view);
+    kept
+}
+
+/// The top bar's spinner's size, while the history is read.
+const SPINNER: f32 = 16.0;
 
 /// The repository's menu: its overview and settings (each a page in place of the history), and
 /// reading it all again.
 fn repository_menu(ui: &mut Ui, shared: &Shared<'_>, look: Look, actions: &mut Vec<Action>) {
     widgets::tool_menu(ui, icon::INFO, "Repository", look, |ui| {
         ui.set_min_width(220.0);
-        for (text, panel) in [
-            ("Overview", RepoPanel::Overview),
-            ("Settings", RepoPanel::Configuration),
+        for (entry, panel) in [
+            ((icon::INFO, "Overview"), RepoPanel::Overview),
+            (
+                (icon::SLIDERS_HORIZONTAL, "Settings"),
+                RepoPanel::Configuration,
+            ),
         ] {
-            if ui.button(text).clicked() {
+            if actions::item(ui, entry, Ok(())) {
                 actions.push(Action::ShowPanel(shared.id, panel));
             }
         }
         ui.separator();
-        if ui
-            .button("Read it again")
-            .on_hover_text(crate::commands::keys_text("⌘R"))
-            .clicked()
-        {
+        if actions::shortcut_item(ui, (icon::ARROWS_CLOCKWISE, "Read it again"), "⌘R") {
             actions.push(Action::Refresh(shared.id));
         }
     });
@@ -1426,13 +1503,13 @@ fn pull_requests_button(ui: &mut Ui, shared: &Shared<'_>, view: &mut HistoryView
 }
 
 /// How many files have changes not yet committed, if any (a button showing them beside the
-/// history); or why that isn't known.
+/// history); or why that isn't known. Returns whether it drew the button.
 fn work_tree_summary(
     ui: &mut Ui,
     work_tree: &mut WorkTree,
     view: &mut HistoryView,
     palette: Palette,
-) {
+) -> bool {
     match work_tree.status() {
         Some(Ok(status)) if !status.is_empty() => {
             let files = status.len();
@@ -1462,6 +1539,7 @@ fn work_tree_summary(
             {
                 view.select_work();
             }
+            true
         }
         Some(Err(problem)) => {
             let problem = problem.to_string();
@@ -1473,8 +1551,9 @@ fn work_tree_summary(
                 .color(palette.danger),
             )
             .on_hover_text(problem);
+            false
         }
-        _ => {}
+        _ => false,
     }
 }
 
@@ -1833,9 +1912,14 @@ impl TableDelegate for CommitRows<'_> {
         };
         ui.add_space(GRAPH_MARGIN);
         ui.add(
-            Label::new(RichText::new(title).strong())
-                .selectable(false)
-                .truncate(),
+            Label::new(
+                RichText::new(title)
+                    .medium()
+                    .size(crate::theme::SMALL)
+                    .color(self.shared.palette.muted),
+            )
+            .selectable(false)
+            .truncate(),
         );
     }
 
@@ -1889,15 +1973,14 @@ impl TableDelegate for CommitRows<'_> {
         response.context_menu(|ui| {
             actions::commit_menu(ui, &menus, id, asked);
             ui.separator();
-            if ui.button("Copy commit name").clicked() {
+            actions::menu_header(ui, "Copy");
+            if actions::item(ui, (icon::COPY, "Copy commit name"), Ok(())) {
                 ui.ctx().copy_text(id.to_string());
-                ui.close();
             }
             if let Some(summary) = summaries.peek(&id)
-                && ui.button("Copy subject").clicked()
+                && actions::item(ui, (icon::COPY, "Copy subject"), Ok(()))
             {
                 ui.ctx().copy_text(summary.subject.to_string());
-                ui.close();
             }
             ui.separator();
             let subject = summaries
@@ -1958,7 +2041,7 @@ impl TableDelegate for CommitRows<'_> {
         let ago;
         let (text, color): (&str, Color32) = match cell.col_nr {
             1 => (&summary.subject, self.shared.palette.text),
-            2 => (&summary.author, self.shared.palette.text),
+            2 => (&summary.author, self.shared.palette.muted),
             _ if self.shared.preferences.dates == crate::preferences::Dates::Ago => {
                 ago = u64::try_from(summary.time)
                     .map_or_else(|_| String::new(), |time| crate::format::ago(time, self.now));
@@ -2157,7 +2240,7 @@ fn badges(
             .show(ui, |ui| {
                 let text = RichText::new(label).size(12.0).color(text);
                 ui.add(
-                    Label::new(if checked_out { text.strong() } else { text })
+                    Label::new(if checked_out { text.semibold() } else { text })
                         .selectable(false)
                         .sense(Sense::click()),
                 )
@@ -2245,18 +2328,15 @@ fn pull_badges(
             *asked = Some(Ask::PullRequest(Some(selected)));
         }
         response.context_menu(|ui| {
-            if ui
-                .button(format!("Show the {}", request_noun(kind)))
-                .clicked()
-            {
+            let show = format!("Show the {}", request_noun(kind));
+            if actions::item(ui, (icon::GIT_PULL_REQUEST, &show), Ok(())) {
                 *asked = Some(Ask::PullRequest(Some(selected)));
-                ui.close();
             }
+            let open = format!("Open on {}", kind.name());
             if let Some(repository) = shared.forge.repositories.get(badge.repository)
-                && ui.button(format!("Open on {}", kind.name())).clicked()
+                && actions::item(ui, (icon::ARROW_SQUARE_OUT, &open), Ok(()))
             {
                 *asked = Some(Ask::Open(repository.pull_request_url(badge.number)));
-                ui.close();
             }
         });
     }
@@ -2352,9 +2432,13 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
     ui.add_space(8.0);
     let counts = view.counting.of(shared, &shown);
     files_heading(ui, shown.changes.len(), counts.as_ref(), shared.palette);
-    let height = ui.available_height();
+    ui.add_space(4.0);
     let counts = counts.and_then(Result::ok);
-    if let Some(index) = view.changes.show(ui, &shown, counts.as_deref(), height)
+    let picked = widgets::list_box(ui, |ui| {
+        let height = ui.available_height();
+        view.changes.show(ui, &shown, counts.as_deref(), height)
+    });
+    if let Some(index) = picked
         && let Some(change) = shown.changes.get(index)
     {
         match &mut view.tool {
@@ -2378,34 +2462,33 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
     }
 }
 
-/// "3 files changed", and the lines they gained and lost once counted.
+/// The changed files' section title (named "3 files changed"), and the lines they gained and
+/// lost once counted, at its right.
 fn files_heading(
     ui: &mut Ui,
     files: usize,
     counts: Option<&Result<Arc<ChangeCounts>, Problem>>,
     palette: Palette,
 ) {
-    ui.horizontal(|ui| {
-        widgets::heading(
-            ui,
-            &if files == 1 {
-                "1 file changed".to_owned()
-            } else {
-                format!(
-                    "{} files changed",
-                    count(u64::try_from(files).unwrap_or(u64::MAX))
-                )
-            },
-        );
+    let name = if files == 1 {
+        "1 file changed".to_owned()
+    } else {
+        format!(
+            "{} files changed",
+            count(u64::try_from(files).unwrap_or(u64::MAX))
+        )
+    };
+    widgets::section_header(ui, ("Changed files", Some(files), &name), |ui| {
         match counts {
             Some(Ok(counts)) => {
+                // From the right: what was lost, then what was gained before it.
                 let total = counts.total;
-                ui.label(
-                    RichText::new(format!("+{}", count(u64::from(total.added)))).color(palette.ok),
-                );
                 ui.label(
                     RichText::new(format!("−{}", count(u64::from(total.removed))))
                         .color(palette.danger),
+                );
+                ui.label(
+                    RichText::new(format!("+{}", count(u64::from(total.added)))).color(palette.ok),
                 );
             }
             Some(Err(problem)) => {
@@ -2431,12 +2514,13 @@ fn commit_info(
     let refs = all.at(&details.id);
     let mut go_to = None;
     widgets::panel_title(ui, commit.subject().to_str_lossy());
+    // The description apart from the subject: a box of its own.
     let body = commit.body().trim_ascii();
     if !body.is_empty() {
-        ui.add_space(4.0);
-        ui.add(Label::new(body.to_str_lossy()).wrap());
+        ui.add_space(6.0);
+        widgets::text_box(ui, |ui| ui.add(Label::new(body.to_str_lossy()).wrap()));
     }
-    ui.add_space(10.0);
+    ui.add_space(12.0);
     ui.spacing_mut().item_spacing.y = 4.0;
     widgets::fact(ui, DETAIL_LABEL, "Commit", |ui| {
         // Within the room the copy button leaves: the details never push the panel wider.
@@ -2476,12 +2560,12 @@ fn commit_info(
             }
         }
     });
-    person(ui, "Author", &commit.author);
+    person(ui, ("Author", "Date"), &commit.author);
     let committed_apart = commit.committer.name != commit.author.name
         || commit.committer.email != commit.author.email
         || commit.committer.time != commit.author.time;
     if committed_apart {
-        person(ui, "Committer", &commit.committer);
+        person(ui, ("Committer", "Committed"), &commit.committer);
     }
     if commit.signed {
         widgets::fact_top(ui, DETAIL_LABEL, "Signature", |ui| {
@@ -2526,21 +2610,15 @@ fn signature(ui: &mut Ui, check: Option<&SignatureCheck>, palette: Palette) {
     });
 }
 
-/// An author or committer: name and email, and when beneath.
-fn person(ui: &mut Ui, role: &str, signature: &egit_git::Signature) {
+/// An author or committer: the name, leading, and the email beneath, muted; then when, as a
+/// fact of its own (`when` names it).
+fn person(ui: &mut Ui, (role, when): (&str, &str), signature: &egit_git::Signature) {
     widgets::fact_top(ui, DETAIL_LABEL, role, |ui| {
-        ui.add(
-            Label::new(format!(
-                "{} <{}>",
-                signature.name.to_str_lossy(),
-                signature.email.to_str_lossy()
-            ))
-            .wrap(),
-        );
-        ui.label(muted(
-            ui,
-            date_time(signature.time, signature.offset_minutes),
-        ));
+        ui.add(Label::new(RichText::new(signature.name.to_str_lossy()).medium()).wrap());
+        ui.add(Label::new(muted(ui, signature.email.to_str_lossy()).small()).wrap());
+    });
+    widgets::fact(ui, DETAIL_LABEL, when, |ui| {
+        ui.add(Label::new(date_time(signature.time, signature.offset_minutes)).truncate());
     });
 }
 

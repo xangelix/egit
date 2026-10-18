@@ -20,6 +20,7 @@ use crate::problem::Problem;
 use crate::repo::{RepoId, RepoPanel, Status};
 use crate::tables::SnapshotTable;
 use crate::tasks::Tasks;
+use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::undo::Journal;
 use crate::views::history::{HistoryPane, HistoryView};
@@ -278,7 +279,7 @@ fn branch_card(ui: &mut Ui, head: &Head, palette: Palette) {
                 Head::Branch(branch) => {
                     ui.label(muted(ui, "On"));
                     ui.label(
-                        RichText::new(format!("{}  {}", icon::GIT_BRANCH, branch.name)).strong(),
+                        RichText::new(format!("{}  {}", icon::GIT_BRANCH, branch.name)).semibold(),
                     );
                     ui.end_row();
 

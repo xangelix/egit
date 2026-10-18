@@ -17,6 +17,7 @@ use crate::format;
 use crate::grid::{GridSource as _, TextGrid};
 use crate::history::{FileContent, Objects};
 use crate::problem::Problem;
+use crate::theme::Weighted as _;
 use crate::theme::icon;
 use crate::widgets::{self, muted};
 
@@ -219,7 +220,7 @@ fn bar(ui: &mut Ui, shared: &Shared<'_>, view: &mut BlameView, done: bool) -> Op
                 }
                 ui.label(RichText::new("Blame").color(shared.palette.muted));
                 ui.add(
-                    egui::Label::new(RichText::new(view.path.to_str_lossy()).strong()).truncate(),
+                    egui::Label::new(RichText::new(view.path.to_str_lossy()).medium()).truncate(),
                 );
                 let at = view.at.map_or_else(
                     || "in the work tree".to_owned(),
@@ -292,7 +293,7 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, view: &BlameView, commit: u32) -> O
                         .monospace()
                         .color(shared.palette.accent),
                 );
-                ui.label(RichText::new(&blamed.summary).strong());
+                ui.label(RichText::new(&blamed.summary).semibold());
             });
             ui.label(muted(ui, format!("{}, {}", blamed.author, when(&blamed))));
             ui.add_space(4.0);

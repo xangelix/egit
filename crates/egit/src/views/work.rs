@@ -230,9 +230,7 @@ fn commit_form(
         form.summary = summary.to_owned();
         form.description = description.to_owned();
     }
-    ui.separator();
-    widgets::heading(ui, "Commit");
-    ui.add_space(4.0);
+    widgets::section_header(ui, ("Commit", None, "Commit"), |_| {});
     let description = message_fields(ui, form);
     options(ui, form, side);
     let ready = !busy && !form.summary.trim().is_empty() && (staged > 0 || form.amend);
@@ -416,7 +414,7 @@ fn list_ui(
         Side::Staged => ("Staged", "Unstage all"),
     };
     let entries = list.entries.len();
-    widgets::section_header(ui, title, Some(entries), |ui| {
+    widgets::section_header(ui, (title, Some(entries), title), |ui| {
         if widgets::secondary(ui, !busy && !list.entries.is_empty(), all).clicked() {
             let paths = list
                 .entries
@@ -431,13 +429,20 @@ fn list_ui(
         }
     });
     if list.entries.is_empty() {
-        ui.label(muted(
-            ui,
-            match side {
-                Side::Unstaged => "Nothing to stage.",
-                Side::Staged => "Nothing staged yet.",
-            },
-        ));
+        widgets::list_box(ui, |ui| {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.add_space(6.0);
+                ui.label(muted(
+                    ui,
+                    match side {
+                        Side::Unstaged => "Nothing to stage.",
+                        Side::Staged => "Nothing staged yet.",
+                    },
+                ));
+            });
+            ui.add_space(4.0);
+        });
         return event;
     }
     let provider = Entries {
@@ -449,22 +454,24 @@ fn list_ui(
     let mut button_event = None;
     let table_id = list.state.id.to_string();
     let table = TableKit::new(table_id.as_str(), &provider, &mut list.state);
-    let shown = crate::tables::list(table, ui)
-        .with_max_height(Some(height))
-        .show_with_output(ui, |ui, cell, row, text_color| {
-            if cell.col_nr != FILE_COLUMN {
-                return crate::tables::status_cell(ui, row, palette);
-            }
-            let entry = provider.entry(usize::try_from(cell.row_nr).ok()?)?;
-            let (response, clicked) = file_cell(ui, entry, side, busy, text_color);
-            if clicked {
-                button_event = Some(WorkEvent::Stage(StageRequest::Files {
-                    paths: paths(entry, side),
-                    direction: side.direction(),
-                }));
-            }
-            Some(response)
-        });
+    let shown = widgets::list_box(ui, |ui| {
+        crate::tables::list(table, ui)
+            .with_max_height(Some(height))
+            .show_with_output(ui, |ui, cell, row, text_color| {
+                if cell.col_nr != FILE_COLUMN {
+                    return crate::tables::status_cell(ui, row, palette);
+                }
+                let entry = provider.entry(usize::try_from(cell.row_nr).ok()?)?;
+                let (response, clicked) = file_cell(ui, entry, side, busy, text_color);
+                if clicked {
+                    button_event = Some(WorkEvent::Stage(StageRequest::Files {
+                        paths: paths(entry, side),
+                        direction: side.direction(),
+                    }));
+                }
+                Some(response)
+            })
+    });
     match shown {
         Ok(output) => {
             if let Some(clicked) = output

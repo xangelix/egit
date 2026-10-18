@@ -12,10 +12,11 @@ use egit_git::{
     Head, Integrated, MailboxProgress, ObjectId, Operation, PullMode, Pulled, PushFlag,
     PushOptions, Pushed, Stash, SwitchTo, Tracking,
 };
-use egui::{Align, Id, Layout, RichText, TextStyle, Ui, UiBuilder};
+use egui::{Align, Id, Layout, Rect, RichText, TextStyle, Ui, UiBuilder};
 
 use super::dialogs::{self, Dialog};
 use super::history::ID_DIGITS;
+use crate::theme::Weighted as _;
 
 use crate::app::Action;
 use crate::forge::{request_noun, request_number};
@@ -113,10 +114,34 @@ impl TaskPane<'_> {
 }
 
 /// The branch, how it compares with its upstream, and Fetch, Pull, Push (or, while one runs,
-/// what it is doing and Cancel), from the right.
-pub(crate) fn bar(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
-    let right = UiBuilder::new().layout(Layout::right_to_left(Align::Center));
-    own_ids(ui, "bar", pane.id, right, |ui| controls(ui, view, pane));
+/// what it is doing and Cancel), from the right of `row`; returns the room they took.
+pub(crate) fn bar(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>, row: Rect) -> Rect {
+    let right = UiBuilder::new()
+        .max_rect(row)
+        .layout(Layout::right_to_left(Align::Center))
+        .id(Id::new(("tasks", "bar", pane.id)));
+    ui.scope_builder(right, |ui| controls(ui, view, pane))
+        .response
+        .rect
+}
+
+/// The widest the task bar's words grow (the branch and its upstream, a task's progress):
+/// longer ones are cut short, so the bar never crowds out what is left of it.
+const WORDS: f32 = 300.0;
+
+/// Text cut short at [`WORDS`] points.
+fn capped(ui: &mut Ui, text: RichText) -> egui::Response {
+    let galley = egui::WidgetText::from(text.clone()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        TextStyle::Body,
+    );
+    let width = galley.size().x.min(WORDS);
+    ui.add_sized(
+        [width, crate::theme::CONTROL],
+        egui::Label::new(text).truncate(),
+    )
 }
 
 /// Pushes the current branch to its upstream, or asks where it goes first (its first push).
@@ -166,7 +191,7 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         if widgets::secondary(ui, true, "Cancel").clicked() {
             pane.actions.push(Action::CancelTask(pane.id));
         }
-        ui.label(muted(ui, progress_text(pane.tasks)));
+        capped(ui, muted(ui, progress_text(pane.tasks)));
         ui.spinner();
         return;
     }
@@ -231,7 +256,7 @@ fn branch_label(ui: &mut Ui, head: Option<&Head>, palette: Palette) {
         None => return,
     };
     fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &text);
-    ui.label(RichText::new(text).color(palette.muted));
+    capped(ui, RichText::new(text.clone()).color(palette.muted)).on_hover_text(text);
 }
 
 /// How a branch compares with its upstream: ` ↑1 ↓2`, nothing when even, ` (gone)`.
@@ -779,7 +804,7 @@ fn operation_banner(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
-            ui.add(egui::Label::new(RichText::new(headline).color(palette.warn).strong()).wrap());
+            ui.add(egui::Label::new(RichText::new(headline).color(palette.warn).semibold()).wrap());
             if operation == Operation::Bisect {
                 event = bisect_banner(ui, pane);
                 return;

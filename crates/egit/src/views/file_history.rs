@@ -21,6 +21,7 @@ use crate::format;
 use crate::grid::TextGrid;
 use crate::jobs;
 use crate::problem::Problem;
+use crate::theme::Weighted as _;
 use crate::theme::icon;
 use crate::widgets::{self, muted};
 
@@ -252,7 +253,7 @@ fn bar(
                 }
                 ui.label(RichText::new("History of").color(shared.palette.muted));
                 ui.add(
-                    egui::Label::new(RichText::new(view.path.to_str_lossy()).strong()).truncate(),
+                    egui::Label::new(RichText::new(view.path.to_str_lossy()).medium()).truncate(),
                 );
                 let commits = match count {
                     1 => "1 commit".to_owned(),

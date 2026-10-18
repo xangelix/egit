@@ -135,7 +135,7 @@ impl Fallbacks {
     }
 }
 
-/// Adds `font` to both families, after every other font.
+/// Adds `font` to every family, after every other font.
 fn add(ctx: &Context, font: &Kept) {
     let name = format!("{}#{}", font.path.display(), font.index);
     tracing::info!(font = %name, "using a system font for characters egui's fonts lack");
@@ -144,8 +144,8 @@ fn add(ctx: &Context, font: &Kept) {
         index: font.index,
         tweak: egui::FontTweak::default(),
     };
-    let families = [FontFamily::Monospace, FontFamily::Proportional]
-        .into_iter()
+    let families = std::iter::once(FontFamily::Monospace)
+        .chain(crate::theme::Weight::ALL.map(crate::theme::Weight::family))
         .map(|family| InsertFontFamily {
             family,
             priority: FontPriority::Lowest,

@@ -22,6 +22,7 @@ use crate::history::HistoryState;
 use crate::jobs;
 use crate::problem::Problem;
 use crate::tasks::Task;
+use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -219,7 +220,7 @@ fn bar(
                     .iter()
                     .map(egit_forge::ForgeRepository::full_name)
                     .collect();
-                ui.add(egui::Label::new(RichText::new(names.join(", ")).strong()).truncate());
+                ui.add(egui::Label::new(RichText::new(names.join(", ")).semibold()).truncate());
                 let shown = u64::try_from(count).unwrap_or(u64::MAX);
                 let open = if totals > shown {
                     format!(
@@ -761,7 +762,7 @@ fn described(
     }
     if !details.checks.is_empty() {
         ui.add_space(8.0);
-        ui.label(RichText::new("Checks").strong());
+        ui.label(RichText::new("Checks").semibold());
         for check in &details.checks {
             ui.horizontal(|ui| {
                 let (glyph, color, meaning) = check_look(check.state, palette);
@@ -781,7 +782,7 @@ fn described(
     }
     if !details.reviews.is_empty() {
         ui.add_space(8.0);
-        ui.label(RichText::new("Reviews").strong());
+        ui.label(RichText::new("Reviews").semibold());
         for review in &details.reviews {
             let (glyph, color, said) = match review.state {
                 ReviewState::Approved => (icon::CHECK, palette.ok, "approved"),
@@ -799,7 +800,7 @@ fn described(
         }
     }
     ui.add_space(8.0);
-    ui.label(RichText::new("Description").strong());
+    ui.label(RichText::new("Description").semibold());
     let body = details.body.trim();
     if body.is_empty() {
         ui.label(muted(ui, "No description."));

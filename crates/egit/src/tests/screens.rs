@@ -668,7 +668,8 @@ fn the_history_shows_branches_merges_and_a_commits_changes() {
     // The commit's lines, and the file's.
     assert_eq!(harness.query_all_by_label("+1").count(), 2);
     assert_eq!(harness.query_all_by_label("−0").count(), 2);
-    harness.get_by_label("egit tests <tests@egit.invalid>");
+    // Who wrote it: the name, and the email beneath.
+    harness.get_by_label("tests@egit.invalid");
     render(&mut harness, "history-commit");
 
     // Down a row and back with the keyboard, then to its parent (the first commit) by its link.
@@ -1653,7 +1654,7 @@ fn commits_are_picked_reverted_tagged_reset_and_merged_from_the_graph() {
     std::fs::write(repo.join("f"), "uncommitted\n").unwrap();
     right_click(&mut harness, row("One"));
     // egui names a submenu's button with its arrow.
-    let reset = "Reset main to this commit ⏵";
+    let reset = "Reset main to this commit";
     wait_for_label(&mut harness, reset);
     harness.get_by_label(reset).click();
     wait_for_label(&mut harness, "Hard: discard the changes…");

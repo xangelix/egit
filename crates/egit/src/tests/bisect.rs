@@ -39,8 +39,8 @@ fn bisect_item(harness: &mut Harness<'_, EgitApp>, subject: &str, item: &str) {
         .get_by_role_and_label(Role::Button, subject)
         .click_secondary();
     // egui names a submenu's button with its arrow.
-    wait_for_label(harness, "Bisect ⏵");
-    harness.get_by_label("Bisect ⏵").click();
+    wait_for_label(harness, "Bisect");
+    harness.get_by_label("Bisect").click();
     wait_for_label(harness, item);
     harness.get_by_label(item).click();
 }

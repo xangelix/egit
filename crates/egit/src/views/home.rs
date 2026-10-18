@@ -16,6 +16,7 @@ use crate::format::now;
 use crate::problem::{OpenProblem, Problem};
 use crate::settings::StoredPath;
 use crate::tables::RecentRows;
+use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -284,6 +285,10 @@ fn profile_card(ui: &mut Ui, state: &mut AppState) {
     let palette = Palette::of(ui.ctx());
     widgets::card(ui, |ui| {
         ui.horizontal(|ui| {
+            // Two lines tall however it stands (being read, read, failed), so the cards below
+            // don't move when the settings land.
+            let line = ui.text_style_height(&egui::TextStyle::Body);
+            ui.set_min_height(2.0f32.mul_add(line, 2.0));
             ui.label(
                 RichText::new(icon::USER_CIRCLE)
                     .size(20.0)
@@ -302,7 +307,7 @@ fn profile_card(ui: &mut Ui, state: &mut AppState) {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         match (name, email) {
                             (Some(name), Some(email)) => {
-                                ui.label(RichText::new(format!("{name} <{email}>")).strong());
+                                ui.label(RichText::new(format!("{name} <{email}>")).medium());
                             }
                             _ => {
                                 ui.label(

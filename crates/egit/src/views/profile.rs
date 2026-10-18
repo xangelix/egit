@@ -19,6 +19,7 @@ use crate::app::{Action, AppState, ConfigChange};
 use crate::forge::{GITHUB_HOSTS_KEY, GITLAB_HOSTS_KEY};
 use crate::problem::Problem;
 use crate::tables::{ConfigRows, ROW_HEIGHT, SnapshotTable};
+use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -498,7 +499,7 @@ impl HostList<'_> {
             ForgeKind::GitHub => ("GitHub Enterprise hosts", "github.example.com"),
             ForgeKind::GitLab => ("Self-managed GitLab hosts", "gitlab.example.com"),
         };
-        ui.label(RichText::new(title).strong());
+        ui.label(RichText::new(title).semibold());
         Grid::new(("profile-forge-hosts", self.key))
             .num_columns(3)
             .min_col_width(widgets::FACT_LABEL)

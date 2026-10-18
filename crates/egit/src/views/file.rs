@@ -31,6 +31,7 @@ use crate::history::{
 use crate::problem::Problem;
 use crate::staging::{LinesRequest, StageRequest};
 use crate::tables::change_name;
+use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -555,7 +556,7 @@ fn change_line(ui: &mut Ui, palette: Palette, file: &mut FileView) {
         ui.label(RichText::new(format!("+{added}")).color(palette.ok));
         ui.label(RichText::new(format!("−{removed}")).color(palette.danger));
     }
-    ui.add(Label::new(RichText::new(file.path().to_str_lossy()).strong()).truncate());
+    ui.add(Label::new(RichText::new(file.path().to_str_lossy()).medium()).truncate());
     if let Some(from) = from {
         ui.add(Label::new(muted(ui, from)).truncate());
     }

@@ -11,7 +11,7 @@ use egit_git::{CancelToken, ObjectId, ReflogEntry, ResetMode, SwitchTo, reflog};
 use egui::{Frame, Id, Key, Margin, Modifiers, RichText, Sense, Ui};
 use egui_async::Bind;
 
-use super::actions::Ask;
+use super::actions::{self, Ask};
 use super::dialogs::Dialog;
 use super::file::{self, FileView, FileWanted};
 use super::history::{ID_DIGITS, Shared};
@@ -21,6 +21,7 @@ use crate::history::{History, Objects};
 use crate::jobs;
 use crate::problem::Problem;
 use crate::tasks::Task;
+use crate::theme::Weighted as _;
 use crate::theme::icon;
 use crate::widgets::{self, muted};
 
@@ -273,7 +274,7 @@ fn bar(
                 {
                     event = Some(ReflogEvent::Close);
                 }
-                ui.label(RichText::new(format!("Reflog of {}", view.whose())).strong());
+                ui.label(RichText::new(format!("Reflog of {}", view.whose())).semibold());
                 let moves = match entries.len() {
                     1 => "1 move".to_owned(),
                     moves => format!("{} moves", count(u64::try_from(moves).unwrap_or(u64::MAX))),
@@ -320,14 +321,13 @@ fn bar(
                                     ResetMode::Keep,
                                 ),
                             ] {
-                                if ui.button(label).clicked() {
+                                if actions::item(ui, (icon::ARROW_U_UP_LEFT, label), Ok(())) {
                                     ask(Ask::Task(Task::Reset(commit, mode)));
-                                    ui.close();
                                 }
                             }
-                            if ui.button("Hard: discard the changes…").clicked() {
+                            let hard = (icon::TRASH, "Hard: discard the changes…");
+                            if actions::danger_item(ui, hard, Ok(())) {
                                 ask(Ask::Dialog(Dialog::HardReset { at: commit }));
-                                ui.close();
                             }
                         });
                     // Named in words: the caret only shows it opens a menu.

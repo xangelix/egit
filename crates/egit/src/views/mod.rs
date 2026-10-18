@@ -32,6 +32,10 @@ pub(crate) const PAGE_WIDTH: f32 = 880.0;
 
 /// A tab's page: it scrolls, with its content centred and at most [`PAGE_WIDTH`] wide.
 pub(crate) fn page(ui: &mut Ui, id: impl egui::AsIdSalt, add_contents: impl FnOnce(&mut Ui)) {
+    // On the chrome's tone, so the cards stand off it.
+    let palette = crate::theme::Palette::of(ui.ctx());
+    ui.painter()
+        .rect_filled(ui.available_rect_before_wrap(), 0.0, palette.panel);
     ScrollArea::vertical()
         .id_salt(id)
         .auto_shrink([false, false])

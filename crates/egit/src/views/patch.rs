@@ -24,6 +24,7 @@ use crate::jobs;
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::tasks::{Patch, Task};
+use crate::theme::Weighted as _;
 use crate::theme::icon;
 use crate::widgets::{self, muted};
 
@@ -255,7 +256,7 @@ fn bar(ui: &mut Ui, shared: &Shared<'_>, view: &PatchView) -> Option<PatchEvent>
                     PatchSource::Pasted => format!("Apply a pasted patch to {branch}"),
                     PatchSource::Stopped => "The patch git am stopped at".to_owned(),
                 };
-                ui.label(RichText::new(title).strong());
+                ui.label(RichText::new(title).semibold());
                 if let PatchSource::Files(files) = &view.source {
                     let names: Vec<String> = files
                         .iter()
@@ -315,7 +316,7 @@ fn summary(
         .inner_margin(Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.label(RichText::new(held(summary)).strong());
+            ui.label(RichText::new(held(summary)).semibold());
             applies_line(ui, shared, &summary.applies);
             ScrollArea::vertical()
                 .id_salt(("patch-lists", shared.id))

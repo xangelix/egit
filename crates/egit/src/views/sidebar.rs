@@ -1,7 +1,11 @@
 //! The sidebar beside the commit table: the repository's branches (folded into folders by
 //! their `/`s), its remotes (each with its branches), its pull or merge requests, tags,
 //! stashes, worktrees, and submodules, each section counted and folding away; a filter
-//! narrowing them all; and a checkbox for each branch saying whether the graph shows it.
+//! narrowing them all; and an eye at each branch's right saying whether the graph shows it.
+//!
+//! A tree's levels step in by a whole icon: a folder's (or remote's) children have their
+//! icons under its name, a guide running down from its icon beside them; its caret hangs left
+//! of its icon, so folders and leaves at one depth line up.
 //!
 //! A ref's row selects its commit in the history (or shows it in the details when the history
 //! doesn't have it), its menu is its badge's; a stash's shows its commit in the details; a
@@ -39,18 +43,28 @@ use crate::history::{Refs, Scope};
 use crate::jobs;
 use crate::problem::Problem;
 use crate::tasks::{Task, remote_names};
-use crate::theme::{Palette, icon};
+use crate::theme::{Palette, SMALL, Weight, icon};
 use crate::widgets::{TARGET, muted};
 
 /// A row's height: a whole target to hit, and rows touch (no gap where the pointer finds
 /// nothing).
 const ROW_HEIGHT: f32 = 28.0;
 
-/// How far each level of a tree is indented.
-const INDENT: f32 = 14.0;
+/// Left of every row, before the column a section's (or a folder's) caret hangs in.
+const PAD: f32 = 6.0;
 
-/// Room left of every row's text: a branch's checkbox (a whole target to hit).
-const GUTTER: f32 = TARGET;
+/// The column a caret hangs in, left of its row's icon.
+const CARET: f32 = 16.0;
+
+/// A row's icon's width.
+const ICON: f32 = 14.0;
+
+/// How far each level of a tree steps in: from a row's icon to its words, under which its
+/// children's icons go.
+const INDENT: f32 = 20.0;
+
+/// Room at a branch's right for its eye (shown in the graph or hidden), a whole target.
+const EYE: f32 = TARGET;
 
 /// The lists the sidebar shows besides the refs, as the tab last read them.
 pub(crate) struct Lists<'a> {
@@ -901,16 +915,13 @@ fn header(ui: &mut Ui, view: &mut Sidebar) {
     ui.add_space(4.0);
 }
 
-/// A row's place: its whole width, its clickable part (right of the gutter, left of `right`
-/// pixels kept for a button), named and marked as selected or hovered.
+/// A row's place: its whole width, its clickable part (all but `right` pixels kept for a
+/// button), named and marked as selected or hovered.
 fn row_area(ui: &mut Ui, id: Id, name: &str, selected: bool, right: f32) -> (Rect, Response) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
     let body = Rect::from_min_max(
-        pos2(rect.left() + GUTTER, rect.top()),
-        pos2(
-            (rect.right() - right).max(rect.left() + GUTTER),
-            rect.bottom(),
-        ),
+        rect.min,
+        pos2((rect.right() - right).max(rect.left()), rect.bottom()),
     );
     let response = ui.interact(body, id, Sense::click());
     response
@@ -919,22 +930,91 @@ fn row_area(ui: &mut Ui, id: Id, name: &str, selected: bool, right: f32) -> (Rec
     (rect, response)
 }
 
-/// Paints one line of `parts` from `x`, cut short to fit `rect`.
-fn paint_line(ui: &Ui, drawing: &Drawing<'_>, rect: Rect, x: f32, parts: &[(&str, Color32)]) {
+/// Paints one line of `parts` from `x`, cut short at `right`: the first in `lead`'s weight
+/// (what the row is: a name), the rest regular.
+fn paint_line(
+    ui: &Ui,
+    drawing: &Drawing<'_>,
+    (x, right): (f32, f32),
+    y: f32,
+    parts: &[(&str, Color32)],
+    lead: Weight,
+) {
     let mut job = LayoutJob::default();
-    for (text, color) in parts {
-        crate::fonts::note_text(ui, &drawing.font, text);
-        job.append(text, 0.0, TextFormat::simple(drawing.font.clone(), *color));
+    for (at, (text, color)) in parts.iter().enumerate() {
+        let font = if at == 0 {
+            FontId::new(drawing.font.size, lead.family())
+        } else {
+            drawing.font.clone()
+        };
+        crate::fonts::note_text(ui, &font, text);
+        job.append(text, 0.0, TextFormat::simple(font, *color));
     }
-    job.wrap = TextWrapping::truncate_at_width((rect.right() - x - 6.0).max(0.0));
+    job.wrap = TextWrapping::truncate_at_width((right - x).max(0.0));
     let galley = ui.painter().layout_job(job);
-    let pos = pos2(x, rect.center().y - galley.size().y / 2.0);
+    let pos = pos2(x, y - galley.size().y / 2.0);
     ui.painter().galley(pos, galley, drawing.palette.text);
 }
 
-/// Where a row's text starts, `depth` levels in.
-fn text_x(rect: Rect, depth: u8) -> f32 {
-    rect.left() + GUTTER + f32::from(depth) * INDENT
+/// Where a row's icon starts, `depth` levels in (a section's own icon at depth 0's).
+fn icon_x(rect: Rect, depth: u8) -> f32 {
+    rect.left() + PAD + CARET + f32::from(depth) * INDENT
+}
+
+/// Paints a row `depth` levels in: the guides of the levels around it, its `glyph` in its
+/// column, and `parts` from a level further in (the first in `lead`'s weight), cut short
+/// `right` pixels from the row's end.
+fn paint_row(
+    ui: &Ui,
+    drawing: &Drawing<'_>,
+    (rect, right): (Rect, f32),
+    depth: u8,
+    (glyph, color): (&str, Color32),
+    parts: &[(&str, Color32)],
+    lead: Weight,
+) {
+    let painter = ui.painter();
+    // A guide down from each level's icon: what the row is inside of.
+    for level in 0..depth {
+        let x = (icon_x(rect, level) + ICON / 2.0).round() + 0.5;
+        painter.vline(
+            x,
+            rect.y_range(),
+            egui::Stroke::new(1.0, drawing.palette.border),
+        );
+    }
+    let x = icon_x(rect, depth);
+    painter.text(
+        pos2(x + ICON / 2.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        drawing.font.clone(),
+        color,
+    );
+    paint_line(
+        ui,
+        drawing,
+        (x + INDENT, rect.right() - right - 6.0),
+        rect.center().y,
+        parts,
+        lead,
+    );
+}
+
+/// Paints a fold's caret, hanging left of the icon of a row `depth` levels in.
+fn paint_caret(ui: &Ui, drawing: &Drawing<'_>, rect: Rect, depth: u8, folded: bool) {
+    let caret = if folded {
+        icon::CARET_RIGHT
+    } else {
+        icon::CARET_DOWN
+    };
+    ui.painter().text(
+        pos2(icon_x(rect, depth) - CARET / 2.0 - 1.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        caret,
+        FontId::proportional(SMALL),
+        drawing.palette.muted,
+    );
 }
 
 /// Draws one row; returns what it asks.
@@ -972,7 +1052,7 @@ fn draw_row(
             let label = egui::Label::new(RichText::new(text.as_str()).color(color))
                 .truncate()
                 .selectable(false);
-            let inner = Rect::from_min_max(pos2(text_x(rect, 0), rect.top()), rect.max);
+            let inner = Rect::from_min_max(pos2(icon_x(rect, 0), rect.top()), rect.max);
             let builder = egui::UiBuilder::new()
                 .max_rect(inner)
                 .layout(egui::Layout::left_to_right(egui::Align::Center));
@@ -1008,28 +1088,7 @@ fn section_row(
     let named = format!("{title}: {count}");
     let (rect, response) = row_area(ui, id, &named, false, right);
     let folded = view.folded.contains(&key);
-    let palette = drawing.palette;
-    let caret = if folded {
-        icon::CARET_RIGHT
-    } else {
-        icon::CARET_DOWN
-    };
-    let counted = format!("{count}");
-    paint_line(
-        ui,
-        drawing,
-        rect,
-        rect.left() + 6.0,
-        &[
-            (caret, palette.muted),
-            ("  ", palette.muted),
-            (section.icon(), palette.muted),
-            ("  ", palette.muted),
-            (title.to_uppercase().as_str(), palette.muted),
-            ("  ", palette.muted),
-            (counted.as_str(), palette.muted),
-        ],
-    );
+    paint_section(ui, drawing, rect, (section, &title, count), folded);
     if response.clicked() {
         toggle(view, key);
     }
@@ -1048,6 +1107,42 @@ fn section_row(
         }
     }
     event
+}
+
+/// Paints a section's header: a band, its caret and icon, its title in small capitals, and how
+/// many it holds in a pill.
+fn paint_section(
+    ui: &Ui,
+    drawing: &Drawing<'_>,
+    rect: Rect,
+    (section, title, count): (Section, &str, usize),
+    folded: bool,
+) {
+    let palette = drawing.palette;
+    let painter = ui.painter();
+    // A band of its own, the section's rows below it; a little lighter under the pointer.
+    let (band, pill) = if ui.rect_contains_pointer(rect) {
+        (palette.surface_alt, palette.surface)
+    } else {
+        (palette.surface, palette.surface_alt)
+    };
+    painter.rect_filled(rect.shrink2(vec2(0.0, 1.0)), 4.0, band);
+    paint_caret(ui, drawing, rect, 0, folded);
+    let x = icon_x(rect, 0);
+    painter.text(
+        pos2(x + ICON / 2.0, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        section.icon(),
+        drawing.font.clone(),
+        palette.muted,
+    );
+    let galleys = crate::widgets::section_galleys(painter, title, Some(count), &palette);
+    crate::widgets::paint_section(
+        painter,
+        pos2(x + INDENT, rect.center().y),
+        galleys,
+        (&palette, pill),
+    );
 }
 
 /// Folds or unfolds a section, folder, or remote.
@@ -1121,7 +1216,7 @@ fn section_menu(ui: &mut Ui, drawing: &Drawing<'_>, section: Section) -> Option<
     let idle = drawing.menus.idle();
     match section {
         Section::Branches if !drawing.shared.scope.hidden.is_empty() => {
-            if actions::item(ui, "Show every branch in the graph", Ok(())) {
+            if actions::item(ui, (icon::EYE, "Show every branch in the graph"), Ok(())) {
                 ask(Ask::Scope(Scope {
                     hidden: Vec::new(),
                     ..drawing.shared.scope.clone()
@@ -1129,28 +1224,40 @@ fn section_menu(ui: &mut Ui, drawing: &Drawing<'_>, section: Section) -> Option<
             }
         }
         Section::Remotes => {
-            if actions::item(ui, "Add a remote…", idle) {
+            if actions::item(ui, (icon::PLUS, "Add a remote…"), idle) {
                 ask(adding_ask(drawing, section)?);
             }
-            if actions::item(ui, "Fetch every remote", idle) {
+            if actions::item(ui, (icon::ARROWS_CLOCKWISE, "Fetch every remote"), idle) {
                 ask(Ask::Task(Task::Fetch));
             }
         }
         Section::Stashes => {
-            if actions::item(ui, "Stash the changes…", adding_allowed(drawing, section)) {
+            if actions::item(
+                ui,
+                (icon::ARCHIVE, "Stash the changes…"),
+                adding_allowed(drawing, section),
+            ) {
                 ask(adding_ask(drawing, section)?);
             }
         }
         Section::Worktrees => {
-            if actions::item(ui, "Create a worktree…", adding_allowed(drawing, section)) {
+            if actions::item(
+                ui,
+                (icon::TREE_STRUCTURE, "Create a worktree…"),
+                adding_allowed(drawing, section),
+            ) {
                 ask(adding_ask(drawing, section)?);
             }
-            if actions::item(ui, "Forget those whose folders are gone", idle) {
+            if actions::item(
+                ui,
+                (icon::BROOM, "Forget those whose folders are gone"),
+                idle,
+            ) {
                 ask(Ask::Task(Task::PruneWorktrees));
             }
         }
         Section::Submodules => {
-            if actions::item(ui, "Update every submodule", idle) {
+            if actions::item(ui, (icon::ARROWS_CLOCKWISE, "Update every submodule"), idle) {
                 ask(Ask::Task(Task::UpdateSubmodules(Vec::new())));
             }
         }
@@ -1174,24 +1281,21 @@ fn fold_row(
     let id = Id::new(("sidebar-folder", drawing.shared.id, section, key.as_slice()));
     let (rect, response) = row_area(ui, id, &format!("{shown}/"), false, 0.0);
     let folded = view.folded.contains(&(section, key.clone()));
-    let caret = if folded {
-        icon::CARET_RIGHT
-    } else {
-        icon::CARET_DOWN
-    };
     let palette = drawing.palette;
-    paint_line(
+    paint_caret(ui, drawing, rect, depth, folded);
+    let glyph = if folded {
+        icon::FOLDER_SIMPLE
+    } else {
+        icon::FOLDER_OPEN
+    };
+    paint_row(
         ui,
         drawing,
-        rect,
-        text_x(rect, depth),
-        &[
-            (caret, palette.muted),
-            ("  ", palette.muted),
-            (icon::FOLDER_SIMPLE, palette.muted),
-            ("  ", palette.muted),
-            (&shown, palette.text),
-        ],
+        (rect, 0.0),
+        depth,
+        (glyph, palette.muted),
+        &[(&shown, palette.text)],
+        Weight::Medium,
     );
     if response.clicked() {
         toggle(view, (section, key.clone()));
@@ -1210,31 +1314,25 @@ fn remote_row(
     let id = Id::new(("sidebar-remote", drawing.shared.id, name.as_slice()));
     let (rect, response) = row_area(ui, id, &shown, false, 0.0);
     let key = (Section::Remotes, name.clone());
-    let caret = if view.folded.contains(&key) {
-        icon::CARET_RIGHT
-    } else {
-        icon::CARET_DOWN
-    };
+    paint_caret(ui, drawing, rect, 0, view.folded.contains(&key));
     let url = drawing.lists.config.and_then(|config| {
         config
             .get(&format!("remote.{shown}.url"))
             .map(|entry| entry.text().to_string())
     });
     let palette = drawing.palette;
-    paint_line(
+    paint_row(
         ui,
         drawing,
-        rect,
-        text_x(rect, 0),
+        (rect, 0.0),
+        0,
+        (icon::CLOUD, palette.muted),
         &[
-            (caret, palette.muted),
-            ("  ", palette.muted),
-            (icon::CLOUD, palette.muted),
-            ("  ", palette.muted),
             (&shown, palette.text),
             ("  ", palette.muted),
             (url.as_deref().unwrap_or(""), palette.muted),
         ],
+        Weight::SemiBold,
     );
     let response = match &url {
         Some(url) => response.on_hover_text(url.as_str()),
@@ -1269,7 +1367,7 @@ fn remote_menu(
         (format!("Fetch {shown}"), false),
         (format!("Fetch {shown}, pruning branches gone there"), true),
     ] {
-        if actions::item(ui, &label, unconfigured) {
+        if actions::item(ui, (icon::ARROWS_CLOCKWISE, &label), unconfigured) {
             ask(Ask::Task(Task::FetchRemote {
                 remote: name.clone(),
                 prune,
@@ -1277,7 +1375,11 @@ fn remote_menu(
         }
     }
     ui.separator();
-    if actions::item(ui, "Change its address…", unconfigured) {
+    if actions::item(
+        ui,
+        (icon::PENCIL_SIMPLE, "Change its address…"),
+        unconfigured,
+    ) {
         let push = drawing
             .lists
             .config
@@ -1290,25 +1392,28 @@ fn remote_menu(
             push,
         }));
     }
-    if actions::item(ui, "Rename…", unconfigured) {
+    if actions::item(ui, (icon::PENCIL_SIMPLE, "Rename…"), unconfigured) {
         ask(Ask::Dialog(Dialog::RenameRemote {
             old: name.clone(),
             name: shown.clone().into_owned(),
         }));
     }
-    if actions::item(ui, "Remove…", unconfigured) {
+    if actions::danger_item(ui, (icon::TRASH, "Remove…"), unconfigured) {
         ask(Ask::Dialog(Dialog::RemoveRemote(name.clone())));
     }
     ui.separator();
     if let Some(url) = url
-        && actions::item(ui, "Copy its address", Ok(()))
+        && actions::item(ui, (icon::COPY, "Copy its address"), Ok(()))
     {
         ui.ctx().copy_text(url.to_owned());
     }
     if let Some(repository) = drawing.shared.forge.repository_of(name.as_bstr())
         && actions::item(
             ui,
-            &format!("Open on {}", repository.host().kind().name()),
+            (
+                icon::ARROW_SQUARE_OUT,
+                &format!("Open on {}", repository.host().kind().name()),
+            ),
             Ok(()),
         )
     {
@@ -1317,52 +1422,30 @@ fn remote_menu(
     event
 }
 
-/// A checkbox in a row's gutter, drawn here so it keeps to the gutter (egui's grows to its
-/// interaction size, over the rows around it).
-fn check_box(
-    ui: &Ui,
-    drawing: &Drawing<'_>,
-    rect: Rect,
-    id: Id,
-    checked: bool,
-    enabled: bool,
-) -> Response {
-    // The box drawn small, the whole gutter beside the row taking the click.
-    let target = Rect::from_min_size(rect.min, vec2(GUTTER, rect.height()));
-    let boxed = Rect::from_center_size(target.center(), vec2(14.0, 14.0));
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(target, id, sense);
+/// A branch's eye at its row's right: open while the graph shows the branch, struck through
+/// while it is hidden; a click hides or shows it. Drawn here so it keeps to its place
+/// (egui's own buttons grow to their interaction size, over the rows around).
+fn eye(ui: &Ui, drawing: &Drawing<'_>, rect: Rect, id: Id, seen: bool) -> Response {
+    let place = Rect::from_min_max(pos2(rect.right() - EYE, rect.top()), rect.max);
+    let response = ui.interact(place, id, Sense::click());
     let palette = drawing.palette;
-    let stroke = if response.hovered() && enabled {
-        palette.accent
-    } else {
-        palette.muted
-    };
-    let painter = ui.painter();
-    painter.rect_stroke(
-        boxed,
-        3.0,
-        egui::Stroke::new(1.0, stroke),
-        egui::StrokeKind::Inside,
-    );
-    if checked {
-        let color = if enabled {
-            palette.accent
-        } else {
-            palette.muted
-        };
-        painter.text(
-            boxed.center(),
-            egui::Align2::CENTER_CENTER,
-            icon::CHECK,
-            FontId::proportional(11.0),
-            color,
-        );
+    let hovered = response.hovered();
+    if hovered {
+        ui.painter()
+            .rect_filled(place.shrink2(vec2(0.0, 2.0)), 4.0, palette.border);
     }
+    let (glyph, color) = match (seen, hovered) {
+        (true, false) => (icon::EYE, palette.muted),
+        (true, true) => (icon::EYE, palette.text),
+        (false, _) => (icon::EYE_SLASH, palette.text),
+    };
+    ui.painter().text(
+        place.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        drawing.font.clone(),
+        color,
+    );
     response
 }
 
@@ -1396,8 +1479,8 @@ fn shown_as(scope: &Scope, reference: &Reference, show: bool) -> Scope {
     scope
 }
 
-/// A branch, remote branch, or tag: its checkbox (branches), its name; a click shows its
-/// commit, a double click switches to a branch, its menu is its badge's.
+/// A branch, remote branch, or tag: its name, and a branch's eye; a click shows its commit, a
+/// double click switches to a branch, its menu is its badge's.
 fn ref_row(
     ui: &mut Ui,
     drawing: &Drawing<'_>,
@@ -1412,38 +1495,36 @@ fn ref_row(
     let key = Picked::Ref(reference.name.clone());
     let selected = view.selected.as_ref() == Some(&key);
     let id = Id::new(("sidebar-ref", drawing.shared.id, reference.name.as_slice()));
-    let (rect, response) = row_area(ui, id, &shown, selected, 0.0);
-    let current = drawing.current.as_ref() == Some(&reference.name);
     let is_branch = matches!(reference.kind, RefKind::Branch | RefKind::RemoteBranch);
+    let right = if is_branch { EYE } else { 0.0 };
+    let (rect, response) = row_area(ui, id, &shown, selected, right);
+    let current = drawing.current.as_ref() == Some(&reference.name);
     let seen = !is_branch || current || visible(drawing.shared, reference);
     let mut event = None;
-    if is_branch {
-        let enabled = !current;
-        let checkbox = check_box(ui, drawing, rect, id.with("shown"), seen, enabled);
-        checkbox.widget_info(|| {
+    // The branch checked out always shows: it has no eye.
+    if is_branch && !current {
+        let toggle = eye(ui, drawing, rect, id.with("shown"), seen);
+        toggle.widget_info(|| {
             WidgetInfo::selected(
                 WidgetType::Checkbox,
-                enabled,
+                true,
                 seen,
                 format!("Show {shown} in the graph"),
             )
         });
-        let checkbox = if enabled {
-            checkbox.on_hover_text(if seen {
-                "Shown in the graph: hide it"
-            } else {
-                "Hidden from the graph: show it"
-            })
+        let toggle = toggle.on_hover_text(if seen {
+            "Shown in the graph: hide it"
         } else {
-            checkbox.on_hover_text("The branch checked out always shows")
-        };
-        if checkbox.clicked() && enabled {
+            "Hidden from the graph: show it"
+        });
+        if toggle.clicked() {
             let scope = shown_as(&drawing.shared.scope, reference, !seen);
             event = Some(SidebarEvent::Ask(Ask::Scope(scope)));
         }
     }
     let palette = drawing.palette;
     let (glyph, color) = match reference.kind {
+        _ if current => (icon::CHECK_CIRCLE, palette.accent),
         RefKind::Branch => (icon::GIT_BRANCH, palette.accent),
         RefKind::RemoteBranch => (icon::GIT_BRANCH, palette.muted),
         RefKind::Tag => (icon::TAG, palette.warn),
@@ -1457,18 +1538,19 @@ fn ref_row(
     } else {
         palette.text
     };
-    let mark = if current { "  (checked out)" } else { "" };
-    paint_line(
+    let (mark, weight) = if current {
+        ("  checked out", Weight::SemiBold)
+    } else {
+        ("", Weight::Regular)
+    };
+    paint_row(
         ui,
         drawing,
-        rect,
-        text_x(rect, depth),
-        &[
-            (glyph, color),
-            ("  ", palette.muted),
-            (&name, text),
-            (mark, palette.muted),
-        ],
+        (rect, right),
+        depth,
+        (glyph, color),
+        &[(&name, text), (mark, palette.muted)],
+        weight,
     );
     if response.double_clicked() {
         if let Some(asked) = actions::ref_double_clicked(&drawing.menus, reference) {
@@ -1503,18 +1585,18 @@ fn stash_row(
         0.0,
     );
     let palette = drawing.palette;
-    paint_line(
+    paint_row(
         ui,
         drawing,
-        rect,
-        text_x(rect, 0),
+        (rect, 0.0),
+        0,
+        (icon::ARCHIVE, palette.muted),
         &[
-            (icon::ARCHIVE, palette.muted),
-            ("  ", palette.muted),
             (&place, palette.muted),
             ("  ", palette.muted),
             (&stash.message, palette.text),
         ],
+        Weight::Regular,
     );
     let clicked = response.clicked();
     if clicked {
@@ -1524,14 +1606,14 @@ fn stash_row(
     response.context_menu(|ui| {
         let idle = drawing.menus.idle();
         for (label, pop) in [("Apply", false), ("Pop", true)] {
-            if actions::item(ui, label, idle) {
+            if actions::item(ui, (icon::TRAY_ARROW_UP, label), idle) {
                 event = Some(SidebarEvent::Ask(Ask::Task(Task::ApplyStash {
                     stash: stash.clone(),
                     pop,
                 })));
             }
         }
-        if actions::item(ui, "Drop…", idle) {
+        if actions::danger_item(ui, (icon::TRASH, "Drop…"), idle) {
             event = Some(SidebarEvent::Ask(Ask::Dialog(Dialog::DropStash(
                 stash.clone(),
             ))));
@@ -1584,14 +1666,13 @@ fn worktree_row(
     } else {
         ""
     };
-    paint_line(
+    paint_row(
         ui,
         drawing,
-        rect,
-        text_x(rect, 0),
+        (rect, 0.0),
+        0,
+        (glyph, palette.muted),
         &[
-            (glyph, palette.muted),
-            ("  ", palette.muted),
             (
                 &checked_out,
                 if here { palette.accent } else { palette.text },
@@ -1601,6 +1682,7 @@ fn worktree_row(
             ("  ", palette.muted),
             (&folder, palette.muted),
         ],
+        Weight::Regular,
     );
     let mut hover = folder;
     if let Some(reason) = worktree.locked.as_ref().filter(|reason| !reason.is_empty()) {
@@ -1641,10 +1723,10 @@ fn worktree_menu(
     } else {
         Ok(())
     };
-    if actions::item(ui, "Open in a tab", opening) {
+    if actions::item(ui, (icon::APP_WINDOW, "Open in a tab"), opening) {
         event = Some(SidebarEvent::Open(worktree.path.clone()));
     }
-    if actions::item(ui, "Copy its path", Ok(())) {
+    if actions::item(ui, (icon::COPY, "Copy its path"), Ok(())) {
         ui.ctx()
             .copy_text(worktree.path.to_string_lossy().into_owned());
     }
@@ -1656,10 +1738,10 @@ fn worktree_menu(
     };
     let path = worktree.path.clone();
     if worktree.locked.is_some() {
-        if actions::item(ui, "Unlock", other) {
+        if actions::item(ui, (icon::LOCK_SIMPLE_OPEN, "Unlock"), other) {
             event = Some(SidebarEvent::Ask(Ask::Task(Task::UnlockWorktree(path))));
         }
-    } else if actions::item(ui, "Lock…", other) {
+    } else if actions::item(ui, (icon::LOCK_SIMPLE, "Lock…"), other) {
         event = Some(SidebarEvent::Ask(Ask::Dialog(Dialog::LockWorktree {
             path,
             reason: String::new(),
@@ -1672,7 +1754,7 @@ fn worktree_menu(
     } else {
         other
     };
-    if actions::item(ui, "Remove…", removing) {
+    if actions::danger_item(ui, (icon::TRASH, "Remove…"), removing) {
         event = Some(SidebarEvent::Ask(Ask::Dialog(Dialog::RemoveWorktree {
             path: worktree.path.clone(),
             changes: false,
@@ -1706,18 +1788,18 @@ fn submodule_row(
     } else {
         "not set up"
     };
-    paint_line(
+    paint_row(
         ui,
         drawing,
-        rect,
-        text_x(rect, 0),
+        (rect, 0.0),
+        0,
+        (icon::PACKAGE, palette.muted),
         &[
-            (icon::PACKAGE, palette.muted),
-            ("  ", palette.muted),
             (&path, palette.text),
             ("  ", palette.muted),
             (state, palette.muted),
         ],
+        Weight::Regular,
     );
     let folder = drawing
         .shared
@@ -1743,7 +1825,7 @@ fn submodule_row(
         } else {
             format!("Set up {path}")
         };
-        if actions::item(ui, &update, idle) {
+        if actions::item(ui, (icon::ARROWS_CLOCKWISE, &update), idle) {
             event = Some(SidebarEvent::Ask(Ask::Task(Task::UpdateSubmodules(vec![
                 submodule.path.clone(),
             ]))));
@@ -1753,10 +1835,10 @@ fn submodule_row(
         } else {
             Err("Set it up first")
         };
-        if actions::item(ui, "Open in a tab", opening) {
+        if actions::item(ui, (icon::APP_WINDOW, "Open in a tab"), opening) {
             event = Some(SidebarEvent::Open(folder.clone()));
         }
-        if actions::item(ui, "Copy its path", Ok(())) {
+        if actions::item(ui, (icon::COPY, "Copy its path"), Ok(())) {
             ui.ctx().copy_text(path.clone().into_owned());
         }
     });
@@ -1782,16 +1864,14 @@ fn request_row(
     let (rect, response) = row_area(ui, id, &request.label, selected, 0.0);
     let palette = drawing.palette;
     let (glyph, color, meaning) = check_look(request.checks, palette);
-    paint_line(
+    paint_row(
         ui,
         drawing,
-        rect,
-        text_x(rect, 0),
-        &[
-            (glyph, color),
-            ("  ", palette.muted),
-            (&request.label, palette.text),
-        ],
+        (rect, 0.0),
+        0,
+        (glyph, color),
+        &[(&request.label, palette.text)],
+        Weight::Regular,
     );
     let response = response.on_hover_text(meaning);
     if response.clicked() {

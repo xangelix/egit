@@ -265,11 +265,15 @@ fn hover(
             control.describe()
         ));
     }
-    if let Some(moved) = moved(shown, &elements(harness)) {
+    if let Some((was, moved)) = moved(control.rect, shown, &elements(harness)) {
         problems.push(format!(
-            "{screen}: the pointer on {} moves {}",
+            "{screen}: the pointer on {} moves {} (from ({:.0}, {:.0}) {:.0}×{:.0})",
             control.describe(),
-            moved.describe()
+            moved.describe(),
+            was.min.x,
+            was.min.y,
+            was.width(),
+            was.height()
         ));
     }
     let fitting = if control.is_text_input() {
@@ -288,22 +292,33 @@ fn hover(
     problems
 }
 
-/// The first element of `before` that `after` shows elsewhere or at another size: the pointer
+/// The first element of `before` in line with the `hovered` control (sharing its row or its
+/// column) that `after` shows elsewhere or at another size, and where it was: the pointer
 /// resting on a control must move nothing (a control growing under it pushes its neighbours).
 /// Handles are left out: a floating scroll bar widens under the pointer.
-fn moved<'a>(before: &[Element], after: &'a [Element]) -> Option<&'a Element> {
+fn moved<'a>(
+    hovered: Rect,
+    before: &[Element],
+    after: &'a [Element],
+) -> Option<(Rect, &'a Element)> {
     let was: std::collections::HashMap<u64, Rect> = before
         .iter()
         .map(|element| (element.node, element.rect))
         .collect();
+    // What a control's growth pushes shares its row or its column; anything else moving
+    // was moved by something else (a job landing meanwhile).
+    let in_line = |rect: Rect| {
+        rect.y_range().intersects(hovered.y_range()) || rect.x_range().intersects(hovered.x_range())
+    };
     after
         .iter()
         .filter(|element| !element.is_handle())
-        .find(|element| {
-            was.get(&element.node).is_some_and(|rect| {
-                rect.min.distance(element.rect.min) > 0.5
-                    || rect.max.distance(element.rect.max) > 0.5
-            })
+        .find_map(|element| {
+            let rect = *was.get(&element.node)?;
+            let moved = in_line(rect)
+                && (rect.min.distance(element.rect.min) > 0.5
+                    || rect.max.distance(element.rect.max) > 0.5);
+            moved.then_some((rect, element))
         })
 }
 

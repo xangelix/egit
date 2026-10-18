@@ -383,7 +383,8 @@ impl TextGrid {
         self.input(ui, &response, panes, &frame);
 
         let painter = ui.painter_at(outer);
-        painter.rect_filled(outer, CornerRadius::ZERO, palette.surface);
+        // Text on the content's background, its gutter on the chrome's.
+        painter.rect_filled(outer, CornerRadius::ZERO, palette.background);
         self.draw_panes(ui, &painter, panes, &rects, &font, &frame, palette);
         let area = Rect::from_min_max(outer.min, pos2(outer.right() - BAR, bottom));
         self.find_bar(ui, panes, area, &frame, palette);

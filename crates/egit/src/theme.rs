@@ -1,5 +1,7 @@
 //! Colours, fonts, and the shape of egui's widgets, for the dark and the light theme.
 
+use std::sync::{Arc, LazyLock};
+
 use egui::{Color32, CornerRadius, Stroke, Visuals};
 use serde::{Deserialize, Serialize};
 
@@ -23,9 +25,9 @@ pub(crate) enum ThemeChoice {
 pub(crate) struct Palette {
     /// Whether it is the dark theme (syntax colours follow).
     pub(crate) dark: bool,
-    /// Behind everything.
+    /// Behind what is read: the commit table, a diff, a file.
     pub(crate) background: Color32,
-    /// Panels and the tab bar.
+    /// The chrome around it (bars, the sidebar, the details), the tab bar, and pages.
     pub(crate) panel: Color32,
     /// Cards and dialogs.
     pub(crate) surface: Color32,
@@ -82,13 +84,13 @@ impl Palette {
     /// The dark theme.
     pub(crate) const DARK: Self = Self {
         dark: true,
-        background: Color32::from_rgb(0x15, 0x18, 0x1C),
-        panel: Color32::from_rgb(0x1B, 0x1F, 0x24),
-        surface: Color32::from_rgb(0x22, 0x27, 0x2E),
-        surface_alt: Color32::from_rgb(0x2A, 0x30, 0x38),
+        background: Color32::from_rgb(0x12, 0x15, 0x19),
+        panel: Color32::from_rgb(0x1C, 0x20, 0x26),
+        surface: Color32::from_rgb(0x24, 0x29, 0x30),
+        surface_alt: Color32::from_rgb(0x2C, 0x32, 0x3A),
         border: Color32::from_rgb(0x36, 0x3D, 0x47),
         border_strong: Color32::from_rgb(0x55, 0x5F, 0x6D),
-        field: Color32::from_rgb(0x15, 0x18, 0x1C),
+        field: Color32::from_rgb(0x12, 0x15, 0x19),
         text: Color32::from_rgb(0xE6, 0xE9, 0xEE),
         muted: Color32::from_rgb(0x9C, 0xA6, 0xB4),
         accent: Color32::from_rgb(0x3F, 0xB6, 0xA8),
@@ -126,10 +128,10 @@ impl Palette {
     /// The light theme.
     pub(crate) const LIGHT: Self = Self {
         dark: false,
-        background: Color32::from_rgb(0xF2, 0xF4, 0xF7),
-        panel: Color32::from_rgb(0xF8, 0xF9, 0xFB),
+        background: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+        panel: Color32::from_rgb(0xF3, 0xF5, 0xF8),
         surface: Color32::from_rgb(0xFF, 0xFF, 0xFF),
-        surface_alt: Color32::from_rgb(0xEE, 0xF1, 0xF4),
+        surface_alt: Color32::from_rgb(0xEB, 0xEE, 0xF2),
         border: Color32::from_rgb(0xD5, 0xDB, 0xE3),
         border_strong: Color32::from_rgb(0x9A, 0xA4, 0xB2),
         field: Color32::from_rgb(0xFF, 0xFF, 0xFF),
@@ -195,10 +197,92 @@ pub(crate) fn selection(palette: &Palette) -> Color32 {
     palette.accent.gamma_multiply(0.35)
 }
 
-/// Installs the fonts: egui's, with Phosphor's icons as a fallback of both families.
+/// Geist, the interface's font (1.800, as Google Fonts ships it; SIL Open Font License 1.1:
+/// `fonts/OFL-Geist.txt`): one variable font holding every weight. Unlike Inter, it puts no
+/// glyphs where Phosphor's icons are (Unicode's private use area), so the icons show though
+/// it comes first, setting the lines' height.
+static GEIST: &[u8] = include_bytes!("../fonts/Geist.ttf");
+
+/// A weight of the interface's text: regular for reading, heavier to stand out (a title, a
+/// section's name, a button's words).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Weight {
+    Regular,
+    Medium,
+    SemiBold,
+}
+
+impl Weight {
+    /// Every weight.
+    pub(crate) const ALL: [Self; 3] = [Self::Regular, Self::Medium, Self::SemiBold];
+
+    /// Its font's name among egui's, and its `wght` on Geist's axis.
+    const fn font(self) -> (&'static str, f32) {
+        match self {
+            Self::Regular => ("Geist", 400.0),
+            Self::Medium => ("Geist Medium", 500.0),
+            Self::SemiBold => ("Geist SemiBold", 600.0),
+        }
+    }
+
+    /// The family drawing text in this weight (regular is egui's proportional family).
+    pub(crate) fn family(self) -> egui::FontFamily {
+        static MEDIUM: LazyLock<egui::FontFamily> =
+            LazyLock::new(|| egui::FontFamily::Name(Weight::Medium.font().0.into()));
+        static SEMIBOLD: LazyLock<egui::FontFamily> =
+            LazyLock::new(|| egui::FontFamily::Name(Weight::SemiBold.font().0.into()));
+        match self {
+            Self::Regular => egui::FontFamily::Proportional,
+            Self::Medium => MEDIUM.clone(),
+            Self::SemiBold => SEMIBOLD.clone(),
+        }
+    }
+}
+
+/// Text in a weight of the interface's font.
+pub(crate) trait Weighted {
+    /// A little heavier: a button's words, a name that leads its line.
+    fn medium(self) -> Self;
+    /// Heavier still: a title, a section's name, what a panel is about.
+    fn semibold(self) -> Self;
+}
+
+impl Weighted for egui::RichText {
+    fn medium(self) -> Self {
+        self.family(Weight::Medium.family())
+    }
+
+    fn semibold(self) -> Self {
+        self.family(Weight::SemiBold.family())
+    }
+}
+
+/// Installs the fonts: Geist in each weight, then egui's own (for scripts and emoji Geist
+/// lacks) and Phosphor's icons behind each; the monospace family stays egui's. The font's
+/// bytes are borrowed, never copied.
 pub(crate) fn install_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    let behind = fonts
+        .families
+        .get(&egui::FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    for weight in Weight::ALL {
+        let (name, wght) = weight.font();
+        let tweak = egui::FontTweak {
+            coords: egui::epaint::text::VariationCoords::new([(b"wght", wght)]),
+            ..egui::FontTweak::default()
+        };
+        fonts.font_data.insert(
+            name.to_owned(),
+            Arc::new(egui::FontData::from_static(GEIST).tweak(tweak)),
+        );
+        let family = std::iter::once(name.to_owned())
+            .chain(behind.iter().cloned())
+            .collect();
+        fonts.families.insert(weight.family(), family);
+    }
     ctx.set_fonts(fonts);
 }
 
@@ -285,9 +369,15 @@ fn shape(style: &mut egui::Style, palette: &Palette, dark: bool) {
     style.text_styles = [
         (egui::TextStyle::Small, egui::FontId::proportional(SMALL)),
         (egui::TextStyle::Body, egui::FontId::proportional(BODY)),
-        (egui::TextStyle::Button, egui::FontId::proportional(BODY)),
+        (
+            egui::TextStyle::Button,
+            egui::FontId::new(BODY, Weight::Medium.family()),
+        ),
         (egui::TextStyle::Monospace, egui::FontId::monospace(CODE)),
-        (egui::TextStyle::Heading, egui::FontId::proportional(TITLE)),
+        (
+            egui::TextStyle::Heading,
+            egui::FontId::new(TITLE, Weight::SemiBold.family()),
+        ),
     ]
     .into();
 
@@ -374,7 +464,7 @@ mod tests {
     #[test]
     fn text_meets_wcag_aa_on_a_selected_row() {
         for palette in [Palette::DARK, Palette::LIGHT] {
-            for under in [palette.panel, palette.surface] {
+            for under in [palette.background, palette.panel, palette.surface] {
                 let selected = blend(selection(&palette), under);
                 let hovered = blend(palette.selected_hover, selected);
                 for background in [selected, hovered] {

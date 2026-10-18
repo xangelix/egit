@@ -6,10 +6,11 @@
 mod toggles;
 
 use std::path::Path;
+use std::sync::Arc;
 
 use egit_git::{ConfigEntry, ConfigScope};
 use egui::{
-    Button, Color32, CornerRadius, Event, Frame, Key, Margin, Response, RichText, Stroke,
+    Button, Color32, CornerRadius, Event, Frame, Key, Margin, Response, RichText, Sense, Stroke,
     StrokeKind, TextBuffer, TextEdit, Ui, WidgetText,
 };
 
@@ -17,7 +18,8 @@ pub(crate) use toggles::{checkbox, radio, radio_value, segmented};
 
 use crate::format::display_path;
 use crate::problem::Problem;
-use crate::theme::{CONTROL, HEADING, Palette};
+use crate::theme::Weighted as _;
+use crate::theme::{CONTROL, HEADING, Palette, SMALL, Weight};
 
 /// The smallest a control is drawn each way, in points: big enough to hit (WCAG 2.5.8 asks
 /// for 24).
@@ -52,38 +54,157 @@ pub(crate) fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R
 
 /// A card's or a section's title.
 pub(crate) fn heading(ui: &mut Ui, text: &str) -> Response {
-    ui.label(RichText::new(text).size(HEADING).strong())
+    ui.label(RichText::new(text).size(HEADING).semibold())
 }
 
 /// A page's title.
 pub(crate) fn page_title(ui: &mut Ui, text: &str) -> Response {
-    ui.label(RichText::new(text).size(PAGE_TITLE).strong())
+    ui.label(RichText::new(text).size(PAGE_TITLE).semibold())
 }
 
 /// A panel's or a dialog's title.
 pub(crate) fn panel_title(ui: &mut Ui, text: impl Into<String>) -> Response {
-    ui.add(egui::Label::new(RichText::new(text).size(PANEL_TITLE).strong()).wrap())
+    ui.add(egui::Label::new(RichText::new(text).size(PANEL_TITLE).semibold()).wrap())
 }
 
-/// A section's header: its title (and how many it holds, muted), then `add_right` from the
-/// right edge (its buttons), all on one line a control's height tall.
+/// A section's header: its title (see [`section_title`]), then `add_right` from the right
+/// edge (its buttons), all on one line a control's height tall.
 pub(crate) fn section_header(
     ui: &mut Ui,
-    title: &str,
-    count: Option<usize>,
+    (title, count, name): (&str, Option<usize>, &str),
     add_right: impl FnOnce(&mut Ui),
 ) {
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), CONTROL),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            ui.label(RichText::new(title).size(HEADING).strong());
-            if let Some(count) = count {
-                ui.label(muted(ui, count.to_string()));
-            }
+            section_title(ui, title, count, name);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), add_right);
         },
     );
+}
+
+/// A section's title, as every list's is (the sidebar's sections, a commit's files, the
+/// changes to stage): small capitals, muted, then how many it holds in a pill. Named `name`
+/// for those who don't see it: the title as written, or a sentence with the count.
+pub(crate) fn section_title(
+    ui: &mut Ui,
+    title: &str,
+    count: Option<usize>,
+    name: &str,
+) -> Response {
+    let palette = Palette::of(ui.ctx());
+    let (title, count) = section_galleys(ui.painter(), title, count, &palette);
+    let width = section_width(&title, count.as_ref());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, title.size().y.max(PILL)), Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name));
+    let pill = palette.surface_alt;
+    paint_section(
+        ui.painter(),
+        rect.left_center(),
+        (title, count),
+        (&palette, pill),
+    );
+    response
+}
+
+/// A count's pill's height.
+const PILL: f32 = 18.0;
+
+/// A section title's and its count's text, laid out.
+pub(crate) fn section_galleys(
+    painter: &egui::Painter,
+    title: &str,
+    count: Option<usize>,
+    palette: &Palette,
+) -> (Arc<egui::Galley>, Option<Arc<egui::Galley>>) {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &title.to_uppercase(),
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::new(SMALL, Weight::SemiBold.family()),
+            color: palette.muted,
+            extra_letter_spacing: 0.6,
+            ..egui::TextFormat::default()
+        },
+    );
+    let title = painter.layout_job(job);
+    let count = count.map(|count| {
+        painter.layout_no_wrap(
+            crate::format::count(u64::try_from(count).unwrap_or(u64::MAX)),
+            egui::FontId::new(SMALL, Weight::Medium.family()),
+            palette.muted,
+        )
+    });
+    (title, count)
+}
+
+/// How wide a section's title and count are.
+fn section_width(title: &egui::Galley, count: Option<&Arc<egui::Galley>>) -> f32 {
+    title.size().x + count.map_or(0.0, |count| 8.0 + count.size().x + 12.0)
+}
+
+/// Paints a section's title and count (on a `pill` of that colour) from `at` (their left,
+/// centred on its height); returns how wide they are.
+pub(crate) fn paint_section(
+    painter: &egui::Painter,
+    at: egui::Pos2,
+    (title, count): (Arc<egui::Galley>, Option<Arc<egui::Galley>>),
+    (palette, pill_fill): (&Palette, Color32),
+) -> f32 {
+    let width = section_width(&title, count.as_ref());
+    let title_width = title.size().x;
+    painter.galley(
+        egui::pos2(at.x, at.y - title.size().y / 2.0),
+        title,
+        palette.muted,
+    );
+    if let Some(count) = count {
+        let pill = egui::Rect::from_min_size(
+            egui::pos2(at.x + title_width + 8.0, at.y - PILL / 2.0),
+            egui::vec2(count.size().x + 12.0, PILL),
+        );
+        painter.rect_filled(pill, PILL / 2.0, pill_fill);
+        let at = egui::Align2::CENTER_CENTER
+            .align_size_within_rect(count.size(), pill)
+            .min;
+        painter.galley(at, count, palette.muted);
+    }
+    width
+}
+
+/// A box around a list (a commit's files): its rows on the window's background inside a
+/// border, filling the rest of the panel.
+pub(crate) fn list_box<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    let palette = Palette::of(ui.ctx());
+    Frame::new()
+        .fill(palette.background)
+        .stroke(Stroke::new(1.0, palette.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::same(4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add_contents(ui)
+        })
+        .inner
+}
+
+/// A box holding a long text apart from what is around it (a commit's description): the
+/// window's background, a border, rounded corners.
+pub(crate) fn text_box<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
+    let palette = Palette::of(ui.ctx());
+    Frame::new()
+        .fill(palette.background)
+        .stroke(Stroke::new(1.0, palette.border))
+        .corner_radius(CornerRadius::same(8))
+        .inner_margin(Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add_contents(ui)
+        })
+        .inner
 }
 
 /// A fact: its label, muted, in a column `width` wide (so facts line up, in one card or
@@ -202,7 +323,7 @@ fn filled(ui: &mut Ui, enabled: bool, text: &str, fill: Color32, on: Color32) ->
         fill
     };
     ui.add(
-        Button::new(RichText::new(text).color(on).strong())
+        Button::new(RichText::new(text).color(on).semibold())
             .fill(fill)
             .stroke(Stroke::NONE)
             .wrap_mode(egui::TextWrapMode::Extend),
@@ -253,6 +374,28 @@ pub(crate) fn tool(ui: &mut Ui, icon: &str, text: &str, selected: bool, look: Lo
     } else {
         response
     }
+}
+
+/// How wide [`tool`] (or, for a `menu`, [`tool_menu`]) draws its button as `look` says: its
+/// words and padding, at least its least width. For a bar choosing its look before drawing.
+pub(crate) fn tool_width(ui: &Ui, (icon, text): (&str, &str), look: Look, menu: bool) -> f32 {
+    let mut label = look.label(icon, text);
+    if menu {
+        label.push_str("  ");
+        label.push_str(crate::theme::icon::CARET_DOWN);
+    }
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let words = ui
+        .painter()
+        .layout_no_wrap(label, font, Color32::PLACEHOLDER)
+        .size()
+        .x;
+    let least = if look == Look::Compact && !menu {
+        CONTROL
+    } else {
+        0.0
+    };
+    (2.0f32.mul_add(ui.spacing().button_padding.x, words)).max(least)
 }
 
 /// A toolbar's menu: a quiet button with a caret, opening `add_contents` below it; named
@@ -529,7 +672,7 @@ pub(crate) fn problem_box(ui: &mut Ui, problem: &Problem, add_actions: impl FnOn
                     problem.title
                 ))
                 .color(palette.danger)
-                .strong(),
+                .semibold(),
             );
             if !problem.detail.is_empty() {
                 ui.add(egui::Label::new(problem.detail.as_str()).selectable(true));

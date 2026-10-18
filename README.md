@@ -22,3 +22,8 @@ cargo build --release
 ```
 
 The toolchain is pinned in `rust-toolchain.toml`; rustup installs it on first use.
+
+## Fonts
+
+egit's interface is set in [Geist](https://github.com/vercel/geist-font), shipped in
+`crates/egit/fonts/` under the SIL Open Font License 1.1 (`OFL-Geist.txt`).
