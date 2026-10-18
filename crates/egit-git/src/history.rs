@@ -687,6 +687,36 @@ pub fn commits_between(
         .collect()
 }
 
+/// How many commits `tip` has that `base` hasn't (`rev-list --count`; both commit names).
+///
+/// # Errors
+///
+/// When git fails or is cancelled.
+pub fn count_between(
+    git: &Git,
+    repository: &Repository,
+    base: ObjectId,
+    tip: ObjectId,
+    cancel: &CancelToken,
+) -> Result<u64, GitError> {
+    let counted = git
+        .read("rev-list")
+        .arg("--count")
+        .arg(tip.to_string())
+        .arg(format!("^{base}"))
+        .arg("--")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()?;
+    counted
+        .stdout
+        .trim_ascii()
+        .to_str()
+        .ok()
+        .and_then(|count| count.parse().ok())
+        .ok_or_else(|| GitError::unexpected("rev-list", "a count"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -259,6 +259,37 @@ impl Repository {
         Ok(HeadRef { reference, commit })
     }
 
+    /// The current branch's upstream: its full name (`refs/remotes/origin/main`) and commit;
+    /// none when detached, without an upstream, or when it is gone (`rev-parse
+    /// --symbolic-full-name @{upstream}`, then its commit).
+    ///
+    /// # Errors
+    ///
+    /// When git can't be run, or prints something unexpected.
+    pub fn upstream_tip(&self, git: &Git) -> Result<Option<(BString, ObjectId)>, GitError> {
+        let named = git
+            .read("rev-parse")
+            .args(["--verify", "--quiet", "--symbolic-full-name", "@{upstream}"])
+            .current_dir(&self.work_tree)
+            .output_unchecked()?;
+        let name = named.stdout.trim_ascii();
+        if !named.status.success() || !name.starts_with(b"refs/") {
+            return Ok(None);
+        }
+        let resolved = git
+            .read("rev-parse")
+            .args(["--verify", "--quiet", "--end-of-options"])
+            .arg(format!("{}^{{commit}}", name.to_str_lossy()))
+            .current_dir(&self.work_tree)
+            .output_unchecked()?;
+        if !resolved.status.success() {
+            return Ok(None);
+        }
+        let commit = ObjectId::from_hex(resolved.stdout.trim_ascii())
+            .ok_or_else(|| GitError::unexpected("rev-parse", "a commit's name"))?;
+        Ok(Some((BString::from(name), commit)))
+    }
+
     fn branch_head(&self, git: &Git, reference: BString) -> Result<BranchHead, GitError> {
         let name = BString::from(
             reference

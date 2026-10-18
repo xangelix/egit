@@ -771,6 +771,64 @@ fn refused(
 
 /// The banner of an operation git stopped in the middle of: Continue and Abort (or, for a
 /// bisect, Stop).
+/// What background fetches brought the current branch's upstream ("↓ 3 new commits on
+/// origin/main"), while the branch is behind it: Pull, Show them (the upstream's commit),
+/// and Dismiss. Gone once the user starts a task.
+pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent> {
+    if pane.tasks.is_busy() {
+        return None;
+    }
+    let brought = pane.tasks.brought.as_ref()?;
+    let Some(Head::Branch(branch)) = pane.head else {
+        return None;
+    };
+    let upstream = branch.upstream.as_ref()?;
+    let behind = matches!(upstream.tracking, Tracking::Diverged { behind, .. } if behind > 0);
+    if !behind || upstream.name != brought.short_name() {
+        return None;
+    }
+    let (to, name) = (brought.to, brought.short_name().to_str_lossy().into_owned());
+    let commits = if brought.commits == 1 {
+        "1 new commit".to_owned()
+    } else {
+        format!("{} new commits", format::count(brought.commits))
+    };
+    let palette = Palette::of(ui.ctx());
+    let mut event = None;
+    own_ids(ui, "brought", pane.id, UiBuilder::new(), |ui| {
+        ui.add_space(4.0);
+        egui::Frame::new()
+            .fill(palette.accent.gamma_multiply(0.10))
+            .stroke(egui::Stroke::new(1.0, palette.accent.gamma_multiply(0.6)))
+            .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
+            .inner_margin(egui::Margin::symmetric(12, 2))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let headline = format!("{}  {commits} on {name}", icon::ARROW_DOWN);
+                    fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
+                    ui.add(egui::Label::new(RichText::new(headline).semibold()).truncate());
+                    ui.label(muted(ui, "fetched in the background"));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let dismiss = widgets::icon_tool(ui, true, icon::X, "Dismiss");
+                        if dismiss.clicked() {
+                            pane.tasks.brought = None;
+                        }
+                        if widgets::secondary(ui, true, "Show them").clicked() {
+                            event = Some(TaskEvent::Commit(to));
+                        }
+                        if widgets::secondary(ui, true, &format!("{}  Pull", icon::ARROW_DOWN))
+                            .clicked()
+                        {
+                            pane.start(Task::Pull(PullMode::AsConfigured));
+                        }
+                    });
+                });
+            });
+    });
+    event
+}
+
 pub(crate) fn banner(
     ui: &mut Ui,
     view: &mut TasksView,

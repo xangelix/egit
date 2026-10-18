@@ -94,8 +94,8 @@ pub use forward::{ForwardFrom, Forwarded, fast_forward_branch, fast_forward_curr
 pub use git::{Git, GitOptions};
 pub use history::{
     ChangeKind, CountedFile, FileChange, LineCounts, RefKind, Reference, TreeEntry, Walked,
-    commit_changes, commits_between, history_tips, line_counts, list_references, walk_history,
-    walk_history_from, write_commit_graph,
+    commit_changes, commits_between, count_between, history_tips, line_counts, list_references,
+    walk_history, walk_history_from, write_commit_graph,
 };
 pub use integrate::{Integrated, ResetMode, cherry_pick, merge, rebase, reset, revert};
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};

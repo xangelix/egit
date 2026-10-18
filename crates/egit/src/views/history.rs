@@ -858,8 +858,8 @@ fn queued_commands(shared: &Shared<'_>, view: &mut HistoryView, pane: &mut TaskP
     }
 }
 
-/// The panel over the commit table: the top bar, the last task's outcome, and an operation's
-/// banner.
+/// The panel over the commit table: the top bar, the last task's outcome, what background
+/// fetches brought, and an operation's banner.
 fn bar_panel(
     ui: &mut Ui,
     shared: &Shared<'_>,
@@ -874,7 +874,8 @@ fn bar_panel(
         .show(ui, |ui| {
             top_bar(ui, shared, history, work_tree, view, writing, pane);
             tasks::outcome(ui, &mut view.tasks, pane);
-            match tasks::banner(ui, &mut view.tasks, pane) {
+            let brought = tasks::brought(ui, pane);
+            match tasks::banner(ui, &mut view.tasks, pane).or(brought) {
                 Some(TaskEvent::WorkTree) => view.select_work(),
                 Some(TaskEvent::Patch) => view.show_patch(PatchSource::Stopped),
                 Some(TaskEvent::Commit(commit)) => {

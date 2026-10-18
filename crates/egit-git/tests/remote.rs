@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, CloneOptions, FetchOptions, GitError, Operation, Progress, PullMode, Pulled,
-    PushFlag, PushOptions, Repository, abort_operation, clone, continue_operation, fetch,
-    fetch_refspecs, pull, push, remote_urls, remotes,
+    PushFlag, PushOptions, Repository, abort_operation, clone, continue_operation, count_between,
+    fetch, fetch_refspecs, pull, push, remote_urls, remotes,
 };
 
 /// A bare repository, `origin.git`, allowing partial clones, with `main` holding a commit; and
@@ -505,4 +505,53 @@ fn remote_urls_are_as_git_rewrites_them() {
             ("plain".into(), "https://example.com/a/b.git".into()),
         ]
     );
+}
+
+#[test]
+fn a_fetch_moves_the_upstream_by_the_commits_it_brings() {
+    let sandbox = Sandbox::new().unwrap();
+    let (_, url) = origin(&sandbox);
+    let (mine, repository) = cloned(&sandbox, &url, "mine");
+    let (theirs, _) = cloned(&sandbox, &url, "theirs");
+    let git = sandbox.git();
+    let (name, before) = repository.upstream_tip(git).unwrap().unwrap();
+    assert_eq!(name, "refs/remotes/origin/main");
+    assert_eq!(before.to_string(), rev(&sandbox, &mine, "origin/main"));
+
+    commit_and_push(&sandbox, &theirs, "a", "1\n", "One");
+    commit_and_push(&sandbox, &theirs, "b", "2\n", "Two");
+    let options = FetchOptions {
+        all: true,
+        prune: true,
+        background: true,
+    };
+    fetch(
+        git,
+        &repository,
+        options,
+        &Progress::new(),
+        &CancelToken::new(),
+    )
+    .unwrap();
+    let (_, after) = repository.upstream_tip(git).unwrap().unwrap();
+    assert_ne!(after, before);
+    let cancel = CancelToken::new();
+    assert_eq!(
+        count_between(git, &repository, before, after, &cancel).unwrap(),
+        2
+    );
+    assert_eq!(
+        count_between(git, &repository, after, before, &cancel).unwrap(),
+        0
+    );
+
+    // No upstream: a branch of its own, or detached.
+    sandbox
+        .run(&mine, "switch", &["--quiet", "-c", "alone"])
+        .unwrap();
+    assert_eq!(repository.upstream_tip(git).unwrap(), None);
+    sandbox
+        .run(&mine, "switch", &["--quiet", "--detach"])
+        .unwrap();
+    assert_eq!(repository.upstream_tip(git).unwrap(), None);
 }

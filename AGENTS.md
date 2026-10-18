@@ -167,7 +167,9 @@ writes paths), never `OsStrExt`.
     paths inside `.git`), `head` (`symbolic-ref`, then `for-each-ref` on that exact ref for the
     commit and `%(upstream:track)`, or `log -1` when detached), `head_ref` (`HeadRef`: just
     the branch's full name and the commit, by `symbolic-ref` and `rev-parse`, without the
-    upstream's ahead and behind), `head_reaches` (whether `HEAD`'s history holds a commit:
+    upstream's ahead and behind), `upstream_tip` (the current branch's upstream, its full name
+    and commit, by `rev-parse --symbolic-full-name @{upstream}`; none when detached, without
+    one, or gone), `head_reaches` (whether `HEAD`'s history holds a commit:
     `merge-base --is-ancestor`), and `operations` (merge, rebase, am, cherry-pick, revert,
     bisect from their state files in the git dir).
   - `config.rs` — `ConfigSnapshot::read(git, ConfigPlace::{User, Repository})`: one
@@ -223,7 +225,7 @@ writes paths), never `OsStrExt`.
     `line_counts` (the same with `--numstat`, in the same order: every file diffed, so it
     follows the list; `GIT_NO_LAZY_FETCH` where git honours it, never prompting),
     `write_commit_graph`, `commits_between` (`rev-list <tip> ^<base>`, newest first, at most
-    a limit: what a branch would bring in);
+    a limit: what a branch would bring in), `count_between` (the same, `--count`);
     `Repository::has_commit_graph` (without one, a topological walk outputs nothing until
     git has read all history: 6 s for Linux's 1.5M commits).
   - `diff.rs` — `file_diff`: one file's patch from `diff-tree -p` (plumbing, so no colour,
@@ -785,7 +787,12 @@ writes paths), never `OsStrExt`.
     (`fetch_every`; every 5 minutes by default, or never; the first 10 s after opening; only
     with a remote): non-interactive, without the lock, stopped when the
     user starts a task, its failure kept apart (`background_problem`; `background_fetches`
-    counts them, for the forge). `remote_names`, `has_remotes` (a scan, nothing allocated),
+    counts them, for the forge); what it brought the current branch's upstream (`Brought`:
+    `upstream_tip` before and after, `count_between` them; a later fetch continuing where an
+    earlier one ended adds to it) kept in `brought` until the user starts a task, and shown
+    under the top bar while the branch is behind (`views/tasks.rs`'s `brought`: "↓ 3 new
+    commits on origin/main", fetched in the background; Pull, Show them (the upstream's
+    commit selected), Dismiss). `remote_names`, `has_remotes` (a scan, nothing allocated),
     and `upstream_of` read the configuration. Fast-forwards (`FastForward` the current branch,
     `FastForwardBranch` another from a remote or a ref here: `Outcome::Forwarded`),
     `SetUpstream`, `DeleteBranchEverywhere` (here, then on the remote; refused here as not
@@ -1255,6 +1262,8 @@ writes paths), never `OsStrExt`.
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
     series saved. `src/tests/people.rs` drives co-authors: picked from the recent authors and
     typed, committed as trailers, shown in the details, taken back into the form to amend.
+    `src/tests/notices.rs` lets background fetches run: one bringing nothing says nothing, two
+    bringing a commit each make one notice of both.
     `src/tests/search.rs` drives the search bar
     (by message, author, path, and name; both themes) and holds egit's own reading of messages
     and authors to what `find_commits` finds on 300 assorted commits. `src/tests/scrolling.rs`

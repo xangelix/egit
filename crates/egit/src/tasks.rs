@@ -24,7 +24,7 @@ use egit_git::{
     RangeError, RebaseError, RebaseRange, RemoveWorktreeError, Repository, ResetMode, Stash,
     StashError, Step, SwitchError, SwitchTo, WorktreeFrom, abort_operation, add_remote,
     add_worktree, apply_patch, bisect_mark, changes_patch, cherry_pick, continue_operation,
-    create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
+    count_between, create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
     fast_forward_branch, fast_forward_current, fetch, fetch_refspecs, fetch_remote, format_patch,
     format_patches, lock_worktree, merge, prune_worktrees, pull, push, push_tag, rebase,
     rebase_interactive, rebase_keeping_merges, rebase_range, remove_remote, remove_worktree,
@@ -409,6 +409,43 @@ pub(crate) enum Outcome {
     WorktreeChanges,
 }
 
+/// What background fetches brought the current branch's upstream, since the user last looked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Brought {
+    /// The upstream, by its full name (`refs/remotes/origin/main`).
+    pub(crate) upstream: BString,
+    /// Where it was before the first of these fetches, and is now.
+    pub(crate) from: ObjectId,
+    pub(crate) to: ObjectId,
+    /// How many commits it gained.
+    pub(crate) commits: u64,
+}
+
+impl Brought {
+    /// The upstream's short name (`origin/main`).
+    pub(crate) fn short_name(&self) -> &BStr {
+        self.upstream
+            .strip_prefix(b"refs/remotes/")
+            .unwrap_or(&self.upstream)
+            .as_bstr()
+    }
+
+    /// `self`, then `later` (a fetch after): one notice, counting both, when `later` starts
+    /// where `self` ends; else `later` alone.
+    fn then(self, later: Self) -> Self {
+        let continues = later.from == self.to;
+        if later.upstream == self.upstream && continues {
+            Self {
+                to: later.to,
+                commits: self.commits.saturating_add(later.commits),
+                ..self
+            }
+        } else {
+            later
+        }
+    }
+}
+
 /// A repository's exchanges with its remotes.
 #[derive(Debug)]
 pub(crate) struct Tasks {
@@ -422,7 +459,7 @@ pub(crate) struct Tasks {
     cancel: CancelToken,
     /// Whether a task's end hasn't been taken in yet.
     open: bool,
-    background: Bind<(), Problem>,
+    background: Bind<Option<Brought>, Problem>,
     background_cancel: CancelToken,
     next_background: Instant,
     /// How often the background fetch runs (`None`: never).
@@ -431,6 +468,8 @@ pub(crate) struct Tasks {
     pub(crate) background_problem: Option<Problem>,
     /// How many background fetches ended (what follows the remotes reads again when it grows).
     pub(crate) background_fetches: u64,
+    /// What they brought the current branch's upstream, until the user looks or dismisses it.
+    pub(crate) brought: Option<Brought>,
 }
 
 impl Tasks {
@@ -449,6 +488,7 @@ impl Tasks {
             background_every: Some(BACKGROUND_FETCH),
             background_problem: None,
             background_fetches: 0,
+            brought: None,
         }
     }
 
@@ -481,6 +521,12 @@ impl Tasks {
         self.next_background = now.checked_add(Duration::from_secs(3600)).unwrap_or(now);
     }
 
+    /// Runs the background fetch at the next frame (tests about it).
+    #[cfg(test)]
+    pub(crate) fn fetch_in_background_now(&mut self) {
+        self.next_background = Instant::now();
+    }
+
     /// Whether a task the user asked for is running.
     pub(crate) fn is_busy(&mut self) -> bool {
         self.result.is_pending()
@@ -498,6 +544,8 @@ impl Tasks {
         task: Task,
     ) {
         self.background_cancel.cancel();
+        // Whatever the user does next, they have seen what the fetches brought.
+        self.brought = None;
         self.cancel.cancel();
         self.cancel = CancelToken::new();
         self.progress = Progress::new();
@@ -568,6 +616,12 @@ impl Tasks {
         }
         if self.background.is_finished() {
             self.background_problem = self.background.err_ref().cloned();
+            if let Some(Ok(Some(brought))) = self.background.take() {
+                self.brought = Some(match self.brought.take() {
+                    Some(earlier) => earlier.then(brought),
+                    None => brought,
+                });
+            }
             self.background = Bind::new(true);
             self.background_fetches = self.background_fetches.wrapping_add(1);
         }
@@ -584,8 +638,26 @@ impl Tasks {
                     prune: true,
                     background: true,
                 };
-                fetch(&git, &repository, options, &progress, &cancel)
-                    .map_err(|error| Problem::git("Fetching in the background failed", &error))
+                let failed = |error| Problem::git("Fetching in the background failed", &error);
+                // Where the current branch's upstream is, before and after: a problem reading
+                // it only goes without the notice.
+                let before = repository.upstream_tip(&git).ok().flatten();
+                fetch(&git, &repository, options, &progress, &cancel).map_err(failed)?;
+                let Some((upstream, from)) = before else {
+                    return Ok(None);
+                };
+                let after = repository.upstream_tip(&git).ok().flatten();
+                Ok(after
+                    .filter(|(name, to)| *name == upstream && *to != from)
+                    .and_then(|(_, to)| {
+                        let commits = count_between(&git, &repository, from, to, &cancel).ok()?;
+                        (commits > 0).then_some(Brought {
+                            upstream,
+                            from,
+                            to,
+                            commits,
+                        })
+                    }))
             }));
         }
         let wait = if self.background_every.is_some() {
