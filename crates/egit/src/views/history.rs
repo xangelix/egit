@@ -989,6 +989,10 @@ fn panels(
                     git: shared.git,
                     repository: shared.repository,
                     objects: &history.objects,
+                    me: shared
+                        .config
+                        .and_then(|config| config.get("user.email"))
+                        .and_then(|entry| entry.value),
                 };
                 work_details(ui, shared, view, staging, commit, actions);
             } else {
@@ -2088,10 +2092,13 @@ impl TableDelegate for CommitRows<'_> {
         if cell.col_nr == 1 && summary.signed {
             seal(ui, self.signatures.get(&id), self.shared.palette);
         }
+        if cell.col_nr == 2 {
+            authors_cell(ui, summary, self.shared.palette);
+            return;
+        }
         let ago;
         let (text, color): (&str, Color32) = match cell.col_nr {
             1 => (&summary.subject, self.shared.palette.text),
-            2 => (&summary.author, self.shared.palette.muted),
             _ if self.shared.preferences.dates == crate::preferences::Dates::Ago => {
                 ago = u64::try_from(summary.time)
                     .map_or_else(|_| String::new(), |time| crate::format::ago(time, self.now));
@@ -2111,6 +2118,33 @@ impl TableDelegate for CommitRows<'_> {
         ROW_HEIGHT
     }
 }
+
+/// A commit's author and co-authors: their avatars, overlapping, and their names.
+fn authors_cell(ui: &mut Ui, summary: &crate::history::Summary, palette: Palette) {
+    let mut people = Vec::with_capacity(summary.co_authors.len().saturating_add(1));
+    people.push((&*summary.author, &*summary.email));
+    people.extend(
+        summary
+            .co_authors
+            .iter()
+            .map(|(name, email)| (&**name, &**email)),
+    );
+    widgets::avatars(ui, AVATAR, &people, palette.background);
+    let names = match &*summary.co_authors {
+        [] => std::borrow::Cow::Borrowed(&*summary.author),
+        [other] => format!("{} and {}", summary.author, other.0).into(),
+        others => format!("{} and {} others", summary.author, others.len()).into(),
+    };
+    fonts::note_text(ui, &egui::TextStyle::Body.resolve(ui.style()), &names);
+    ui.add(
+        Label::new(RichText::new(&*names).color(palette.muted))
+            .selectable(false)
+            .truncate(),
+    );
+}
+
+/// An avatar's size in the commit table.
+const AVATAR: f32 = 18.0;
 
 impl CommitRows<'_> {
     /// The work in progress's row, pinned under the titles: in the graph's column a hollow node
@@ -2990,6 +3024,7 @@ fn commit_info(
         }
     });
     person(ui, ("Author", "Date"), &commit.author);
+    co_authors(ui, commit);
     let committed_apart = commit.committer.name != commit.author.name
         || commit.committer.email != commit.author.email
         || commit.committer.time != commit.author.time;
@@ -3039,17 +3074,67 @@ fn signature(ui: &mut Ui, check: Option<&SignatureCheck>, palette: Palette) {
     });
 }
 
-/// An author or committer: the name, leading, and the email beneath, muted; then when, as a
-/// fact of its own (`when` names it).
+/// An author or committer: their avatar, then the name, leading, and the email beneath,
+/// muted; then when, as a fact of its own (`when` names it).
 fn person(ui: &mut Ui, (role, when): (&str, &str), signature: &egit_git::Signature) {
     widgets::fact_top(ui, DETAIL_LABEL, role, |ui| {
-        ui.add(Label::new(RichText::new(signature.name.to_str_lossy()).medium()).wrap());
-        ui.add(Label::new(muted(ui, signature.email.to_str_lossy()).small()).wrap());
+        someone(ui, (&signature.name, &signature.email));
     });
     widgets::fact(ui, DETAIL_LABEL, when, |ui| {
         ui.add(Label::new(date_time(signature.time, signature.offset_minutes)).truncate());
     });
 }
+
+/// Who a message's `Co-authored-by` trailers name, each as an author is shown.
+fn co_authors(ui: &mut Ui, commit: &egit_git::Commit) {
+    let people = commit.co_authors();
+    if people.is_empty() {
+        return;
+    }
+    let label = if people.len() == 1 {
+        "Co-author"
+    } else {
+        "Co-authors"
+    };
+    let edge = Palette::of(ui.ctx()).panel;
+    widgets::fact_top(ui, DETAIL_LABEL, label, |ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        // A line each, the email on hover: there may be many.
+        for person in &people {
+            let (name, email) = (person.name.to_str_lossy(), person.email.to_str_lossy());
+            // As tall as the label's line, so the first sits level with it.
+            let height = ui
+                .text_style_height(&egui::TextStyle::Body)
+                .max(CO_AUTHOR_AVATAR);
+            let line = egui::vec2(ui.available_width(), height);
+            ui.allocate_ui_with_layout(line, Layout::left_to_right(Align::Center), |ui| {
+                widgets::avatar(ui, CO_AUTHOR_AVATAR, (&name, &email), edge);
+                ui.add(Label::new(RichText::new(&*name).medium()).truncate())
+                    .on_hover_text(&*email);
+            });
+        }
+    });
+}
+
+/// A co-author's avatar in the details.
+const CO_AUTHOR_AVATAR: f32 = 18.0;
+
+/// Someone named in a commit: their avatar, their name leading, their email beneath.
+fn someone(ui: &mut Ui, (name, email): (&[u8], &[u8])) {
+    let (name, email) = (name.to_str_lossy(), email.to_str_lossy());
+    let edge = Palette::of(ui.ctx()).panel;
+    ui.horizontal_top(|ui| {
+        widgets::avatar(ui, DETAIL_AVATAR, (&name, &email), edge);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 2.0;
+            ui.add(Label::new(RichText::new(&*name).medium()).wrap());
+            ui.add(Label::new(muted(ui, &*email).small()).wrap());
+        });
+    });
+}
+
+/// An avatar's size in the details.
+const DETAIL_AVATAR: f32 = 28.0;
 
 /// The width of the details' labels (Commit, Author, …): the panel is narrow.
 const DETAIL_LABEL: f32 = 72.0;

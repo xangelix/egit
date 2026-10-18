@@ -1,6 +1,6 @@
 //! The working tree's changes beside the history: what isn't staged and what is, each list with
 //! a button to move all of it and each file with its own, a file opened in the file view; and
-//! the form that commits what is staged.
+//! the form that commits what is staged, with whoever else wrote it as co-authors.
 //!
 //! The lists are made once per status read (indices into it, so a tree with a hundred thousand
 //! untracked files costs a few hundred kilobytes), and drawn by egui-table-kit, only the rows on
@@ -9,12 +9,12 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use bstr::{BString, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
-    Change, Committed, Direction, EntryKind, Git, NewCommit, ObjectId, Repository, Status,
-    StatusEntry, Uncommitted,
+    Author, CO_AUTHORED_BY, CancelToken, Change, Committed, Direction, EntryKind, Git, NewCommit,
+    ObjectId, Person, Repository, Status, StatusEntry, Uncommitted,
 };
-use egui::{Align, Key, Label, Layout, Modifiers, Response, RichText, Ui};
+use egui::{Align, Frame, Key, Label, Layout, Margin, Modifiers, Response, RichText, Ui};
 use egui_async::Bind;
 use egui_table_kit::error::TableError;
 use egui_table_kit::interaction::RowEventKind;
@@ -56,7 +56,15 @@ pub(super) struct CommitSide<'a> {
     pub(super) git: Option<&'a Git>,
     pub(super) repository: &'a Arc<Repository>,
     pub(super) objects: &'a Objects,
+    /// The user's email here (`user.email`), not offered as their own co-author.
+    pub(super) me: Option<&'a BStr>,
 }
+
+/// Up to this many recent commits' authors are offered as co-authors.
+const AUTHORS_READ: usize = 5_000;
+
+/// At most this many offered at once.
+const OFFERED: usize = 8;
 
 /// The commit form's state.
 #[derive(Debug)]
@@ -71,6 +79,12 @@ struct CommitForm {
     made_seen: u64,
     /// The last commit's message, read to amend it.
     amended: Bind<String, Problem>,
+    /// Who else wrote it: a `Co-authored-by` trailer each.
+    co_authors: Vec<Person>,
+    /// What is typed in the co-author picker.
+    query: String,
+    /// Who wrote the recent commits, offered there (read when it first opens).
+    authors: Bind<Vec<Author>, Problem>,
 }
 
 impl CommitForm {
@@ -83,6 +97,34 @@ impl CommitForm {
             sign: None,
             made_seen: 0,
             amended: Bind::new(true),
+            co_authors: Vec::new(),
+            query: String::new(),
+            authors: Bind::new(true),
+        }
+    }
+
+    /// Each co-author's trailer, for `git commit --trailer`.
+    fn trailers(&self) -> Vec<String> {
+        self.co_authors
+            .iter()
+            .map(|person| {
+                format!(
+                    "{CO_AUTHORED_BY}: {} <{}>",
+                    person.name.to_str_lossy(),
+                    person.email.to_str_lossy()
+                )
+            })
+            .collect()
+    }
+
+    /// Adds someone, unless they're there already (by email, in any case).
+    fn add_co_author(&mut self, person: Person) {
+        if !self
+            .co_authors
+            .iter()
+            .any(|known| known.email.eq_ignore_ascii_case(&person.email))
+        {
+            self.co_authors.push(person);
         }
     }
 
@@ -223,13 +265,14 @@ fn commit_form(
         && form.is_blank()
         && let Some(Ok(message)) = form.amended.read_as_ref()
     {
-        let message = message.trim_end();
-        let (summary, description) = message.split_once("\n\n").unwrap_or((message, ""));
-        form.summary = summary.to_owned();
-        form.description = description.to_owned();
+        let message = message.trim_end().to_owned();
+        let (summary, description) = message.split_once("\n\n").unwrap_or((&message, ""));
+        summary.clone_into(&mut form.summary);
+        form.description = take_co_authors(description, form);
     }
     widgets::section_header(ui, ("Commit", None, "Commit"), |_| {});
     let description = message_fields(ui, form);
+    co_authors_row(ui, form, side);
     options(ui, form, side);
     let ready = !busy && !form.summary.trim().is_empty() && (staged > 0 || form.amend);
     let label = if form.amend {
@@ -252,6 +295,7 @@ fn commit_form(
                 amend: form.amend,
                 sign_off: form.sign_off,
                 sign: Some(form.sign.unwrap_or(side.sign_by_default)),
+                trailers: form.trailers(),
             });
         }
         if side.committing.is_pending() {
@@ -290,6 +334,210 @@ fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
             .desired_width(f32::INFINITY),
     )
     .labelled_by(description_label.id)
+}
+
+/// `description` without its `Co-authored-by` lines, whom `form` takes as its co-authors (git
+/// adds them back, as trailers, when the commit is amended).
+fn take_co_authors(description: &str, form: &mut CommitForm) -> String {
+    let mut kept = String::with_capacity(description.len());
+    for line in description.lines() {
+        let person = line.split_once(':').and_then(|(key, value)| {
+            key.trim()
+                .eq_ignore_ascii_case(CO_AUTHORED_BY)
+                .then(|| Person::parse(value.as_bytes()))
+                .flatten()
+        });
+        if let Some(person) = person {
+            form.add_co_author(person);
+        } else {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    kept.trim_end().to_owned()
+}
+
+/// The co-authors: each a chip with its avatar and a button removing it, then "Co-author"
+/// opening the picker.
+fn co_authors_row(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
+    let palette = Palette::of(ui.ctx());
+    ui.horizontal_wrapped(|ui| {
+        let mut removed = None;
+        for (at, person) in form.co_authors.iter().enumerate() {
+            let (name, email) = (person.name.to_str_lossy(), person.email.to_str_lossy());
+            ui.push_id(("co-author", at), |ui| {
+                // As tall as a control: a target's height and 2 points around it.
+                Frame::new()
+                    .fill(palette.surface_alt)
+                    .corner_radius(crate::theme::RADIUS_CONTROL)
+                    .inner_margin(Margin {
+                        left: 5,
+                        right: 2,
+                        top: 2,
+                        bottom: 2,
+                    })
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 6.0;
+                            widgets::avatar(ui, 18.0, (&name, &email), palette.surface_alt);
+                            ui.add(Label::new(&*name).selectable(false))
+                                .on_hover_text(&*email);
+                            let (rect, _) = ui.allocate_exact_size(
+                                egui::vec2(widgets::TARGET, widgets::TARGET),
+                                egui::Sense::hover(),
+                            );
+                            let remove = format!("Remove {name} as a co-author");
+                            let id = ui.id().with("remove");
+                            if widgets::icon_button(ui, rect, id, icon::X, &remove, true).clicked()
+                            {
+                                removed = Some(at);
+                            }
+                        });
+                    });
+            });
+        }
+        if let Some(at) = removed {
+            form.co_authors.remove(at);
+        }
+        co_author_picker(ui, form, side);
+    });
+}
+
+/// "Co-author": a menu with a field, the recent authors matching what is typed, and whoever
+/// it names when it is `Name <email>`.
+fn co_author_picker(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
+    let button = egui::Button::new(format!("{}  Co-author", icon::USER_PLUS))
+        .min_size(egui::vec2(0.0, crate::theme::CONTROL));
+    let config = egui::containers::menu::MenuConfig::new()
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+    let (response, _) = egui::containers::menu::MenuButton::from_button(button)
+        .config(config)
+        .ui(ui, |ui| {
+            ui.set_width(360.0);
+            if form.authors.is_idle()
+                && let Some(git) = side.git
+            {
+                form.authors
+                    .request(read_authors(git.clone(), Arc::clone(side.repository)));
+            }
+            let label = ui.label(muted(ui, "Who wrote it with you"));
+            let field = ui
+                .add(
+                    widgets::line_field(&mut form.query)
+                        .hint_text("Name, email, or Name <email>")
+                        .desired_width(f32::INFINITY),
+                )
+                .labelled_by(label.id);
+            // Typed into at once, as a dialog's field is.
+            if ui.memory(|memory| memory.focused().is_none()) {
+                field.request_focus();
+            }
+            let picked = offers(
+                ui,
+                (&mut form.authors, &form.co_authors, &form.query),
+                side.me,
+            );
+            if let Some(person) = picked {
+                form.add_co_author(person);
+                form.query.clear();
+                ui.close();
+            }
+        });
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add a co-author")
+    });
+    response.on_hover_text(
+        "Credit someone else who wrote this commit: a Co-authored-by line at the message's end",
+    );
+}
+
+/// The authors offered for what is typed, and the person typed; returns the one picked.
+fn offers(
+    ui: &mut Ui,
+    (authors, chosen, query): (&mut Bind<Vec<Author>, Problem>, &[Person], &str),
+    me: Option<&BStr>,
+) -> Option<Person> {
+    let palette = Palette::of(ui.ctx());
+    let query = query.trim();
+    let typed = Person::parse(query.as_bytes());
+    let mut picked = None;
+    let mut add = |ui: &mut Ui, person: &Person, detail: &str| {
+        let (name, email) = (person.name.to_str_lossy(), person.email.to_str_lossy());
+        let text = format!("{name}  ·  {email}{detail}");
+        let row = ui.horizontal(|ui| {
+            widgets::avatar(ui, 20.0, (&name, &email), palette.surface);
+            ui.add(
+                egui::Button::new(text)
+                    .frame_when_inactive(false)
+                    .truncate()
+                    .min_size(egui::vec2(ui.available_width(), crate::theme::CONTROL)),
+            )
+        });
+        let named = format!("{name} <{email}>");
+        row.inner
+            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &named));
+        if row.inner.clicked() {
+            picked = Some(person.clone());
+        }
+    };
+    if let Some(person) = &typed {
+        add(ui, person, "");
+    }
+    match authors.read_as_ref() {
+        Some(Ok(authors)) => {
+            let folded = query.to_lowercase();
+            let mut shown = 0_usize;
+            for author in authors {
+                let person = &author.person;
+                let taken = chosen
+                    .iter()
+                    .chain(&typed)
+                    .any(|known| known.email.eq_ignore_ascii_case(&person.email))
+                    || me.is_some_and(|me| me.eq_ignore_ascii_case(&person.email));
+                let matches = folded.is_empty()
+                    || person.name.to_str_lossy().to_lowercase().contains(&folded)
+                    || person.email.to_str_lossy().to_lowercase().contains(&folded);
+                if taken || !matches {
+                    continue;
+                }
+                let commits = if author.commits == 1 {
+                    "  ·  1 commit".to_owned()
+                } else {
+                    format!("  ·  {} commits", count(u64::from(author.commits)))
+                };
+                add(ui, person, &commits);
+                shown = shown.saturating_add(1);
+                if shown == OFFERED {
+                    break;
+                }
+            }
+            if shown == 0 && typed.is_none() {
+                ui.label(muted(
+                    ui,
+                    "Nobody matches: type Name <email> to add someone new",
+                ));
+            }
+        }
+        Some(Err(problem)) => {
+            ui.label(muted(ui, problem.to_string()));
+        }
+        None => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(muted(ui, "Reading who wrote the recent commits…"));
+            });
+        }
+    }
+    picked
+}
+
+/// Who wrote the recent commits, most commits first.
+async fn read_authors(git: Git, repository: Arc<Repository>) -> Result<Vec<Author>, Problem> {
+    crate::jobs::blocking(move || {
+        egit_git::recent_authors(&git, &repository, AUTHORS_READ, &CancelToken::new())
+            .map_err(|error| Problem::git("The recent authors couldn't be read", &error))
+    })
+    .await
 }
 
 /// Amending (which reads the last commit's message), signing off, signing.

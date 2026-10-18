@@ -207,7 +207,10 @@ writes paths), never `OsStrExt`.
   - `objects.rs` — `ObjectReader`: one `cat-file --batch-command --buffer` per reader;
     requests go 128 at a time then `flush` (both pipes stay under their buffers), answers are
     read into one reused buffer. `commit.rs` — `Commit::parse` (raw commit objects; `subject`
-    is `%s`).
+    is `%s`; `co_authors`, each `Person` its `Co-authored-by` trailers name, in any case,
+    once). `people.rs` — `recent_authors`: who wrote the last commits of every branch (`log
+    --all --no-merges`, the stash left out), through the mailmap (`%aN`, `%aE`), most commits
+    first, each email once.
   - `history.rs` — `walk_history` (`rev-list --topo-order --parents`, streamed, lines split
     across chunks without copying; with a commit-graph it starts from `merge-base
     --independent` of `--all`'s tips, since git's topological walk first reads down to the
@@ -263,7 +266,8 @@ writes paths), never `OsStrExt`.
     entry at a commit (`ls-tree -z --full-tree`, a literal pathspec), or none. `git_path`: a
     path relative to a work tree as git writes it (`/` between folders, on Windows too).
   - `committing.rs` — `create_commit`: `git commit --file=- --cleanup=whitespace` (a line
-    starting with `#` is kept), `NewCommit`'s amend, sign-off, and signing (`-S`,
+    starting with `#` is kept), `NewCommit`'s amend, sign-off, trailers (`--trailer`, placed
+    by git's rules: co-authors), and signing (`-S`,
     `--no-gpg-sign`, or the configuration's choice); a passphrase is asked through askpass,
     labelled "Signing the commit"; `Committed::output` is what git and its hooks printed (a
     refusal's whole standard error is on the failure). `reword_head`: `HEAD`'s message alone
@@ -640,9 +644,9 @@ writes paths), never `OsStrExt`.
     left", "Unpin"; "2 branches hidden", "Show them"). `Refs` are shared (`shared`, an
     `Arc<[Reference]>`) and numbered by read (`read`), so the sidebar sorts them in a job and
     knows when they changed.
-    `Summaries`: subject, author, preformatted date, read as rows come into view (at most 512
-    a read, one read at a time), about 4,096 kept, least recently drawn forgotten first; each
-    says whether its commit is signed. `Signatures`: the signed commits on screen (and the one
+    `Summaries`: subject, author, preformatted date, co-authors (none allocates nothing), read
+    as rows come into view (at most 512 a read, one read at a time), about 4,096 kept, least
+    recently drawn forgotten first; each says whether its commit is signed. `Signatures`: the signed commits on screen (and the one
     selected) checked with `check_signatures`, 64 at a time, one batch at a time (each check
     runs a program); a failed batch counts as checked without a verdict, so it isn't retried
     every frame; forgotten when the configuration is read again.
@@ -878,10 +882,12 @@ writes paths), never `OsStrExt`.
     is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
     selection and the top row's commit in place when a re-read takes over. The table's
     column titles are small and muted, and so is all but the subject (author, date, commit),
-    which leads its row. Details: the subject as the panel's title, the description in a box
+    which leads its row; the author's column shows the author's avatar and the co-authors'
+    (`authors_cell`), and their names ("Ada and Alan", "Ada and 3 others"). Details: the subject as the panel's title, the description in a box
     of its own (`widgets::text_box`), then facts: names,
-    parents (buttons: egui announces links as plain text), each person (the name, leading,
-    the email beneath, muted) and their date as a fact of its own, the signature (its
+    parents (buttons: egui announces links as plain text), each person (their avatar, the
+    name, leading, the email beneath, muted) and their date as a fact of its own, the
+    co-authors (a line each, their avatar and name, the email on hover), the signature (its
     verdict, signer, and key), refs. A commit of the branch checked out (`CommitDetails::in_head`,
     read with them) has its message edited in place: a double click on its subject or
     description (they show it under the pointer), or the pencil at the title's right (named
@@ -917,8 +923,13 @@ writes paths), never `OsStrExt`.
     `views/work.rs` — `WorkPanel`: "Not staged" and "Staged", each a table-kit list (indices
     into the status, made once per read) with a button for all and one per file (named
     "Stage <path>"), a file clicked opened in the `FileView`; then the commit form: summary
-    (warned past 72 characters), description (⌘Enter commits), amend (a blank form takes the
-    last commit's message, `read_message`), sign off, sign (`commit.gpgSign` by default),
+    (warned past 72 characters), description (⌘Enter commits), co-authors (chips with their
+    avatars, each removable; "Co-author" opens a picker: a field typed into at once, the
+    recent authors (`recent_authors` of the last 5,000 commits, read when it first opens; the
+    user's own `user.email` left out) matching it by name or email, most commits first, eight
+    at most, and whoever `Name <email>` typed names; each a `Co-authored-by` trailer), amend
+    (a blank form takes the last commit's message, `read_message`, its co-author lines moved
+    into the chips: git adds them back), sign off, sign (`commit.gpgSign` by default),
     and the last commit's output (its hooks') or problem (git's whole complaint). It clears
     once the tab's `commits_made` grows. A history of 10,000+ commits
     without a commit-graph is offered one (`Action::WriteCommitGraph`).
@@ -1183,7 +1194,11 @@ writes paths), never `OsStrExt`.
     control's height, their text centred and 8 points from the side, and `text_area` (several
     lines, 8 points from every edge), `link` (hanging into its inset, its words aligned with
     text above and below), `icon_button` exactly its place, `row_fill` a list row's background (a selected
-    one lightens under the pointer), cards, origin labels, problem boxes; `toggles.rs`: a
+    one lightens under the pointer), cards, origin labels, problem boxes; `avatar.rs`: someone
+    as their initials (their name's first and last words', else their email's) on a colour
+    of the palette's `avatars` hashed from their email (FNV-1a, any case), so one person looks
+    alike everywhere; drawn, never fetched (`avatar`; `avatars` overlapping a little, three
+    at most and "+2"); `toggles.rs`: a
     checkbox (a square box, filled and ticked when checked), radio buttons, and a segmented
     control (sized from its words before it is drawn, a control's height, so it centres on its
     row as any widget does; its 24-point segments' corners following its), each a whole row
@@ -1238,7 +1253,9 @@ writes paths), never `OsStrExt`.
     changes); a submodule set up. `src/tests/patches.rs` drives patches: a series looked
     at and applied signed off, a conflicting one stopped (its progress, its patch, Skip,
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
-    series saved. `src/tests/search.rs` drives the search bar
+    series saved. `src/tests/people.rs` drives co-authors: picked from the recent authors and
+    typed, committed as trailers, shown in the details, taken back into the form to amend.
+    `src/tests/search.rs` drives the search bar
     (by message, author, path, and name; both themes) and holds egit's own reading of messages
     and authors to what `find_commits` finds on 300 assorted commits. `src/tests/scrolling.rs`
     turns the wheel through a commit's 300 files and 300 files to stage, past their ends,

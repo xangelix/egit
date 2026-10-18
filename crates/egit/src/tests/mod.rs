@@ -5,6 +5,7 @@ mod bisect;
 mod corpus;
 mod menus;
 mod patches;
+mod people;
 mod polish;
 mod scale;
 mod screens;

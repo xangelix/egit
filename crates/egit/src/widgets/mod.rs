@@ -1,8 +1,9 @@
 //! The pieces views are built from, so every view looks and answers alike: text in a few sizes,
 //! buttons of a few kinds (primary, secondary, danger, and a toolbar's quiet ones), toggles
-//! (`toggles`), cards, facts in aligned columns, sections with their actions, labels for where
-//! a setting comes from, and problem boxes.
+//! (`toggles`), people's initials (`avatar`), cards, facts in aligned columns, sections with
+//! their actions, labels for where a setting comes from, and problem boxes.
 
+mod avatar;
 mod toggles;
 
 use std::path::Path;
@@ -14,6 +15,7 @@ use egui::{
     StrokeKind, TextBuffer, TextEdit, Ui, WidgetText,
 };
 
+pub(crate) use avatar::{avatar, avatars};
 pub(crate) use toggles::{checkbox, radio, radio_value, segmented};
 
 use crate::format::display_path;

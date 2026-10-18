@@ -59,6 +59,9 @@ pub(crate) struct Palette {
     pub(crate) on_danger: Color32,
     /// The commit graph's lanes, in turn.
     pub(crate) lanes: [Color32; 10],
+    /// Behind people's initials, one each (by email), and the initials on them.
+    pub(crate) avatars: [Color32; 10],
+    pub(crate) on_avatar: Color32,
     /// Behind a diff's added lines, and its changed words.
     pub(crate) added: Color32,
     pub(crate) added_word: Color32,
@@ -114,6 +117,20 @@ impl Palette {
             Color32::from_rgb(0x95, 0x75, 0xCD),
             Color32::from_rgb(0xA1, 0x88, 0x7F),
         ],
+        // The lanes: bright enough for dark initials.
+        avatars: [
+            Color32::from_rgb(0x4F, 0xC3, 0xF7),
+            Color32::from_rgb(0x81, 0xC7, 0x84),
+            Color32::from_rgb(0xFF, 0xB7, 0x4D),
+            Color32::from_rgb(0xBA, 0x68, 0xC8),
+            Color32::from_rgb(0xF0, 0x62, 0x92),
+            Color32::from_rgb(0x4D, 0xD0, 0xE1),
+            Color32::from_rgb(0xDC, 0xE7, 0x75),
+            Color32::from_rgb(0xFF, 0x8A, 0x65),
+            Color32::from_rgb(0x95, 0x75, 0xCD),
+            Color32::from_rgb(0xA1, 0x88, 0x7F),
+        ],
+        on_avatar: Color32::from_rgb(0x12, 0x15, 0x19),
         added: Color32::from_rgba_unmultiplied_const(0x3F, 0xB9, 0x50, 40),
         added_word: Color32::from_rgba_unmultiplied_const(0x3F, 0xB9, 0x50, 100),
         removed: Color32::from_rgba_unmultiplied_const(0xF8, 0x51, 0x49, 40),
@@ -159,6 +176,20 @@ impl Palette {
             Color32::from_rgb(0x45, 0x27, 0xA0),
             Color32::from_rgb(0x6D, 0x4C, 0x41),
         ],
+        // The lanes, a few darkened so white initials read on each.
+        avatars: [
+            Color32::from_rgb(0x02, 0x77, 0xBD),
+            Color32::from_rgb(0x2E, 0x7D, 0x32),
+            Color32::from_rgb(0xB8, 0x5C, 0x00),
+            Color32::from_rgb(0x7B, 0x1F, 0xA2),
+            Color32::from_rgb(0xC2, 0x18, 0x5B),
+            Color32::from_rgb(0x00, 0x73, 0x7D),
+            Color32::from_rgb(0x6B, 0x62, 0x13),
+            Color32::from_rgb(0xBF, 0x36, 0x0C),
+            Color32::from_rgb(0x45, 0x27, 0xA0),
+            Color32::from_rgb(0x6D, 0x4C, 0x41),
+        ],
+        on_avatar: Color32::from_rgb(0xFF, 0xFF, 0xFF),
         added: Color32::from_rgba_unmultiplied_const(0x1A, 0x7F, 0x37, 32),
         added_word: Color32::from_rgba_unmultiplied_const(0x1A, 0x7F, 0x37, 80),
         removed: Color32::from_rgba_unmultiplied_const(0xCF, 0x22, 0x2E, 32),
@@ -454,6 +485,10 @@ mod tests {
             }
             assert!(contrast(palette.on_accent, palette.accent) >= 4.5);
             assert!(contrast(palette.on_danger, palette.danger) >= 4.5);
+            for avatar in palette.avatars {
+                let ratio = contrast(palette.on_avatar, avatar);
+                assert!(ratio >= 4.5, "initials on {avatar:?}: {ratio:.2}");
+            }
         }
     }
 

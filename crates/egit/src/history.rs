@@ -706,6 +706,8 @@ pub(crate) struct Summary {
     pub(crate) time: i64,
     /// Whether it carries a signature (whether it holds is checked apart).
     pub(crate) signed: bool,
+    /// Who its `Co-authored-by` trailers name: name and email (none allocates nothing).
+    pub(crate) co_authors: Box<[(Box<str>, Box<str>)]>,
 }
 
 impl Summary {
@@ -718,6 +720,11 @@ impl Summary {
             date: date_time(commit.author.time, commit.author.offset_minutes).into_boxed_str(),
             time: commit.author.time,
             signed: commit.signed,
+            co_authors: commit
+                .co_authors()
+                .iter()
+                .map(|person| (text(&person.name), text(&person.email)))
+                .collect(),
         }
     }
 
@@ -730,6 +737,7 @@ impl Summary {
             date: Box::default(),
             time: 0,
             signed: false,
+            co_authors: Box::default(),
         }
     }
 }
