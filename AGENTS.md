@@ -1192,7 +1192,9 @@ writes paths), never `OsStrExt`.
     dialog (`Ask`), or opens the rebase editor, carried out by the history view
     (`carry_out`). The commit menu's "Rewrite" group (on a branch, nothing running): "Rebase
     interactively from here…", "Edit the message…" (the editor, that commit reworded),
-    "Squash into its parent", "Drop this commit…" (a dialog first).
+    "Squash into its parent", "Drop this commit…" (a dialog first). Its "Bulk actions"
+    submenu: what picking several offers (`views/picked.rs`), for this one ("Sign this
+    commit…"), and how to pick more.
     `views/picked.rs` — commits picked together in the commit table (`Picked`: their rows and
     names, the newest first, and where a range runs from): ⇧-click a range from the last row
     clicked alone (at most 10,000), ⌘-click (Ctrl) adds or takes away one (the keys read from
@@ -1200,7 +1202,7 @@ writes paths), never `OsStrExt`.
     a plain click lets them go; kept by name across a history read again (`follow`). While
     several are picked they alone show as selected, the details show them (`panel`: how many,
     Sign these commits…, Copy their names, Clear the selection, the first 200 listed), and a
-    right click on one opens their menu ("These 3 commits": the same). Signing asks first
+    right click on one opens their menu ("Bulk actions on 3 commits": the same). Signing asks first
     (`Dialog::SignCommits`: what is made again, what a push takes, what stays).
     `views/output.rs` — the output panel at a repository tab's bottom (once anything ran): a
     bar (show or hide it, ⌘J; the run shown and how it stands: its hooks running and for how
@@ -1533,7 +1535,8 @@ writes paths), never `OsStrExt`.
     `EGIT_REQUIRE_LFS`).
     `src/tests/picked.rs` picks two commits by ⇧-click, adds and takes away a third by ⌘-click,
     signs the two from their menu (the one after them made again too, the first left alone;
-    their signatures good in `git log`), and undoes it. `src/tests/avatars.rs` serves pictures from stand-ins for
+    their signatures good in `git log`), and undoes it; and signs one commit from its menu's
+    Bulk actions. `src/tests/avatars.rs` serves pictures from stand-ins for
     GitHub and Gravatar on the loopback address: one GitHub knows drawn from it (Gravatar not
     asked), one it answers its placeholder for drawn from Gravatar, one neither has kept to
     initials; all kept on disk, a window opened after asking nothing; and keeps to initials

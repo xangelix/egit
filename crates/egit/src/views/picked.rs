@@ -252,7 +252,7 @@ pub(super) fn panel(
 }
 
 /// The clicks that pick, as this platform's keys name them.
-const fn clicks() -> (&'static str, &'static str) {
+pub(super) const fn clicks() -> (&'static str, &'static str) {
     if cfg!(target_os = "macos") {
         ("⇧-click", "⌘-click")
     } else {
@@ -273,7 +273,7 @@ pub(super) fn names(ids: &[ObjectId]) -> String {
 /// The menu of a right click on one of several commits picked: what can be done to them all.
 pub(super) fn menu(ui: &mut Ui, menus: &Menus<'_>, ids: &[ObjectId]) -> Option<PickedEvent> {
     let mut event = None;
-    super::actions::menu_header(ui, &format!("These {} commits", ids.len()));
+    super::actions::menu_header(ui, &format!("Bulk actions on {} commits", ids.len()));
     if super::actions::item(
         ui,
         (icon::SEAL_CHECK, "Sign these commits…"),

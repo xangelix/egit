@@ -987,7 +987,8 @@ pub(super) const TOPICS: &[Topic] = &[
         group: Group::Looking,
         title: "Selecting several commits",
         on: &[
-            "These * commits",
+            "Bulk actions on * commits",
+            "Bulk actions",
             "Selected",
             "Copy their names",
             "Clear the selection",
@@ -995,8 +996,8 @@ pub(super) const TOPICS: &[Topic] = &[
         what: "Shift-click picks every commit from the one last clicked to this one; Ctrl-click \
                (⌘ on a Mac) adds one or takes it away; Shift with ↑ or ↓ stretches the range. \
                While several are picked, the details list them, and a right click on one offers \
-               what can be done to them all: signing them, copying their names. Picking changes \
-               nothing in the repository.",
+               what can be done to them all: signing them, copying their names (one commit's menu \
+               has them too, under Bulk actions). Picking changes nothing in the repository.",
         git: "",
         cases: &[
             (

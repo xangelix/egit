@@ -1312,7 +1312,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "sign-commits",
         group: Group::Rewriting,
         title: "Signing commits already made",
-        on: &["Sign these commits…"],
+        on: &["Sign these commits…", "Sign this commit…"],
         what: "Makes each commit picked again, with the same changes, author, and message, signed \
                with your key, and you as its committer, now. Every commit of the branch after \
                them is made again too, its parent being new, and signed as well. Nothing is \

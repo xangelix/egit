@@ -159,3 +159,34 @@ fn picked_commits_are_signed_from_their_menu() {
     wait_for_label(&mut harness, "Undid signing 2 commits.");
     assert_eq!(log(&sandbox, &repo, "%H"), before);
 }
+
+#[test]
+fn one_commit_is_signed_from_its_bulk_actions() {
+    let sandbox = Sandbox::new().unwrap();
+    let Some(repo) = signing_repo(&sandbox) else {
+        return;
+    };
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+
+    // Its menu's Bulk actions: what picking several offers, for it alone.
+    harness
+        .get_by_role_and_label(Role::Button, "Four")
+        .click_secondary();
+    wait_for_label(&mut harness, "Bulk actions");
+    harness.get_by_label("Bulk actions").hover();
+    wait_for_label(&mut harness, "Sign this commit…");
+    harness.get_by_label("Sign this commit…").click();
+    wait_for_label(&mut harness, "Sign 1 commit?");
+    harness.get_by_label("Sign").click();
+    wait_for_label(&mut harness, "Signed 1 commit.");
+    assert_eq!(
+        log(&sandbox, &repo, "%G? %s"),
+        ["G Four", "N Three", "N Two", "N One"]
+    );
+}

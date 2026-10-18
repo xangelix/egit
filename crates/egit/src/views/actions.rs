@@ -365,6 +365,7 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
     ui.separator();
     into_items(ui, menus, id, (other, can), &mut ask);
     rewrite_items(ui, menus, id, &mut ask);
+    bulk_menu(ui, menus, id, &mut ask);
     bisect_menu(ui, menus, id, &mut ask);
     let reset = format!("Reset {current} to this commit");
     submenu(ui, (icon::ARROW_U_UP_LEFT, &reset), |ui| {
@@ -404,6 +405,26 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             ui.ctx().copy_text(repository.commit_url(id));
         }
     }
+}
+
+/// The actions picking several commits offers (their menu's), for this one alone, and how to
+/// pick more.
+fn bulk_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, ask: &mut impl FnMut(Ask)) {
+    submenu(ui, (icon::STACK, "Bulk actions"), |ui| {
+        let allowed = super::picked::signing_allowed(menus, 1);
+        if item(ui, (icon::SEAL_CHECK, "Sign this commit…"), allowed) {
+            ask(Ask::Dialog(Dialog::SignCommits(vec![id])));
+        }
+        ui.separator();
+        let (range, one) = super::picked::clicks();
+        ui.add(
+            egui::Label::new(muted(
+                ui,
+                format!("{range} or {one} rows to pick several: their menu does these to all."),
+            ))
+            .wrap(),
+        );
+    });
 }
 
 /// What can be made at a commit: switching there detached, a branch, a tag, a worktree.
