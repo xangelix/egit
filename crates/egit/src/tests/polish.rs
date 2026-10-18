@@ -110,8 +110,18 @@ fn the_palette_runs_commands_and_the_shortcuts_reach_them() {
     wait_for_label(&mut harness, "Switched to parser.");
 
     // The application's own shortcuts.
+    let hide = harness.get_by_label("Hide the sidebar").rect();
     harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
     wait_for_label(&mut harness, "Show the sidebar");
+    // Its strip's button: where the hiding one was on the head band (level with the column
+    // titles), centred across the strip (less its edge's line).
+    let show = harness.get_by_label("Show the sidebar").rect();
+    assert!(
+        (show.center().y - hide.center().y).abs() < 0.5
+            && (show.center().x - (crate::widgets::HEAD - 1.0) / 2.0).abs() < 0.5,
+        "{show:?}, hidden from {hide:?}"
+    );
+    render(&mut harness, "sidebar-strip");
     harness.key_press_modifiers(Modifiers::COMMAND, Key::B);
     wait_for_label(&mut harness, "Hide the sidebar");
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);

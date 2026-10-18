@@ -2014,10 +2014,15 @@ fn request_row(
     None
 }
 
-/// The narrow strip shown in the sidebar's place while it is hidden: a button showing it.
+/// The narrow strip shown in the sidebar's place while it is hidden ([`HIDDEN_WIDTH`]): a
+/// button showing it, centred across the strip and on the window's head band, level with the
+/// column titles beside it.
 pub(super) fn hidden(ui: &mut Ui, view: &mut Sidebar) {
-    ui.add_space(6.0);
-    let (_, place) = ui.allocate_space(vec2(TARGET, TARGET));
+    let (band, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), crate::widgets::HEAD),
+        Sense::hover(),
+    );
+    let place = Rect::from_center_size(band.center(), vec2(TARGET, TARGET));
     let show = crate::widgets::icon_button(
         ui,
         place,
@@ -2030,6 +2035,10 @@ pub(super) fn hidden(ui: &mut Ui, view: &mut Sidebar) {
         view.open = true;
     }
 }
+
+/// The hidden sidebar's strip: as wide as the head band is tall, so its button has as much
+/// room either side as above and below it.
+pub(super) const HIDDEN_WIDTH: f32 = crate::widgets::HEAD;
 
 #[cfg(test)]
 mod tests {

@@ -1262,8 +1262,8 @@ fn side_panel(
     } else {
         egui::Panel::left(id)
             .resizable(false)
-            .exact_size(28.0)
-            .frame(chrome(shared).inner_margin(Margin::symmetric(4, 0)))
+            .exact_size(sidebar::HIDDEN_WIDTH)
+            .frame(chrome(shared))
             .show(ui, |ui| sidebar::hidden(ui, &mut view.sidebar));
         None
     };
