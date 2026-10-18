@@ -785,7 +785,9 @@ writes paths), never `OsStrExt`.
     selected) checked with `check_signatures`, 64 at a time, one batch at a time (each check
     runs a program); a failed batch counts as checked without a verdict, so it isn't retried
     every frame; forgotten when the configuration is read again.
-    `read_details` (the commit and its `commit_changes`); `read_change_counts` (its
+    `read_details` (the commit and its `commit_changes`); `read_comparison` (two commits: the
+    newer's details with the older as its only parent, so the details' files, counts, and
+    diffs run from one to the other); `read_change_counts` (its
     `line_counts`, lined up with the changes by path should their orders differ, and their
     total). `HistoryState`: the history shown,
     and a re-read (`reload`) that takes over only once complete (`replaced`), so the table
@@ -937,7 +939,10 @@ writes paths), never `OsStrExt`.
     file written in the job). Patches: `ApplyPatch` (its bytes shared, `Patch`), `Skip`,
     `CopyPatch` and `CopyChanges` (`Outcome::Copied`, its text, copied as the outcome is first
     shown; refused when empty or not UTF-8), `SavePatches` (`Outcome::SavedPatches`),
-    `SaveChanges`. A forge's tasks run with the tab's accounts:
+    `SaveChanges`. `Export`: commits picked together (`exporting.rs`; `Outcome::Exported`, how
+    many patches or lines were made and the text copied, if it was; copied texts are shared,
+    `Arc<str>`, as an outcome is cloned each frame it shows). A forge's tasks run with the
+    tab's accounts:
     `CheckOutPullRequest` (`fetch_refspecs` of its refspec, then a switch; changes in the way
     lead to stash-and-switch, as a switch's do) and `CreatePullRequest` (`Outcome::Opened`).
     The repository's plumbing: `AddRemote` (fetched at once if asked), `FetchRemote`,
@@ -958,6 +963,11 @@ writes paths), never `OsStrExt`.
     `run` (`discard_files` or `discard_lines`); `refusal` (a conflict, a submodule, an
     untracked repository of its own aren't discarded here) and `of_entries` (every entry that
     can be, from a list).
+  - `exporting.rs` — `Export`: commits picked together as patches (one each, into a folder or
+    copied), as one patch (into a file or copied), or a changelog copied (`changelog`: a
+    Markdown list of their subjects, the oldest first, each with its short name linked to its
+    page on the repository's forge; merges left out unless they are all there is); `run`, and
+    each's words (`done`: "Saved 2 patches to ~/out.", merges left out said).
   - `output.rs` — a tab's output: `Run`s (a task or commit each: its title, `Transcript`, the
     hooks it was expected to run (`Task::hooks`, `commit_hooks`, among those installed), its
     start and end (`Ended`: done, failed, cancelled), its `CancelToken` while it runs), the last
@@ -1024,7 +1034,8 @@ writes paths), never `OsStrExt`.
     nothing that could pass for an option): `xdg-open`, else `gio open` (macOS's `open`;
     Windows' `rundll32 url.dll,FileProtocolHandler`, no shell reading the address), in a job.
     `FileDialogs`: the desktop's file dialogs (`rfd`, one at a time) for a `FileQuestion`:
-    where a patch or the changes go (a file), where a series goes (a folder), which patches to
+    where a patch or the changes go (a file), where a series goes (a folder), where commits
+    picked go (`SavePicked`: a file for one patch, a folder for one each), which patches to
     apply (files, patches first); for tests a folder answering them all (`in_folder`).
     `Action::AskFiles` asks, and `AppState::poll` turns the answer into a task, or shows the
     patches (`Action::OpenPatches`).
@@ -1259,9 +1270,16 @@ writes paths), never `OsStrExt`.
     the click's own event, as a test's are let go in the same frame), ⇧↑ ⇧↓ stretch, Escape or
     a plain click lets them go; kept by name across a history read again (`follow`). While
     several are picked they alone show as selected, the details show them (`panel`: how many,
-    Sign these commits…, Copy their names, Clear the selection, the first 200 listed), and a
-    right click on one opens their menu ("Bulk actions on 3 commits": the same). Signing asks first
-    (`Dialog::SignCommits`: what is made again, what a push takes, what stays).
+    Sign these commits…, Compare these two (exactly two), Export (a menu), Copy their names,
+    Clear the selection, wrapped in the panel's width; the first 200 listed), and a right click
+    on one opens their menu ("Bulk actions on 3 commits": the same). Signing asks first
+    (`Dialog::SignCommits`: what is made again, what a push takes, what stays). Export
+    (`export_items`, the menu's too): "As a single patch" and "As separate patches", each
+    "Save to a file…" (or "…a folder…", asked by `FileQuestion::SavePicked`) and "Copy to the
+    clipboard", and "Copy as a changelog" (`Task::Export`). Compared, two show in the details'
+    place (`views/history.rs`'s `Comparison`: From and To, Swap them, Close the comparison; the
+    files changed from one to the other, their lines counted, each opening its diff in a
+    `FileView`), as long as they are the two picked.
     `views/output.rs` — the output panel at a repository tab's bottom (once anything ran): a
     bar (show or hide it, ⌘J; the run shown and how it stands: its hooks running and for how
     long, done, failed, cancelled; the runs kept; Cancel while one runs; Copy; Clear) over the
@@ -1604,6 +1622,9 @@ writes paths), never `OsStrExt`.
     lines show as they come, the output closing after it went well; refused (the output kept
     open with its words); skipped; cancelled part-way from the output's bar (no commit); and
     the Overview's Hooks card lists it.
+    `src/tests/exporting.rs` picks two commits apart, copies them as separate patches and a
+    changelog, saves them as one patch and as separate patches (a folder answering), then
+    compares them (a file's diff opened, swapped, closed).
     `src/tests/discard.rs` discards a hunk from a diff (nothing asked) and undoes it, a file
     from its row's menu (asked first), an untracked file (deleted, then brought back by Undo),
     and everything not staged from a row's menu.

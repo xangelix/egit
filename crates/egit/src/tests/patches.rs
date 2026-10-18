@@ -107,7 +107,7 @@ pub(super) fn wait_for_text(harness: &mut Harness<'_, EgitApp>, text: &str) {
 /// The text the last task copied (the clipboard took it in the frame it ended).
 fn copied(harness: &mut Harness<'_, EgitApp>) -> Option<String> {
     match harness.state_mut().state.repos[0].tasks.result.ok_ref() {
-        Some(crate::tasks::Outcome::Copied(text)) => Some(text.clone()),
+        Some(crate::tasks::Outcome::Copied(text)) => Some(text.to_string()),
         _ => None,
     }
 }

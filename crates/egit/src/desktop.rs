@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 use egit_git::{Changes, ObjectId};
 use egui_async::Bind;
@@ -47,7 +48,7 @@ impl Opener {
 }
 
 /// What the desktop's file dialog is asked for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FileQuestion {
     /// Where a repository's commit's patch goes (a file).
     SavePatch { repo: RepoId, commit: ObjectId },
@@ -57,6 +58,13 @@ pub(crate) enum FileQuestion {
     SaveChanges { repo: RepoId, changes: Changes },
     /// Which patches to apply to a repository (files).
     ApplyPatches { repo: RepoId },
+    /// Where commits picked together go: their changes as one patch (`one`: a file), or one
+    /// patch each (a folder).
+    SavePicked {
+        repo: RepoId,
+        commits: Arc<[ObjectId]>,
+        one: bool,
+    },
 }
 
 /// The desktop's file dialogs (`rfd`, one at a time): where a file is saved, a folder, the
@@ -102,30 +110,39 @@ impl FileDialogs {
             return;
         }
         if let Some(folder) = &self.folder {
-            let answer = match question {
-                FileQuestion::SavePatch { .. } | FileQuestion::SaveChanges { .. } => {
-                    vec![folder.join(name)]
+            let answer = match &question {
+                FileQuestion::SavePatch { .. }
+                | FileQuestion::SaveChanges { .. }
+                | FileQuestion::SavePicked { one: true, .. } => vec![folder.join(name)],
+                FileQuestion::SavePatches { .. } | FileQuestion::SavePicked { one: false, .. } => {
+                    vec![folder.clone()]
                 }
-                FileQuestion::SavePatches { .. } => vec![folder.clone()],
                 FileQuestion::ApplyPatches { .. } => patches_in(folder),
             };
             self.answered = Some((question, answer));
             return;
         }
+        let kind = match &question {
+            FileQuestion::SavePatch { .. }
+            | FileQuestion::SaveChanges { .. }
+            | FileQuestion::SavePicked { one: true, .. } => Asked::File,
+            FileQuestion::SavePatches { .. } | FileQuestion::SavePicked { one: false, .. } => {
+                Asked::Folder
+            }
+            FileQuestion::ApplyPatches { .. } => Asked::Patches,
+        };
         self.question = Some(question);
         self.asking.request(async move {
             let dialog = rfd::AsyncFileDialog::new().set_title(title);
-            let chosen = match question {
-                FileQuestion::SavePatch { .. } | FileQuestion::SaveChanges { .. } => dialog
+            let chosen = match kind {
+                Asked::File => dialog
                     .set_file_name(name)
                     .save_file()
                     .await
                     .into_iter()
                     .collect::<Vec<_>>(),
-                FileQuestion::SavePatches { .. } => {
-                    dialog.pick_folder().await.into_iter().collect()
-                }
-                FileQuestion::ApplyPatches { .. } => dialog
+                Asked::Folder => dialog.pick_folder().await.into_iter().collect(),
+                Asked::Patches => dialog
                     .add_filter("Patches", &["patch", "diff", "mbox", "eml"])
                     .add_filter("Any file", &["*"])
                     .pick_files()
@@ -146,6 +163,14 @@ impl FileDialogs {
         }
         self.answered.take()
     }
+}
+
+/// What a dialog asks for: a file to save, a folder, or patches to open.
+#[derive(Clone, Copy, Debug)]
+enum Asked {
+    File,
+    Folder,
+    Patches,
 }
 
 /// The patches a test's folder holds, by name.

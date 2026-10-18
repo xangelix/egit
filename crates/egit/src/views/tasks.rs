@@ -415,7 +415,15 @@ fn follow_up(ui: &Ui, view: &mut TasksView, pane: &mut TaskPane<'_>, outcome: &O
             }),
             Outcome::Done,
         ) => pane.actions.push(Action::Open(path.clone())),
-        (_, Outcome::Copied(text)) => ui.ctx().copy_text(text.clone()),
+        (
+            _,
+            Outcome::Copied(text)
+            | Outcome::Exported {
+                copied: Some(text), ..
+            },
+        ) => {
+            ui.ctx().copy_text(text.to_string());
+        }
         _ => {}
     }
 }
@@ -507,6 +515,9 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
         ) => signed_text(*made, *asked, *pushed),
         (Task::Discard(discard), Outcome::Discarded(kept)) => {
             discarded_text(discard, kept.is_some())
+        }
+        (Task::Export { commits, how }, Outcome::Exported { made, .. }) => {
+            how.done(commits.len(), *made, home)
         }
         (task, _) => worktree_text(task, home).unwrap_or_else(|| done_text(task)),
     }

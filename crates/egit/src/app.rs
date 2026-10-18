@@ -17,6 +17,7 @@ use egui_async::Bind;
 
 use crate::commands::{self, Command, RepoCommand};
 use crate::desktop::{FileDialogs, FileQuestion, Opener};
+use crate::exporting::Export;
 use crate::fonts::Fallbacks;
 use crate::format::now;
 use crate::history::Scope;
@@ -603,6 +604,17 @@ impl AppState {
                 chosen.dedup();
                 self.actions.push(Action::OpenPatches(repo, chosen));
             }
+            FileQuestion::SavePicked { repo, commits, one } => self.actions.push(Action::Task(
+                repo,
+                Task::Export {
+                    commits: commits.to_vec(),
+                    how: if one {
+                        Export::OnePatch(first)
+                    } else {
+                        Export::Patches(first)
+                    },
+                },
+            )),
         }
     }
 

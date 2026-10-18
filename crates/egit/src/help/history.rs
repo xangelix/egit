@@ -996,8 +996,9 @@ pub(super) const TOPICS: &[Topic] = &[
         what: "Shift-click picks every commit from the one last clicked to this one; Ctrl-click \
                (⌘ on a Mac) adds one or takes it away; Shift with ↑ or ↓ stretches the range. \
                While several are picked, the details list them, and a right click on one offers \
-               what can be done to them all: signing them, copying their names (one commit's menu \
-               has them too, under Bulk actions). Picking changes nothing in the repository.",
+               what can be done to them all: signing them, comparing two, saving or copying them \
+               as patches or a changelog, copying their names (one commit's menu has signing \
+               too, under Bulk actions). Picking changes nothing in the repository.",
         git: "",
         cases: &[
             (
@@ -1013,6 +1014,104 @@ pub(super) const TOPICS: &[Topic] = &[
                 "Their full names, one a line, the newest first: ready for git cherry-pick or a script.",
             ),
         ],
+    },
+    Topic {
+        id: "compare-two",
+        group: Group::Looking,
+        title: "Comparing two commits",
+        on: &[
+            "Compare these two",
+            "Comparing two commits",
+            "Close the comparison",
+            "Swap them",
+            "From",
+            "To",
+        ],
+        what: "With exactly two commits picked, the details show what changed from the older to \
+               the newer: every file that differs between them, with the lines gained and lost, \
+               each opening its diff. It is the difference between the two snapshots, whatever \
+               lies between them; they needn't be on one branch. Swap compares the other way \
+               round.",
+        git: "git diff-tree -r -M <from> <to>; git diff <from> <to> -- <file>",
+        cases: &[
+            (
+                "Commits on two branches?",
+                "Still their snapshots' difference: what one has that the other hasn't, either way.",
+            ),
+            (
+                "Gone when I clicked a row?",
+                "A plain click picks one commit again: Shift- or Ctrl-click the two back, and Compare.",
+            ),
+        ],
+    },
+    Topic {
+        id: "export",
+        group: Group::Looking,
+        title: "Exporting commits",
+        // Either way's "Copy to the clipboard" points to its own topic when Alt is held.
+        on: &["Export", "Copy to the clipboard"],
+        what: "Commits picked together, as patches or a changelog: their changes as a single \
+               patch, separate patches (one each, as git mails them), each saved or copied, or \
+               a changelog of their subjects copied. Nothing changes in the repository.",
+        git: "git format-patch --no-walk; git diff; git log --no-walk",
+        cases: &[],
+    },
+    Topic {
+        id: "export-one-patch",
+        group: Group::Looking,
+        title: "As a single patch",
+        on: &["As a single patch", "Save to a file…"],
+        what: "Every picked commit's changes together, as one diff git apply takes (under a list \
+               of the commits, which git apply passes over): from the oldest one's parent to the \
+               newest when each follows the one before; otherwise each commit's changes merged \
+               in turn onto those before it, the oldest first, as cherry-picking them would. It \
+               holds no messages or authors: separate patches keep those.",
+        git: "git diff --binary <base> <result>; git merge-tree --write-tree (commits apart)",
+        cases: &[
+            (
+                "Refused as a conflict?",
+                "A commit changes lines a commit left out between them changed first: pick that one too, or save separate patches.",
+            ),
+            (
+                "Applying it?",
+                "Patches, Apply from files, as changes; or git apply in a terminal.",
+            ),
+        ],
+    },
+    Topic {
+        id: "export-patches",
+        group: Group::Looking,
+        title: "As separate patches",
+        on: &["As separate patches", "Save to a folder…"],
+        what: "One patch each, the oldest first, as git format-patch mails them: each commit's \
+               message, author, and date with its changes, which git am applies as commits \
+               again. Saved to a folder they are 0001-…, 0002-…; copied, one text holding them \
+               all (a mailbox).",
+        git: "git format-patch --no-walk=unsorted --stdin (-o <folder>, or --stdout)",
+        cases: &[
+            (
+                "A merge picked?",
+                "Left out, as git leaves merges: a patch holds one parent's changes.",
+            ),
+            (
+                "Applying them elsewhere?",
+                "Patches, Apply from files, as commits; or git am in a terminal.",
+            ),
+        ],
+    },
+    Topic {
+        id: "export-changelog",
+        group: Group::Looking,
+        title: "Copy as a changelog",
+        on: &["Copy as a changelog"],
+        what: "A Markdown list of the picked commits' subjects, the oldest first, each with its \
+               short name, linked to its page when the repository is on GitHub or GitLab: \
+               ready for release notes or a pull request's description.",
+        git: "git log --no-walk=unsorted --stdin --format=%H%x1f%P%x1f%s",
+        cases: &[(
+            "Merges missing?",
+            "They are left out (Merge branch … says little in a changelog), unless only merges were picked.",
+        )],
     },
     Topic {
         id: "details-split",

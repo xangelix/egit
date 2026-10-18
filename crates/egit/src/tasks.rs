@@ -135,6 +135,12 @@ pub(crate) enum Task {
     },
     /// Throw changes not staged away: whole files, or some lines of one.
     Discard(crate::discarding::Discard),
+    /// Export commits picked together (the newest first): as patches, their changes as one
+    /// patch, or a changelog.
+    Export {
+        commits: Vec<ObjectId>,
+        how: crate::exporting::Export,
+    },
     /// Reset the current branch to a commit.
     Reset(ObjectId, ResetMode),
     /// Tag a commit: annotated with a message, or lightweight.
@@ -407,6 +413,7 @@ impl Task {
             Self::Reword { .. } => "Rewording",
             Self::SignCommits { .. } => "Signing the commits",
             Self::Discard(_) => "Discarding",
+            Self::Export { how, .. } => how.doing(),
             Self::CherryPick(_) => "Cherry-picking",
             Self::Revert(_) => "Reverting",
             Self::Reset(..) => "Resetting",
@@ -477,8 +484,8 @@ pub(crate) enum Outcome {
     Opened(Opened),
     /// A fast-forward: done, there already, or refused as it would take a merge.
     Forwarded(Forwarded),
-    /// A patch made, to copy (its text).
-    Copied(String),
+    /// A patch made, to copy (its text: shared, as an outcome is cloned while it shows).
+    Copied(Arc<str>),
     /// Patches saved: how many.
     SavedPatches(usize),
     /// A worktree not removed: it has changes, which removing it would lose.
@@ -493,6 +500,12 @@ pub(crate) enum Outcome {
     /// Changes discarded: each file as it was and as it is now, kept for Undo (`None`: too
     /// many, or too large, to keep).
     Discarded(Option<Vec<egit_git::DiscardedFile>>),
+    /// Commits exported: how many patches (or changelog lines) were made, and the text to copy,
+    /// when it is copied.
+    Exported {
+        made: usize,
+        copied: Option<Arc<str>>,
+    },
 }
 
 /// What background fetches brought the current branch's upstream, since the user last looked.
@@ -805,6 +818,9 @@ fn run(
         | Task::Reword { .. } => rewrite(git, repository, task, cancel),
         Task::SignCommits { commits } => sign(git, repository, commits, progress, cancel),
         Task::Discard(discard) => crate::discarding::run(git, repository, discard, cancel),
+        Task::Export { commits, how } => {
+            crate::exporting::run(git, repository, commits, how, cancel)
+        }
         Task::Switch(_)
         | Task::StashAndSwitch(_)
         | Task::CreateBranch { .. }
@@ -1513,12 +1529,14 @@ fn copied(patch: Vec<u8>) -> Result<Outcome, Problem> {
             "No changes: the patch would be empty.",
         ));
     }
-    String::from_utf8(patch).map(Outcome::Copied).map_err(|_| {
-        Problem::new(
-            "The patch can't be copied",
-            "It holds text that isn't UTF-8, which the clipboard can't take: save it instead.",
-        )
-    })
+    String::from_utf8(patch)
+        .map(|text| Outcome::Copied(Arc::from(text)))
+        .map_err(|_| {
+            Problem::new(
+                "The patch can't be copied",
+                "It holds text that isn't UTF-8, which the clipboard can't take: save it instead.",
+            )
+        })
 }
 
 /// The remotes a configuration names (`remote.<name>.url`), in order.

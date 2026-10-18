@@ -7,6 +7,7 @@ mod columns;
 mod corpus;
 mod discard;
 mod dragging;
+mod exporting;
 mod help;
 mod lfs;
 mod long_text;

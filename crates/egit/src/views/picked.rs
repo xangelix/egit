@@ -2,7 +2,9 @@
 //! picks every row from the last one clicked to this one, ⌘-click (Ctrl elsewhere) adds one or
 //! takes it away, ⇧↑ and ⇧↓ stretch the range, Escape lets them go. They are kept by their
 //! names, so a history read again keeps them (where they are still in it); while several are
-//! picked, the details show them, and a right click on one offers what can be done to all.
+//! picked, the details show them, and a right click on one offers what can be done to all:
+//! signing them, comparing two, saving or copying them as patches (their changes as one, or
+//! one each), copying a changelog of them.
 
 use std::collections::HashSet;
 
@@ -158,11 +160,39 @@ impl Picked {
 }
 
 /// What the picked commits' panel asked for.
+#[derive(Debug)]
 pub(super) enum PickedEvent {
     /// Ask whether to sign them.
     Sign(Vec<ObjectId>),
+    /// Compare two: what changed from the older (`from`) to the newer (`to`).
+    Compare { from: ObjectId, to: ObjectId },
+    /// Export them (the newest first).
+    Export(Vec<ObjectId>, Exporting),
     /// Let them go.
     Clear,
+}
+
+/// How picked commits are exported.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Exporting {
+    /// Their changes as one patch, saved where the user says.
+    SaveOne,
+    /// Their changes as one patch, copied.
+    CopyOne,
+    /// One patch each, saved into the folder the user says.
+    SaveEach,
+    /// One patch each, copied.
+    CopyEach,
+    /// A changelog of their subjects, copied.
+    Changelog,
+}
+
+/// The two picked, the older first, if exactly two are.
+pub(super) const fn two(ids: &[ObjectId]) -> Result<(ObjectId, ObjectId), &'static str> {
+    match ids {
+        [newer, older] => Ok((*older, *newer)),
+        _ => Err("Pick exactly two commits to compare"),
+    }
 }
 
 /// Why the picked commits can't be signed now, if they can't.
@@ -199,7 +229,8 @@ pub(super) fn panel(
     );
     ui.add_space(8.0);
     let ids = picked.ids();
-    widgets::buttons_row(ui, |ui| {
+    // Wrapped in the panel's width: a row of them all would widen the panel past the table.
+    ui.horizontal_wrapped(|ui| {
         let allowed = signing_allowed(menus, ids.len());
         let sign = widgets::primary(ui, allowed.is_ok(), "Sign these commits…");
         let sign = match allowed {
@@ -208,6 +239,18 @@ pub(super) fn panel(
         };
         if sign.clicked() {
             event = Some(PickedEvent::Sign(ids.clone()));
+        }
+        if let Ok((from, to)) = two(&ids)
+            && widgets::secondary(ui, true, "Compare these two").clicked()
+        {
+            event = Some(PickedEvent::Compare { from, to });
+        }
+        let (_, exported) =
+            widgets::tool_menu(ui, icon::EXPORT, "Export", widgets::Look::Full, |ui| {
+                export_items(ui, &ids, menus.idle())
+            });
+        if let Some(Some(exported)) = exported {
+            event = Some(exported);
         }
         if widgets::secondary(ui, true, "Copy their names").clicked() {
             ui.ctx().copy_text(names(&ids));
@@ -270,6 +313,55 @@ pub(super) fn names(ids: &[ObjectId]) -> String {
     text
 }
 
+/// What exporting `ids` offers (`allowed`: a task can start), in the menu and the panel's
+/// Export: their changes as a single patch, or separate patches (each saved or copied), and a
+/// changelog copied.
+fn export_items(ui: &mut Ui, ids: &[ObjectId], allowed: Result<(), &str>) -> Option<PickedEvent> {
+    use super::actions::{item, item_of, submenu};
+    let mut chosen = None;
+    let ask = |how| Some(PickedEvent::Export(ids.to_vec(), how));
+    submenu(ui, (icon::FILE_TEXT, "As a single patch"), |ui| {
+        if item_of(
+            ui,
+            (icon::FLOPPY_DISK, "Save to a file…"),
+            allowed,
+            "export-one-patch",
+        ) {
+            chosen = ask(Exporting::SaveOne);
+        }
+        if item_of(
+            ui,
+            (icon::COPY, "Copy to the clipboard"),
+            allowed,
+            "export-one-patch",
+        ) {
+            chosen = ask(Exporting::CopyOne);
+        }
+    });
+    submenu(ui, (icon::FILES, "As separate patches"), |ui| {
+        if item_of(
+            ui,
+            (icon::FLOPPY_DISK, "Save to a folder…"),
+            allowed,
+            "export-patches",
+        ) {
+            chosen = ask(Exporting::SaveEach);
+        }
+        if item_of(
+            ui,
+            (icon::COPY, "Copy to the clipboard"),
+            allowed,
+            "export-patches",
+        ) {
+            chosen = ask(Exporting::CopyEach);
+        }
+    });
+    if item(ui, (icon::LIST_BULLETS, "Copy as a changelog"), allowed) {
+        chosen = ask(Exporting::Changelog);
+    }
+    chosen
+}
+
 /// The menu of a right click on one of several commits picked: what can be done to them all.
 pub(super) fn menu(ui: &mut Ui, menus: &Menus<'_>, ids: &[ObjectId]) -> Option<PickedEvent> {
     let mut event = None;
@@ -281,6 +373,20 @@ pub(super) fn menu(ui: &mut Ui, menus: &Menus<'_>, ids: &[ObjectId]) -> Option<P
     ) {
         event = Some(PickedEvent::Sign(ids.to_vec()));
     }
+    let compared = two(ids);
+    if super::actions::item(
+        ui,
+        (icon::ARROWS_LEFT_RIGHT, "Compare these two"),
+        compared.map(drop),
+    ) && let Ok((from, to)) = compared
+    {
+        event = Some(PickedEvent::Compare { from, to });
+    }
+    ui.separator();
+    if let Some(exported) = export_items(ui, ids, menus.idle()) {
+        event = Some(exported);
+    }
+    ui.separator();
     if super::actions::item(ui, (icon::COPY, "Copy their names"), Ok(())) {
         ui.ctx().copy_text(names(ids));
     }

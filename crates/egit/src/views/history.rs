@@ -33,7 +33,7 @@ use super::file::{self, FileView, FileWanted, WorkFile};
 use super::file_history::{self, FileHistoryView};
 use super::lfs::LfsEvent;
 use super::patch::{self, PatchEvent, PatchSource, PatchView};
-use super::picked::{self, Click, Picked, PickedEvent};
+use super::picked::{self, Click, Exporting, Picked, PickedEvent};
 use super::pull_form::{self, PullRequestForm};
 use super::pulls::{self, PullRequestEvent, PullRequestView};
 use super::rebase::{self, RebaseEvent, RebaseView};
@@ -46,12 +46,13 @@ use super::work::{CommitSide, WorkEvent, WorkPanel};
 use crate::app::{Action, OutputAsk};
 use crate::commands::RepoCommand;
 use crate::desktop::FileQuestion;
+use crate::exporting::Export;
 use crate::fonts;
 use crate::forge::{Badge, RepoForge, request_noun, request_number};
 use crate::format::{count, date_time};
 use crate::history::{
     ChangeCounts, CommitDetails, History, HistoryState, Objects, Refs, Scope, Signatures,
-    Summaries, read_change_counts, read_details,
+    Summaries, read_change_counts, read_comparison, read_details,
 };
 use crate::preferences::Preferences;
 use crate::problem::Problem;
@@ -203,6 +204,10 @@ pub(crate) struct HistoryView {
     submodules_dismissed: Option<crate::submodules::OutOfStep>,
     /// Commits picked together, for what acts on several.
     picked: Picked,
+    /// Two of them compared, in the details' place.
+    compare: Option<Comparison>,
+    /// What their panel asked for this frame.
+    picked_asked: Option<PickedEvent>,
 }
 
 /// A ref dropped onto another, where.
@@ -327,6 +332,41 @@ impl Drop for Counting {
     }
 }
 
+/// Two commits picked, compared: what changed from one to the other, in the details' place.
+#[derive(Debug)]
+struct Comparison {
+    from: ObjectId,
+    to: ObjectId,
+    /// `to`'s details with `from` as its parent: its files, their lines, and their diffs run
+    /// from one to the other.
+    details: Bind<Arc<CommitDetails>, Problem>,
+    counting: Counting,
+    changes: ChangesTable,
+}
+
+impl Comparison {
+    /// What changed from `from` to `to`, being read.
+    fn new(shared: &Shared<'_>, objects: &Objects, from: ObjectId, to: ObjectId) -> Self {
+        let mut details = Bind::new(true);
+        if let Some(git) = shared.git {
+            details.request(read_comparison(
+                git.clone(),
+                Arc::clone(shared.repository),
+                objects.clone(),
+                from,
+                to,
+            ));
+        }
+        Self {
+            from,
+            to,
+            details,
+            counting: Counting::default(),
+            changes: ChangesTable::new(format!("comparison-changes-{}", shared.id)),
+        }
+    }
+}
+
 /// The selected commit and its row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Selected {
@@ -366,6 +406,8 @@ impl HistoryView {
             dropped: None,
             submodules_dismissed: None,
             picked: Picked::default(),
+            compare: None,
+            picked_asked: None,
         }
     }
 
@@ -535,11 +577,13 @@ impl HistoryView {
     /// Closes the file looked at unless it belongs to what is selected: a commit's to that
     /// commit, the work tree's to the work tree.
     fn close_unselected_file(&mut self) {
+        let compared = self.compare.as_ref().map(|compare| compare.to);
         let belongs = self.file.as_ref().is_none_or(|file| match file.commit() {
             Some(commit) => {
                 !self.work_selected
                     && (self.selected.map(|selected| selected.id) == Some(commit)
-                        || self.peek == Some(commit))
+                        || self.peek == Some(commit)
+                        || compared == Some(commit))
             }
             None => self.work_selected,
         });
@@ -1213,6 +1257,8 @@ fn panels(
     if let Some(asked) = view.asked.take() {
         carry_out(asked, shared, view, actions);
     }
+    let picked = view.picked_asked.take();
+    picked_asked(picked, (shared, &history.objects), view, actions);
 
     view.close_unselected_file();
     egui::CentralPanel::default()
@@ -2095,16 +2141,16 @@ fn commit_table(
         view.select(shown, row, None);
         ui.memory_mut(|memory| memory.request_focus(keys));
     }
-    picked_asked(picked_event, shared, view, actions);
+    picked_asked(picked_event, (shared, &history.objects), view, actions);
     if let Some(asked) = asked {
         carry_out(asked, shared, view, actions);
     }
 }
 
-/// Carries out what the menu of several commits picked asked for.
+/// Carries out what several commits picked were asked for (by their menu or their panel).
 fn picked_asked(
     event: Option<PickedEvent>,
-    shared: &Shared<'_>,
+    (shared, objects): (&Shared<'_>, &Objects),
     view: &mut HistoryView,
     actions: &mut Vec<Action>,
 ) {
@@ -2113,8 +2159,55 @@ fn picked_asked(
             let dialog = super::dialogs::Dialog::SignCommits(commits);
             carry_out(Ask::Dialog(dialog), shared, view, actions);
         }
+        Some(PickedEvent::Compare { from, to }) => {
+            view.compare = Some(Comparison::new(shared, objects, from, to));
+        }
+        Some(PickedEvent::Export(commits, how)) => export(commits, how, shared, actions),
         Some(PickedEvent::Clear) => view.picked.clear(),
         None => {}
+    }
+}
+
+/// Exports commits picked (the newest first) as asked: saved where the user says, or copied
+/// by a task.
+fn export(commits: Vec<ObjectId>, how: Exporting, shared: &Shared<'_>, actions: &mut Vec<Action>) {
+    let copy = |how| {
+        Action::Task(
+            shared.id,
+            crate::tasks::Task::Export {
+                commits: commits.clone(),
+                how,
+            },
+        )
+    };
+    match how {
+        Exporting::SaveOne | Exporting::SaveEach => {
+            let one = how == Exporting::SaveOne;
+            let count = commits.len();
+            actions.push(Action::AskFiles {
+                question: FileQuestion::SavePicked {
+                    repo: shared.id,
+                    commits: Arc::from(commits),
+                    one,
+                },
+                title: if one {
+                    "Save their changes as one patch"
+                } else {
+                    "Save the patches in"
+                },
+                name: if one {
+                    format!("changes-of-{count}-commits.patch")
+                } else {
+                    String::new()
+                },
+            });
+        }
+        Exporting::CopyOne => actions.push(copy(Export::CopyOnePatch)),
+        Exporting::CopyEach => actions.push(copy(Export::CopyPatches)),
+        Exporting::Changelog => {
+            let forge = shared.forge.repositories.first().cloned();
+            actions.push(copy(Export::CopyChangelog(forge)));
+        }
     }
 }
 
@@ -3501,19 +3594,122 @@ fn picked_details(
         return false;
     }
     let menus = shared.menus(history.shown.refs());
-    match picked::panel(ui, shared, &history.summaries, &view.picked, &menus) {
-        Some(PickedEvent::Sign(commits)) => {
-            view.asked = Some(Ask::Dialog(super::dialogs::Dialog::SignCommits(commits)));
-        }
-        Some(PickedEvent::Clear) => view.picked.clear(),
-        None => {}
-    }
+    // Carried out once the details are drawn, where actions are taken.
+    view.picked_asked = picked::panel(ui, shared, &history.summaries, &view.picked, &menus);
     true
+}
+
+/// Two commits picked, compared, in the details' place: which they are (Swap, Close), and the
+/// files changed from one to the other, each opening its diff; returns whether it was drawn.
+fn compare_details(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    view: &mut HistoryView,
+) -> bool {
+    let Some(compare) = &view.compare else {
+        return false;
+    };
+    // Only while those two are what is picked.
+    let (from, to) = (compare.from, compare.to);
+    let still = view.picked.len() == 2 && view.picked.contains(&from) && view.picked.contains(&to);
+    if !still || view.peeked().is_some() {
+        view.compare = None;
+        return false;
+    }
+    let (mut swap, mut close) = (false, false);
+    widgets::panel_head(ui, widgets::Head::Title, |ui| {
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            close = widgets::icon_tool(ui, true, icon::X, "Close the comparison").clicked();
+            swap = widgets::icon_tool(ui, true, icon::ARROWS_LEFT_RIGHT, "Swap them")
+                .on_hover_text("Compare the other way round")
+                .clicked();
+            ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
+                widgets::panel_title(ui, "Comparing two commits");
+            });
+        });
+    });
+    for (label, id) in [("From", from), ("To", to)] {
+        widgets::fact(ui, DETAIL_LABEL, label, |ui| {
+            ui.label(
+                RichText::new(id.abbreviated(ID_DIGITS).to_string())
+                    .monospace()
+                    .color(shared.palette.muted),
+            );
+            let subject = history
+                .summaries
+                .peek(&id)
+                .map_or_else(String::new, |summary| summary.subject.to_string());
+            ui.add(Label::new(subject).truncate());
+        });
+    }
+    ui.add(
+        Label::new(muted(
+            ui,
+            "What changed from the first to the second, as git diff shows it between them.",
+        ))
+        .wrap(),
+    );
+    ui.add_space(8.0);
+    if close {
+        view.compare = None;
+        return false;
+    }
+    if swap {
+        view.compare = Some(Comparison::new(shared, &history.objects, to, from));
+        return true;
+    }
+    compared_files(ui, shared, view);
+    true
+}
+
+/// A comparison's changed files, once read, each opening its diff from one commit to the
+/// other.
+fn compared_files(ui: &mut Ui, shared: &Shared<'_>, view: &mut HistoryView) {
+    let Some(compare) = view.compare.as_mut() else {
+        return;
+    };
+    let shown = match compare.details.read_as_ref() {
+        None => {
+            widgets::working(ui, "Comparing…");
+            return;
+        }
+        Some(Err(problem)) => {
+            let problem = problem.clone();
+            widgets::problem_box(ui, &problem, |_| {});
+            return;
+        }
+        Some(Ok(details)) => Arc::clone(details),
+    };
+    let counts = compare.counting.of(shared, &shown);
+    files_heading(
+        ui,
+        shown.changes.len(),
+        counts.as_ref(),
+        shared.palette,
+        &mut view.asked,
+    );
+    ui.add_space(4.0);
+    let counts = counts.and_then(Result::ok);
+    let picked = widgets::list_box(ui, |ui| {
+        let height = ui.available_height();
+        compare.changes.show(ui, &shown, counts.as_deref(), height)
+    });
+    if let Some(index) = picked
+        && let Some(change) = shown.changes.get(index)
+    {
+        view.file = Some(FileView::open(
+            shared,
+            &shown,
+            change.clone(),
+            view.file.as_ref(),
+        ));
+    }
 }
 
 /// The selected commit's details and changed files.
 fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &mut HistoryView) {
-    if picked_details(ui, shared, history, view) {
+    if compare_details(ui, shared, history, view) || picked_details(ui, shared, history, view) {
         return;
     }
     let peeked = view.peeked();

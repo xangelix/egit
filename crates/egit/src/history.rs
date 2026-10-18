@@ -1138,25 +1138,7 @@ pub(crate) async fn read_details(
     id: ObjectId,
 ) -> Result<Arc<CommitDetails>, Problem> {
     jobs::blocking(move || {
-        const UNREADABLE: &str = "The commit couldn't be read";
-        let mut parsed = None;
-        objects
-            .read(&git, repository.work_tree(), &[id], |_, object| {
-                parsed = object
-                    .filter(|object| object.kind == ObjectKind::Commit)
-                    .map(|object| Commit::parse(object.data));
-            })
-            .map_err(|error| Problem::git(UNREADABLE, &error))?;
-        let commit = match parsed {
-            Some(Ok(commit)) => commit,
-            Some(Err(error)) => return Err(Problem::new(UNREADABLE, error.to_string())),
-            None => {
-                return Err(Problem::new(
-                    UNREADABLE,
-                    format!("{id} isn't a commit in this repository."),
-                ));
-            }
-        };
+        let commit = read_commit(&git, &repository, &objects, id)?;
         // Read again after a task anyway; a check failing only hides rewording.
         let in_head = repository.head_reaches(&git, id).unwrap_or(false);
         let changes = commit_changes(&git, &repository, id, commit.parents.first().copied())
@@ -1169,6 +1151,56 @@ pub(crate) async fn read_details(
         }))
     })
     .await
+}
+
+/// Two commits compared: `to`'s details with `from` as its only parent, so its changes, their
+/// lines, and their diffs run from one to the other (git's `diff from to`).
+pub(crate) async fn read_comparison(
+    git: Git,
+    repository: Arc<Repository>,
+    objects: Objects,
+    from: ObjectId,
+    to: ObjectId,
+) -> Result<Arc<CommitDetails>, Problem> {
+    jobs::blocking(move || {
+        let mut commit = read_commit(&git, &repository, &objects, to)?;
+        commit.parents = vec![from];
+        let changes = commit_changes(&git, &repository, to, Some(from))
+            .map_err(|error| Problem::git("The commits couldn't be compared", &error))?;
+        Ok(Arc::new(CommitDetails {
+            id: to,
+            commit,
+            changes,
+            in_head: false,
+        }))
+    })
+    .await
+}
+
+/// The commit `id`, parsed.
+fn read_commit(
+    git: &Git,
+    repository: &Repository,
+    objects: &Objects,
+    id: ObjectId,
+) -> Result<Commit, Problem> {
+    const UNREADABLE: &str = "The commit couldn't be read";
+    let mut parsed = None;
+    objects
+        .read(git, repository.work_tree(), &[id], |_, object| {
+            parsed = object
+                .filter(|object| object.kind == ObjectKind::Commit)
+                .map(|object| Commit::parse(object.data));
+        })
+        .map_err(|error| Problem::git(UNREADABLE, &error))?;
+    match parsed {
+        Some(Ok(commit)) => Ok(commit),
+        Some(Err(error)) => Err(Problem::new(UNREADABLE, error.to_string())),
+        None => Err(Problem::new(
+            UNREADABLE,
+            format!("{id} isn't a commit in this repository."),
+        )),
+    }
 }
 
 /// The lines each file a commit changed gained and lost.
