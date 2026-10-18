@@ -34,6 +34,7 @@ it.
 | 20 | macOS and Windows | done; linted for both from Linux, CI's runs left to the owner |
 | 21 | Ergonomics: one look for every control | done; awaiting the owner's review |
 | 22 | Readability: weights, surfaces, a tree, menus that scan | done; awaiting the owner's review |
+| 23 | Alignment: to the point, edges, corners, padding | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -554,7 +555,8 @@ writes paths), never `OsStrExt`.
     to stop between them; `matches_case` is smart case; `Needle`, a query made ready for
     many short texts (a finder built once, or ASCII folded).
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
-  (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io: bump
+  (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io; rows' rounding (`with_row_rounding`)
+    is a commit not yet pushed: bump
   `rev` to the owner's pushed commit after each change made there; until it is pushed, cargo
   fetches it from the clone: `GIT_CONFIG_COUNT=1
   GIT_CONFIG_KEY_0=url.$HOME/egui-table-kit.insteadOf
@@ -857,7 +859,9 @@ writes paths), never `OsStrExt`.
     lanes) and nodes (hollow for merges, ringed for `HEAD`); rows are buttons named by their
     subject; a bisection's refs as badges in its terms (bad, good, skipped; `bisect_badge`);
     ref badges (each its menu, a branch's double-click switching to it; in the details
-    too); a signed commit's seal by its verdict (good, doubtful, bad, or
+    too; painted 18 points tall, so badges in rows next to each other never touch; one that
+    doesn't fit in its cell is counted, "+2", rather than cut at the column's edge; in the
+    details they wrap); a signed commit's seal by its verdict (good, doubtful, bad, or
     unchecked, its meaning on hover); a focusable area takes ↑ ↓ PgUp PgDn Home End. The message column
     is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
     selection and the top row's commit in place when a re-read takes over. The table's
@@ -1125,7 +1129,11 @@ writes paths), never `OsStrExt`.
     their line, semibold for titles; `Weighted` gives `RichText` them); the monospace family
     stays egui's; palettes: `background` behind what is read (the commit table, the text
     grid), `panel` for the chrome around it and pages, `surface` for cards, dialogs, and the
-    sidebar's section bands; WCAG AA checked by tests, text over every line background too: diff
+    sidebar's section bands; corner radii on one scale, each container a step rounder than
+    what sits inside it so their corners follow (`RADIUS_INNER` 4: a row's highlight, a
+    segment, a badge, a band; `RADIUS_CONTROL` 6: buttons, fields, the focus ring;
+    `RADIUS_BOX` 8: boxes, menus, banners; `RADIUS_CARD` 12: cards, dialogs, windows);
+    WCAG AA checked by tests, text over every line background too: diff
     lines and words, a conflict's sides and headers, resolved lines, rows a search found;
     a selected or found row under the pointer (`selected_hover`) too, and text on the danger
     colour; Phosphor icons; one scale of text: `SMALL` 11.5, `BODY` 13, `CODE` 12.5, `HEADING`
@@ -1141,12 +1149,22 @@ writes paths), never `OsStrExt`.
     before drawing), `toolbar_separator`, `section_title` (small capitals, muted, its count in
     a pill; named in sentence case) and `section_header` (one, its buttons at the right),
     `text_box` (a long text apart: a commit's description) and `list_box` (a list's rows in a
-    border), facts in aligned columns (`fact`, `fact_top`,
-    `form_row` naming its field; `FACT_LABEL` on pages), `line_field` text fields as tall as
-    buttons, `icon_button` exactly its place, `row_fill` a list row's background (a selected
+    border, their corners rounded to follow its), `bar` (a view's bar: the chrome's tone, its
+    controls 12 points from its sides and 6 from its top and bottom, a hairline under it,
+    nothing spaced from it, so stacked bars make one strip and every view's back button is in
+    one place), `panel_head` and `HEAD` (a panel's first row, 32 points: the sidebar's filter,
+    the commit table's column titles, the details' title line up across the window), facts in
+    aligned columns (`fact`, `fact_top` (its first line as far down as a one-line fact's, so
+    facts keep one rhythm),
+    `form_row` naming its field; `FACT_LABEL` on pages), `line_field` one-line fields a
+    control's height, their text centred and 8 points from the side, and `text_area` (several
+    lines, 8 points from every edge), `link` (hanging into its inset, its words aligned with
+    text above and below), `icon_button` exactly its place, `row_fill` a list row's background (a selected
     one lightens under the pointer), cards, origin labels, problem boxes; `toggles.rs`: a
     checkbox (a square box, filled and ticked when checked), radio buttons, and a segmented
-    control, each a whole row to click; `TARGET`, the 24 points every control takes each way;
+    control (sized from its words before it is drawn, a control's height, so it centres on its
+    row as any widget does; its 24-point segments' corners following its), each a whole row
+    to click; `TARGET`, the 24 points every control takes each way;
     `focus_ring`, drawn once a frame around the control with the keyboard focus after a key
     (Tab, an arrow) or an assistive technology moved it, gone at the next press of the
     pointer, as a browser's `:focus-visible`, never around a field (its edge shows it) or an
@@ -1163,7 +1181,10 @@ writes paths), never `OsStrExt`.
     interface change. Every rendered screen first passes `src/tests/audit.rs` (after eshine's):
     no egui id clashes, no text or control drawn partly over another on the same layer,
     nothing moving while idle, and every control named in words or numbers (link a field to
-    its visible label with `labelled_by`). `wait_for_label` lets what it found lay out two
+    its visible label with `labelled_by`), and every one-line field a control's height, its
+    text centred top to bottom and 8 points from its side. `EGIT_GUI_RECTS=1` writes each
+    rendered screen's elements (role, rectangle, name) to `<screen>.rects` beside it, to
+    measure a screen to the point. `wait_for_label` lets what it found lay out two
     more frames (a window's first frame only sizes it: clicks there are lost); a wait that
     times out saves `timed-out-<test>.png`; `menu_item` right-clicks and picks, and
     `double_click` puts both clicks in one frame (the harness's frames are a quarter second
