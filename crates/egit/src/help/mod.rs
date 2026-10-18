@@ -622,6 +622,11 @@ mod tests {
             "a tool's icon is skipped"
         );
         assert_eq!(id("Merge topic into main"), Some("merge"));
+        assert_eq!(
+            id("Merge topic into main (no fast-forward)"),
+            Some("merge-no-ff"),
+            "the pattern naming more of its words"
+        );
         assert_eq!(id("Rebase interactively from here…"), Some("interactive"));
         assert_eq!(id("Mend everything"), Some("submodule-mend"));
         assert_eq!(id("Stage src/main.rs"), Some("stage"));

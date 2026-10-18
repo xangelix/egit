@@ -102,7 +102,9 @@ pub use history::{
     walk_history, walk_history_from, write_commit_graph,
 };
 pub use hooks::{Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
-pub use integrate::{Integrated, ResetMode, cherry_pick, merge, rebase, reset, revert};
+pub use integrate::{
+    FastForward, Integrated, ResetMode, cherry_pick, merge, rebase, reset, revert,
+};
 pub use lfs::{
     LfsFile, LfsLock, LfsPattern, LfsTransfer, LfsVersion, lfs_files, lfs_install, lfs_lock,
     lfs_locks, lfs_patterns, lfs_prune, lfs_set_up, lfs_track, lfs_transfer, lfs_untrack,

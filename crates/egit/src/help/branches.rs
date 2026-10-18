@@ -277,6 +277,39 @@ pub(super) const TOPICS: &[Topic] = &[
                 "Regretted?",
                 "Undo moves the branch back to before the merge. Once pushed, revert the merge instead.",
             ),
+            (
+                "Wanted a merge commit, got a fast-forward?",
+                "Use the “(no fast-forward)” item beside it: it always makes one.",
+            ),
+        ],
+    },
+    Topic {
+        id: "merge-no-ff",
+        group: Group::Branches,
+        title: "Merging without fast-forward",
+        on: &["Merge * (no fast-forward)"],
+        what: "Always makes a merge commit, even when the current branch could simply move \
+               forward to the other. The branch's commits stay grouped behind that merge, so \
+               the history shows where it came in, and reverting the merge takes the whole \
+               branch back out in one commit.",
+        git: "git merge --no-edit --no-ff",
+        cases: &[
+            (
+                "What the plain Merge does instead?",
+                "What merge.ff says: unset, it fast-forwards whenever it can, leaving no trace that a branch was merged.",
+            ),
+            (
+                "merge.ff = only in your configuration?",
+                "--no-ff on the command line wins: the merge commit is still made.",
+            ),
+            (
+                "The branches have diverged?",
+                "Then both items do the same: a merge commit is the only way.",
+            ),
+            (
+                "Already up to date?",
+                "Nothing to merge: no commit is made, fast-forward or not.",
+            ),
         ],
     },
     Topic {

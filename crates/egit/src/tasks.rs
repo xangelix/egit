@@ -19,12 +19,12 @@ use egit_forge::{
 };
 use egit_git::{
     ApplyAs, BisectMark, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget,
-    DeleteBranchError, FetchOptions, ForwardFrom, Forwarded, Git, GitError, Integrated,
-    MAX_PLANNED, MAX_SIGNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled, PushOptions,
-    Pushed, RangeError, RebaseError, RebaseRange, RemoveWorktreeError, Repository, ResetMode,
-    SignError, Stash, StashError, Step, SwitchError, SwitchTo, WorktreeFrom, abort_operation,
-    add_remote, add_worktree, apply_patch, bisect_mark, changes_patch, cherry_pick,
-    continue_operation, count_between, create_branch, create_tag, delete_branch,
+    DeleteBranchError, FastForward, FetchOptions, ForwardFrom, Forwarded, Git, GitError,
+    Integrated, MAX_PLANNED, MAX_SIGNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled,
+    PushOptions, Pushed, RangeError, RebaseError, RebaseRange, RemoveWorktreeError, Repository,
+    ResetMode, SignError, Stash, StashError, Step, SwitchError, SwitchTo, WorktreeFrom,
+    abort_operation, add_remote, add_worktree, apply_patch, bisect_mark, changes_patch,
+    cherry_pick, continue_operation, count_between, create_branch, create_tag, delete_branch,
     delete_remote_branch, delete_tag, fast_forward_branch, fast_forward_current, fetch,
     fetch_refspecs, fetch_remote, format_patch, format_patches, lock_worktree, merge, plan_signing,
     prune_worktrees, pull, push, push_tag, rebase, rebase_interactive, rebase_keeping_merges,
@@ -89,6 +89,8 @@ pub(crate) enum Task {
     Merge {
         what: BString,
         shown: String,
+        /// Whether it may just move the branch forward, or always makes a merge commit.
+        fast_forward: FastForward,
     },
     /// Something of Git LFS's.
     Lfs(crate::lfs::LfsTask),
@@ -1018,7 +1020,9 @@ fn history(
         Task::Continue(operation) => continue_operation(git, repository, *operation, cancel)
             .map(|()| Outcome::Continued)
             .or_else(failed("It couldn't carry on")),
-        Task::Merge { what, .. } => merge(git, repository, what.as_ref(), cancel)
+        Task::Merge {
+            what, fast_forward, ..
+        } => merge(git, repository, what.as_ref(), *fast_forward, cancel)
             .map(Outcome::Integrated)
             .or_else(failed("Merging failed")),
         Task::Rebase {

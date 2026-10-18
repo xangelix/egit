@@ -1,8 +1,8 @@
-//! The branch and commit menus' actions beyond switching and merging, driven as a user drives
+//! The branch and commit menus' actions beyond switching and a plain merge, driven as a user drives
 //! them: pulling, pushing, and fast-forwarding branches other than the current one; upstreams
 //! set and forgotten; a branch deleted here and on its remote at once; names and links copied;
-//! a commit saved as a patch; worktrees made (one opened in a tab); and the graph narrowed to a
-//! branch, or a branch pinned to its left.
+//! a commit saved as a patch; worktrees made (one opened in a tab); the graph narrowed to a
+//! branch, or a branch pinned to its left; and a branch or a commit merged without fast-forward.
 
 use std::path::Path;
 
@@ -317,4 +317,59 @@ fn worktrees_patches_and_the_graph_s_scope_come_from_the_menus() {
         app.state.repos.len() == 2
     });
     assert!(tree.join("parser.rs").exists());
+}
+
+#[test]
+fn a_branch_or_a_commit_is_merged_without_fast_forward() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "f", "one\n", "One").unwrap();
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--create", "ahead"])
+        .unwrap();
+    sandbox.commit_file(&repo, "g", "two\n", "Two").unwrap();
+    sandbox.commit_file(&repo, "g", "three\n", "Three").unwrap();
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    let one = rev(&sandbox, &repo, "main").unwrap();
+    let parents = |sandbox: &Sandbox| {
+        let out = sandbox.run(&repo, "log", &["-1", "--format=%P"]).unwrap();
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+
+    // From the branch's badge: a merge commit, though main could just move forward.
+    menu_item(
+        &mut harness,
+        &badge("ahead"),
+        "Merge ahead into main (no fast-forward)",
+    );
+    wait_for_label(&mut harness, "Merged ahead, with a merge commit.");
+    let ahead = rev(&sandbox, &repo, "ahead").unwrap();
+    assert_eq!(parents(&sandbox), format!("{one} {ahead}"));
+
+    // Taken back, then from a commit's menu: its parent merged the same way.
+    settle(
+        &mut harness,
+        "the merge shown",
+        shown(&sandbox, &repo, "main"),
+    );
+    click_when_enabled(&mut harness, "Undo");
+    wait_for_label(&mut harness, "Undid the merge of ahead.");
+    assert_eq!(rev(&sandbox, &repo, "main"), Some(one));
+    settle(&mut harness, "the history after undoing", history_of(3));
+    let two = rev(&sandbox, &repo, "ahead^").unwrap();
+    harness
+        .get_by_role_and_label(Role::Button, "Two")
+        .click_secondary();
+    let item = "Merge into main (no fast-forward)";
+    wait_for_label(&mut harness, item);
+    harness.get_by_label(item).click();
+    wait_for_label(
+        &mut harness,
+        &format!("Merged {}, with a merge commit.", two.abbreviated(8)),
+    );
+    assert_eq!(parents(&sandbox), format!("{one} {two}"));
 }

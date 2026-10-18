@@ -436,7 +436,8 @@ writes paths), never `OsStrExt`.
     nothing to resolve). `Repository::mailbox_progress` (`rebase-apply/next`, `last`, and
     `info`'s subject), `current_patch` (`am --show-current-patch=diff`), `looks_like_patch`
     (`.patch`, `.diff`, `.mbox`, `.eml`).
-  - `integrate.rs` — commits brought into the current branch: `merge` (`--no-edit`),
+  - `integrate.rs` — commits brought into the current branch: `merge` (`--no-edit`; `FastForward`: as `merge.ff`
+    says, or never, `--no-ff`: a merge commit even where the branch could just move forward),
     `rebase` (keeping merges, `--rebase-merges`, when asked), `cherry_pick`, `revert` (`--no-edit`; a merge's against its first parent, by
     `rev-list --parents`), each `Integrated::Done`, `Conflicts` (failed with the operation in
     progress and `ls-files -u` not empty), `Empty` (a pick that is "now empty", skipped), or
@@ -1170,12 +1171,14 @@ writes paths), never `OsStrExt`.
     commit table offers (`Menus`, from `Shared::menus`: the
     branch, `HEAD`, the configuration (its remotes read only when a menu needs them), the refs, whether a task runs or an operation is in progress,
     which disable what would change the branch, saying why): a commit's context menu (switch
-    there detached, create a branch or tag there, merge it in, rebase onto it, cherry-pick,
+    there detached, create a branch or tag there, merge it in (or always with a merge commit,
+    "(no fast-forward)"), rebase onto it, cherry-pick,
     revert, reset soft or mixed, hard after a dialog, a worktree there, its Bisect submenu (mark
     it bad or good in the bisection's terms, starting one; skip it), copy a link to it on
     its forge; and in the row's menu, its name, subject, or "Save as a patch…"), a ref badge's
     (switch to a branch, a remote's through its local one tracking it, unless one of that
-    name exists; merge it in, rebase onto it (or onto it keeping merges), fast-forward the
+    name exists; merge it in (or without fast-forward), rebase onto it (or onto it keeping
+    merges), fast-forward the
     current branch to it, and a
     remote's local branch following it; a local branch's Pull (the current one as configured,
     another fast-forward only), Push (to its upstream, or the first-push dialog), and Set
@@ -1184,8 +1187,8 @@ writes paths), never `OsStrExt`.
     it, show only it, it too, or hide it (`Scope`, `Action::Scope`), or every branch again;
     push or delete a tag), a branch badge double-clicked (switch), a ref dropped onto another
     (`drop_items`, in a menu where it lands: onto the current branch, merging the dragged one
-    in, rebasing onto it, or fast-forwarding to it; the current branch onto another, rebasing
-    onto that (keeping merges or not), merging it in, fast-forwarding; else fast-forwarding
+    in (or without fast-forward), rebasing onto it, or fast-forwarding to it; the current branch onto another, rebasing
+    onto that (keeping merges or not), merging it in (or without fast-forward), fast-forwarding; else fast-forwarding
     the branch dropped on, or switching to it, a merge into it said to wait for that), and
     the stash menu beside
     the commit count

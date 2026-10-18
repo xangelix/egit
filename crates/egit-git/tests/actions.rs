@@ -16,10 +16,11 @@ use std::path::{Path, PathBuf};
 use bstr::BStr;
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, CloneOptions, DeleteBranchError, Head, Integrated, ObjectId, Operation, Progress,
-    PushFlag, Repository, ResetMode, StashError, SwitchError, SwitchTo, cherry_pick, clone,
-    create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag, merge, push_tag,
-    rebase, rename_branch, reset, revert, stash_apply, stash_drop, stash_push, stashes, switch,
+    CancelToken, CloneOptions, DeleteBranchError, FastForward, Head, Integrated, ObjectId,
+    Operation, Progress, PushFlag, Repository, ResetMode, StashError, SwitchError, SwitchTo,
+    cherry_pick, clone, create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
+    merge, push_tag, rebase, rename_branch, reset, revert, stash_apply, stash_drop, stash_push,
+    stashes, switch,
 };
 
 fn open(sandbox: &Sandbox, path: &Path) -> Repository {
@@ -268,7 +269,14 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
 
     // Merged: a merge commit (`other` is no ancestor of `main`).
     assert_eq!(
-        merge(git, &repository, BStr::new("other"), &cancel()).unwrap(),
+        merge(
+            git,
+            &repository,
+            BStr::new("other"),
+            FastForward::AsConfigured,
+            &cancel()
+        )
+        .unwrap(),
         Integrated::Done
     );
     let parents = sandbox.run(&path, "log", &["-1", "--format=%P"]).unwrap();
@@ -299,7 +307,14 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
     // Conflicts stop each, the operation in progress.
     sandbox.commit_file(&path, "g", "mine\n", "Mine").unwrap();
     assert_eq!(
-        merge(git, &repository, BStr::new("other"), &cancel()).unwrap(),
+        merge(
+            git,
+            &repository,
+            BStr::new("other"),
+            FastForward::AsConfigured,
+            &cancel()
+        )
+        .unwrap(),
         Integrated::Conflicts
     );
     assert_eq!(operations(), [Operation::Merge]);
@@ -326,6 +341,55 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
         Integrated::Done
     );
     assert_eq!(subject(&sandbox, &path, "HEAD~1"), "Other");
+}
+
+#[test]
+fn a_merge_fast_forwards_as_configured_or_never() {
+    let sandbox = Sandbox::new().unwrap();
+    let path = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&path, "f", "one\n", "One").unwrap();
+    sandbox.run(&path, "branch", &["ahead"]).unwrap();
+    sandbox.run(&path, "switch", &["--quiet", "ahead"]).unwrap();
+    sandbox.commit_file(&path, "g", "two\n", "Two").unwrap();
+    sandbox.run(&path, "switch", &["--quiet", "main"]).unwrap();
+    let (repository, git) = (open(&sandbox, &path), sandbox.git());
+    let (one, ahead) = (rev(&sandbox, &path, "main"), rev(&sandbox, &path, "ahead"));
+
+    // Never: a merge commit, though `main` could just move forward.
+    assert_eq!(
+        merge(
+            git,
+            &repository,
+            BStr::new("ahead"),
+            FastForward::Never,
+            &cancel()
+        )
+        .unwrap(),
+        Integrated::Done
+    );
+    let parents = sandbox.run(&path, "log", &["-1", "--format=%P"]).unwrap();
+    assert_eq!(
+        String::from_utf8(parents.stdout).unwrap().trim(),
+        format!("{one} {ahead}")
+    );
+    assert_eq!(subject(&sandbox, &path, "HEAD"), "Merge branch 'ahead'");
+
+    // As configured (unset): it just moves forward.
+    sandbox
+        .run(&path, "reset", &["--hard", "--quiet", &one.to_string()])
+        .unwrap();
+    assert_eq!(
+        merge(
+            git,
+            &repository,
+            BStr::new("ahead"),
+            FastForward::AsConfigured,
+            &cancel()
+        )
+        .unwrap(),
+        Integrated::Done
+    );
+    assert_eq!(rev(&sandbox, &path, "HEAD"), ahead);
 }
 
 #[test]

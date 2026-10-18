@@ -12,8 +12,8 @@ use std::path::Path;
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_forge::ForgeRepository;
 use egit_git::{
-    BisectMark, BisectTerms, Bisection, Changes, ConfigSnapshot, ObjectId, PullMode, PushOptions,
-    RefKind, Reference, ResetMode, Stash, SwitchTo, patch_file_name,
+    BisectMark, BisectTerms, Bisection, Changes, ConfigSnapshot, FastForward, ObjectId, PullMode,
+    PushOptions, RefKind, Reference, ResetMode, Stash, SwitchTo, patch_file_name,
 };
 use egui::{Response, RichText, Ui};
 
@@ -488,15 +488,20 @@ fn into_items(
     menu_header(ui, &format!("Into {current}"));
     let shown = id.abbreviated(ID_DIGITS).to_string();
     let what = BString::from(id.to_string());
-    if item(
-        ui,
-        (icon::GIT_MERGE, &format!("Merge into {current}")),
-        other,
-    ) {
-        ask(Ask::Task(Task::Merge {
-            what: what.clone(),
-            shown: shown.clone(),
-        }));
+    for (label, fast_forward) in [
+        (format!("Merge into {current}"), FastForward::AsConfigured),
+        (
+            format!("Merge into {current} (no fast-forward)"),
+            FastForward::Never,
+        ),
+    ] {
+        if item(ui, (icon::GIT_MERGE, &label), other) {
+            ask(Ask::Task(Task::Merge {
+                what: what.clone(),
+                shown: shown.clone(),
+                fast_forward,
+            }));
+        }
     }
     for (label, keep_merges) in [
         (format!("Rebase {current} onto this commit"), false),
@@ -804,10 +809,11 @@ fn drop_offers(
         reference.kind == RefKind::Branch && menus.branch == Some(reference.short_name())
     };
     let allowed = menus.can_change().map_err(str::to_owned);
-    let merge = |what: &Reference, shown: &str| {
+    let merge = |what: &Reference, shown: &str, fast_forward| {
         Some(Task::Merge {
             what: what.name.clone(),
             shown: shown.to_owned(),
+            fast_forward,
         })
     };
     let rebase = |onto: &Reference, shown: &str, keep_merges| {
@@ -828,7 +834,13 @@ fn drop_offers(
             (
                 icon::GIT_MERGE,
                 format!("Merge {from} into {to}"),
-                merge(dragged, from),
+                merge(dragged, from, FastForward::AsConfigured),
+                allowed.clone(),
+            ),
+            (
+                icon::GIT_MERGE,
+                format!("Merge {from} into {to} (no fast-forward)"),
+                merge(dragged, from, FastForward::Never),
                 allowed.clone(),
             ),
             (
@@ -862,7 +874,13 @@ fn drop_offers(
             (
                 icon::GIT_MERGE,
                 format!("Merge {to} into {from}"),
-                merge(onto, to),
+                merge(onto, to, FastForward::AsConfigured),
+                allowed.clone(),
+            ),
+            (
+                icon::GIT_MERGE,
+                format!("Merge {to} into {from} (no fast-forward)"),
+                merge(onto, to, FastForward::Never),
                 allowed.clone(),
             ),
             (
@@ -927,15 +945,23 @@ fn ref_into_items(
     let current = menus.current();
     let name = reference.short_name().to_str_lossy();
     menu_header(ui, &format!("Into {current}"));
-    if item(
-        ui,
-        (icon::GIT_MERGE, &format!("Merge {name} into {current}")),
-        other,
-    ) {
-        ask(Ask::Task(Task::Merge {
-            what: reference.name.clone(),
-            shown: name.clone().into_owned(),
-        }));
+    for (label, fast_forward) in [
+        (
+            format!("Merge {name} into {current}"),
+            FastForward::AsConfigured,
+        ),
+        (
+            format!("Merge {name} into {current} (no fast-forward)"),
+            FastForward::Never,
+        ),
+    ] {
+        if item(ui, (icon::GIT_MERGE, &label), other) {
+            ask(Ask::Task(Task::Merge {
+                what: reference.name.clone(),
+                shown: name.clone().into_owned(),
+                fast_forward,
+            }));
+        }
     }
     for (label, keep_merges) in [
         (format!("Rebase {current} onto {name}"), false),

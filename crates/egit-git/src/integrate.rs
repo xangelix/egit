@@ -27,8 +27,19 @@ pub enum Integrated {
     Stopped,
 }
 
+/// Whether a merge may just move the branch forward, when it can.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FastForward {
+    /// As the configuration says (`merge.ff`; unset, a fast-forward whenever one is possible).
+    #[default]
+    AsConfigured,
+    /// Never: a merge commit even when the branch could just move forward (`--no-ff`), so the
+    /// history keeps the branch merged as one.
+    Never,
+}
+
 /// Merges `what` (a branch's name, or a commit's) into the current branch (`git merge
-/// --no-edit`: git's message; a fast-forward when the configuration allows one).
+/// --no-edit`: git's message), fast-forwarding as `fast_forward` says.
 ///
 /// # Errors
 ///
@@ -37,11 +48,16 @@ pub fn merge(
     git: &Git,
     repository: &Repository,
     what: &BStr,
+    fast_forward: FastForward,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
-    let done = git
+    let mut command = git
         .write("merge")
-        .args(["--no-edit", "--no-stat", "--quiet"])
+        .args(["--no-edit", "--no-stat", "--quiet"]);
+    if fast_forward == FastForward::Never {
+        command = command.arg("--no-ff");
+    }
+    let done = command
         .arg(what.to_os_str_lossy())
         .prompt_context("Merging")
         .current_dir(repository.work_tree())

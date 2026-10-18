@@ -8,8 +8,8 @@ use std::path::Path;
 
 use bstr::{BString, ByteSlice as _};
 use egit_git::{
-    ApplyAs, BisectLeft, BisectMark, BisectTerms, Bisection, Changes, ConfigSnapshot, Forwarded,
-    Head, Integrated, MailboxProgress, ObjectId, Operation, PullMode, Pulled, PushFlag,
+    ApplyAs, BisectLeft, BisectMark, BisectTerms, Bisection, Changes, ConfigSnapshot, FastForward,
+    Forwarded, Head, Integrated, MailboxProgress, ObjectId, Operation, PullMode, Pulled, PushFlag,
     PushOptions, Pushed, Stash, SwitchTo, Tracking,
 };
 use egui::{Align, Id, Layout, Rect, RichText, TextStyle, Ui, UiBuilder};
@@ -583,37 +583,47 @@ fn rewritten_text(task: &Task) -> String {
     }
 }
 
+/// What a switch did, the changes in its way stashed first or not.
+fn switched_text(to: &SwitchTo, stashed: bool) -> String {
+    let short = |name: &BString| name.to_str_lossy().into_owned();
+    let switched = if stashed {
+        "Stashed your changes, and switched"
+    } else {
+        "Switched"
+    };
+    match to {
+        SwitchTo::Branch(name) => format!("{switched} to {}.", short(name)),
+        SwitchTo::Track {
+            remote_branch,
+            local,
+        } => format!(
+            "{switched} to {}, tracking {}.",
+            short(local),
+            short(remote_branch)
+        ),
+        SwitchTo::NewBranch { name, .. } => {
+            format!("Made {}; {} to it.", short(name), switched.to_lowercase())
+        }
+        SwitchTo::Detached(at) => format!(
+            "{switched} to {}, without a branch.",
+            at.abbreviated(ID_DIGITS)
+        ),
+    }
+}
+
 fn done_text(task: &Task) -> String {
     let short = |name: &BString| name.to_str_lossy().into_owned();
     match task {
-        Task::Switch(to) | Task::StashAndSwitch(to) => {
-            let stashed = if matches!(task, Task::StashAndSwitch(_)) {
-                "Stashed your changes, and switched"
-            } else {
-                "Switched"
-            };
-            match to {
-                SwitchTo::Branch(name) => format!("{stashed} to {}.", short(name)),
-                SwitchTo::Track {
-                    remote_branch,
-                    local,
-                } => format!(
-                    "{stashed} to {}, tracking {}.",
-                    short(local),
-                    short(remote_branch)
-                ),
-                SwitchTo::NewBranch { name, .. } => {
-                    format!("Made {}; {} to it.", short(name), stashed.to_lowercase())
-                }
-                SwitchTo::Detached(at) => format!(
-                    "{stashed} to {}, without a branch.",
-                    at.abbreviated(ID_DIGITS)
-                ),
-            }
-        }
+        Task::Switch(to) => switched_text(to, false),
+        Task::StashAndSwitch(to) => switched_text(to, true),
         Task::CreateBranch { name, .. } => format!("Made {}.", short(name)),
         Task::RenameBranch { old, new } => format!("Renamed {} to {}.", short(old), short(new)),
         Task::DeleteBranch { name, .. } => format!("Deleted {}.", short(name)),
+        Task::Merge {
+            shown,
+            fast_forward: FastForward::Never,
+            ..
+        } => format!("Merged {shown}, with a merge commit."),
         Task::Merge { shown, .. } => format!("Merged {shown}."),
         Task::Rebase { shown, .. } => format!("Rebased onto {shown}."),
         Task::CherryPick(commit) => format!("Picked {}.", commit.abbreviated(ID_DIGITS)),
