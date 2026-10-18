@@ -12,6 +12,7 @@ mod lfs;
 mod merge;
 pub(crate) mod palette;
 mod patch;
+mod picked;
 pub(crate) mod preferences;
 pub(crate) mod profile;
 pub(crate) mod prompts;

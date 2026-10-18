@@ -565,6 +565,7 @@ const fn moves_head(task: &Task) -> bool {
             | Task::DropCommit(_)
             | Task::SquashIntoParent(_)
             | Task::Reword { .. }
+            | Task::SignCommits { .. }
             | Task::FastForward { .. }
             | Task::ApplyPatch { .. }
             | Task::Pull(_)
@@ -754,6 +755,7 @@ const fn went_through(outcome: &Outcome) -> bool {
             | Outcome::Pulled(Pulled::Updated)
             | Outcome::Forwarded(Forwarded::Moved)
             | Outcome::Stashed(true)
+            | Outcome::Signed { .. }
     )
 }
 
@@ -774,6 +776,8 @@ fn moved_words(task: &Task) -> String {
         Task::DropCommit(commit) => format!("dropping {}", short(commit)),
         Task::SquashIntoParent(commit) => format!("squashing {} into its parent", short(commit)),
         Task::Reword { commit, .. } => format!("rewording {}", short(commit)),
+        Task::SignCommits { commits } if commits.len() == 1 => "signing a commit".to_owned(),
+        Task::SignCommits { commits } => format!("signing {} commits", commits.len()),
         Task::FastForward { shown, .. } => format!("the fast-forward to {shown}"),
         Task::ApplyPatch { commits: 1, .. } => "applying the patch".to_owned(),
         Task::ApplyPatch { commits, .. } => format!("applying {commits} patches"),

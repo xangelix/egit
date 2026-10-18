@@ -48,6 +48,18 @@ impl Progress {
         self.0.lock().clone()
     }
 
+    /// Reports a step of work egit does itself one item at a time (commits signed), as git
+    /// reports its own: the phase, how many are done, of how many.
+    pub fn step(&self, phase: &str, done: u64, total: u64) {
+        let mut report = self.0.lock();
+        if report.phase != phase {
+            phase.clone_into(&mut report.phase);
+        }
+        report.done = done;
+        report.total = Some(total);
+        report.updates = report.updates.wrapping_add(1);
+    }
+
     /// Forgets what was reported (for the next command).
     pub fn clear(&self) {
         *self.0.lock() = ProgressReport::default();

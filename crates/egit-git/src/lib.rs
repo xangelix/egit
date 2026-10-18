@@ -47,6 +47,7 @@ mod remote_setup;
 mod repo;
 mod search;
 mod signatures;
+mod signing;
 mod span;
 mod stage;
 mod stash;
@@ -128,6 +129,7 @@ pub use repo::{
 };
 pub use search::{CommitFilter, find_commits, resolve_commit};
 pub use signatures::{SignatureCheck, Verdict, check_signatures};
+pub use signing::{MAX_SIGNED, SignError, Signed, SigningPlan, plan_signing, sign_commits};
 pub use stage::{stage, unstage};
 pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stash_store, stashes};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};

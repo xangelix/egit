@@ -982,4 +982,35 @@ pub(super) const TOPICS: &[Topic] = &[
         git: "git lfs ls-files --json",
         cases: &[],
     },
+    Topic {
+        id: "picked-commits",
+        group: Group::Looking,
+        title: "Selecting several commits",
+        on: &[
+            "These * commits",
+            "Selected",
+            "Copy their names",
+            "Clear the selection",
+        ],
+        what: "Shift-click picks every commit from the one last clicked to this one; Ctrl-click \
+               (⌘ on a Mac) adds one or takes it away; Shift with ↑ or ↓ stretches the range. \
+               While several are picked, the details list them, and a right click on one offers \
+               what can be done to them all: signing them, copying their names. Picking changes \
+               nothing in the repository.",
+        git: "",
+        cases: &[
+            (
+                "Rows in between picked too?",
+                "A range is every row between, as the graph lays them out, other branches' too: Ctrl-click takes one away.",
+            ),
+            (
+                "Lost the selection?",
+                "A plain click, or Escape, lets them go; reading the history again keeps those still in it.",
+            ),
+            (
+                "Copy their names?",
+                "Their full names, one a line, the newest first: ready for git cherry-pick or a script.",
+            ),
+        ],
+    },
 ];

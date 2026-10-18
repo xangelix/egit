@@ -12,6 +12,7 @@ mod menus;
 mod notices;
 mod patches;
 mod people;
+mod picked;
 mod pictures;
 mod polish;
 mod scale;

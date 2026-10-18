@@ -20,17 +20,17 @@ use egit_forge::{
 use egit_git::{
     ApplyAs, BisectMark, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget,
     DeleteBranchError, FetchOptions, ForwardFrom, Forwarded, Git, GitError, Integrated,
-    MAX_PLANNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled, PushOptions, Pushed,
-    RangeError, RebaseError, RebaseRange, RemoveWorktreeError, Repository, ResetMode, Stash,
-    StashError, Step, SwitchError, SwitchTo, WorktreeFrom, abort_operation, add_remote,
-    add_worktree, apply_patch, bisect_mark, changes_patch, cherry_pick, continue_operation,
-    count_between, create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
-    fast_forward_branch, fast_forward_current, fetch, fetch_refspecs, fetch_remote, format_patch,
-    format_patches, lock_worktree, merge, prune_worktrees, pull, push, push_tag, rebase,
-    rebase_interactive, rebase_keeping_merges, rebase_range, remove_remote, remove_worktree,
-    rename_branch, rename_remote, reset, revert, reword_head, set_config, set_remote_url,
-    set_upstream, skip_operation, stash_apply, stash_drop, stash_push, switch, unlock_worktree,
-    unset_config, update_submodules,
+    MAX_PLANNED, MAX_SIGNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled, PushOptions,
+    Pushed, RangeError, RebaseError, RebaseRange, RemoveWorktreeError, Repository, ResetMode,
+    SignError, Stash, StashError, Step, SwitchError, SwitchTo, WorktreeFrom, abort_operation,
+    add_remote, add_worktree, apply_patch, bisect_mark, changes_patch, cherry_pick,
+    continue_operation, count_between, create_branch, create_tag, delete_branch,
+    delete_remote_branch, delete_tag, fast_forward_branch, fast_forward_current, fetch,
+    fetch_refspecs, fetch_remote, format_patch, format_patches, lock_worktree, merge, plan_signing,
+    prune_worktrees, pull, push, push_tag, rebase, rebase_interactive, rebase_keeping_merges,
+    rebase_range, remove_remote, remove_worktree, rename_branch, rename_remote, reset, revert,
+    reword_head, set_config, set_remote_url, set_upstream, sign_commits, skip_operation,
+    stash_apply, stash_drop, stash_push, switch, unlock_worktree, unset_config, update_submodules,
 };
 use egui_async::Bind;
 use parking_lot::Mutex;
@@ -125,6 +125,11 @@ pub(crate) enum Task {
     Reword {
         commit: ObjectId,
         message: String,
+    },
+    /// Sign commits of the current branch: each made again, signed, and every commit after
+    /// them too (`egit_git::sign_commits`).
+    SignCommits {
+        commits: Vec<ObjectId>,
     },
     /// Reset the current branch to a commit.
     Reset(ObjectId, ResetMode),
@@ -337,6 +342,7 @@ impl Task {
             Self::Bisect { .. } => "Bisecting",
             Self::SquashIntoParent(_) => "Squashing",
             Self::Reword { .. } => "Rewording",
+            Self::SignCommits { .. } => "Signing the commits",
             Self::CherryPick(_) => "Cherry-picking",
             Self::Revert(_) => "Reverting",
             Self::Reset(..) => "Resetting",
@@ -413,6 +419,13 @@ pub(crate) enum Outcome {
     SavedPatches(usize),
     /// A worktree not removed: it has changes, which removing it would lose.
     WorktreeChanges,
+    /// Commits signed: how many were made again, how many of them were asked for, and whether
+    /// any had been pushed.
+    Signed {
+        made: usize,
+        asked: usize,
+        pushed: bool,
+    },
 }
 
 /// What background fetches brought the current branch's upstream, since the user last looked.
@@ -722,6 +735,7 @@ fn run(
         | Task::DropCommit(_)
         | Task::SquashIntoParent(_)
         | Task::Reword { .. } => rewrite(git, repository, task, cancel),
+        Task::SignCommits { commits } => sign(git, repository, commits, progress, cancel),
         Task::Switch(_)
         | Task::StashAndSwitch(_)
         | Task::CreateBranch { .. }
@@ -1049,6 +1063,60 @@ fn rewrite(
         Err(RebaseError::Git(error)) => failed(TITLE)(error),
         Err(error) => Err(Problem::new(TITLE, format!("The plan won't do: {error}."))),
     }
+}
+
+/// Signs `commits` of the current branch, every commit after them made again and signed too,
+/// how far it got in `progress`.
+fn sign(
+    git: &Git,
+    repository: &Repository,
+    commits: &[ObjectId],
+    progress: &Progress,
+    cancel: &CancelToken,
+) -> Result<Outcome, Problem> {
+    let plan = match plan_signing(git, repository, commits, cancel) {
+        Ok(plan) => plan,
+        Err(SignError::Git(GitError::Cancelled { .. })) => return Ok(Outcome::Cancelled),
+        Err(error) => return Err(sign_problem(&error)),
+    };
+    let total = u64::try_from(plan.commits.len()).unwrap_or(u64::MAX);
+    let signed = sign_commits(git, repository, &plan, cancel, |made| {
+        progress.step(
+            "Signing commits",
+            u64::try_from(made).unwrap_or(u64::MAX),
+            total,
+        );
+    });
+    match signed {
+        Ok(signed) => Ok(Outcome::Signed {
+            made: signed.made,
+            asked: plan.asked,
+            pushed: plan.pushed,
+        }),
+        Err(SignError::Git(GitError::Cancelled { .. })) => Ok(Outcome::Cancelled),
+        Err(error) => Err(sign_problem(&error)),
+    }
+}
+
+/// Why commits couldn't be signed, for people.
+fn sign_problem(error: &SignError) -> Problem {
+    const TITLE: &str = "The commits couldn't be signed";
+    let said = match error {
+        SignError::Nothing => "No commit was asked for.".to_owned(),
+        SignError::Detached => "HEAD isn't on a branch: switch to the branch first.".to_owned(),
+        SignError::NotInBranch => "Not every one is in the current branch's history: only \
+                                   its own commits can be signed."
+            .to_owned(),
+        SignError::TooMany => format!("It would make more than {MAX_SIGNED} commits again."),
+        SignError::Unreadable(id) => format!("Commit {id} couldn't be read."),
+        SignError::Moved => "The branch moved while they were being signed: nothing changed. \
+                             Try again."
+            .to_owned(),
+        SignError::Git(error) => {
+            return Problem::git(TITLE, error);
+        }
+    };
+    Problem::new(TITLE, said)
 }
 
 /// `range`'s commits, picked unless `step` says otherwise.

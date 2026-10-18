@@ -149,7 +149,8 @@ writes paths), never `OsStrExt`.
   - `progress.rs` — `Progress`: a long command's `--progress` lines read as they come, each
     replacing the last (git rewrites them with `\r`): the phase, done and total, the transfer
     (`1.20 MiB | 2.30 MiB/s`), whether the remote is doing it (`remote: `), and the other
-    lines as notes (the latest fifty).
+    lines as notes (the latest fifty). `step` reports work egit does itself one item at a
+    time (commits signed) the same way.
   - `process.rs` — git leading a group of its own, stopped and waited on safely, per platform
     (with the askpass's `getpeereid`, the crate's only `unsafe`). `process/unix.rs`: `setsid`
     in `pre_exec` (no controlling terminal; git leads its process group), SIGTERM to the
@@ -296,6 +297,23 @@ writes paths), never `OsStrExt`.
     certifying a key gpg made, since gpgsm can't make one without a passphrase; trusted by
     `trustlist.txt`). A test whose tools are missing is skipped, unless
     `EGIT_REQUIRE_SIGNERS` is set (CI installs GnuPG, gpgsm, and OpenSSH and sets it).
+  - `signing.rs` — signing commits already made, as `rebase --force-rebase --gpg-sign` would,
+    without a rebase. `plan_signing`: the branch checked out, every commit asked for in its
+    history (`rev-list --count --stdin` of them `^tip`: none outside), its commits newest
+    first (`--topo-order --parents`, children before parents) until every one asked for has
+    come, so all after them have too, then oldest first each made again when asked for or a
+    parent is (`SigningPlan`: those, how many asked, merges, and whether the upstream holds
+    one: `merge-base --is-ancestor` of the lowest asked for); at most `MAX_SIGNED` (10,000).
+    `sign_commits`: each read through one `cat-file`, made again by `commit-tree -S` with its
+    tree, author (`GIT_AUTHOR_DATE=@<seconds> <offset>`), message byte for byte, encoding, and
+    parents as made again (the committer is whoever signs, now), labelled "Signing the
+    commits"; then one `update-ref -m "egit: signed N commits"` checking the branch's old
+    value (`SignError::Moved` otherwise). Nothing is checked out or merged again: the work tree
+    and index stay, merges keep their resolutions, no hook runs; `mergetag` headers are left
+    behind. `tests/signing.rs` signs one commit of a history holding a hand-resolved merge
+    (trees, author and date, the merge's resolution and second parent, the side branch, an
+    uncommitted change all kept; signatures good), and refuses nothing asked for, a commit off
+    the branch, a branch that moved, a detached `HEAD`; a pushed commit is said to be.
   - `remote.rs` — moving commits, each with `--progress` into a `Progress`, a `CancelToken`,
     and askpass prompts labelled by what is done: `clone` (from `/`; `CloneOptions`:
     submodules, partial `--filter=blob:none`, both with `--also-filter-submodules`),
@@ -864,6 +882,9 @@ writes paths), never `OsStrExt`.
     it back once it went through (`undo::noted`, into the tab's journal); `Undo` and `Redo`
     run `undo::take_back` and `do_again` instead (one stopped before changing anything goes
     back on its list).
+    `SignCommits` signs commits picked together (`plan_signing`, then `sign_commits`, how many
+    made in the `Progress`; `Outcome::Signed`: made, asked for, whether any was pushed),
+    undone as any task moving `HEAD` is.
   - `undo.rs` — taking back what egit did. An `Undo`: what it was in words ("the merge of
     topic", "the commit “Fix it”") and its `Change`s in order: `HEAD` moved (from, to, and
     the `ResetMode` that moves it back and forth: soft for a commit, a soft or mixed reset's
@@ -1117,6 +1138,15 @@ writes paths), never `OsStrExt`.
     (`carry_out`). The commit menu's "Rewrite" group (on a branch, nothing running): "Rebase
     interactively from here…", "Edit the message…" (the editor, that commit reworded),
     "Squash into its parent", "Drop this commit…" (a dialog first).
+    `views/picked.rs` — commits picked together in the commit table (`Picked`: their rows and
+    names, the newest first, and where a range runs from): ⇧-click a range from the last row
+    clicked alone (at most 10,000), ⌘-click (Ctrl) adds or takes away one (the keys read from
+    the click's own event, as a test's are let go in the same frame), ⇧↑ ⇧↓ stretch, Escape or
+    a plain click lets them go; kept by name across a history read again (`follow`). While
+    several are picked they alone show as selected, the details show them (`panel`: how many,
+    Sign these commits…, Copy their names, Clear the selection, the first 200 listed), and a
+    right click on one opens their menu ("These 3 commits": the same). Signing asks first
+    (`Dialog::SignCommits`: what is made again, what a push takes, what stays).
     `views/rebase.rs` — `RebaseView`, the interactive rebase editor in the commit table's
     place (Escape or "History" goes back): the range read in a job, the plan's rows newest
     first (each a commit's place in the range, a `Kind`, and a reworded message once there is
@@ -1438,7 +1468,9 @@ writes paths), never `OsStrExt`.
     `src/tests/lfs.rs` meets Git LFS not set up (the banner sets it up), its menu and page,
     a file listed, a pattern tracked and untracked (skipped without git-lfs unless
     `EGIT_REQUIRE_LFS`).
-    `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
+    `src/tests/picked.rs` picks two commits by ⇧-click, adds and takes away a third by ⌘-click,
+    signs the two from their menu (the one after them made again too, the first left alone;
+    their signatures good in `git log`), and undoes it. `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
     current one onto another (rebased), between the sidebar and the graph either way.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.

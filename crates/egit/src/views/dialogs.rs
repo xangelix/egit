@@ -81,6 +81,9 @@ pub(crate) enum Dialog {
     HardReset { at: ObjectId },
     /// Whether to drop a commit from the current branch.
     DropCommit(ObjectId),
+    /// Whether to sign commits of the current branch picked together (and make every commit
+    /// after them again).
+    SignCommits(Vec<ObjectId>),
     /// Whether to stash the changes in the way of a switch, then switch.
     StashAndSwitch {
         to: SwitchTo,
@@ -200,6 +203,7 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
             || Task::DeleteTag(name.clone()),
         ),
         Dialog::HardReset { at } => hard_reset(ui, pane, *at),
+        Dialog::SignCommits(commits) => sign_commits(ui, pane, commits),
         Dialog::DropCommit(commit) => {
             let branch = pane.branch().unwrap_or_else(|| "HEAD".to_owned());
             confirm_danger(
@@ -796,6 +800,44 @@ fn hard_reset(ui: &mut Ui, pane: &TaskPane<'_>, at: ObjectId) -> Option<Answer> 
         "Reset",
         || Task::Reset(at, ResetMode::Hard),
     )
+}
+
+/// Whether to sign `commits` of the current branch: what that makes again, and what stays.
+fn sign_commits(ui: &mut Ui, pane: &TaskPane<'_>, commits: &[ObjectId]) -> Option<Answer> {
+    let branch = pane.branch().unwrap_or_else(|| "HEAD".to_owned());
+    let count = if commits.len() == 1 {
+        "1 commit".to_owned()
+    } else {
+        format!("{} commits", commits.len())
+    };
+    title(ui, &format!("Sign {count}?"));
+    says(
+        ui,
+        "Each is made again with the same changes, author, and message, signed with your key (as \
+         your Profile sets it), with you as its committer, now: their names change.",
+    );
+    ui.add_space(6.0);
+    says(
+        ui,
+        &format!(
+            "Every commit of {branch} after them is made again too, its parent being new, and \
+             signed as well. Nothing is checked out: your uncommitted changes stay, and merges \
+             keep their resolutions."
+        ),
+    );
+    ui.add_space(6.0);
+    says(
+        ui,
+        &format!(
+            "Pushed already? Pushing after takes a force push. Other branches and tags at these \
+             commits stay at the old ones. Undo puts {branch} back."
+        ),
+    );
+    ui.add_space(12.0);
+    let commits = commits.to_vec();
+    buttons_of(ui, ("Sign", Some("sign-commits")), true, || {
+        Task::SignCommits { commits }
+    })
 }
 
 /// Whether to stash the changes in the way of a switch, then switch.

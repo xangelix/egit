@@ -491,34 +491,37 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
         (Task::SaveChanges { path, .. }, _) => {
             format!("Saved the patch to {}.", format::display_path(path, home))
         }
-        (Task::AddWorktree { path, .. }, _) => {
-            format!("Made a worktree at {}.", format::display_path(path, home))
-        }
-        (Task::RemoveWorktree { path, .. }, _) => {
-            format!(
-                "Removed the worktree at {}.",
-                format::display_path(path, home)
-            )
-        }
-        (Task::LockWorktree { path, .. }, _) => {
-            format!(
-                "Locked the worktree at {}.",
-                format::display_path(path, home)
-            )
-        }
-        (Task::UnlockWorktree(path), _) => {
-            format!(
-                "Unlocked the worktree at {}.",
-                format::display_path(path, home)
-            )
-        }
         (Task::SavePatch { commit, path }, _) => format!(
             "Saved {}'s patch to {}.",
             commit.abbreviated(ID_DIGITS),
             format::display_path(path, home)
         ),
-        (task, _) => done_text(task),
+        (
+            _,
+            Outcome::Signed {
+                made,
+                asked,
+                pushed,
+            },
+        ) => signed_text(*made, *asked, *pushed),
+        (task, _) => worktree_text(task, home).unwrap_or_else(|| done_text(task)),
     }
+}
+
+/// What a task on a worktree did, in words (`None` for any other task).
+fn worktree_text(task: &Task, home: Option<&Path>) -> Option<String> {
+    let (done, path) = match task {
+        Task::AddWorktree { path, .. } => ("Made", path),
+        Task::RemoveWorktree { path, .. } => ("Removed", path),
+        Task::LockWorktree { path, .. } => ("Locked", path),
+        Task::UnlockWorktree(path) => ("Unlocked", path),
+        _ => return None,
+    };
+    let article = if done == "Made" { "a" } else { "the" };
+    Some(format!(
+        "{done} {article} worktree at {}.",
+        format::display_path(path, home)
+    ))
 }
 
 /// How a fast-forward went, in words.
@@ -538,6 +541,32 @@ fn forwarded_text(task: &Task, forwarded: Forwarded) -> String {
              together."
         ),
     }
+}
+
+/// Commits signed, in words: those asked for, those after them made again too, and what a push
+/// takes now.
+fn signed_text(made: usize, asked: usize, pushed: bool) -> String {
+    let commits = |n: usize| {
+        if n == 1 {
+            "1 commit".to_owned()
+        } else {
+            format!("{n} commits")
+        }
+    };
+    let after = made.saturating_sub(asked);
+    let mut said = if after == 0 {
+        format!("Signed {}.", commits(asked))
+    } else {
+        format!(
+            "Signed {}, and the {} after them, made again.",
+            commits(asked),
+            commits(after)
+        )
+    };
+    if pushed {
+        said.push_str(" They were pushed already: pushing now takes a force push.");
+    }
+    said
 }
 
 /// What a task that went through did.

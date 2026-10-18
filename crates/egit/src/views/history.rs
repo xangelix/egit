@@ -33,6 +33,7 @@ use super::file::{self, FileView, FileWanted, WorkFile};
 use super::file_history::{self, FileHistoryView};
 use super::lfs::LfsEvent;
 use super::patch::{self, PatchEvent, PatchSource, PatchView};
+use super::picked::{self, Click, Picked, PickedEvent};
 use super::pull_form::{self, PullRequestForm};
 use super::pulls::{self, PullRequestEvent, PullRequestView};
 use super::rebase::{self, RebaseEvent, RebaseView};
@@ -206,6 +207,8 @@ pub(crate) struct HistoryView {
     dropped: Option<Dropped>,
     /// What the submodules' banner said when dismissed: it shows again when that changes.
     submodules_dismissed: Option<crate::submodules::OutOfStep>,
+    /// Commits picked together, for what acts on several.
+    picked: Picked,
 }
 
 /// A ref dropped onto another, where.
@@ -368,6 +371,7 @@ impl HistoryView {
             work_counts: WorkCounts::default(),
             dropped: None,
             submodules_dismissed: None,
+            picked: Picked::default(),
         }
     }
 
@@ -628,6 +632,7 @@ impl HistoryView {
     /// shown again.
     fn follow(&mut self, history: &History) {
         self.search.history_replaced();
+        self.picked.follow(history);
         if let Some(Tool::Reflog(reflog)) = &mut self.tool {
             // Refs moved: where they have been is read again.
             reflog.refresh();
@@ -2017,6 +2022,11 @@ fn commit_table(
             );
         });
         move_by_keys(ui, &history.shown, view);
+        if view.picked.is_several()
+            && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            view.picked.clear();
+        }
     }
 
     let salt = ("history", shared.id);
@@ -2061,6 +2071,7 @@ fn commit_table(
         view,
         clicked: None,
         asked: None,
+        picked: None,
         now: crate::format::now(),
     };
     table.show(ui, &mut rows);
@@ -2073,12 +2084,33 @@ fn commit_table(
         (shown_rows.mul_add(ROW_HEIGHT, height), work),
     );
     let asked = rows.asked.take();
-    if let Some(row) = rows.clicked {
+    let picked_event = rows.picked.take();
+    if let Some((row, click)) = rows.clicked {
+        let before = view.selected.map(|selected| (selected.row, selected.id));
+        view.picked.click(shown, row, before, click);
         view.select(shown, row, None);
         ui.memory_mut(|memory| memory.request_focus(keys));
     }
+    picked_asked(picked_event, shared, view, actions);
     if let Some(asked) = asked {
         carry_out(asked, shared, view, actions);
+    }
+}
+
+/// Carries out what the menu of several commits picked asked for.
+fn picked_asked(
+    event: Option<PickedEvent>,
+    shared: &Shared<'_>,
+    view: &mut HistoryView,
+    actions: &mut Vec<Action>,
+) {
+    match event {
+        Some(PickedEvent::Sign(commits)) => {
+            let dialog = super::dialogs::Dialog::SignCommits(commits);
+            carry_out(Ask::Dialog(dialog), shared, view, actions);
+        }
+        Some(PickedEvent::Clear) => view.picked.clear(),
+        None => {}
     }
 }
 
@@ -2499,6 +2531,21 @@ fn move_by_keys(ui: &Ui, history: &History, view: &mut HistoryView) {
         .max(1);
     let current = view.selected.map(|selected| selected.row);
     let pressed = |key| ui.input_mut(|input| input.consume_key(Modifiers::NONE, key));
+    // ⇧↑ and ⇧↓ stretch the commits picked from where picking started.
+    let stretched = |key| ui.input_mut(|input| input.consume_key(Modifiers::SHIFT, key));
+    let stretch = if stretched(Key::ArrowDown) {
+        Some(current.map_or(0, |row| row.saturating_add(1).min(last)))
+    } else if stretched(Key::ArrowUp) {
+        Some(current.map_or(0, |row| row.saturating_sub(1)))
+    } else {
+        None
+    };
+    if let Some(row) = stretch {
+        let before = view.selected.map(|selected| (selected.row, selected.id));
+        view.picked.click(history, row, before, Click::Range);
+        view.select(history, row, None);
+        return;
+    }
     let target = if pressed(Key::ArrowDown) {
         Some(current.map_or(0, |row| row.saturating_add(1).min(last)))
     } else if pressed(Key::ArrowUp) {
@@ -2515,6 +2562,8 @@ fn move_by_keys(ui: &Ui, history: &History, view: &mut HistoryView) {
         None
     };
     if let Some(row) = target {
+        let before = view.selected.map(|selected| (selected.row, selected.id));
+        view.picked.click(history, row, before, Click::Plain);
         view.select(history, row, None);
     }
 }
@@ -2527,10 +2576,12 @@ struct CommitRows<'a> {
     signatures: &'a mut Signatures,
     objects: &'a Objects,
     view: &'a mut HistoryView,
-    /// The row clicked this frame.
-    clicked: Option<u64>,
+    /// The row clicked this frame, and how.
+    clicked: Option<(u64, Click)>,
     /// What a menu (or a double-clicked branch) asked for this frame.
     asked: Option<Ask>,
+    /// What the menu of several commits picked asked for this frame.
+    picked: Option<PickedEvent>,
     /// Now (seconds since the Unix epoch), for dates as how long ago.
     now: u64,
 }
@@ -2607,10 +2658,17 @@ impl TableDelegate for CommitRows<'_> {
     fn row_ui(&mut self, ui: &mut Ui, row: u64) {
         let rect = ui.max_rect();
         let response = ui.interact(rect, ui.id().with("commit"), Sense::click());
-        let selected = self
-            .view
-            .selected
-            .is_some_and(|selected| selected.row == row);
+        let id = self.history.id(row);
+        // While several are picked, they are what shows as selected (a row taken away by a
+        // ⌘-click is no longer, though the last clicked).
+        let picked = id.is_some_and(|id| self.view.picked.contains(&id));
+        let selected = if self.view.picked.is_several() {
+            picked
+        } else {
+            self.view
+                .selected
+                .is_some_and(|selected| selected.row == row)
+        };
         let found = self
             .view
             .search
@@ -2635,9 +2693,25 @@ impl TableDelegate for CommitRows<'_> {
                 .rect_filled(rect, CornerRadius::ZERO, self.shared.palette.selected_hover);
         }
         if response.clicked() {
-            self.clicked = Some(row);
+            // The keys held as the button was let go (they may be let go too, that frame).
+            let modifiers = ui.input(|input| {
+                input
+                    .events
+                    .iter()
+                    .rev()
+                    .find_map(|event| match event {
+                        egui::Event::PointerButton {
+                            pressed: false,
+                            modifiers,
+                            ..
+                        } => Some(*modifiers),
+                        _ => None,
+                    })
+                    .unwrap_or(input.modifiers)
+            });
+            self.clicked = Some((row, Click::of(modifiers)));
         }
-        let Some(id) = self.history.id(row) else {
+        let Some(id) = id else {
             return;
         };
         // Looked up only when asked for: these run rarely, rows every frame.
@@ -2651,6 +2725,15 @@ impl TableDelegate for CommitRows<'_> {
         });
         let menus = self.shared.menus(self.history.refs());
         let asked = &mut self.asked;
+        // One of several picked: what can be done to them all.
+        if picked && self.view.picked.is_several() {
+            let ids = &self.view.picked;
+            let event = &mut self.picked;
+            response.context_menu(|ui| {
+                *event = picked::menu(ui, &menus, &ids.ids());
+            });
+            return;
+        }
         response.context_menu(|ui| {
             actions::commit_menu(ui, &menus, id, asked);
             ui.separator();
@@ -2693,7 +2776,7 @@ impl TableDelegate for CommitRows<'_> {
                 self.shared.palette,
                 &mut self.asked,
             ) {
-                self.clicked = Some(cell.row_nr);
+                self.clicked = Some((cell.row_nr, Click::Plain));
             }
             pull_badges(
                 ui,
@@ -3325,8 +3408,33 @@ fn work_details(
     }
 }
 
+/// The details' place while several commits are picked: them, and what can be done to them
+/// all; returns whether it was drawn.
+fn picked_details(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    view: &mut HistoryView,
+) -> bool {
+    if !view.picked.is_several() || view.peeked().is_some() {
+        return false;
+    }
+    let menus = shared.menus(history.shown.refs());
+    match picked::panel(ui, shared, &history.summaries, &view.picked, &menus) {
+        Some(PickedEvent::Sign(commits)) => {
+            view.asked = Some(Ask::Dialog(super::dialogs::Dialog::SignCommits(commits)));
+        }
+        Some(PickedEvent::Clear) => view.picked.clear(),
+        None => {}
+    }
+    true
+}
+
 /// The selected commit's details and changed files.
 fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &mut HistoryView) {
+    if picked_details(ui, shared, history, view) {
+        return;
+    }
     let peeked = view.peeked();
     let Some(id) = peeked.or_else(|| view.selected.map(|selected| selected.id)) else {
         widgets::panel_head(ui, widgets::Head::Text, |ui| {

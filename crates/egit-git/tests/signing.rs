@@ -1,6 +1,6 @@
 //! Commits egit makes, signed each way, then checked as `git log --show-signature` checks them:
 //! SSH (a key file, and an agent holding the key), OpenPGP, X.509, and a signing program of the
-//! user's own.
+//! user's own. And commits already made, signed after the fact.
 //!
 //! Each needs its tools (ssh-keygen and ssh-agent, gpg, gpgsm). A test whose tools aren't
 //! installed is skipped, unless `EGIT_REQUIRE_SIGNERS` is set (as CI sets it).
@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, Git, NewCommit, ObjectId, Repository, SignatureCheck, Verdict, check_signatures,
-    create_commit,
+    CancelToken, Git, NewCommit, ObjectId, Repository, SignError, SignatureCheck, Verdict,
+    check_signatures, create_commit, plan_signing, sign_commits,
 };
 
 /// Whether `program` can be run; a test without it is skipped, unless every signer is required.
@@ -393,4 +393,249 @@ fn signs_with_an_x509_certificate() {
     assert_eq!(check.key, fingerprint);
     let shown = shown(sandbox.git(), &repo);
     assert!(shown.contains("Good signature from"), "{shown}");
+}
+
+/// `name` resolved in `repo`.
+fn rev(git: &Git, repo: &Path, name: &str) -> ObjectId {
+    let out = git
+        .read("rev-parse")
+        .args(["--verify", name])
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    ObjectId::from_hex(out.stdout.trim_ascii()).unwrap()
+}
+
+/// What `git log -1` says of `commit` in `format`.
+fn said(git: &Git, repo: &Path, commit: ObjectId, format: &str) -> String {
+    let out = git
+        .read("log")
+        .args(["-1", "--date=raw", &format!("--format={format}")])
+        .arg(commit.to_string())
+        .current_dir(repo)
+        .output()
+        .unwrap();
+    String::from_utf8(out.stdout).unwrap()
+}
+
+/// A history to sign, its commits signed by an SSH key file: First; Ada's (by someone else,
+/// in their own time zone) changing the line a side branch changes too; the side merged by
+/// hand, its conflict resolved as neither side (a rebase would meet it again); then Last.
+struct Merged {
+    repo: PathBuf,
+    first: ObjectId,
+    adas: ObjectId,
+    side: ObjectId,
+    tip: ObjectId,
+}
+
+fn merged(sandbox: &Sandbox) -> Merged {
+    let git = sandbox.git();
+    let key = sandbox.home().join("id_ed25519");
+    let allowed = allowed_signers(sandbox, &ssh_key(&key));
+    let repo = sandbox.init("repo").unwrap();
+    for [name, value] in [
+        ["gpg.format", "ssh"],
+        ["user.signingKey", key.to_str().unwrap()],
+        ["gpg.ssh.allowedSignersFile", allowed.to_str().unwrap()],
+    ] {
+        sandbox.run(&repo, "config", &[name, value]).unwrap();
+    }
+    sandbox
+        .commit_file(&repo, "file", "one\n", "First")
+        .unwrap();
+    sandbox.run(&repo, "branch", &["side"]).unwrap();
+    std::fs::write(repo.join("file"), "main\n").unwrap();
+    sandbox
+        .run(
+            &repo,
+            "commit",
+            &[
+                "--quiet",
+                "--all",
+                "--message=Ada's",
+                "--author=Ada Lovelace <ada@example.com>",
+                "--date=@1700000000 +0900",
+            ],
+        )
+        .unwrap();
+    let adas = rev(git, &repo, "HEAD");
+    sandbox.run(&repo, "switch", &["--quiet", "side"]).unwrap();
+    sandbox
+        .commit_file(&repo, "file", "side\n", "Side")
+        .unwrap();
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    let _conflict = sandbox.run(&repo, "merge", &["--quiet", "side"]);
+    std::fs::write(repo.join("file"), "resolved\n").unwrap();
+    sandbox
+        .run(&repo, "commit", &["--quiet", "--all", "--no-edit"])
+        .unwrap();
+    sandbox.commit_file(&repo, "other", "x\n", "Last").unwrap();
+    Merged {
+        first: rev(git, &repo, "main~3"),
+        side: rev(git, &repo, "side"),
+        tip: rev(git, &repo, "main"),
+        adas,
+        repo,
+    }
+}
+
+#[test]
+fn signs_commits_already_made_keeping_trees_authors_and_merges() {
+    if !available("ssh-keygen") {
+        return;
+    }
+    let sandbox = Sandbox::new().unwrap();
+    let git = sandbox.git();
+    let Merged {
+        repo,
+        first,
+        adas,
+        side,
+        tip,
+    } = merged(&sandbox);
+    // Something not committed, which signing never touches.
+    std::fs::write(repo.join("other"), "uncommitted\n").unwrap();
+    let repository = Repository::discover(git, &repo).unwrap();
+    let cancel = CancelToken::new();
+
+    // Ada's commit: it, the merge after it, and the last made again; the side's commit and
+    // the first stay.
+    let plan = plan_signing(git, &repository, &[adas], &cancel).unwrap();
+    assert_eq!((plan.asked, plan.commits.len(), plan.merges), (1, 3, 1));
+    assert_eq!(plan.commits.first(), Some(&adas));
+    assert!(!plan.pushed, "no upstream");
+    let mut heard = Vec::new();
+    let signed = sign_commits(git, &repository, &plan, &cancel, |made| heard.push(made)).unwrap();
+    assert_eq!(heard, [1, 2, 3]);
+    assert_eq!((signed.from, signed.made), (tip, 3));
+    assert_eq!(rev(git, &repo, "main"), signed.to);
+
+    // Each made again, signed, its tree as it was; Ada still its author, at her time.
+    let after = [
+        signed.to,
+        rev(git, &repo, "main^"),
+        rev(git, &repo, "main~2"),
+    ];
+    let checks = check_signatures(git, &repository, &after, &cancel).unwrap();
+    assert!(
+        checks.iter().all(|check| check.verdict == Verdict::Good),
+        "{checks:?}"
+    );
+    for (old, new) in [
+        (tip, after[0]),
+        (rev(git, &repo, &format!("{tip}^")), after[1]),
+    ] {
+        assert_eq!(
+            rev(git, &repo, &format!("{old}^{{tree}}")),
+            rev(git, &repo, &format!("{new}^{{tree}}"))
+        );
+    }
+    assert_eq!(
+        said(git, &repo, after[2], "%an <%ae> %ad%n%B"),
+        said(git, &repo, adas, "%an <%ae> %ad%n%B")
+    );
+    assert_eq!(said(git, &repo, after[2], "%ad"), "1700000000 +0900\n");
+    // The merge kept its resolution and its second parent; the first commit is the same.
+    assert_eq!(
+        said(git, &repo, after[1], "%P"),
+        format!("{} {side}\n", after[2])
+    );
+    assert_eq!(rev(git, &repo, "main~3"), first);
+    let shown_file = git
+        .read("show")
+        .arg("main^:file")
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(shown_file.stdout, b"resolved\n");
+    // The uncommitted change is still there; the reflog says what moved the branch.
+    assert_eq!(
+        std::fs::read_to_string(repo.join("other")).unwrap(),
+        "uncommitted\n"
+    );
+    let moved = git
+        .read("log")
+        .args(["-g", "-1", "--format=%gs", "main"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert_eq!(moved.stdout.trim_ascii(), b"egit: signed 3 commits");
+}
+
+#[test]
+fn signing_says_what_was_pushed_and_refuses_what_it_cant_sign() {
+    if !available("ssh-keygen") {
+        return;
+    }
+    let sandbox = Sandbox::new().unwrap();
+    let git = sandbox.git();
+    let Merged { repo, adas, .. } = merged(&sandbox);
+    sandbox
+        .run(&repo, "branch", &["elsewhere", "side"])
+        .unwrap();
+    sandbox
+        .run(&repo, "switch", &["--quiet", "elsewhere"])
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "elsewhere", "e\n", "Elsewhere")
+        .unwrap();
+    let elsewhere = rev(git, &repo, "elsewhere");
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    let repository = Repository::discover(git, &repo).unwrap();
+    let cancel = CancelToken::new();
+
+    // Nothing asked for; a commit not in the branch.
+    assert!(matches!(
+        plan_signing(git, &repository, &[], &cancel),
+        Err(SignError::Nothing)
+    ));
+    assert!(matches!(
+        plan_signing(git, &repository, &[elsewhere], &cancel),
+        Err(SignError::NotInBranch)
+    ));
+
+    // Pushed: the upstream holds the commit asked for, so pushing after takes a force push.
+    let remote = sandbox.path("remote.git");
+    sandbox
+        .run(
+            &repo,
+            "init",
+            &["--quiet", "--bare", remote.to_str().unwrap()],
+        )
+        .unwrap();
+    sandbox
+        .run(
+            &repo,
+            "remote",
+            &["add", "origin", remote.to_str().unwrap()],
+        )
+        .unwrap();
+    sandbox
+        .run(
+            &repo,
+            "push",
+            &["--quiet", "--set-upstream", "origin", "main"],
+        )
+        .unwrap();
+    let plan = plan_signing(git, &repository, &[adas], &cancel).unwrap();
+    assert!(plan.pushed);
+
+    // The branch moved after the plan was made: nothing changes.
+    sandbox.commit_file(&repo, "late", "l\n", "Late").unwrap();
+    let late = rev(git, &repo, "main");
+    assert!(matches!(
+        sign_commits(git, &repository, &plan, &cancel, |_| ()),
+        Err(SignError::Moved)
+    ));
+    assert_eq!(rev(git, &repo, "main"), late);
+
+    // Detached: no branch to move.
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--detach", "main"])
+        .unwrap();
+    assert!(matches!(
+        plan_signing(git, &repository, &[adas], &cancel),
+        Err(SignError::Detached)
+    ));
 }

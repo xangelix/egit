@@ -1308,4 +1308,42 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
         ],
     },
+    Topic {
+        id: "sign-commits",
+        group: Group::Rewriting,
+        title: "Signing commits already made",
+        on: &["Sign these commits…"],
+        what: "Makes each commit picked again, with the same changes, author, and message, signed \
+               with your key, and you as its committer, now. Every commit of the branch after \
+               them is made again too, its parent being new, and signed as well. Nothing is \
+               checked out or merged again: uncommitted changes stay, and a merge keeps its \
+               resolution. The branch then points at the new commits: their names change.",
+        git: "git commit-tree -S for each, then git update-ref (as git rebase --force-rebase --gpg-sign would, without a rebase)",
+        cases: &[
+            (
+                "Already pushed?",
+                "The remote has the old ones: pushing now takes a force push, and whoever built on them has to rebase. egit says so when it is done.",
+            ),
+            (
+                "Asked for a passphrase each time?",
+                "Each commit is signed on its own: an agent (gpg-agent, ssh-agent) holding the key asks once.",
+            ),
+            (
+                "No key set up?",
+                "Signing fails and nothing changes: set a signing key and format in your Profile first.",
+            ),
+            (
+                "Not on the current branch?",
+                "Only the branch checked out's own commits can be signed: switch to the one holding them.",
+            ),
+            (
+                "Other branches or tags at these commits?",
+                "They stay at the old, unsigned ones: sign there too, or move them.",
+            ),
+            (
+                "Changed your mind?",
+                "Undo puts the branch back where it was; the signed commits stay in the reflog for a while.",
+            ),
+        ],
+    },
 ];
