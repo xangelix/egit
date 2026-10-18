@@ -12,7 +12,7 @@
 use std::path::Path;
 
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, NewCommit, Repository, create_commit};
+use egit_git::{CancelToken, NewCommit, Repository, create_commit, reword_head};
 
 /// `HEAD`'s message.
 fn message(sandbox: &Sandbox, repo: &Path) -> String {
@@ -179,4 +179,44 @@ fn declining_to_sign_overrides_the_configuration() {
     )
     .unwrap();
     assert_eq!(message(&sandbox, &repo), "Not signed");
+}
+
+#[test]
+fn rewording_head_changes_only_its_message() {
+    let sandbox = Sandbox::new().unwrap();
+    // A commit, then a change staged and another not.
+    let repo = staged(&sandbox);
+    std::fs::write(repo.join("other"), "untouched\n").unwrap();
+    let before = sandbox
+        .run(&repo, "rev-parse", &["HEAD^{tree}"])
+        .unwrap()
+        .stdout;
+    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    reword_head(
+        sandbox.git(),
+        &repository,
+        "First, said better\n\n# kept\nWhy.",
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        message(&sandbox, &repo),
+        "First, said better\n\n# kept\nWhy."
+    );
+    // Its files as they were: what is staged stays staged, out of the commit.
+    let after = sandbox
+        .run(&repo, "rev-parse", &["HEAD^{tree}"])
+        .unwrap()
+        .stdout;
+    assert_eq!(before, after);
+    let staged = sandbox
+        .run(&repo, "diff", &["--cached", "--name-only"])
+        .unwrap()
+        .stdout;
+    assert_eq!(staged, b"file\n");
+    let count = sandbox
+        .run(&repo, "rev-list", &["--count", "HEAD"])
+        .unwrap()
+        .stdout;
+    assert_eq!(count, b"1\n");
 }

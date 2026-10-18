@@ -71,7 +71,7 @@ pub use branch::{
 pub use cancel::CancelToken;
 pub use command::{Access, GitCommand, SecretOutput, Streamed};
 pub use commit::{Commit, CommitParseError, Signature};
-pub use committing::{Committed, NewCommit, create_commit};
+pub use committing::{Committed, NewCommit, create_commit, reword_head};
 pub use config::{
     ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, add_config_value,
     set_config, unset_config, unset_config_value,

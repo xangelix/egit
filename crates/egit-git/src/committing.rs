@@ -68,3 +68,40 @@ pub fn create_commit(
         output: output.trim().to_owned(),
     })
 }
+
+/// Gives `HEAD` a new message, and nothing else.
+///
+/// `git commit --amend --only` (no paths: what is staged stays staged, out of it), the message
+/// written as `create_commit` writes it (whitespace cleaned up, a line starting with `#` kept),
+/// `--allow-empty` (a commit changing nothing keeps changing nothing), signed as the
+/// configuration says, its hooks run.
+///
+/// # Errors
+///
+/// When git refuses (a hook, signing), or can't be run.
+pub fn reword_head(
+    git: &Git,
+    repository: &Repository,
+    message: &str,
+    cancel: &CancelToken,
+) -> Result<Committed, GitError> {
+    let done = git
+        .write("commit")
+        .args([
+            "--amend",
+            "--only",
+            "--allow-empty",
+            "--file=-",
+            "--cleanup=whitespace",
+        ])
+        .prompt_context("Signing the commit")
+        .current_dir(repository.work_tree())
+        .stdin(message.as_bytes().to_vec())
+        .cancel_token(cancel)
+        .output()?;
+    let mut output = done.stderr.as_bytes().to_str_lossy().into_owned();
+    output.push_str(&done.stdout.to_str_lossy());
+    Ok(Committed {
+        output: output.trim().to_owned(),
+    })
+}

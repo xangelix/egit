@@ -192,6 +192,30 @@ impl Repository {
         }
     }
 
+    /// Whether `HEAD`'s history holds `commit` (`merge-base --is-ancestor`): a commit of the
+    /// branch checked out, which rewriting it can reach. `false` before the first commit.
+    ///
+    /// # Errors
+    ///
+    /// When git fails otherwise.
+    pub fn head_reaches(&self, git: &Git, commit: ObjectId) -> Result<bool, GitError> {
+        let reached = git
+            .read("merge-base")
+            .args(["--is-ancestor", &commit.to_string(), "HEAD"])
+            .current_dir(&self.work_tree)
+            .output_unchecked()?;
+        match reached.status.code() {
+            Some(0) => Ok(true),
+            // Not an ancestor; or (128) no `HEAD` yet.
+            Some(1 | 128) => Ok(false),
+            _ => Err(GitError::failed(
+                "merge-base",
+                reached.status,
+                reached.stderr,
+            )),
+        }
+    }
+
     /// Where `HEAD` is, and nothing else [`Self::head`] works out (the upstream, how far
     /// ahead): two quick reads, for checking it before and after something moves it.
     ///
