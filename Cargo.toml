@@ -34,6 +34,11 @@ egui_kittest = "0.36.2"
 # egui's own charts, for the Stats page (the release made for egui 0.36).
 egui_plot = "0.37.0"
 egui_tiles = "0.17.1"
+# Markdown previewed (the release made for egui 0.36): no images loaded by it, so nothing is
+# read from disk or fetched for a document.
+egui_commonmark = { version = "0.25.0", default-features = false, features = ["pulldown_cmark"] }
+# Markdown read where egit makes a document ready to preview (the version egui_commonmark reads).
+pulldown-cmark = { version = "0.13.0", default-features = false }
 # Local reads only: no network, no TLS (never `ring`).
 # Its dynamic pack cache only: the static one needs `uluru` (MPL-2.0).
 gix = { version = "0.89.0", default-features = false, features = ["pack-cache-lru-dynamic", "parallel", "sha1", "sha256"] }

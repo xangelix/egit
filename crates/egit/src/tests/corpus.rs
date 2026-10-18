@@ -14,7 +14,9 @@
 //! stepping through the list, and the commit table under their badges. And the sidebar on
 //! 100,000 refs (50,000 branches in 100 folders, 30,000 of a remote's, 20,000 tags): how soon
 //! they are listed (and the longest frame meanwhile, as they are sorted), and frames scrolling
-//! through them, unfolding the tags, and typing in the filter.
+//! through them, unfolding the tags, and typing in the filter. And a Markdown document of
+//! almost 1 MiB changed, previewed before and after: how soon it is read and drawn, and frames
+//! still and wheel-scrolling through it.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
@@ -1386,4 +1388,110 @@ fn corpus_sidebar() {
             "the 99th percentile frame took {worst:?}"
         );
     }
+}
+
+/// A Markdown document of about `bytes`: sections of headings, paragraphs with emphasis, code,
+/// and links, lists (tasks among them), code blocks, and tables; `edition` changes its words.
+fn document(bytes: usize, edition: &str) -> String {
+    let mut text = String::with_capacity(bytes + 1024);
+    let mut section = 0;
+    while text.len() < bytes {
+        section += 1;
+        let _ = write!(
+            text,
+            "## Section {section} ({edition})\n\nThe *parser* reads `input-{section}` and \
+             writes **output**, as [the guide](https://example.com/guide/{section}) says. \
+             Every line is checked twice, then kept.\n\n- first point\n- second point, longer \
+             than the first\n- [ ] a task left\n- [x] a task done\n\n```rust\nfn section_\
+             {section}() -> u32 {{\n    {section}\n}}\n```\n\n| Option | Meaning |\n|---|---|\n\
+             | `-q` | quiet |\n| `-v` | verbose |\n\n"
+        );
+    }
+    text
+}
+
+#[test]
+#[ignore = "a release-build measurement: see the module's documentation"]
+fn corpus_markdown() {
+    let largest = usize::try_from(crate::markdown::LARGEST).unwrap() - 4096;
+    println!(
+        "a Markdown document of {} KiB changed, previewed:",
+        largest / 1024
+    );
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(&repo, "README.md", &document(largest, "first"), "Write it")
+        .unwrap();
+    sandbox
+        .commit_file(
+            &repo,
+            "README.md",
+            &document(largest, "second"),
+            "Rewrite it",
+        )
+        .unwrap();
+    let git = sandbox.git().clone();
+    let builder = Harness::builder().with_size([1400.0, 900.0]);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    let mut harness = builder.build_eframe(move |creation| {
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            None,
+            Prompts::none(),
+        )
+    });
+    harness.run_steps(2);
+    harness.state_mut().state.actions.push(Action::Open(repo));
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state
+            .repos
+            .first()
+            .is_some_and(|repo| !repo.history.is_loading() && repo.history.shown.rows() == 2)
+    });
+    let started = Instant::now();
+    while harness
+        .query_by_role_and_label(Role::Button, "Rewrite it")
+        .is_none()
+    {
+        assert!(started.elapsed() < Duration::from_secs(30), "no subject");
+        harness.step();
+    }
+    harness
+        .get_by_role_and_label(Role::Button, "Rewrite it")
+        .click();
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state.repos[0].history_view.details_shown()
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "README.md")
+        .click();
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state.repos[0].history_view.file_shown() == Some(("README.md".to_owned(), true))
+    });
+    reset_peak_memory();
+    let started = Instant::now();
+    harness.get_by_label("Preview").click();
+    step_until(&mut harness, Duration::from_secs(30), |app| {
+        app.state.repos[0].history_view.file_shown() == Some(("README.md".to_owned(), true))
+    });
+    harness.run_steps(1);
+    println!("  read and first drawn in {:?}", started.elapsed());
+    let idle = measure_frames(&mut harness, 60, |_, _| {});
+    let mut worst = report("still", idle);
+    harness.hover_at(egui::pos2(1000.0, 500.0));
+    let scrolling = measure_frames(&mut harness, 300, |harness, _| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -600.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+    worst = worst.max(report("wheel scrolling", scrolling));
+    snapshot(&mut harness, "markdown");
+    println!("  peak memory {} MB", peak_memory_mb());
+    assert!(worst < Duration::from_millis(8), "p99 {worst:?} past 8 ms");
 }

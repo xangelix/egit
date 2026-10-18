@@ -37,6 +37,7 @@ egui.workspace = true
 egui-async.workspace = true
 egui-phosphor.workspace = true
 egui-table-kit.workspace = true
+egui_commonmark.workspace = true
 egui_plot.workspace = true
 egui_tiles.workspace = true
 image.workspace = true
@@ -44,6 +45,7 @@ jiff.workspace = true
 memchr.workspace = true
 notify.workspace = true
 parking_lot.workspace = true
+pulldown-cmark.workspace = true
 # Native folder dialogs through the desktop portal (no GTK).
 rfd = { workspace = true, features = ["xdg-portal"] }
 serde.workspace = true

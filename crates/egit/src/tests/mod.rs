@@ -13,6 +13,7 @@ mod help;
 mod ignoring;
 mod lfs;
 mod long_text;
+mod markdown;
 mod menus;
 mod notices;
 mod output;

@@ -32,6 +32,7 @@ use crate::grid::TextGrid;
 use crate::history::{
     CommitDetails, FileContent, LfsPointer, Objects, read_file, read_work_tree_file,
 };
+use crate::markdown::{Documents, Preview, is_markdown, read_documents};
 use crate::pictures::{Picture, PictureSource, Pictures, is_image, read_pictures};
 use crate::problem::Problem;
 use crate::staging::{LinesRequest, StageRequest};
@@ -52,6 +53,16 @@ enum Source {
     },
     /// One in the work tree, not committed yet.
     WorkTree(WorkFile),
+}
+
+impl Source {
+    /// The path it shows.
+    fn path(&self) -> &BStr {
+        match self {
+            Self::Commit { change, .. } => change.path.as_ref(),
+            Self::WorkTree(work) => work.path.as_ref(),
+        }
+    }
 }
 
 /// A file with uncommitted changes, and which of them a view shows.
@@ -148,6 +159,10 @@ pub(super) struct FileView {
     /// An image's sides, read the first time they are shown, and their textures.
     pictures: Bind<Arc<Pictures>, Problem>,
     textures: Option<Textures>,
+    /// A Markdown file's sides, read the first time they are previewed, and each preview's
+    /// state (before, after).
+    documents: Bind<Arc<Documents>, Problem>,
+    previews: (Preview, Preview),
     /// A submodule's move and the commits it brings, read the first time it is shown.
     moved: Bind<Arc<crate::submodules::Moved>, Problem>,
     /// What its bar asked to see of the file instead: its blame, or its history.
@@ -199,7 +214,11 @@ impl FileView {
         // As the view open before it, or as preferred.
         let preferred = shared.preferences;
         let wrap = previous.map_or(preferred.files.wrap, |open| open.diff_grid.wraps());
-        let shown = previous.map_or(Shown::Diff, |open| open.shown);
+        // A preview is a Markdown file's alone.
+        let shown = match previous.map_or(Shown::Diff, |open| open.shown) {
+            Shown::Preview if !is_markdown(source.path()) => Shown::Diff,
+            shown => shown,
+        };
         let whole = previous.is_some_and(|open| open.whole);
         let split = previous.map_or(preferred.files.split_diffs, |open| open.split);
         let mut diff_grid = TextGrid::new(("diff", shared.id));
@@ -225,6 +244,8 @@ impl FileView {
             merge: None,
             pictures: Bind::new(true),
             textures: None,
+            documents: Bind::new(true),
+            previews: (Preview::default(), Preview::default()),
             moved: Bind::new(true),
             wanted: None,
             asked: None,
@@ -329,6 +350,7 @@ impl FileView {
         self.content = Bind::new(true);
         self.pictures = Bind::new(true);
         self.textures = None;
+        self.documents = Bind::new(true);
         self.moved = Bind::new(true);
         self.read_diff(shared);
     }
@@ -387,10 +409,7 @@ impl FileView {
 
     /// The path it shows.
     fn path(&self) -> &BStr {
-        match &self.source {
-            Source::Commit { change, .. } => change.path.as_ref(),
-            Source::WorkTree(work) => work.path.as_ref(),
-        }
+        self.source.path()
     }
 
     /// Where its blame is: the commit it shows (or, deleted there, its parent); the work tree
@@ -440,6 +459,8 @@ impl FileView {
             Shown::File => &self.file_grid,
             Shown::Diff if self.split => &self.sides_grid,
             Shown::Diff => &self.diff_grid,
+            // A preview has no grid.
+            Shown::Preview => return None,
         };
         grid.spot_position(0, line, cell)
     }
@@ -450,6 +471,7 @@ impl FileView {
         let ready = match self.shown {
             Shown::Diff => self.diff.is_ok() && (!self.split || self.sides.is_ok()),
             Shown::File => self.content.is_ok(),
+            Shown::Preview => self.documents.is_ok(),
         };
         (self.path().to_string(), ready)
     }
@@ -484,6 +506,8 @@ pub(super) enum Shown {
     Diff,
     /// The whole file.
     File,
+    /// A Markdown file as it reads, rendered.
+    Preview,
 }
 
 /// A changed file's diff or contents, under a bar to go back to the commit table (and, for the
@@ -513,6 +537,7 @@ pub(super) fn show(
     match file.shown {
         Shown::Diff => show_diff(ui, shared, objects, file, actions),
         Shown::File => show_file(ui, shared, objects, file),
+        Shown::Preview => show_preview(ui, shared, objects, file, actions),
     }
     open
 }
@@ -599,11 +624,20 @@ fn file_bar(
 /// with the whole file around it, and long lines wrapped or not.
 fn shown_controls(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) {
     if file.merge.is_none() {
-        widgets::segmented(
-            ui,
-            &mut file.shown,
-            &[(Shown::Diff, "Diff"), (Shown::File, "File")],
-        );
+        let choices: &[(Shown, &str)] = if is_markdown(file.path()) {
+            &[
+                (Shown::Diff, "Diff"),
+                (Shown::File, "File"),
+                (Shown::Preview, "Preview"),
+            ]
+        } else {
+            &[(Shown::Diff, "Diff"), (Shown::File, "File")]
+        };
+        widgets::segmented(ui, &mut file.shown, choices);
+        // A preview has no lines to wrap.
+        if file.shown == Shown::Preview {
+            return;
+        }
         if file.shown == Shown::Diff {
             widgets::segmented(
                 ui,
@@ -1107,6 +1141,100 @@ fn show_pictures(
             }
         });
     });
+}
+
+/// A Markdown file as it reads: before and after side by side, or the one side there is (a new
+/// file's, a deleted one's), each read the first time and rendered in a scroll area of its
+/// own; the pages its links ask for go to egit's opener.
+fn show_preview(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    objects: &Objects,
+    file: &mut FileView,
+    actions: &mut Vec<Action>,
+) {
+    if file.documents.is_idle()
+        && let Some(git) = shared.git
+    {
+        file.documents.request(read_documents(
+            git.clone(),
+            Arc::clone(shared.repository),
+            objects.clone(),
+            file.picture_sources(),
+        ));
+    }
+    let documents = match file.documents.read_as_ref() {
+        None => {
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::working(ui, "Reading the document…"));
+            return;
+        }
+        Some(Err(problem)) => {
+            let problem = problem.clone();
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
+            return;
+        }
+        Some(Ok(documents)) => Arc::clone(documents),
+    };
+    let (before, after) = &mut file.previews;
+    let sides: Vec<_> = [
+        ("Before", &documents.before, before),
+        ("After", &documents.after, after),
+    ]
+    .into_iter()
+    .filter(|(_, side, _)| side.is_some())
+    .collect();
+    let path = file.source.path().to_owned();
+    Frame::new().inner_margin(Margin::same(16)).show(ui, |ui| {
+        crate::help::note_topic(ui, ui.max_rect(), "markdown-preview");
+        ui.columns(sides.len().max(1), |columns| {
+            for (column, (title, side, preview)) in columns.iter_mut().zip(sides) {
+                let pages = document_side(
+                    column,
+                    (title, side),
+                    preview,
+                    (path.as_ref(), shared.palette),
+                );
+                actions.extend(pages.into_iter().map(Action::OpenUrl));
+            }
+        });
+    });
+}
+
+/// One side of a Markdown file's change: its title and size, then the document as it reads, or
+/// why it couldn't be read; returns the pages its links asked for.
+fn document_side(
+    ui: &mut Ui,
+    (title, side): (&str, &crate::markdown::Side),
+    preview: &mut Preview,
+    (path, palette): (&BStr, Palette),
+) -> Vec<String> {
+    let facts = match side {
+        Some(Ok(document)) => format::size(document.bytes),
+        Some(Err(why)) => format!("couldn't be read: {why}"),
+        None => String::new(),
+    };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title).semibold());
+        ui.label(muted(ui, facts));
+    });
+    ui.add_space(8.0);
+    let Some(Ok(document)) = side else {
+        return Vec::new();
+    };
+    let mut pages = Vec::new();
+    Frame::new()
+        .fill(palette.background)
+        .stroke(egui::Stroke::new(1.0, palette.border))
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
+        .inner_margin(Margin::same(16))
+        .show(ui, |ui| {
+            pages = crate::markdown::show(ui, preview, document, (title, path));
+        });
+    pages
 }
 
 /// One side of an image's change: its title and size, then the image, or why there is none.

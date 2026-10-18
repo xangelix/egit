@@ -129,7 +129,15 @@ pub(crate) fn run(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<Strin
             let shared = a.visible.intersect(b.visible);
             let nested = a.visible.expand(1.0).contains_rect(b.visible)
                 || b.visible.expand(1.0).contains_rect(a.visible);
-            if a.layer == b.layer && shared.is_positive() && shared.area() > 4.0 && !nested {
+            // A sliver under a point (text runs flowing one after another, their edges
+            // rounded apart) is no overlap anyone sees.
+            let sliver = shared.width() < 1.0 || shared.height() < 1.0;
+            if a.layer == b.layer
+                && shared.is_positive()
+                && shared.area() > 4.0
+                && !nested
+                && !sliver
+            {
                 problems.push(format!(
                     "{screen}: drawn over each other: {} and {}",
                     a.describe(),

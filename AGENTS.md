@@ -83,7 +83,10 @@ it.
   listed 280 ms after opening (its longest frame meanwhile 5.6 ms: they are sorted in a job),
   scrolled at 0.7–1.1 ms p99, the tags unfolded in a frame of 1.2 ms, each letter typed in the
   filter 0.6 ms at most (the rows made in a job, landing 3–5 ms after the last letter); then the command palette over its 50,001 branches: opened in a frame
-  of 2.8 ms, each letter typed 4.1 ms at most; peak 179 MB.
+  of 2.8 ms, each letter typed 4.1 ms at most; peak 179 MB. `corpus_markdown`: a Markdown
+  document of 1,020 KiB changed, previewed before and after: read and first drawn in 14 ms,
+  wheel-scrolled at 4.9 ms p99 (drawn whole, as `egui_commonmark` draws a document, 780 ms a
+  frame and 943 MB), peak 214 MB.
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory, then how much of what
@@ -716,7 +719,9 @@ writes paths), never `OsStrExt`.
     to stop between them; `matches_case` is smart case; `Needle`, a query made ready for
     many short texts (a finder built once, or ASCII folded).
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
-  (wgpu), `egui_tiles` 0.17, `egui_plot` 0.37 (egui's charts: the Stats page), `egui-table-kit`
+  (wgpu), `egui_tiles` 0.17, `egui_plot` 0.37 (egui's charts: the Stats page),
+  `egui_commonmark` 0.25 (Markdown previewed; no default features, so it loads no image),
+  `egui-table-kit`
   0.7 (a git revision ahead of crates.io: bump
   `rev` to the owner's pushed commit after each change made there; until it is pushed, cargo
   fetches it from the clone: `GIT_CONFIG_COUNT=1
@@ -1218,7 +1223,8 @@ writes paths), never `OsStrExt`.
     clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or
     "History" goes back; its bar: back, how the file changed and its path, at the right Open
     file and Show in folder (the work tree's file, as it is now), Blame, and File history;
-    then Diff or File, Unified or Side by side, as segmented choices):
+    then Diff or File (or for Markdown Preview: before and after rendered side by side, or the
+    side there is; `markdown.rs`), Unified or Side by side, as segmented choices):
     its diff against the first parent (unified or side by side, with
     "Whole file" for all of its context), or the file as the commit left it (as it was, if
     deleted; read the first time it is asked for, `read_file`), or a placeholder for binary
@@ -1589,8 +1595,20 @@ writes paths), never `OsStrExt`.
     and name; at each row's right what its list adds (`TreeRow`: lines counted, a stage
     button); made again only when the list is replaced, in a job past 5,000 files, the last
     tree shown meanwhile, in a scroll area of its own.
+  - `markdown.rs` — Markdown previewed (`is_markdown`: `.md`, `.markdown`, …):
+    `read_documents` reads a change's sides as `pictures.rs` does (1 MiB at most), each a
+    `Document`: its text `prepared` (an image a link to it, as nothing is fetched; a task's box
+    an icon, as `egui_commonmark` draws a checkbox nothing names) and split there into blocks
+    (top-level elements, a top-level list's items one by one, an ordered one's numbered as it
+    was; the room before each), with the link reference definitions written out and each
+    heading's anchor as GitHub names it. `show` draws only the blocks in view (each through
+    `egui_commonmark`, the definitions after it when it may use them; `ScrollArea::
+    show_viewport`), a block's height guessed from its lines until drawn or measured ahead
+    (unseen, 2 ms a frame), the view kept where it is as heights above it change; links' pages
+    taken from egui's output for egit's opener (web pages only), a heading's link scrolling to
+    it.
   - `pictures.rs` — an image's sides read (blobs through the shared `Objects`, or the work
-    tree's file, 64 MiB at most) and decoded by `image` (PNG, JPEG, GIF, WebP, BMP, ICO;
+    tree's file, 64 MiB at most: `read_side`, its limit given) and decoded by `image` (PNG, JPEG, GIF, WebP, BMP, ICO;
     20,000 pixels a side and 512 MiB of decoding at most), then scaled down to 2,048 pixels a
     side at most (all a screen shows) into an `egui::ColorImage` shared with its texture
     (`Picture`: its size as stored, its bytes, its pixels; a side that couldn't be read says
@@ -1678,7 +1696,8 @@ writes paths), never `OsStrExt`.
     adapter exists (`EGIT_GUI_RENDER=1` requires one, `0` skips). Look at them after any
     interface change. Every rendered screen first passes `src/tests/audit.rs` (after eshine's):
     no egui id clashes, no text or control drawn partly over another on the same layer (a
-    floating scroll bar aside: it lies over what it scrolls),
+    floating scroll bar aside: it lies over what it scrolls; and slivers under a point, text
+    runs flowing one after another),
     nothing moving while idle, and every control named in words or numbers (link a field to
     its visible label with `labelled_by`), and every one-line field a control's height, its
     text centred top to bottom and 8 points from its side. `EGIT_GUI_RECTS=1` writes each
@@ -1766,6 +1785,9 @@ writes paths), never `OsStrExt`.
     opens it from its view's bar, and the repository's folder from its menu (recorded).
     `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
     current one onto another (rebased), between the sidebar and the graph either way.
+    `src/tests/markdown.rs` previews a README a commit changed (before and after: its headings,
+    code, a table, an image made a link, tasks' boxes), a link going to the opener and a
+    heading's link opening nothing; a document added and one deleted, each its one side.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,

@@ -729,6 +729,31 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "markdown-preview",
+        group: Group::Changes,
+        title: "Markdown previewed",
+        on: &["Preview"],
+        what: "A Markdown file (.md) as it reads, rendered: headings, lists, tables, code, \
+               links. A change shows before and after side by side; a new file, or a deleted \
+               one, the side it has. For the work tree, as the diff's sides are: what is \
+               staged against HEAD, or the file against the index.",
+        git: "git cat-file (each side's blob), or the file on disk",
+        cases: &[
+            (
+                "An image shows as a link?",
+                "egit fetches nothing to draw a document (a picture on the web can tell its author who looked): the link opens it in your browser.",
+            ),
+            (
+                "A link does nothing?",
+                "egit opens web pages (https) only; a link to another file in the repository isn't followed. A link to a heading (#…) scrolls to it.",
+            ),
+            (
+                "Too large?",
+                "Past 1 MiB a document isn't previewed: see it as the File instead.",
+            ),
+        ],
+    },
+    Topic {
         id: "show-file",
         group: Group::Changes,
         title: "File",

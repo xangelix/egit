@@ -77,7 +77,7 @@ pub(crate) async fn read_pictures(
     jobs::blocking(move || {
         let read = |source: Option<PictureSource>| {
             source.map(|source| {
-                let bytes = read_side(&git, &repository, &objects, &source)?;
+                let bytes = read_side(&git, &repository, &objects, &source, LARGEST_FILE)?;
                 decode(&bytes)
             })
         };
@@ -89,13 +89,20 @@ pub(crate) async fn read_pictures(
     .await
 }
 
-/// A side's bytes.
-fn read_side(
+/// A side's bytes, refused past `largest`.
+pub(crate) fn read_side(
     git: &Git,
     repository: &Repository,
     objects: &Objects,
     source: &PictureSource,
+    largest: u64,
 ) -> Result<Vec<u8>, String> {
+    let too_large = |size: u64| {
+        format!(
+            "It is {}: larger than egit shows.",
+            crate::format::size(size)
+        )
+    };
     match source {
         PictureSource::Blob(id) => {
             let mut bytes = None;
@@ -106,18 +113,20 @@ fn read_side(
                         .map(|object| object.data.to_vec());
                 })
                 .map_err(|error| error.to_string())?;
-            bytes.ok_or_else(|| format!("{id} isn't in this repository."))
+            let bytes = bytes.ok_or_else(|| format!("{id} isn't in this repository."))?;
+            let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+            if size > largest {
+                return Err(too_large(size));
+            }
+            Ok(bytes)
         }
         PictureSource::WorkTree(path) => {
             let file = repository.work_tree().join(path.to_path_lossy());
             let size = std::fs::metadata(&file)
                 .map_err(|error| error.to_string())?
                 .len();
-            if size > LARGEST_FILE {
-                return Err(format!(
-                    "It is {}: larger than egit shows.",
-                    crate::format::size(size)
-                ));
+            if size > largest {
+                return Err(too_large(size));
             }
             std::fs::read(&file).map_err(|error| error.to_string())
         }

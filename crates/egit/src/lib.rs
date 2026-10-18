@@ -35,6 +35,7 @@ mod history;
 mod ignoring;
 mod jobs;
 mod lfs;
+mod markdown;
 mod merge;
 mod output;
 mod pictures;
