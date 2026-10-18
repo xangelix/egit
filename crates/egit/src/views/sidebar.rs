@@ -229,6 +229,31 @@ pub(crate) struct Sidebar {
     sorting_for: Option<(u64, Option<Arc<ConfigSnapshot>>)>,
     requests: Vec<Request>,
     selected: Option<Picked>,
+    /// Whether the filter changed since the rows were made (so they may be made in a job).
+    filtered: bool,
+    /// Rows a job is making, and which making they were (only the latest's are taken).
+    making: Bind<(u64, Vec<Row>), Problem>,
+    generation: u64,
+}
+
+/// How many refs make filtering worth a job: fewer are narrowed within a frame.
+const ROWS_IN_A_JOB: usize = 5_000;
+
+/// A list as read (or why it couldn't be), owned.
+fn owned<T: ?Sized>(read: Result<&Arc<T>, &Problem>) -> Result<Arc<T>, String> {
+    read.map(Arc::clone).map_err(ToString::to_string)
+}
+
+/// What the rows are made from, owned, so a job can make them.
+struct RowsInput {
+    sorted: Arc<Sorted>,
+    query: String,
+    folded: HashSet<(Section, BString)>,
+    stashes: Option<Result<Arc<[Stash]>, String>>,
+    worktrees: Option<Result<Arc<[Worktree]>, String>>,
+    submodules: Option<Result<Arc<[Submodule]>, String>>,
+    /// The forge's requests' labels, when a remote is on a forge.
+    requests: Option<Vec<String>>,
 }
 
 impl Default for Sidebar {
@@ -246,6 +271,9 @@ impl Default for Sidebar {
             sorting_for: None,
             requests: Vec::new(),
             selected: None,
+            filtered: false,
+            making: Bind::new(true),
+            generation: 0,
         }
     }
 }
@@ -492,8 +520,14 @@ impl Sidebar {
         }
     }
 
-    /// Makes the rows again when what they show changed.
+    /// Makes the rows again when what they show changed (taking those a job made, unless
+    /// newer ones were made since).
     fn refresh(&mut self, refs: &Refs, lists: &Lists<'_>, forge: &RepoForge) {
+        if let Some((generation, rows)) = self.making.take_ok()
+            && generation == self.generation
+        {
+            self.rows = rows;
+        }
         let stashes = lists.stashes.and_then(Result::ok);
         let worktrees = lists.worktrees.and_then(Result::ok);
         let submodules = lists.submodules.and_then(Result::ok);
@@ -519,6 +553,11 @@ impl Sidebar {
         if current && !self.stale {
             return;
         }
+        // One job at a time: what is typed meanwhile is made once it lands (the latest only).
+        let in_a_job = self.filtered && self.sorted.refs.len() > ROWS_IN_A_JOB;
+        if in_a_job && self.making.is_pending() {
+            return;
+        }
         if self
             .made
             .as_ref()
@@ -540,7 +579,18 @@ impl Sidebar {
                 })
                 .collect();
         }
-        self.make(lists, forge);
+        let input = self.rows_input(lists, forge);
+        self.generation = self.generation.wrapping_add(1);
+        // Typing in the filter over many refs: the rows are made in a job, the last ones shown
+        // until they land (a frame or two), so no letter waits for them.
+        self.filtered = false;
+        if in_a_job {
+            let generation = self.generation;
+            self.making
+                .request(jobs::blocking(move || Ok((generation, Self::make_rows(&input)))));
+        } else {
+            self.rows = Self::make_rows(&input);
+        }
         self.made = Some(Made {
             sorted: Arc::clone(&self.sorted),
             stashes: stashes.cloned(),
@@ -553,12 +603,30 @@ impl Sidebar {
         self.stale = false;
     }
 
+    /// What the rows are made from now, owned (a job may make them).
+    fn rows_input(&self, lists: &Lists<'_>, forge: &RepoForge) -> RowsInput {
+        RowsInput {
+            sorted: Arc::clone(&self.sorted),
+            query: self.filter.text.trim().to_owned(),
+            folded: self.folded.clone(),
+            stashes: lists.stashes.map(owned),
+            worktrees: lists.worktrees.map(owned),
+            submodules: lists.submodules.map(owned),
+            requests: (!forge.repositories.is_empty()).then(|| {
+                self.requests
+                    .iter()
+                    .map(|request| request.label.clone())
+                    .collect()
+            }),
+        }
+    }
+
     /// The rows, each section's after its header, narrowed by the filter (which unfolds
     /// everything it matches in).
-    fn make(&mut self, lists: &Lists<'_>, forge: &RepoForge) {
-        let sorted = Arc::clone(&self.sorted);
+    fn make_rows(input: &RowsInput) -> Vec<Row> {
+        let sorted = &input.sorted;
         let refs = &sorted.refs;
-        let query = self.filter.text.trim();
+        let query = input.query.as_str();
         let needle =
             (!query.is_empty()).then(|| Needle::new(query.as_bytes(), !matches_case(query)));
         let matches = |text: &[u8]| {
@@ -568,10 +636,9 @@ impl Sidebar {
         };
         let filtering = needle.is_some();
         let folded = |section: Section, key: &[u8]| {
-            !filtering && self.folded.contains(&(section, BString::from(key)))
+            !filtering && input.folded.contains(&(section, BString::from(key)))
         };
-        let mut rows = std::mem::take(&mut self.rows);
-        rows.clear();
+        let mut rows = Vec::new();
         let of_kind = |kind: RefKind| {
             sorted
                 .order
@@ -589,8 +656,8 @@ impl Sidebar {
             (Section::Tags, RefKind::Tag, "No tags"),
         ] {
             if section == Section::Tags {
-                Self::remote_rows(&mut rows, &sorted, &matches, &folded);
-                self.request_rows(&mut rows, forge, &matches, &folded);
+                Self::remote_rows(&mut rows, sorted, &matches, &folded);
+                Self::request_rows(&mut rows, input.requests.as_deref(), &matches, &folded);
             }
             let count = of_kind(kind).count();
             rows.push(Row::Section { section, count });
@@ -613,8 +680,8 @@ impl Sidebar {
                     .map(|(_, index, reference)| (index, reference.short_name().as_bytes(), 0)),
             );
         }
-        Self::list_rows(&mut rows, lists, &matches, &folded, filtering);
-        self.rows = rows;
+        Self::list_rows(&mut rows, input, &matches, &folded, filtering);
+        rows
     }
 
     /// The remotes, each with its branches below.
@@ -684,21 +751,19 @@ impl Sidebar {
 
     /// The pull (or merge) requests, when a remote is on a forge.
     fn request_rows(
-        &self,
         rows: &mut Vec<Row>,
-        forge: &RepoForge,
+        requests: Option<&[String]>,
         matches: &dyn Fn(&[u8]) -> bool,
         folded: &dyn Fn(Section, &[u8]) -> bool,
     ) {
-        if forge.repositories.is_empty() {
+        let Some(requests) = requests else {
             return;
-        }
-        let shown: Vec<usize> = (0..self.requests.len())
-            .filter(|at| {
-                self.requests
-                    .get(*at)
-                    .is_some_and(|request| matches(request.label.as_bytes()))
-            })
+        };
+        let shown: Vec<usize> = requests
+            .iter()
+            .enumerate()
+            .filter(|(_, label)| matches(label.as_bytes()))
+            .map(|(at, _)| at)
             .collect();
         rows.push(Row::Section {
             section: Section::Requests,
@@ -716,13 +781,13 @@ impl Sidebar {
     /// The stashes, worktrees, and submodules (shown when there are any).
     fn list_rows(
         rows: &mut Vec<Row>,
-        lists: &Lists<'_>,
+        lists: &RowsInput,
         matches: &dyn Fn(&[u8]) -> bool,
         folded: &dyn Fn(Section, &[u8]) -> bool,
         filtering: bool,
     ) {
-        let stashes = lists.stashes.map(|read| {
-            read.map(|stashes| {
+        let stashes = lists.stashes.as_ref().map(|read| {
+            read.as_ref().map(|stashes| {
                 stashes
                     .iter()
                     .enumerate()
@@ -731,8 +796,8 @@ impl Sidebar {
                     .collect::<Vec<_>>()
             })
         });
-        let worktrees = lists.worktrees.map(|read| {
-            read.map(|worktrees| {
+        let worktrees = lists.worktrees.as_ref().map(|read| {
+            read.as_ref().map(|worktrees| {
                 worktrees
                     .iter()
                     .enumerate()
@@ -747,8 +812,8 @@ impl Sidebar {
                     .collect::<Vec<_>>()
             })
         });
-        let submodules = lists.submodules.map(|read| {
-            read.map(|submodules| {
+        let submodules = lists.submodules.as_ref().map(|read| {
+            read.as_ref().map(|submodules| {
                 submodules
                     .iter()
                     .enumerate()
@@ -757,8 +822,8 @@ impl Sidebar {
                     .collect::<Vec<_>>()
             })
         });
-        let has_submodules = lists.submodules.is_some_and(|read| {
-            read.is_err() || read.is_ok_and(|submodules| !submodules.is_empty())
+        let has_submodules = lists.submodules.as_ref().is_some_and(|read| {
+            read.is_err() || read.as_ref().is_ok_and(|submodules| !submodules.is_empty())
         });
         for (section, listed, none) in [
             (Section::Stashes, stashes, "No stashes"),
@@ -779,7 +844,7 @@ impl Sidebar {
             match listed {
                 None => rows.push(note("Reading…")),
                 Some(Err(problem)) => rows.push(Row::Note {
-                    text: problem.to_string(),
+                    text: problem.clone(),
                     warn: true,
                 }),
                 Some(Ok(found)) if found.is_empty() => {
@@ -905,10 +970,12 @@ fn header(ui: &mut Ui, view: &mut Sidebar) {
         if escaped && !view.filter.text.is_empty() {
             view.filter.text.clear();
             view.stale = true;
+            view.filtered = true;
             view.filter.to_top = true;
         }
         if field.changed() {
             view.stale = true;
+            view.filtered = true;
             view.filter.to_top = true;
         }
     });

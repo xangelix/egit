@@ -77,7 +77,7 @@ it.
   refs (50,000 branches in 100 folders, 30,000 of a remote's, 20,000 tags) on 1,000 commits:
   listed 280 ms after opening (its longest frame meanwhile 5.6 ms: they are sorted in a job),
   scrolled at 0.7–1.1 ms p99, the tags unfolded in a frame of 1.2 ms, each letter typed in the
-  filter 5.6 ms at most; then the command palette over its 50,001 branches: opened in a frame
+  filter 0.6 ms at most (the rows made in a job, landing 3–5 ms after the last letter); then the command palette over its 50,001 branches: opened in a frame
   of 2.8 ms, each letter typed 4.1 ms at most; peak 179 MB.
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
@@ -1037,7 +1037,9 @@ writes paths), never `OsStrExt`.
     double click switches, its menu is its badge's. The refs are sorted (by kind, then their
     `/`-parts naturally: `v2.9` before `v2.10`, either case alike) in a job, once a read of the
     refs or when the remotes change; the rows are made again only when what they show changed
-    (the sorted refs, a list read again, the forge's requests, the filter, a fold) and drawn
+    (the sorted refs, a list read again, the forge's requests, the filter, a fold; from owned
+    input, `RowsInput`: typing in the filter over more than 5,000 refs makes them in a job, one
+    at a time, the last rows shown until the latest land) and drawn
     with `show_rows`, their text painted.
     `views/reflog.rs` — `ReflogView`, a ref's reflog in the commit table's place (the top
     bar's Reflog: `HEAD`'s; a branch badge's "Show <name>'s reflog"): read in a job (10,000

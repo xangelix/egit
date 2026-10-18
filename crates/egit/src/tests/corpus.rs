@@ -1216,6 +1216,35 @@ fn palette_on_many_branches(harness: &mut Harness<'_, EgitApp>) -> Duration {
     opened.max(typing)
 }
 
+/// The sidebar's filter typed a letter at a time (each narrowing every list again, in a job),
+/// then the rows it narrowed to awaited; returns the typing's 99th percentile frame.
+fn filter_many_refs(harness: &mut Harness<'_, EgitApp>) -> Duration {
+    harness
+        .get_by_role_and_label(Role::TextInput, "Filter")
+        .focus();
+    harness.run_steps(2);
+    let typed = "feature-499";
+    let typing = measure_frames(harness, typed.len(), |harness, at| {
+        let letter = typed.get(at..=at).unwrap_or_default();
+        harness.event(egui::Event::Text(letter.to_owned()));
+    });
+    let worst = report("typing in the filter", typing);
+    let matching = (0..SIDEBAR_BRANCHES)
+        .filter(|index| format!("feature-{index}").contains(typed))
+        .count();
+    // The rows land a frame or a few later.
+    let started = Instant::now();
+    let counted = format!("Branches: {matching}");
+    while harness.query_by_label(&counted).is_none() {
+        assert!(started.elapsed() < Duration::from_secs(2), "{counted} never shown");
+        harness.step();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    println!("  narrowed {:?} after the last letter", started.elapsed());
+    snapshot(harness, "sidebar-filtered");
+    worst
+}
+
 #[test]
 #[ignore = "a release-build measurement: see the module's documentation"]
 fn corpus_sidebar() {
@@ -1298,27 +1327,7 @@ fn corpus_sidebar() {
     ));
     snapshot(&mut harness, "sidebar");
 
-    // The filter typed a letter at a time: each keystroke narrows every list again.
-    harness
-        .get_by_role_and_label(Role::TextInput, "Filter")
-        .focus();
-    harness.run_steps(2);
-    let typed = "feature-499";
-    let typing = measure_frames(&mut harness, typed.len(), |harness, at| {
-        let letter = typed.get(at..=at).unwrap_or_default();
-        harness.event(egui::Event::Text(letter.to_owned()));
-    });
-    worst = worst.max(report("typing in the filter", typing));
-    harness.run_steps(2);
-    let matching = (0..SIDEBAR_BRANCHES)
-        .filter(|index| format!("feature-{index}").contains(typed))
-        .count();
-    assert!(
-        harness
-            .query_by_label(&format!("Branches: {matching}"))
-            .is_some()
-    );
-    snapshot(&mut harness, "sidebar-filtered");
+    worst = worst.max(filter_many_refs(&mut harness));
 
     worst = worst.max(palette_on_many_branches(&mut harness));
     println!("  peak memory {:.0} MB", peak_memory_mb());
