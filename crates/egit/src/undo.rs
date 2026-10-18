@@ -12,10 +12,10 @@ use std::sync::Arc;
 
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
-    CancelToken, Forwarded, Git, GitError, Integrated, ObjectId, Pulled, Repository, ResetMode,
-    Stash, SwitchError, SwitchTo, create_branch, create_ref, delete_branch, delete_ref,
-    move_branch, ref_target, rename_branch, reset, stash_apply, stash_drop, stash_push,
-    stash_store, stashes, switch,
+    CancelToken, DiscardError, DiscardSide, DiscardedFile, Forwarded, Git, GitError, Integrated,
+    ObjectId, Pulled, Repository, ResetMode, Stash, SwitchError, SwitchTo, create_branch,
+    create_ref, delete_branch, delete_ref, move_branch, put_back, ref_target, rename_branch, reset,
+    stash_apply, stash_drop, stash_push, stash_store, stashes, switch,
 };
 use parking_lot::Mutex;
 
@@ -113,6 +113,8 @@ pub(crate) enum Change {
     },
     /// The stash `id` dropped.
     StashDropped { id: ObjectId, message: String },
+    /// Changes not staged discarded: each file as it was, and as the discard left it.
+    Discarded(Vec<DiscardedFile>),
 }
 
 /// An action that can be taken back: what it was, in words, and its changes, in the order made.
@@ -372,6 +374,21 @@ fn reverse(
         Change::StashDropped { id, message } => {
             stash_store(git, repository, *id, message, cancel).map_err(|error| failed(&error))
         }
+        Change::Discarded(files) => {
+            put_back(git, repository, files, DiscardSide::Before, cancel).map_err(discard_halt)
+        }
+    }
+}
+
+/// Why discarded files couldn't be put back (or discarded again).
+fn discard_halt(error: DiscardError) -> Halt {
+    match error {
+        DiscardError::Stale(path) => moved_on(format!("{} changed since.", path.to_str_lossy())),
+        DiscardError::Git(error) => failed(&error),
+        error => Halt {
+            moved_on: false,
+            detail: format!("{error}."),
+        },
     }
 }
 
@@ -449,6 +466,9 @@ fn redo(
                     })?,
                 _ => return Err(moved_on("The stash isn't the latest any more.")),
             }
+        }
+        Change::Discarded(files) => {
+            put_back(git, repository, files, DiscardSide::After, cancel).map_err(discard_halt)?;
         }
     }
     Ok(change.clone())
@@ -649,6 +669,13 @@ pub(crate) fn noted(
                 mode,
             });
         }
+        Task::Discard(discard) => {
+            let Outcome::Discarded(Some(files)) = outcome else {
+                return None;
+            };
+            what = format!("discarding {}", discard.words());
+            changes.push(Change::Discarded(files.clone()));
+        }
         task => {
             let (words, change) = noted_ref(git, repository, task, &before)?;
             what = words;
@@ -756,6 +783,7 @@ const fn went_through(outcome: &Outcome) -> bool {
             | Outcome::Forwarded(Forwarded::Moved)
             | Outcome::Stashed(true)
             | Outcome::Signed { .. }
+            | Outcome::Discarded(Some(_))
     )
 }
 

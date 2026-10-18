@@ -191,7 +191,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "stage",
         group: Group::Everyday,
         title: "Staging a file",
-        on: &["Stage *"],
+        on: &["Stage *", "Stage"],
         what: "The index (the staging area) is the next commit being prepared. Staging a file \
                copies its content as the work tree has it now into the index: later edits \
                need staging again. A deleted file's deletion is staged; a new one starts \
@@ -220,7 +220,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "unstage",
         group: Group::Everyday,
         title: "Unstaging a file",
-        on: &["Unstage *"],
+        on: &["Unstage *", "Unstage"],
         what: "Puts HEAD's version of the file back in the index, so the next commit leaves \
                it as it was. Your edits stay in the work tree, now listed as not staged. A \
                new file goes back to untracked; a staged deletion is undone in the index, \
@@ -333,7 +333,12 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "stage-folder",
         group: Group::Everyday,
         title: "Staging a folder",
-        on: &["Stage the folder *", "Unstage the folder *"],
+        on: &[
+            "Stage the folder *",
+            "Unstage the folder *",
+            "Stage the folder",
+            "Unstage the folder",
+        ],
         what: "In the tree of folders, stages or unstages every file the folder holds in that \
                list, however deep, in one go. Folders themselves aren't tracked by git: only \
                files are, so an empty folder never shows.",
@@ -342,6 +347,104 @@ pub(super) const TOPICS: &[Topic] = &[
             "An empty folder to keep?",
             "git can't track it: put a file in it (often named .gitkeep).",
         )],
+    },
+    Topic {
+        id: "discard-changes",
+        group: Group::Everyday,
+        title: "Discarding changes",
+        on: &[
+            "Discard changes…",
+            "Discard file…",
+            "Discard the folder's changes…",
+            "Discard all…",
+            "Discard",
+        ],
+        what: "Throws away changes not staged: a tracked file goes back to what the index holds \
+               (what is staged, or the last commit where nothing is), and an untracked file is \
+               deleted. What is staged stays: changes go down one step at a time, staged to \
+               not staged (Unstage), not staged to gone (Discard). egit asks first, and keeps \
+               each file's bytes before and after as blobs nothing refers to, so Undo puts \
+               them back while the tab is open (unless a discard names over 1,000 files, or one \
+               over 64 MiB).",
+        git: "git restore --worktree (tracked files); git clean --force (untracked ones); git \
+              hash-object -w --no-filters (kept for Undo)",
+        cases: &[
+            (
+                "Throw staged changes away too?",
+                "Unstage them first (they come back as not staged), then discard them.",
+            ),
+            (
+                "Disabled for a file in conflict?",
+                "Resolve it in the merge editor, or abort the operation.",
+            ),
+            (
+                "Disabled for a submodule?",
+                "Its page updates it to the commit recorded here.",
+            ),
+            (
+                "An untracked folder that is a repository of its own?",
+                "egit won't delete it: delete its folder yourself.",
+            ),
+            (
+                "Undo says a file changed since?",
+                "Something wrote to it after the discard: Undo won't overwrite that.",
+            ),
+            (
+                "A file added with git add -N (intent to add)?",
+                "Its index entry is empty, so discarding leaves the file empty.",
+            ),
+        ],
+    },
+    Topic {
+        id: "discard-lines",
+        group: Group::Everyday,
+        title: "Discarding lines or a hunk",
+        on: &["Discard lines", "Discard hunk"],
+        what: "Puts the selected lines back as the index has them, in the work tree: removed \
+               lines return and added ones go; every other change stays. egit rebuilds the \
+               file from the index's copy with every change but those picked, and writes it \
+               through the file's filters (line endings, LFS) as git checks a file out. It \
+               doesn't ask first: Undo puts the lines back.",
+        git: "git cat-file --filters --path=<path> <blob>; git hash-object -w --no-filters (kept \
+              for Undo)",
+        cases: &[
+            (
+                "Refused as stale?",
+                "The file or the index changed since the diff was read: look at it again and select anew.",
+            ),
+            (
+                "Disabled?",
+                "No changed line is selected, the diff is side by side (lines are picked in the unified one), or a task is running.",
+            ),
+            (
+                "A deleted file?",
+                "Discarding some of its removed lines brings the file back holding just those.",
+            ),
+            (
+                "Two changes in one hunk?",
+                "Discard hunk takes both: select lines to take one.",
+            ),
+        ],
+    },
+    Topic {
+        id: "show-changes",
+        group: Group::Everyday,
+        title: "Show changes",
+        on: &["Show changes"],
+        what: "Opens the file's diff in place of the commit table, as clicking its row does: \
+               what isn't staged against the index, or what is staged against HEAD.",
+        git: "git diff -- <path>, or git diff --cached -- <path>",
+        cases: &[],
+    },
+    Topic {
+        id: "copy-path",
+        group: Group::Everyday,
+        title: "Copy path",
+        on: &["Copy path"],
+        what: "Copies the file's (or folder's) path, from the repository's top, as git writes it \
+               (forward slashes).",
+        git: "",
+        cases: &[],
     },
     Topic {
         id: "not-staged",
@@ -356,7 +459,7 @@ pub(super) const TOPICS: &[Topic] = &[
         cases: &[
             (
                 "Throw a file's changes away?",
-                "egit has no discard for one file: stash the changes, or git restore <path> in a terminal.",
+                "Right-click it: Discard changes… (asked first), or discard lines or a hunk in its diff. Undo brings them back.",
             ),
             (
                 "Listed but you changed nothing?",

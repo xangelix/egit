@@ -18,12 +18,14 @@ use egit_git::{
 use egui::{Align, Color32, Frame, Key, Label, Layout, Margin, Modifiers, RichText, Ui};
 use egui_async::Bind;
 
+use super::dialogs::Dialog;
 use super::history::{ID_DIGITS, Shared};
 use super::merge::{self, MergeView};
 use crate::app::Action;
 use crate::diff::{
     DiffDocument, LfsChange, SplitDiff, read_diff, read_uncommitted_diff, split_diff,
 };
+use crate::discarding::{Discard, DiscardLines};
 use crate::format;
 use crate::grid::TextGrid;
 use crate::history::{
@@ -33,6 +35,7 @@ use crate::pictures::{Picture, PictureSource, Pictures, is_image, read_pictures}
 use crate::problem::Problem;
 use crate::staging::{LinesRequest, StageRequest};
 use crate::tables::change_name;
+use crate::tasks::Task;
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
@@ -148,6 +151,8 @@ pub(super) struct FileView {
     moved: Bind<Arc<crate::submodules::Moved>, Problem>,
     /// What its bar asked to see of the file instead: its blame, or its history.
     pub(super) wanted: Option<FileWanted>,
+    /// A dialog its bar asked for: whether to discard the file.
+    pub(super) asked: Option<Dialog>,
 }
 
 /// Another way of looking at a file, asked from its bar.
@@ -221,6 +226,7 @@ impl FileView {
             textures: None,
             moved: Bind::new(true),
             wanted: None,
+            asked: None,
         };
         match &file.source {
             // A conflict's diff isn't one egit reads: it is merged instead.
@@ -636,7 +642,8 @@ const fn side_name(which: Uncommitted) -> &'static str {
 }
 
 /// A work tree's file's second bar: staging or unstaging it whole, or the lines or hunks
-/// selected in its diff.
+/// selected in its diff; changes not staged are discarded the same ways (the whole file once
+/// asked).
 fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut Vec<Action>) {
     let Some(work) = file.work().cloned() else {
         return;
@@ -650,8 +657,12 @@ fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut
     let mut hunks = picked(file, true);
     let has_lines = lines.is_some();
     let mut request = None;
+    let mut discard = None;
+    // Changes not staged are demoted by discarding them, as staged ones are by unstaging.
+    let discards = direction == Direction::Stage && !work.conflict;
+    let can_discard = discard_refusal(shared, &work);
     widgets::bar(ui, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let whole = widgets::secondary(ui, true, &format!("{verb} file"));
             // A file in conflict: staging it is what resolves it.
             if work.conflict {
@@ -673,8 +684,41 @@ fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut
             if widgets::secondary(ui, hunks.is_some(), &format!("{verb} hunk")).clicked() {
                 request = hunks.take().map(|picked| lines_request(&work, picked));
             }
+            if discards {
+                widgets::toolbar_separator(ui);
+                let button = |ui: &mut Ui, enabled: bool, words: &str| {
+                    let allowed = enabled && can_discard.is_ok();
+                    let response = widgets::secondary(ui, allowed, words);
+                    match can_discard {
+                        Err(why) if enabled => response.on_disabled_hover_text(why),
+                        _ => response,
+                    }
+                    .clicked()
+                };
+                if button(ui, has_lines, "Discard lines") {
+                    discard = lines
+                        .take()
+                        .map(|picked| discard_lines(&work, picked, false));
+                }
+                if button(ui, hunks.is_some(), "Discard hunk") {
+                    discard = hunks
+                        .take()
+                        .map(|picked| discard_lines(&work, picked, true));
+                }
+                if button(ui, true, "Discard file…") {
+                    let path = vec![work.path.clone()];
+                    let (tracked, untracked) = if work.which == Uncommitted::Untracked {
+                        (Vec::new(), path)
+                    } else {
+                        (path, Vec::new())
+                    };
+                    file.asked = Some(Dialog::Discard(Discard::Files { tracked, untracked }));
+                }
+            }
             let hint = if file.split && file.shown == Shown::Diff {
                 "Lines are picked in the unified diff (side by side off).".to_owned()
+            } else if !has_lines && discards {
+                "Select lines in the diff to stage or discard only those.".to_owned()
             } else if !has_lines {
                 format!(
                     "Select lines in the diff to {} only those.",
@@ -692,6 +736,37 @@ fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut
         file.diff_grid.clear_selection();
         actions.push(Action::Stage(shared.id, request));
     }
+    if let Some(discard) = discard {
+        file.diff_grid.clear_selection();
+        actions.push(Action::Task(shared.id, Task::Discard(discard)));
+    }
+}
+
+/// Why `work`'s changes not staged can't be discarded now: a task is running (discarding is
+/// one), or it is a submodule or a link (whose lines aren't a file's).
+fn discard_refusal(shared: &Shared<'_>, work: &WorkFile) -> Result<(), &'static str> {
+    if shared.busy {
+        return Err("Another task is running");
+    }
+    match work.entry.map(|entry| entry.mode) {
+        Some(0o160_000) => Err("A submodule: update it to the commit recorded from its page"),
+        _ => Ok(()),
+    }
+}
+
+/// Discarding `picked` lines (or, `hunks`, whole hunks) of `work`'s diff.
+fn discard_lines(
+    work: &WorkFile,
+    (diff, picked): (Arc<DiffDocument>, Vec<bool>),
+    hunks: bool,
+) -> Discard {
+    Discard::Lines(Box::new(DiscardLines {
+        path: work.path.clone(),
+        diff: Arc::new(diff.file_diff()),
+        picked,
+        entry: work.entry,
+        hunks,
+    }))
 }
 
 /// The lines of the shown diff the selection picks (with `hunks`, all those of the hunks it

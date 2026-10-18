@@ -19,6 +19,7 @@ use super::history::ID_DIGITS;
 use crate::theme::Weighted as _;
 
 use crate::app::Action;
+use crate::discarding::Discard;
 use crate::forge::{request_noun, request_number};
 use crate::problem::Problem;
 use crate::repo::RepoId;
@@ -504,7 +505,26 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
                 pushed,
             },
         ) => signed_text(*made, *asked, *pushed),
+        (Task::Discard(discard), Outcome::Discarded(kept)) => {
+            discarded_text(discard, kept.is_some())
+        }
         (task, _) => worktree_text(task, home).unwrap_or_else(|| done_text(task)),
+    }
+}
+
+/// What a discard did, in words, and whether Undo can bring it back.
+fn discarded_text(discard: &Discard, kept: bool) -> String {
+    let verb = match discard {
+        Discard::Files { tracked, .. } if tracked.is_empty() => "Deleted",
+        _ => "Discarded",
+    };
+    let words = discard.words();
+    if kept {
+        format!("{verb} {words}.")
+    } else {
+        format!(
+            "{verb} {words}: too many files, or one too large, to keep, so Undo can't bring them back."
+        )
     }
 }
 

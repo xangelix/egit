@@ -22,6 +22,7 @@ mod blame;
 mod commands;
 mod desktop;
 mod diff;
+mod discarding;
 mod file_tree;
 mod fonts;
 mod forge;

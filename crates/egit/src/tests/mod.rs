@@ -5,6 +5,7 @@ mod avatars;
 mod bisect;
 mod columns;
 mod corpus;
+mod discard;
 mod dragging;
 mod help;
 mod lfs;

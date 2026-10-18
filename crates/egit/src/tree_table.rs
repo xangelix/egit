@@ -55,6 +55,17 @@ pub(crate) struct TreeShown<E> {
     pub(crate) opened: Option<usize>,
     /// What a list's own part of a row asked.
     pub(crate) asked: Option<E>,
+    /// A row right-clicked, for its list's menu.
+    pub(crate) menu: Option<TreeMenu>,
+}
+
+/// A row right-clicked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TreeMenu {
+    /// A file: its entry.
+    File(usize),
+    /// A folder: its path, and the entries of every file it holds.
+    Folder { path: Vec<u8>, entries: Vec<usize> },
 }
 
 /// A list of files shown as a tree, between frames.
@@ -137,6 +148,7 @@ impl<S: TreeSource> TreeTable<S> {
         let mut shown = TreeShown {
             opened: None,
             asked: None,
+            menu: None,
         };
         self.sync(source);
         let Some((files, tree)) = self.shown.clone() else {
@@ -200,6 +212,26 @@ impl<S: TreeSource> TreeTable<S> {
                     } else {
                         shown.opened = Some(entry_of(node));
                     }
+                }
+                let right = output
+                    .events
+                    .iter()
+                    .find(|event| event.kind == RowEventKind::SecondaryClicked);
+                if let Some(right) = right
+                    && let Some(&index) = self.rows.get(right.row_index)
+                    && let Some(node) = tree.node(index)
+                {
+                    shown.menu = Some(if node.is_folder() {
+                        TreeMenu::Folder {
+                            path: node.folder_path(files.path(entry_of(node))).to_vec(),
+                            entries: tree
+                                .files_in(index)
+                                .filter_map(|entry| usize::try_from(entry).ok())
+                                .collect(),
+                        }
+                    } else {
+                        TreeMenu::File(entry_of(node))
+                    });
                 }
             }
             Err(error) => {

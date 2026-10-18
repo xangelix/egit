@@ -19,6 +19,7 @@ use egui::{Id, Key, Modal, RichText, Ui};
 
 use super::history::ID_DIGITS;
 use super::tasks::TaskPane;
+use crate::discarding::Discard;
 use crate::tasks::{Task, WorktreeSource};
 use crate::theme::Palette;
 use crate::widgets::{self, muted};
@@ -94,6 +95,8 @@ pub(crate) enum Dialog {
     Stash { message: String, untracked: bool },
     /// Whether to drop a stash.
     DropStash(Stash),
+    /// Whether to throw whole files' changes not staged away (untracked files deleted).
+    Discard(Discard),
     /// A remote to add: its name and address, and whether to fetch from it at once.
     AddRemote {
         name: String,
@@ -228,6 +231,7 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
             "Drop",
             || Task::DropStash(stash.clone()),
         ),
+        Dialog::Discard(discard) => discard_files(ui, discard),
         Dialog::AddRemote { name, url, fetch } => add_remote(ui, pane, name, url, fetch),
         Dialog::EditRemote { remote, url, push } => edit_remote(ui, remote, url, push),
         Dialog::RenameRemote { old, name } => rename_remote(ui, pane, old, name),
@@ -247,6 +251,65 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
         Dialog::RemoveWorktree { path, changes } => remove_worktree(ui, pane, path, *changes),
         Dialog::LockWorktree { path, reason } => lock_worktree(ui, pane, path, reason),
     }
+}
+
+/// Whether to discard whole files: what each kind of file becomes, and how long Undo can bring
+/// them back.
+fn discard_files(ui: &mut Ui, discard: &Discard) -> Option<Answer> {
+    let Discard::Files { tracked, untracked } = discard else {
+        return Some(Answer::Closed);
+    };
+    let deleting = tracked.is_empty() && untracked.len() == 1;
+    let question = if deleting {
+        format!("Delete {}?", discard.words())
+    } else {
+        format!("Discard {}?", discard.words())
+    };
+    let back = match tracked.len() {
+        0 => None,
+        1 => Some(
+            "its changes not staged are lost: it goes back to what is staged (or, with \
+                   nothing staged, to the last commit)"
+                .to_owned(),
+        ),
+        files => Some(format!(
+            "{files} files go back to what is staged (or, with nothing staged, to the last \
+             commit)"
+        )),
+    };
+    let gone = match untracked.len() {
+        0 => None,
+        1 if deleting => Some("it isn't tracked, so all of it goes".to_owned()),
+        1 => Some("an untracked file is deleted".to_owned()),
+        files => Some(format!("{files} untracked files are deleted")),
+    };
+    let what = back
+        .into_iter()
+        .chain(gone)
+        .collect::<Vec<_>>()
+        .join(", and ");
+    let megabytes = egit_git::KEEP_BYTES >> 20;
+    let undo = if discard.files() == 1 {
+        format!("Undo brings it back while this tab is open (unless it is over {megabytes} MiB).")
+    } else {
+        format!(
+            "Undo brings them back while this tab is open (unless there are over {} files, or \
+             one is over {megabytes} MiB).",
+            egit_git::KEEP_FILES
+        )
+    };
+    let said = format!(
+        "{}{}. {undo}",
+        what.get(..1).unwrap_or_default().to_uppercase(),
+        what.get(1..).unwrap_or_default(),
+    );
+    confirm_danger(
+        ui,
+        &question,
+        &said,
+        if deleting { "Delete" } else { "Discard" },
+        || Task::Discard(discard.clone()),
+    )
 }
 
 /// A dialog's title.

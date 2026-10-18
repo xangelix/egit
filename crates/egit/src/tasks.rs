@@ -133,6 +133,8 @@ pub(crate) enum Task {
     SignCommits {
         commits: Vec<ObjectId>,
     },
+    /// Throw changes not staged away: whole files, or some lines of one.
+    Discard(crate::discarding::Discard),
     /// Reset the current branch to a commit.
     Reset(ObjectId, ResetMode),
     /// Tag a commit: annotated with a message, or lightweight.
@@ -404,6 +406,7 @@ impl Task {
             Self::SquashIntoParent(_) => "Squashing",
             Self::Reword { .. } => "Rewording",
             Self::SignCommits { .. } => "Signing the commits",
+            Self::Discard(_) => "Discarding",
             Self::CherryPick(_) => "Cherry-picking",
             Self::Revert(_) => "Reverting",
             Self::Reset(..) => "Resetting",
@@ -487,6 +490,9 @@ pub(crate) enum Outcome {
         asked: usize,
         pushed: bool,
     },
+    /// Changes discarded: each file as it was and as it is now, kept for Undo (`None`: too
+    /// many, or too large, to keep).
+    Discarded(Option<Vec<egit_git::DiscardedFile>>),
 }
 
 /// What background fetches brought the current branch's upstream, since the user last looked.
@@ -798,6 +804,7 @@ fn run(
         | Task::SquashIntoParent(_)
         | Task::Reword { .. } => rewrite(git, repository, task, cancel),
         Task::SignCommits { commits } => sign(git, repository, commits, progress, cancel),
+        Task::Discard(discard) => crate::discarding::run(git, repository, discard, cancel),
         Task::Switch(_)
         | Task::StashAndSwitch(_)
         | Task::CreateBranch { .. }

@@ -888,7 +888,7 @@ fn the_work_tree_is_followed_as_files_change_outside_egit() {
 }
 
 /// Drags across the open file's diff from `from` to `to` (each a line and a cell).
-fn drag(harness: &mut Harness<'_, EgitApp>, from: (u32, u32), to: (u32, u32)) {
+pub(super) fn drag(harness: &mut Harness<'_, EgitApp>, from: (u32, u32), to: (u32, u32)) {
     let spot = |harness: &mut Harness<'_, EgitApp>, (line, cell): (u32, u32)| {
         harness.state_mut().state.repos[0]
             .history_view

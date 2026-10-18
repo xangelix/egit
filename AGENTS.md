@@ -935,7 +935,14 @@ writes paths), never `OsStrExt`.
     back on its list).
     `SignCommits` signs commits picked together (`plan_signing`, then `sign_commits`, how many
     made in the `Progress`; `Outcome::Signed`: made, asked for, whether any was pushed),
-    undone as any task moving `HEAD` is.
+    undone as any task moving `HEAD` is. `Discard` throws changes not staged away
+    (`discarding.rs`; `Outcome::Discarded`, the files kept for Undo, or none).
+  - `discarding.rs` — `Discard`: whole files (tracked back to what the index holds, untracked
+    deleted) or `DiscardLines` (a path, its diff shared, the lines picked, the index's entry,
+    whether whole hunks), its words ("a hunk of src/main.rs", "the changes to 3 files"), and
+    `run` (`discard_files` or `discard_lines`); `refusal` (a conflict, a submodule, an
+    untracked repository of its own aren't discarded here) and `of_entries` (every entry that
+    can be, from a list).
   - `output.rs` — a tab's output: `Run`s (a task or commit each: its title, `Transcript`, the
     hooks it was expected to run (`Task::hooks`, `commit_hooks`, among those installed), its
     start and end (`Ended`: done, failed, cancelled), its `CancelToken` while it runs), the last
@@ -949,7 +956,9 @@ writes paths), never `OsStrExt`.
     the `ResetMode` that moves it back and forth: soft for a commit, a soft or mixed reset's
     own, keep otherwise), a switch (`Place`: a branch, or a commit detached), a branch made,
     removed, renamed, or moved (a fast-forward of another), a tag made or removed, changes
-    stashed (only a stash the action made) or a stash dropped. Each change is checked before
+    stashed (only a stash the action made) or a stash dropped, or changes not staged discarded
+    (`Discarded`: each file as kept before and after, put back by `put_back`). Each change is
+    checked before
     it is reversed (`HEAD` where the action left it, a branch or tag where it was, the stash
     still the latest), last first; done again first first, a stash pushed again noted anew.
     `Journal`: up to `KEPT` (100) to undo and those undone, to redo, until a new action; jobs
@@ -1112,7 +1121,10 @@ writes paths), never `OsStrExt`.
     (`read_move`), in place of git's "Subproject commit" lines. A `FileView` of a work tree's
     file (`WorkFile`: a path, which `Uncommitted` changes, the index entry its diff was read
     against) reads its diff again whenever the status changes, and has a second bar: stage
-    or unstage the file, the lines selected in its unified diff, or their hunks. A file in
+    or unstage the file, the lines selected in its unified diff, or their hunks; for changes
+    not staged, after a line, discard them the same ways (lines and hunks at once, the file
+    after `Dialog::Discard` asks; disabled, saying why, while a task runs or for a
+    submodule). A file in
     conflict shows `views/merge.rs`'s `MergeView` instead (and "Stage file", resolving it as
     the work tree has it), reading the conflict again when the status changes (its choices kept
     while its sides are the same), then, resolved, its staged changes. `MergeView`: "Conflict 2
@@ -1132,7 +1144,11 @@ writes paths), never `OsStrExt`.
     into the status, made once per read: `ListFiles`, shared with the job arranging its tree)
     with a button for all and one per file (named "Stage <path>"), or as a tree of their
     folders (the first list's header choosing; each folder a button too, "Stage the folder
-    src", every file it holds), a file clicked opened in the `FileView`; then the commit form: summary
+    src", every file it holds), a file clicked opened in the `FileView`, a right click opening
+    its row's menu (an `egui::Popup` at the pointer, over the list's files as they were then:
+    stage or unstage it or the folder, "Discard changes…" or "Discard the folder's changes…",
+    Show changes, Copy path; "Discard all…"; each item's paths gathered only when chosen); then
+    the commit form: summary
     (warned past 72 characters), description (⌘Enter commits), co-authors (chips with their
     avatars, each removable; "Co-author" opens a picker: a field typed into at once, the
     recent authors (`recent_authors` of the last 5,000 commits, read when it first opens; the
@@ -1178,7 +1194,8 @@ writes paths), never `OsStrExt`.
     add (a name git takes and none here has, "origin" offered for the first; its address;
     "Fetch from it now"), its addresses (fetching, and pushing: empty is the same), its new
     name, its removal; a worktree's removal (again, "Remove anyway", when it has changes) and
-    lock (why).
+    lock (why). Discarding whole files: what each becomes (back to what is staged, or deleted
+    when untracked: "Delete todo.md?") and how long Undo can bring them back.
     `views/actions.rs` — the menus' pieces, which every menu is built from: `item` (an
     icon in a column of its own, then its words, which name it; disabled, why on hover),
     `danger_item` (what loses work, in the danger colour), `shortcut_item` (its keys at its
@@ -1571,6 +1588,9 @@ writes paths), never `OsStrExt`.
     lines show as they come, the output closing after it went well; refused (the output kept
     open with its words); skipped; cancelled part-way from the output's bar (no commit); and
     the Overview's Hooks card lists it.
+    `src/tests/discard.rs` discards a hunk from a diff (nothing asked) and undoes it, a file
+    from its row's menu (asked first), an untracked file (deleted, then brought back by Undo),
+    and everything not staged from a row's menu.
     `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
     current one onto another (rebased), between the sidebar and the graph either way.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the

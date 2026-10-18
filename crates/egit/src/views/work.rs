@@ -23,6 +23,7 @@ use egui_table_kit::state::TableState;
 use egui_table_kit::table::TableKit;
 
 use super::file::WorkFile;
+use crate::discarding::Discard;
 use crate::format::count;
 use crate::history::{Objects, read_message};
 use crate::preferences::Preferences;
@@ -31,7 +32,7 @@ use crate::repo::RepoId;
 use crate::staging::StageRequest;
 use crate::tables::elided_start;
 use crate::theme::{Palette, icon};
-use crate::tree_table::{TreeRow, TreeSource, TreeTable};
+use crate::tree_table::{TreeMenu, TreeRow, TreeSource, TreeTable};
 use crate::widgets::{self, muted};
 
 /// What the user asked of the panel.
@@ -49,6 +50,8 @@ pub(super) enum WorkEvent {
     ShowOutput,
     /// Show lists of files so (a list, or a tree).
     Preferences(Preferences),
+    /// Ask whether to discard whole files' changes not staged.
+    AskDiscard(Discard),
 }
 
 /// What the commit form needs of the repository.
@@ -169,12 +172,24 @@ pub(super) struct WorkPanel {
     form: CommitForm,
 }
 
-/// One of the lists: its files, its table's state, and the same files as a tree.
+/// One of the lists: its files, its table's state, and the same files as a tree; and the menu
+/// of a row right-clicked.
 #[derive(Debug)]
 struct List {
     files: Arc<ListFiles>,
     state: TableState,
     tree: TreeTable<ListFiles>,
+    menu: Option<RowMenu>,
+    /// Whether the menu opens this frame.
+    open_menu: bool,
+}
+
+/// A row's menu: the list's files when it opened (a status read since doesn't change what it
+/// names), and the file or folder right-clicked.
+#[derive(Debug)]
+struct RowMenu {
+    files: Arc<ListFiles>,
+    target: TreeMenu,
 }
 
 /// A list's files: entries of a status (indices into it), shared with the job arranging them
@@ -220,6 +235,8 @@ impl List {
             }),
             tree: TreeTable::new(format!("{id}-tree")),
             state: TableState::new(id, 0),
+            menu: None,
+            open_menu: false,
         }
     }
 
@@ -254,6 +271,7 @@ impl WorkPanel {
         status: &Arc<Status>,
         staging: &mut Bind<(), Problem>,
         commit: CommitSide<'_>,
+        task: bool,
     ) -> Option<WorkEvent> {
         if !self
             .made_from
@@ -288,7 +306,7 @@ impl WorkPanel {
         ] {
             // Each table's scroll area is named by where it is drawn: apart, then.
             let found = ui
-                .push_id(side, |ui| list_ui(ui, list, side, busy, height))
+                .push_id(side, |ui| list_ui(ui, list, side, (busy, task), height))
                 .inner;
             if found.is_some() {
                 event = found;
@@ -791,8 +809,15 @@ fn paths(entry: StatusEntry<'_>, side: Side) -> Vec<BString> {
 }
 
 /// One list: its heading, its button for all (and, on the first, the choice of a list or a
-/// tree), and its files as either.
-fn list_ui(ui: &mut Ui, list: &mut List, side: Side, busy: bool, height: f32) -> Option<WorkEvent> {
+/// tree), and its files as either, a row's menu on a right click; `busy` while staging or
+/// committing, `task` while a task runs (discarding is one).
+fn list_ui(
+    ui: &mut Ui,
+    list: &mut List,
+    side: Side,
+    (busy, task): (bool, bool),
+    height: f32,
+) -> Option<WorkEvent> {
     let mut event = None;
     let (title, all) = match side {
         Side::Unstaged => ("Not staged", "Stage all"),
@@ -842,7 +867,117 @@ fn list_ui(ui: &mut Ui, list: &mut List, side: Side, busy: bool, height: f32) ->
     } else {
         table_ui(ui, list, &files, busy, height)
     };
-    asked.or(event)
+    let chosen = row_menu(ui, list, side, (busy, task));
+    chosen.or(asked).or(event)
+}
+
+/// A row's menu, while one is open: moving the file (or a folder's files) across, discarding
+/// it, looking at it, copying its path; and discarding every change not staged.
+fn row_menu(ui: &Ui, list: &mut List, side: Side, busy: (bool, bool)) -> Option<WorkEvent> {
+    let id = ui.id().with("row-menu");
+    let menu = list.menu.as_ref()?;
+    let open = std::mem::take(&mut list.open_menu);
+    let mut event = None;
+    let shown = egui::Popup::new(
+        id,
+        ui.ctx().clone(),
+        egui::PopupAnchor::PointerFixed,
+        ui.layer_id(),
+    )
+    .kind(egui::PopupKind::Menu)
+    .layout(Layout::top_down_justified(Align::Min))
+    .style(egui::containers::menu::menu_style)
+    .open_memory(open.then_some(egui::SetOpenCommand::Bool(true)))
+    .show(|ui| {
+        ui.set_min_width(220.0);
+        event = row_menu_items(ui, menu, side, busy);
+    });
+    if shown.is_none() {
+        list.menu = None;
+    }
+    event
+}
+
+/// A row's menu's items; what is chosen, its paths gathered only then (a folder may hold
+/// thousands).
+fn row_menu_items(
+    ui: &mut Ui,
+    menu: &RowMenu,
+    side: Side,
+    (busy, task): (bool, bool),
+) -> Option<WorkEvent> {
+    use super::actions::{danger_item, item};
+    let files = &menu.files;
+    let (entries, path, folder) = match &menu.target {
+        TreeMenu::File(entry) => {
+            let path = files.entry(*entry)?.path.to_owned();
+            (std::slice::from_ref(entry), path, false)
+        }
+        TreeMenu::Folder { path, entries } => {
+            (entries.as_slice(), BString::from(path.clone()), true)
+        }
+    };
+    let each = || entries.iter().filter_map(|entry| files.entry(*entry));
+    let staging = if busy {
+        Err("Wait for what is under way")
+    } else {
+        Ok(())
+    };
+    let (glyph, words) = match (side, folder) {
+        (Side::Unstaged, false) => (icon::PLUS, "Stage"),
+        (Side::Staged, false) => (icon::MINUS, "Unstage"),
+        (Side::Unstaged, true) => (icon::PLUS, "Stage the folder"),
+        (Side::Staged, true) => (icon::MINUS, "Unstage the folder"),
+    };
+    let mut event = item(ui, (glyph, words), staging).then(|| {
+        WorkEvent::Stage(StageRequest::Files {
+            paths: each().flat_map(|entry| paths(entry, side)).collect(),
+            direction: side.direction(),
+        })
+    });
+    if side == Side::Unstaged {
+        let refused = if folder {
+            None
+        } else {
+            each().next().and_then(crate::discarding::refusal)
+        };
+        let allowed = match (task, refused) {
+            (true, _) => Err("Another task is running"),
+            (false, Some(why)) => Err(why),
+            (false, None) => staging,
+        };
+        let words = if folder {
+            "Discard the folder's changes…"
+        } else {
+            "Discard changes…"
+        };
+        if danger_item(ui, (icon::TRASH, words), allowed) {
+            event = crate::discarding::of_entries(each()).map(WorkEvent::AskDiscard);
+        }
+    }
+    ui.separator();
+    if !folder
+        && item(ui, (icon::FILE_TEXT, "Show changes"), Ok(()))
+        && let Some(entry) = each().next()
+    {
+        event = Some(WorkEvent::Open(WorkFile::of(entry, side.which(entry))));
+    }
+    if item(ui, (icon::COPY, "Copy path"), Ok(())) {
+        ui.ctx().copy_text(path.to_str_lossy().into_owned());
+    }
+    if side == Side::Unstaged {
+        ui.separator();
+        let allowed = if task {
+            Err("Another task is running")
+        } else {
+            staging
+        };
+        if danger_item(ui, (icon::TRASH, "Discard all…"), allowed) {
+            let all = (0..files.entries.len()).filter_map(|row| files.entry(row));
+            event = crate::discarding::of_entries(all).map(WorkEvent::AskDiscard);
+        }
+    }
+    event
 }
 
 /// A list's files as a tree of their folders, a button on each file and folder.
@@ -885,6 +1020,13 @@ fn tree_ui(
             }))
         })
     });
+    if let Some(target) = shown.menu {
+        list.menu = Some(RowMenu {
+            files: Arc::clone(files),
+            target,
+        });
+        list.open_menu = true;
+    }
     if let Some(row) = shown.opened
         && let Some(entry) = files.entry(row)
     {
@@ -939,6 +1081,17 @@ fn table_ui(
                 && let Some(entry) = provider.entry(clicked.row_index)
             {
                 event = Some(WorkEvent::Open(WorkFile::of(entry, side.which(entry))));
+            }
+            if let Some(right) = output
+                .events
+                .iter()
+                .find(|event| event.kind == RowEventKind::SecondaryClicked)
+            {
+                list.menu = Some(RowMenu {
+                    files: Arc::clone(files),
+                    target: TreeMenu::File(right.row_index),
+                });
+                list.open_menu = true;
             }
         }
         Err(error) => {

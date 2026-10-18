@@ -1221,6 +1221,9 @@ fn panels(
             _ if view.tool.is_some() => tool(ui, shared, history, view, actions),
             Some(file) => {
                 let open = file::show(ui, shared, &history.objects, file, actions);
+                if let Some(dialog) = file.asked.take() {
+                    view.tasks.dialog = Some(dialog);
+                }
                 let wanted = file.wanted.take();
                 if !open {
                     view.file = None;
@@ -3464,7 +3467,9 @@ fn work_details(
     let shown = egui::ScrollArea::vertical()
         .id_salt("work-details")
         .auto_shrink([false, false])
-        .show(ui, |ui| view.work.show(ui, status, staging, commit))
+        .show(ui, |ui| {
+            view.work.show(ui, status, staging, commit, shared.busy)
+        })
         .inner;
     match shown {
         Some(WorkEvent::Open(work)) => view.open_work(shared, work),
@@ -3476,6 +3481,9 @@ fn work_details(
         Some(WorkEvent::ShowOutput) => actions.push(Action::Output(shared.id, OutputAsk::Show)),
         Some(WorkEvent::Preferences(preferences)) => {
             actions.push(Action::SetPreferences(preferences));
+        }
+        Some(WorkEvent::AskDiscard(discard)) => {
+            view.tasks.dialog = Some(super::dialogs::Dialog::Discard(discard));
         }
         None => {}
     }
