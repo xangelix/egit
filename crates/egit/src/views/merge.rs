@@ -728,14 +728,16 @@ fn editor(ui: &mut Ui, view: &mut MergeView, file: &ConflictFile) {
                     conflict.saturating_add(1)
                 ),
             ));
-            let field = ui
-                .add(
-                    crate::widgets::text_area(&mut editing.text)
-                        .code_editor()
-                        .desired_rows(8)
-                        .desired_width(f32::INFINITY),
-                )
-                .labelled_by(label.id);
+            let field = crate::widgets::bounded_text_area(
+                ui,
+                crate::widgets::text_area(&mut editing.text)
+                    .code_editor()
+                    .desired_rows(8)
+                    .desired_width(f32::INFINITY),
+                320.0,
+                "merge-edit",
+            )
+            .labelled_by(label.id);
             if field.has_focus() && ui.input(|input| input.key_pressed(Key::Escape)) {
                 done = Some(false);
             }

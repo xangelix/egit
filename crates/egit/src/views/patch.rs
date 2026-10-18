@@ -279,15 +279,18 @@ fn paste(ui: &mut Ui, shared: &Shared<'_>, view: &mut PatchView) {
             ui,
             "Paste a patch: commits by mail (git format-patch's), or a diff.",
         ));
-        let field = ui
-            .add(
-                crate::widgets::text_area(&mut view.pasted)
-                    .code_editor()
-                    .desired_rows(20)
-                    .desired_width(f32::INFINITY)
-                    .hint_text("From 1234abcd… or diff --git a/…"),
-            )
-            .labelled_by(label.id);
+        let most = (ui.available_height() - 80.0).max(200.0);
+        let field = crate::widgets::bounded_text_area(
+            ui,
+            crate::widgets::text_area(&mut view.pasted)
+                .code_editor()
+                .desired_rows(20)
+                .desired_width(f32::INFINITY)
+                .hint_text("From 1234abcd… or diff --git a/…"),
+            most,
+            "pasted-patch",
+        )
+        .labelled_by(label.id);
         if field.changed() {
             view.edited = Some(ui.input(|input| input.time));
         }

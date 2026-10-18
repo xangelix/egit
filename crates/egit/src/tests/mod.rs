@@ -7,6 +7,7 @@ mod corpus;
 mod dragging;
 mod help;
 mod lfs;
+mod long_text;
 mod menus;
 mod notices;
 mod patches;

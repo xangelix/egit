@@ -3328,11 +3328,15 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
     let editing = view.message_edit.is_some();
     let mut go_to = None;
     let height = ui.available_height();
+    // Its bar shows while a long message holds more than its half of the panel shows.
+    let saved_scroll = ui.spacing().scroll;
+    widgets::show_overflow(ui);
     egui::ScrollArea::vertical()
         .id_salt("commit-message")
         .max_height(height * 0.5)
         .auto_shrink([false, true])
         .show(ui, |ui| {
+            ui.spacing_mut().scroll = saved_scroll;
             if shown.commit.signed
                 && let Some(git) = shared.git
             {
@@ -3356,6 +3360,7 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
                 view.message_edit = Some(MessageEdit::of(&shown));
             }
         });
+    ui.spacing_mut().scroll = saved_scroll;
     ui.add_space(8.0);
     let counts = view.counting.of(shared, &shown);
     files_heading(
@@ -3609,9 +3614,15 @@ fn message_editor(
     }
     ui.add_space(4.0);
     let label = ui.label(muted(ui, "Description"));
-    let description = ui
-        .add(widgets::text_area(&mut edit.description).desired_rows(5))
-        .labelled_by(label.id);
+    // Bounded: a long message scrolls inside its field, leaving room for the buttons below.
+    let most = (ui.available_height() * 0.45).max(120.0);
+    let description = widgets::bounded_text_area(
+        ui,
+        widgets::text_area(&mut edit.description).desired_rows(5),
+        most,
+        "message-edit-description",
+    )
+    .labelled_by(label.id);
     let branch = shared.branch().map_or_else(
         || "the branch".to_owned(),
         |name| name.to_str_lossy().into_owned(),

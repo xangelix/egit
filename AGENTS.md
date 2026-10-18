@@ -1342,7 +1342,10 @@ writes paths), never `OsStrExt`.
     facts keep one rhythm),
     `form_row` naming its field; `FACT_LABEL` on pages), `line_field` one-line fields a
     control's height, their text centred and 8 points from the side, and `text_area` (several
-    lines, 8 points from every edge), `link` (hanging into its inset, its words aligned with
+    lines, 8 points from every edge; `bounded_text_area` at most so tall, scrolling inside its
+    edge, as every message, description, and pasted patch is), `show_overflow` (scroll bars
+    shown while text is cut, thin, in room of their own: egui's floating ones show only under
+    the pointer), `link` (hanging into its inset, its words aligned with
     text above and below), `icon_button` exactly its place, `row_fill` a list row's background (a selected
     one lightens under the pointer), cards, origin labels, problem boxes; `avatar.rs`: someone
     as their initials (their name's first and last words', else their email's) on a colour
@@ -1408,6 +1411,10 @@ writes paths), never `OsStrExt`.
     typed, committed as trailers, shown in the details, taken back into the form to amend.
     `src/tests/help.rs` holds Alt over Push and a commit's row (their topics shown, gone
     when let go), and finds a topic with F1 (Escape closes it).
+    `src/tests/columns.rs` drags the lines between the commit table's columns (each moving
+    alone, holding still once let go, a double click putting them back);
+    `src/tests/long_text.rs` edits a 200-line message in place and types one into the commit
+    form, each scrolling inside its field, the buttons below still on screen.
     `src/tests/submodules.rs` meets a fresh clone's submodule not set up (the banner mends
     it), updates it to its branch's latest from its page (the commit it brings shown), records
     it, shows its change in the work tree; and adds one from the page.

@@ -377,14 +377,20 @@ fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
     }
     let description_label = ui.label(muted(ui, "Description"));
     crate::help::note_topic(ui, description_label.rect, "commit");
-    ui.add(
+    crate::widgets::bounded_text_area(
+        ui,
         crate::widgets::text_area(&mut form.description)
             .hint_text("Why, and anything else worth knowing")
             .desired_rows(4)
             .desired_width(f32::INFINITY),
+        DESCRIPTION_HEIGHT,
+        "commit-description",
     )
     .labelled_by(description_label.id)
 }
+
+/// The tallest the commit form's description gets before it scrolls: the form keeps its room.
+const DESCRIPTION_HEIGHT: f32 = 180.0;
 
 /// `description` without its `Co-authored-by` lines, whom `form` takes as its co-authors (git
 /// adds them back, as trailers, when the commit is amended).

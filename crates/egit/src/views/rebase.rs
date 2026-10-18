@@ -595,10 +595,13 @@ fn message(ui: &mut Ui, view: &mut RebaseView, range: &RebaseRange) {
         Kind::Reword => {
             let label = ui.label("Its new message:");
             let message = row.message.get_or_insert_with(|| commit.message.clone());
-            ui.add(
+            crate::widgets::bounded_text_area(
+                ui,
                 crate::widgets::text_area(message)
                     .desired_width(f32::INFINITY)
                     .desired_rows(5),
+                240.0,
+                "rebase-reword",
             )
             .labelled_by(label.id);
         }

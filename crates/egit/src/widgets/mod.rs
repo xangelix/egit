@@ -690,6 +690,56 @@ pub(crate) fn text_area(text: &mut dyn TextBuffer) -> TextEdit<'_> {
         .desired_width(f32::INFINITY)
 }
 
+/// Shows the scroll bars of what `ui` holds next while there is more than shows, rather than
+/// only under the pointer (egui's floating bars are invisible until then): where text is cut,
+/// the bar says there is more. Thin, and in room of their own, so nothing sits under them.
+pub(crate) fn show_overflow(ui: &mut Ui) {
+    ui.spacing_mut().scroll = egui::style::ScrollStyle {
+        // Never wider than the room it keeps, less a gap from what it scrolls.
+        bar_width: 6.0,
+        floating_allocated_width: 8.0,
+        ..egui::style::ScrollStyle::thin()
+    };
+}
+
+/// A text area at most `max_height` tall (`edit`: from [`text_area`]): what doesn't fit
+/// scrolls inside its edge, which stays put, the cursor kept in view as it moves. Named by
+/// what `labelled_by` on the answer links it to, as any field.
+pub(crate) fn bounded_text_area(
+    ui: &mut Ui,
+    edit: TextEdit<'_>,
+    max_height: f32,
+    salt: &str,
+) -> Response {
+    let fill = ui.visuals().text_edit_bg_color();
+    let corner = ui.visuals().widgets.inactive.corner_radius;
+    let shown = Frame::new()
+        .fill(fill)
+        .corner_radius(corner)
+        .show(ui, |ui| {
+            show_overflow(ui);
+            egui::ScrollArea::vertical()
+                .id_salt(salt)
+                .max_height(max_height)
+                .auto_shrink([false, true])
+                // Its own edge goes; its text keeps its inset.
+                .show(ui, |ui| {
+                    ui.add(edit.frame(Frame::new().inner_margin(Margin::same(FIELD_INSET))))
+                })
+                .inner
+        });
+    let field = shown.inner;
+    // Its edge, as a field's: the selection's while typed into, stronger under the pointer.
+    let stroke = if field.has_focus() {
+        ui.visuals().selection.stroke
+    } else {
+        ui.style().interact(&field).bg_stroke
+    };
+    ui.painter()
+        .rect_stroke(shown.response.rect, corner, stroke, StrokeKind::Inside);
+    field
+}
+
 /// Shows which control has the keyboard focus, as a browser's `:focus-visible` does: a ring
 /// around it once a key (Tab, an arrow) or an assistive technology moved the focus, and none
 /// from the next press of the pointer. Called once a frame, after everything is drawn.

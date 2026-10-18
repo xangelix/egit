@@ -271,10 +271,13 @@ fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<
         field(ui, "Base branch", &mut form.base, false);
         field(ui, "Title", &mut form.title, true);
         let label = ui.label(muted(ui, "Description"));
-        ui.add(
+        crate::widgets::bounded_text_area(
+            ui,
             crate::widgets::text_area(&mut form.body)
                 .desired_rows(6)
                 .desired_width(f32::INFINITY),
+            260.0,
+            "pull-request-body",
         )
         .labelled_by(label.id);
         crate::widgets::checkbox(ui, &mut form.draft, "Draft");

@@ -747,10 +747,13 @@ fn create_tag(
         ui,
         "Message (makes it an annotated tag, with its author and date)",
     ));
-    ui.add(
+    crate::widgets::bounded_text_area(
+        ui,
         crate::widgets::text_area(message)
             .desired_rows(3)
             .desired_width(f32::INFINITY),
+        220.0,
+        "tag-message",
     )
     .labelled_by(label.id);
     ui.add_space(12.0);
