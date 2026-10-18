@@ -903,6 +903,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
 
     let no_commits = history.shown.rows() == 0;
     if no_commits && work_status.as_ref().is_none_or(|status| status.is_empty()) {
+        notices_panel(ui, &shared, history, view, &mut pane);
         nothing_yet(ui, history);
         return;
     }
@@ -911,7 +912,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         work,
         lists: &lists,
     };
-    panels(ui, &shared, history, view, sides, actions, no_commits);
+    panels(ui, &shared, history, view, sides, &mut pane, no_commits);
     drop_menu(ui.ctx(), &shared, history, view);
 }
 
@@ -1019,8 +1020,8 @@ fn queued_commands(shared: &Shared<'_>, view: &mut HistoryView, pane: &mut TaskP
     }
 }
 
-/// The panel over the commit table: the top bar, the last task's outcome, what background
-/// fetches brought, and an operation's banner.
+/// The panel over the commit table: the top bar, and the banners of what stands until it is
+/// dealt with (Git LFS or submodules out of step, an operation in progress).
 fn bar_panel(
     ui: &mut Ui,
     shared: &Shared<'_>,
@@ -1034,25 +1035,57 @@ fn bar_panel(
         .frame(chrome(shared).inner_margin(Margin::symmetric(12, 8)))
         .show(ui, |ui| {
             top_bar(ui, shared, history, work_tree, view, writing, pane);
-            tasks::outcome(ui, &mut view.tasks, pane);
             if lfs_banner(ui, shared, pane) {
                 view.show_lfs();
             }
             if submodules_banner(ui, shared, view, pane) {
                 view.show_submodules();
             }
-            let brought = tasks::brought(ui, pane);
-            match tasks::banner(ui, &mut view.tasks, pane).or(brought) {
-                Some(TaskEvent::WorkTree) => view.select_work(),
-                Some(TaskEvent::Patch) => view.show_patch(PatchSource::Stopped),
-                Some(TaskEvent::Commit(commit)) => {
-                    view.file = None;
-                    view.tool = None;
-                    view.show_commit(&history.shown, commit);
-                }
-                None => {}
-            }
+            let event = tasks::banner(ui, &mut view.tasks, pane);
+            task_event(event, history, view);
         });
+}
+
+/// The strip under the commit table, while it has something to say: the last task's outcome
+/// (one that went well goes by itself after a few seconds; a problem stays until dismissed),
+/// and what background fetches brought. Under the table, so nothing above it moves.
+fn notices_panel(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    view: &mut HistoryView,
+    pane: &mut TaskPane<'_>,
+) {
+    let outcome = tasks::has_outcome(&mut view.tasks, pane);
+    let brought = tasks::has_brought(pane);
+    if !outcome && !brought {
+        return;
+    }
+    egui::Panel::bottom(Id::new(("history-notices", shared.id)))
+        .resizable(false)
+        .frame(chrome(shared).inner_margin(Margin::symmetric(12, 8)))
+        .show(ui, |ui| {
+            tasks::outcome(ui, &mut view.tasks, pane);
+            if outcome && brought {
+                ui.add_space(6.0);
+            }
+            let event = tasks::brought(ui, pane);
+            task_event(event, history, view);
+        });
+}
+
+/// Carries out what a banner or notice asked.
+fn task_event(event: Option<TaskEvent>, history: &HistoryState, view: &mut HistoryView) {
+    match event {
+        Some(TaskEvent::WorkTree) => view.select_work(),
+        Some(TaskEvent::Patch) => view.show_patch(PatchSource::Stopped),
+        Some(TaskEvent::Commit(commit)) => {
+            view.file = None;
+            view.tool = None;
+            view.show_commit(&history.shown, commit);
+        }
+        None => {}
+    }
 }
 
 /// Where submodules are out of step (not set up, at other commits than recorded, in conflict,
@@ -1252,9 +1285,10 @@ fn panels(
     history: &mut HistoryState,
     view: &mut HistoryView,
     sides: Sides<'_>,
-    actions: &mut Vec<Action>,
+    pane: &mut TaskPane<'_>,
     no_commits: bool,
 ) {
+    let actions = &mut *pane.actions;
     let Sides { work, lists } = sides;
     let WorkSide {
         staging,
@@ -1305,6 +1339,8 @@ fn panels(
     picked_asked(picked, (shared, &history.objects), view, actions);
 
     view.close_unselected_file();
+    notices_panel(ui, shared, history, view, pane);
+    let actions = &mut *pane.actions;
     egui::CentralPanel::default()
         .frame(Frame::new())
         .show(ui, |ui| match &mut view.file {

@@ -988,7 +988,7 @@ writes paths), never `OsStrExt`.
     counts them, for the forge); what it brought the current branch's upstream (`Brought`:
     `upstream_tip` before and after, `count_between` them; a later fetch continuing where an
     earlier one ended adds to it) kept in `brought` until the user starts a task, and shown
-    under the top bar while the branch is behind (`views/tasks.rs`'s `brought`: "↓ 3 new
+    under the commit table while the branch is behind (`views/tasks.rs`'s `brought`: "↓ 3 new
     commits on origin/main", fetched in the background; Pull, Show them (the upstream's
     commit selected), Dismiss). `remote_names`, `has_remotes` (a scan, nothing allocated),
     and `upstream_of` read the configuration. Fast-forwards (`FastForward` the current branch,
@@ -1285,9 +1285,14 @@ writes paths), never `OsStrExt`.
     without a commit-graph is offered one (`Action::WriteCommitGraph`).
     `views/tasks.rs` — the task bar at the top bar's right: Push, Pull, Fetch, and the branch
     beside its upstream with ↑ ahead ↓ behind (or "(not pushed yet)", "(gone)"); while a task
-    runs, its progress and Cancel. Under it the last task's outcome until dismissed (a line,
-    the remote's notes, or a problem box), a refused push explained by its reason (behind:
-    "Force push…" or Pull; a lease that failed: nothing forced, fetch first), and the banner
+    runs, its progress and Cancel. Under the commit table (a bottom panel between the sidebar
+    and the details, `history::notices_panel`, there only while it has something to say, so
+    nothing above the table moves) the last task's outcome (a line, the remote's notes, or a
+    problem box; one that went well goes by itself after `OUTCOME_LASTS`, 5 s of egui's clock,
+    put forward while the pointer rests on it; a problem, or what stopped short, stays until
+    dismissed; `set_outcome_lasts`: tests keep them all), a refused push explained by its
+    reason (behind: "Force push…" or Pull; a lease that failed: nothing forced, fetch first),
+    and what background fetches brought; under the top bar the banner
     of an operation in progress (a stopped `git am`'s "Applying patches stopped at 2 of 5:
     subject" and Show the patch; Show the conflicts, Continue, Skip, Abort…; a bisection's
     state (a commit to mark bad or good; "About 3 more to test: 9 commits could be the first
@@ -1767,6 +1772,8 @@ writes paths), never `OsStrExt`.
     a folder staged whole, a commit's files alike, a list again.
     `src/tests/notices.rs` lets background fetches run: one bringing nothing says nothing, two
     bringing a commit each make one notice of both.
+    It also shows an outcome under the commit table (the table's head where it was), gone by
+    itself five seconds later, and a refused revert staying.
     `src/tests/search.rs` drives the search bar
     (by message, author, path, and name; both themes) and holds egit's own reading of messages
     and authors to what `find_commits` finds on 300 assorted commits. `src/tests/scrolling.rs`

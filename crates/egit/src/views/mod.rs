@@ -30,6 +30,8 @@ mod submodules;
 mod tasks;
 mod work;
 
+pub(crate) use tasks::{OUTCOME_LASTS, set_outcome_lasts};
+
 use egui::{ScrollArea, Ui};
 
 /// The widest a page's content grows; wider windows centre it.

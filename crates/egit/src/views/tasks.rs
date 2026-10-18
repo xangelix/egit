@@ -1,7 +1,8 @@
 //! A repository's tasks, as the history shows them: the branch, its upstream and how they
 //! compare, Fetch, Pull, and Push (what the running task is doing, with Cancel); how the last
-//! one ended, in words a person can act on (or the dialog it leads to: `views/dialogs.rs`);
-//! and the banner of an operation git stopped in the middle of.
+//! one ended, in words a person can act on (or the dialog it leads to: `views/dialogs.rs`),
+//! under the commit table, where it goes by itself a few seconds after it went well; and the
+//! banner of an operation git stopped in the middle of.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -37,6 +38,28 @@ pub(crate) struct TasksView {
     seen: u64,
     /// The task whose outcome was followed up (a new worktree opened).
     followed: u64,
+    /// The task whose outcome that went well is shown, and since when (egui's clock, put
+    /// forward while the pointer rests on it): it goes by itself after [`outcome_lasts`].
+    shown_since: Option<(u64, f64)>,
+}
+
+/// How long an outcome that went well stays before it goes by itself, in seconds.
+pub(crate) const OUTCOME_LASTS: f64 = 5.0;
+
+/// How long an outcome that went well stays (`None`: until dismissed).
+#[derive(Clone, Copy, Debug)]
+struct Lasting(Option<f64>);
+
+/// How long outcomes that went well stay, in seconds (`None`: until dismissed, as tests keep
+/// them to look at).
+pub(crate) fn set_outcome_lasts(ctx: &egui::Context, seconds: Option<f64>) {
+    ctx.data_mut(|data| data.insert_temp(Id::new("egit-outcome-lasts"), Lasting(seconds)));
+}
+
+/// How long outcomes that went well stay, in seconds.
+fn outcome_lasts(ctx: &egui::Context) -> Option<f64> {
+    ctx.data(|data| data.get_temp::<Lasting>(Id::new("egit-outcome-lasts")))
+        .map_or(Some(OUTCOME_LASTS), |lasting| lasting.0)
 }
 
 /// What the task parts work with while they are drawn.
@@ -288,16 +311,59 @@ fn progress_text(tasks: &Tasks) -> String {
     format::progress(doing, &tasks.progress.report())
 }
 
-/// How the last task ended (until dismissed or another starts): a line, a problem, or the
-/// dialog it leads to.
-pub(crate) fn outcome(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
-    // Nothing to say: no room taken (a place, even empty, takes the row's spacing).
+/// Whether the last task's outcome is to be shown: not yet dismissed, and not one leading to a
+/// dialog (asked now, in its place).
+pub(crate) fn has_outcome(view: &mut TasksView, pane: &mut TaskPane<'_>) -> bool {
     if pane.tasks.is_busy() || view.seen == pane.tasks.started {
+        return false;
+    }
+    let Some(result) = pane.tasks.result.read_as_ref() else {
+        return false;
+    };
+    if let Ok(outcome) = result
+        && let Some(dialog) = asks_next(pane.tasks.task.as_ref(), outcome)
+    {
+        view.dialog = Some(dialog);
+        view.seen = pane.tasks.started;
+        return false;
+    }
+    true
+}
+
+/// How the last task ended (until dismissed or another starts): a line, or a problem. One that
+/// went well goes by itself after a few seconds, the time put forward while the pointer rests
+/// on it.
+pub(crate) fn outcome(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
+    if !has_outcome(view, pane) {
         return;
     }
-    own_ids(ui, "outcome", pane.id, UiBuilder::new(), |ui| {
+    let started = pane.tasks.started;
+    let went_well = matches!(
+        pane.tasks.result.read_as_ref(),
+        Some(Ok(outcome)) if !outcome.stopped()
+    );
+    let shown = own_ids(ui, "outcome", pane.id, UiBuilder::new(), |ui| {
         outcome_lines(ui, view, pane);
+        ui.min_rect()
     });
+    let Some(lasts) = outcome_lasts(ui.ctx()).filter(|_| went_well) else {
+        return;
+    };
+    let now = ui.input(|input| input.time);
+    let since = match view.shown_since {
+        _ if ui.rect_contains_pointer(shown) => now,
+        Some((task, since)) if task == started => since,
+        _ => now,
+    };
+    view.shown_since = Some((started, since));
+    let left = lasts - (now - since);
+    if left <= 0.0 {
+        view.seen = started;
+        ui.ctx().request_repaint();
+    } else {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_secs_f64(left));
+    }
 }
 
 fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
@@ -311,18 +377,10 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         .result
         .read_as_ref()
         .map(|result| result.cloned().map_err(Clone::clone));
-    if let Some(Ok(outcome)) = &result
-        && let Some(dialog) = asks_next(pane.tasks.task.as_ref(), outcome)
-    {
-        view.dialog = Some(dialog);
-        view.seen = started;
-        return;
-    }
     let mut dismiss = false;
     match result {
         None => {}
         Some(Err(problem)) => {
-            ui.add_space(4.0);
             widgets::problem_box(ui, &problem, |ui| {
                 if widgets::secondary(ui, true, "Dismiss").clicked() {
                     dismiss = true;
@@ -940,10 +998,14 @@ fn refused(
 
 /// The banner of an operation git stopped in the middle of: Continue and Abort (or, for a
 /// bisect, Stop).
-/// What background fetches brought the current branch's upstream ("↓ 3 new commits on
-/// origin/main"), while the branch is behind it: Pull, Show them (the upstream's commit),
-/// and Dismiss. Gone once the user starts a task.
-pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent> {
+/// Whether there is a notice of what background fetches brought.
+pub(crate) fn has_brought(pane: &mut TaskPane<'_>) -> bool {
+    brought_of(pane).is_some()
+}
+
+/// What background fetches brought the current branch's upstream, while the branch is behind
+/// it and nothing runs.
+fn brought_of(pane: &mut TaskPane<'_>) -> Option<crate::tasks::Brought> {
     if pane.tasks.is_busy() {
         return None;
     }
@@ -953,9 +1015,14 @@ pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent>
     };
     let upstream = branch.upstream.as_ref()?;
     let behind = matches!(upstream.tracking, Tracking::Diverged { behind, .. } if behind > 0);
-    if !behind || upstream.name != brought.short_name() {
-        return None;
-    }
+    (behind && upstream.name == brought.short_name()).then(|| brought.clone())
+}
+
+/// What background fetches brought the current branch's upstream ("↓ 3 new commits on
+/// origin/main"), while the branch is behind it: Pull, Show them (the upstream's commit),
+/// and Dismiss. Gone once the user starts a task.
+pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent> {
+    let brought = brought_of(pane)?;
     let (to, name) = (brought.to, brought.short_name().to_str_lossy().into_owned());
     let commits = if brought.commits == 1 {
         "1 new commit".to_owned()
@@ -965,7 +1032,6 @@ pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent>
     let palette = Palette::of(ui.ctx());
     let mut event = None;
     own_ids(ui, "brought", pane.id, UiBuilder::new(), |ui| {
-        ui.add_space(4.0);
         egui::Frame::new()
             .fill(palette.accent.gamma_multiply(0.10))
             .stroke(egui::Stroke::new(1.0, palette.accent.gamma_multiply(0.6)))

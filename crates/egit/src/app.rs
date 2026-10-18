@@ -237,6 +237,8 @@ impl EgitApp {
         );
         // Tests look at the pages asked for; no browser starts.
         app.state.opener = Opener::recording();
+        // And at outcomes, however many frames later: they stay until dismissed.
+        crate::views::set_outcome_lasts(ctx, None);
         app
     }
 
@@ -253,6 +255,7 @@ impl EgitApp {
         theme::apply(ctx, settings.theme);
         settings.preferences.apply(ctx);
         ctx.plugin_or_default::<egui_async::EguiAsyncPlugin>();
+        crate::views::set_outcome_lasts(ctx, Some(crate::views::OUTCOME_LASTS));
         if let Err(error) = jobs::install_runtime() {
             tracing::error!(%error, "couldn't start egit's worker threads");
         }
