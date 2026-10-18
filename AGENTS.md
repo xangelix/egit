@@ -36,6 +36,7 @@ it.
 | 22 | Readability: weights, surfaces, a tree, menus that scan | done; awaiting the owner's review |
 | 23 | Alignment: to the point, edges, corners, padding | done; awaiting the owner's review |
 | 24 | Follow-ups: scrolling, tabs, the details' head, rewording in place | done; awaiting the owner's review |
+| 25 | The work in progress, people, trees, pictures, LFS, submodules, and Help | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -1443,10 +1444,11 @@ writes paths), never `OsStrExt`.
   (a salt alone doesn't change that), and a click pressed on one id and released on another
   is lost. Colours come from `theme::Palette::of(ctx)`, icons from `theme::icon`, shared pieces
   from `widgets`. Text inside an `egui::Grid` is sized explicitly (`add_sized`): a grid sizes
-  cells to their content. Names and paths come from people: assume them long, in any script. Help: a
-  new control built from `widgets` (or a menu's item) is explained by its words
-  (`help::for_label`: add them to `EXACT` or `STARTS`); a custom one calls `help::note_topic`;
-  a new feature gets a topic in `help::TOPICS`, at git's level, with the cases that surprise.
+  cells to their content. Names and paths come from people: assume them long, in any script.
+  Help: a new control built from `widgets` (or a menu's item) is explained by its words
+  (`help::for_label`: add them to `EXACT` or `STARTS`); a custom one calls
+  `help::note_topic`; a new feature gets a topic in `help::TOPICS`, at git's level, with the
+  cases that surprise.
 - **Performance:** CPU time and peak memory are features. Nothing proportional to a
   repository is loaded or drawn unless it is visible or being prepared off the interface thread;
   parsers work on borrowed bytes and reuse their buffers.
