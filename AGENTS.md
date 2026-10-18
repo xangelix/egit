@@ -687,7 +687,7 @@ writes paths), never `OsStrExt`.
     left", "Unpin"; "2 branches hidden", "Show them"). `Refs` are shared (`shared`, an
     `Arc<[Reference]>`) and numbered by read (`read`), so the sidebar sorts them in a job and
     knows when they changed.
-    `Summaries`: subject, author, preformatted date, co-authors (none allocates nothing), read
+    `Summaries`: subject, author, preformatted date (the viewer's time zone), co-authors (none allocates nothing), read
     as rows come into view (at most 512 a read, one read at a time), about 4,096 kept, least
     recently drawn forgotten first; each says whether its commit is signed. `Signatures`: the signed commits on screen (and the one
     selected) checked with `check_signatures`, 64 at a time, one batch at a time (each check
@@ -966,7 +966,10 @@ writes paths), never `OsStrExt`.
     author, date, and commit, so rows end where the table does. `column_lines` draws a line
     between each two columns over the table, every one dragged to trade width between its
     two columns (the message's by filling what is left), so the line follows the pointer and
-    nothing else moves; a double click puts them back. `HistoryView::follow` keeps the
+    nothing else moves; a double click puts them back. Dates are the viewer's time zone's
+    (`format::local_date_time`, jiff's system zone, at the offset each commit's moment had:
+    summer time or not), monospace, the column titled with the zone ("Date (CEST)"); the
+    details show the same, the commit's own clock on hover. `HistoryView::follow` keeps the
     selection and the top row's commit in place when a re-read takes over. The table's
     column titles are small and muted, and so is all but the subject (author, date, commit),
     which leads its row; the author's column shows the author's avatar and the co-authors'
@@ -1361,7 +1364,8 @@ writes paths), never `OsStrExt`.
     (Tab, an arrow) or an assistive technology moved it, gone at the next press of the
     pointer, as a browser's `:focus-visible`, never around a field (its edge shows it) or an
     area as large as the commit table (its selection shows it)), `format.rs` (`~` paths, "5 minutes ago",
-    dates, a long command's progress), `settings.rs` (theme, recent repositories, open tabs,
+    dates (in the viewer's time zone: `local_zone`, `local_date_time`, `zone_name`), a long
+    command's progress), `settings.rs` (theme, recent repositories, open tabs,
     the clone folder; non-UTF-8 paths kept as
     bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
   - `tests/askpass_helper.rs` — the real `egit` executable (`CARGO_BIN_EXE_egit`) started by

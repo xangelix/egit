@@ -2572,6 +2572,12 @@ impl TableDelegate for CommitRows<'_> {
             0 => self.view.graph.title(self.view.lanes_shown),
             1 => "Message".to_owned(),
             2 => "Author".to_owned(),
+            // Dates as written are the viewer's own time zone's, named.
+            3 if self.shared.preferences.dates == crate::preferences::Dates::Written => {
+                let now = i64::try_from(self.now).unwrap_or(i64::MAX);
+                let zone = crate::format::zone_name(now, &crate::format::local_zone());
+                format!("Date ({zone})")
+            }
             3 => "Date".to_owned(),
             _ => "Commit".to_owned(),
         };
@@ -2725,9 +2731,15 @@ impl TableDelegate for CommitRows<'_> {
             }
             _ => (&summary.date, self.shared.palette.muted),
         };
-        fonts::note_text(ui, &egui::TextStyle::Body.resolve(ui.style()), text);
+        // Dates in columns of their own: each digit under the one above.
+        let style = if cell.col_nr == 3 {
+            egui::TextStyle::Monospace
+        } else {
+            egui::TextStyle::Body
+        };
+        fonts::note_text(ui, &style.resolve(ui.style()), text);
         ui.add(
-            Label::new(RichText::new(text).color(color))
+            Label::new(RichText::new(text).text_style(style).color(color))
                 .selectable(false)
                 .truncate(),
         );
@@ -3785,8 +3797,18 @@ fn person(ui: &mut Ui, (role, when): (&str, &str), signature: &egit_git::Signatu
     widgets::fact_top(ui, DETAIL_LABEL, role, |ui| {
         someone(ui, (&signature.name, &signature.email));
     });
+    // In the viewer's time zone, named, as the table shows it; its own clock on hover.
+    let zone = crate::format::local_zone();
+    let local = crate::format::local_date_time(signature.time, &zone);
+    let name = crate::format::zone_name(signature.time, &zone);
+    let own = format!(
+        "{} {}, by its own clock",
+        date_time(signature.time, signature.offset_minutes),
+        crate::format::offset(signature.offset_minutes)
+    );
     widgets::fact(ui, DETAIL_LABEL, when, |ui| {
-        ui.add(Label::new(date_time(signature.time, signature.offset_minutes)).truncate());
+        ui.add(Label::new(format!("{local} {name}")).truncate())
+            .on_hover_text(own);
     });
 }
 

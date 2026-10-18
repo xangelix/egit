@@ -6,6 +6,8 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use egit_git::ProgressReport;
+use jiff::Timestamp;
+use jiff::tz::TimeZone;
 
 /// Now, in seconds since the Unix epoch.
 pub(crate) fn now() -> u64 {
@@ -49,7 +51,7 @@ pub(crate) fn ago(then: u64, now: u64) -> String {
         HOUR..DAY => plural(count(HOUR), "hour"),
         DAY..172_800 => "yesterday".to_owned(),
         172_800..604_800 => plural(count(DAY), "day"),
-        _ => date(then),
+        _ => local_date(then),
     }
 }
 
@@ -58,6 +60,49 @@ pub(crate) fn date(unix: u64) -> String {
     let days = i64::try_from(unix).unwrap_or(i64::MAX).div_euclid(86_400);
     let (year, month, day) = civil_from_days(days);
     format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// A Unix time's date as the viewer reads it, `YYYY-MM-DD` in their time zone.
+pub(crate) fn local_date(unix: u64) -> String {
+    let at = i64::try_from(unix).unwrap_or(i64::MAX);
+    let shift = i64::from(offset_minutes(at, &local_zone())).saturating_mul(60);
+    date(unix.saturating_add_signed(shift))
+}
+
+/// The viewer's time zone: the system's (`TZ`, else its own setting), UTC where none can be
+/// read. jiff keeps it, looking at the system again every few minutes.
+pub(crate) fn local_zone() -> TimeZone {
+    TimeZone::try_system().unwrap_or(TimeZone::UTC)
+}
+
+/// A Unix time as the viewer reads it: [`date_time`] in `zone`, at the offset it had then
+/// (summer time or not).
+pub(crate) fn local_date_time(unix: i64, zone: &TimeZone) -> String {
+    date_time(unix, offset_minutes(unix, zone))
+}
+
+/// `zone`'s offset from UTC at `unix`, in minutes.
+pub(crate) fn offset_minutes(unix: i64, zone: &TimeZone) -> i32 {
+    Timestamp::from_second(unix).map_or(0, |at| zone.to_offset(at).seconds().div_euclid(60))
+}
+
+/// `zone`'s short name at `unix`: "CEST", "UTC", or its offset ("+0530") where it has none.
+pub(crate) fn zone_name(unix: i64, zone: &TimeZone) -> String {
+    Timestamp::from_second(unix).map_or_else(
+        |_| "UTC".to_owned(),
+        |at| zone.to_offset_info(at).abbreviation().to_owned(),
+    )
+}
+
+/// An offset from UTC in minutes as git writes it: `+0900`, `-0530`.
+pub(crate) fn offset(minutes: i32) -> String {
+    let sign = if minutes < 0 { '-' } else { '+' };
+    let minutes = minutes.unsigned_abs();
+    format!(
+        "{sign}{:02}{:02}",
+        minutes.div_euclid(60),
+        minutes.rem_euclid(60)
+    )
 }
 
 /// A time as someone saw it: `YYYY-MM-DD HH:MM` in their time zone, `offset_minutes` from
@@ -199,7 +244,7 @@ mod tests {
         assert_eq!(ago(now - 23 * 3600, now), "23 hours ago");
         assert_eq!(ago(now - 30 * 3600, now), "yesterday");
         assert_eq!(ago(now - 3 * 86_400, now), "3 days ago");
-        assert_eq!(ago(now - 30 * 86_400, now), date(now - 30 * 86_400));
+        assert_eq!(ago(now - 30 * 86_400, now), local_date(now - 30 * 86_400));
         assert_eq!(ago(now + 100, now), "just now");
     }
 
@@ -221,6 +266,21 @@ mod tests {
         assert_eq!(date_time(unix, -300), "2026-10-15 18:30");
         assert_eq!(date_time(-1, 0), "1969-12-31 23:59");
         assert_eq!(date_time(-86_400 * 366, 0), "1968-12-31 00:00");
+    }
+
+    #[test]
+    fn dates_as_the_viewer_reads_them_in_summer_and_winter() {
+        let zone = TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
+        // 2026-07-01 12:00 UTC, in summer time; 2026-01-15 12:00 UTC, in winter.
+        let (summer, winter) = (1_782_907_200, 1_768_478_400);
+        assert_eq!(local_date_time(summer, &zone), "2026-07-01 08:00");
+        assert_eq!(local_date_time(winter, &zone), "2026-01-15 07:00");
+        assert_eq!(zone_name(summer, &zone), "EDT");
+        assert_eq!(zone_name(winter, &zone), "EST");
+        assert_eq!(local_date_time(summer, &TimeZone::UTC), "2026-07-01 12:00");
+        assert_eq!(offset(540), "+0900");
+        assert_eq!(offset(-330), "-0530");
+        assert_eq!(offset(0), "+0000");
     }
 
     #[test]

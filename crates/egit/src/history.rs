@@ -26,7 +26,7 @@ use egit_text::Text;
 use egui_async::Bind;
 use parking_lot::Mutex;
 
-use crate::format::date_time;
+use crate::format::local_date_time;
 use crate::grid::Plain;
 use crate::jobs;
 use crate::problem::Problem;
@@ -700,7 +700,7 @@ pub(crate) struct Summary {
     pub(crate) author: Box<str>,
     /// The author's email.
     pub(crate) email: Box<str>,
-    /// When it was written, in the author's time zone.
+    /// When it was written, in the viewer's time zone.
     pub(crate) date: Box<str>,
     /// When it was written (seconds since the Unix epoch), for "5 minutes ago".
     pub(crate) time: i64,
@@ -711,13 +711,13 @@ pub(crate) struct Summary {
 }
 
 impl Summary {
-    fn of(commit: &Commit) -> Self {
+    fn of(commit: &Commit, zone: &jiff::tz::TimeZone) -> Self {
         let text = |bytes: &[u8]| bytes.to_str_lossy().into_owned().into_boxed_str();
         Self {
             subject: text(&commit.subject()),
             author: text(&commit.author.name),
             email: text(&commit.author.email),
-            date: date_time(commit.author.time, commit.author.offset_minutes).into_boxed_str(),
+            date: local_date_time(commit.author.time, zone).into_boxed_str(),
             time: commit.author.time,
             signed: commit.signed,
             co_authors: commit
@@ -917,12 +917,13 @@ impl Summaries {
         let (git, repository, objects) = (git.clone(), Arc::clone(repository), objects.clone());
         self.reading.request(jobs::blocking(move || {
             let mut found = Vec::with_capacity(missing.len());
+            let zone = crate::format::local_zone();
             objects
                 .read(&git, repository.work_tree(), &missing, |id, object| {
                     let summary = object
                         .filter(|object| object.kind == ObjectKind::Commit)
                         .and_then(|object| Commit::parse(object.data).ok())
-                        .map_or_else(Summary::unreadable, |commit| Summary::of(&commit));
+                        .map_or_else(Summary::unreadable, |commit| Summary::of(&commit, &zone));
                     found.push((id, summary));
                 })
                 .map_err(|error| Problem::git("Commits couldn't be read", &error))?;
