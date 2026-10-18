@@ -90,6 +90,8 @@ pub(crate) enum Task {
         what: BString,
         shown: String,
     },
+    /// Something of Git LFS's.
+    Lfs(crate::lfs::LfsTask),
     /// Rebase the current branch onto a ref or commit; `keep_merges`: its merges too
     /// (otherwise flattened).
     Rebase {
@@ -370,6 +372,7 @@ impl Task {
             Self::UpdateSubmodules(_) => "Updating the submodules",
             Self::Undo(_) => "Undoing",
             Self::Redo(_) => "Redoing",
+            Self::Lfs(lfs) => lfs.doing(),
         }
     }
 }
@@ -691,6 +694,7 @@ fn run(
         Task::CheckOutPullRequest { .. } | Task::CreatePullRequest(_) => {
             forge(git, repository, task, progress, cancel, accounts)
         }
+        Task::Lfs(lfs) => crate::lfs::run(git, repository, lfs, progress, cancel),
         Task::Fetch
         | Task::Pull(_)
         | Task::PullAndRemember { .. }

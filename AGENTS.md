@@ -269,6 +269,15 @@ writes paths), never `OsStrExt`.
     is; folders end with `/` so folder-only patterns match them); and `tree_entry`, one path's
     entry at a commit (`ls-tree -z --full-tree`, a literal pathspec), or none. `git_path`: a
     path relative to a work tree as git writes it (`/` between folders, on Windows too).
+  - `lfs.rs` — Git LFS through `git lfs`: `lfs_version` (none when it isn't installed),
+    `lfs_set_up` (its filters in a configuration), `lfs_patterns` (`track --json`, git-lfs 3.4
+    and newer; its listing otherwise: tracked, excluded, lockable), `lfs_files` (`ls-files
+    --json` at `HEAD`: size, checked out, downloaded), `lfs_install` (`--local`),
+    `lfs_track` (`--lockable`) and `lfs_untrack`, `lfs_transfer` (`LfsTransfer`: fetch, all
+    or the current branch's; check out; pull; push `--all` to a remote; progress, labelled
+    prompts), `lfs_prune`, `lfs_locks` (`locks --json`), `lfs_lock` (lock, unlock, force).
+    `tests/lfs.rs` pushes through `file://` and pulls into a clone that had pointers
+    (skipped without git-lfs unless `EGIT_REQUIRE_LFS`, which CI sets).
   - `committing.rs` — `create_commit`: `git commit --file=- --cleanup=whitespace` (a line
     starting with `#` is kept), `NewCommit`'s amend, sign-off, trailers (`--trailer`, placed
     by git's rules: co-authors), and signing (`-S`,
@@ -617,8 +626,8 @@ writes paths), never `OsStrExt`.
   - `repo.rs` — `RepoTab`: `Repository`, `Bind`s for `Status` (head, operations, a stopped
     `git am`'s progress, and a bisection's `Bisection`) and the
     repository's `ConfigSnapshot` (`request` keeps showing the old state until the new one
-    lands) and its stash list, worktrees, and submodules (`refresh_lists`: read at once, when
-    refs change, and after each task), its
+    lands) and its stash list, worktrees, submodules, and Git LFS (`lfs`: `refresh_lists`, read
+    at once, when refs change, and after each task), its
     `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph), its
     `Journal` (what to undo and redo; `undo` runs the next as a task, and a commit made notes
     how to take it back),
@@ -831,6 +840,15 @@ writes paths), never `OsStrExt`.
     report through its inbox (`Landed`), taken in each frame. A stop says why (`Halt`: moved
     on, or git's words, and whether part was done) and whether it can be tried again. Pushes,
     fetches, and what an operation stopped part-way did aren't taken back.
+  - `lfs.rs` — a tab's Git LFS: `read_lfs` (`Reading::WhereUsed` for the tab's lists, which
+    runs nothing unless the top `.gitattributes` gives a pattern LFS's filter; `All` for its
+    page): git-lfs's version, `lfs_set_up` from the configuration, the patterns (from
+    `.gitattributes` where git-lfs isn't installed); `LfsState::trouble` (used, but git-lfs
+    isn't installed, or isn't set up here); the files and locks read for the page;
+    `LfsTask` (set up, track, untrack, fetch, check out, pull, push, prune, lock, unlock),
+    `Task::Lfs`, run by `lfs::run`, its words (`doing`, `done`: what to do next, "commit
+    .gitattributes to share it"). A banner under the top bar where LFS is used but its files
+    can't be whole here (`lfs_banner`: why, and "Set up Git LFS here" or "Open Git LFS").
   - `forge.rs` — `RepoForge`, a tab's forge side: `configured` (whenever new configuration
     lands) works out in a job which remotes are GitHub repositories or GitLab projects
     (`remote_urls`, as git rewrites them, else as `remote.<name>.url` writes them; the hosts
@@ -867,8 +885,9 @@ writes paths), never `OsStrExt`.
   - `views/history.rs` — the history's chrome (the top bar, the sidebar, the details: `chrome`,
     the panel tone) around the commit table on the window's background. The top bar: Undo and
     Redo, then the views and menus as quiet tools
-    (Search, Reflog, Stash, Patches, and Repository: its Overview, Settings, and reading it
-    again), their words beside their icons where the bar has room for all it shows
+    (Search, Reflog, Stash, Patches, LFS where the repository keeps files in it (its state;
+    pull, fetch, check out, push to each remote, prune; its page), and Repository: its
+    Overview, Settings, Git LFS's page, and reading it again), their words beside their icons where the bar has room for all it shows
     (`Look::Full`), their icons alone elsewhere (`Look::Compact`, their words on hover), the
     commit count (a spinner beside it while the history is read), why the work tree couldn't
     be read (when it couldn't), the requests; at its right `views/tasks.rs`'s bar (drawn first,
@@ -1093,6 +1112,15 @@ writes paths), never `OsStrExt`.
     input, `RowsInput`: typing in the filter over more than 5,000 refs makes them in a job, one
     at a time, the last rows shown until the latest land) and drawn
     with `show_rows`, their text painted.
+    `views/lfs.rs` — `LfsView`, Git LFS's page in the commit table's place (the LFS menu's
+    "Patterns, files, and locks…", the Repository menu's "Git LFS", the banner; Escape or
+    History goes back): what LFS is and whether it is installed and set up here (how to,
+    when it isn't), moving its files (Pull, Fetch, Fetch every file, Check out, Push to each
+    remote, Prune; each saying what it does), the patterns tracked (each to stop tracking;
+    one to track, lockable or not), the files held at `HEAD` (how many, how large, how many
+    not downloaded or pointers; each here, downloaded, or a pointer, with its size; drawn as
+    far as they show), and the locks (read when asked: they need a server; each to unlock or
+    force; a path to lock). It reads the whole state itself, again when the tab's lands anew.
     `views/reflog.rs` — `ReflogView`, a ref's reflog in the commit table's place (the top
     bar's Reflog: `HEAD`'s; a branch badge's "Show <name>'s reflog"): read in a job (10,000
     moves at most), read again when the history is (`follow`) or `HEAD` moves, the selection
@@ -1311,6 +1339,9 @@ writes paths), never `OsStrExt`.
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
     series saved. `src/tests/people.rs` drives co-authors: picked from the recent authors and
     typed, committed as trailers, shown in the details, taken back into the form to amend.
+    `src/tests/lfs.rs` meets Git LFS not set up (the banner sets it up), its menu and page,
+    a file listed, a pattern tracked and untracked (skipped without git-lfs unless
+    `EGIT_REQUIRE_LFS`).
     `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
     current one onto another (rebased), between the sidebar and the graph either way.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the

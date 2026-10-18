@@ -71,6 +71,8 @@ pub(crate) struct Lists<'a> {
     pub(crate) stashes: Option<Result<&'a Arc<[Stash]>, &'a Problem>>,
     pub(crate) worktrees: Option<Result<&'a Arc<[Worktree]>, &'a Problem>>,
     pub(crate) submodules: Option<Result<&'a Arc<[Submodule]>, &'a Problem>>,
+    /// Its Git LFS, once read.
+    pub(crate) lfs: Option<Result<&'a Arc<crate::lfs::LfsState>, &'a Problem>>,
     pub(crate) config: Option<&'a Arc<ConfigSnapshot>>,
 }
 

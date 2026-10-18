@@ -8,6 +8,7 @@ mod file;
 mod file_history;
 pub(crate) mod history;
 pub(crate) mod home;
+mod lfs;
 mod merge;
 pub(crate) mod palette;
 mod patch;

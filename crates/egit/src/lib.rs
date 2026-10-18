@@ -28,6 +28,7 @@ mod format;
 mod grid;
 mod history;
 mod jobs;
+mod lfs;
 mod merge;
 mod pictures;
 mod preferences;

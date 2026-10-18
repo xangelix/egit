@@ -645,6 +645,7 @@ fn done_text(task: &Task) -> String {
         Task::PruneWorktrees => "Forgot the worktrees whose folders are gone.".to_owned(),
         Task::Undo(undo) => format!("Undid {}.", undo.what),
         Task::Redo(undo) => format!("Redid {}.", undo.what),
+        Task::Lfs(lfs) => lfs.done(),
         _ => "Done.".to_owned(),
     }
 }

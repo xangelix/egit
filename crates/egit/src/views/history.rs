@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use bstr::{BStr, ByteSlice as _};
 use egit_git::{
-    Bisection, CancelToken, Changes, Committed, ConfigSnapshot, FileChange, Git, Head,
+    Bisection, CancelToken, Changes, Committed, ConfigSnapshot, FileChange, Git, Head, LfsTransfer,
     MailboxProgress, ObjectId, Operation, RefKind, Reference, Repository, SignatureCheck, Stash,
     Status, Verdict, looks_like_patch,
 };
@@ -31,6 +31,7 @@ use super::actions::{self, Ask, Menus};
 use super::blame::{self, BlameEvent, BlameView};
 use super::file::{self, FileView, FileWanted, WorkFile};
 use super::file_history::{self, FileHistoryView};
+use super::lfs::LfsEvent;
 use super::patch::{self, PatchEvent, PatchSource, PatchView};
 use super::pull_form::{self, PullRequestForm};
 use super::pulls::{self, PullRequestEvent, PullRequestView};
@@ -54,7 +55,7 @@ use crate::preferences::Preferences;
 use crate::problem::Problem;
 use crate::repo::{RepoId, RepoPanel};
 use crate::tables::ChangesTable;
-use crate::tasks::Tasks;
+use crate::tasks::{Task, Tasks};
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::undo::Journal;
@@ -265,6 +266,7 @@ enum Tool {
     PullRequests(PullRequestView),
     Patch(PatchView),
     Reflog(Box<ReflogView>),
+    Lfs(Box<super::lfs::LfsView>),
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -579,6 +581,12 @@ impl HistoryView {
         self.tool = Some(Tool::Reflog(Box::new(ReflogView::new(reference))));
     }
 
+    /// Shows Git LFS's page in the commit table's place.
+    fn show_lfs(&mut self) {
+        self.file = None;
+        self.tool = Some(Tool::Lfs(Box::default()));
+    }
+
     /// Shows the sidebar or hides it.
     pub(crate) const fn show_sidebar(&mut self, open: bool) {
         self.sidebar.open = open;
@@ -763,6 +771,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         scope: history.scope().clone(),
         home,
         journal,
+        lfs: lists.lfs.and_then(Result::ok),
     };
     // Before the first commit, the work tree is all there is to look at.
     if history.shown.rows() == 0 && !history.shown.is_loading() {
@@ -797,13 +806,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
 
     let no_commits = history.shown.rows() == 0;
     if no_commits && work_status.as_ref().is_none_or(|status| status.is_empty()) {
-        egui::CentralPanel::default()
-            .frame(Frame::new().inner_margin(Margin::same(16)))
-            .show(ui, |ui| {
-                if !history.shown.is_loading() && history.shown.problem().is_none() {
-                    ui.label(muted(ui, "No commits yet."));
-                }
-            });
+        nothing_yet(ui, history);
         return;
     }
 
@@ -856,6 +859,17 @@ fn drop_menu(
     if asked.is_some() {
         view.asked = asked;
     }
+}
+
+/// A repository without a commit or a change yet: says so, once the history is read.
+fn nothing_yet(ui: &mut Ui, history: &HistoryState) {
+    egui::CentralPanel::default()
+        .frame(Frame::new().inner_margin(Margin::same(16)))
+        .show(ui, |ui| {
+            if !history.shown.is_loading() && history.shown.problem().is_none() {
+                ui.label(muted(ui, "No commits yet."));
+            }
+        });
 }
 
 /// What the panels beside the commit table show: the working tree's side, and the sidebar's
@@ -926,6 +940,9 @@ fn bar_panel(
         .show(ui, |ui| {
             top_bar(ui, shared, history, work_tree, view, writing, pane);
             tasks::outcome(ui, &mut view.tasks, pane);
+            if lfs_banner(ui, shared, pane) {
+                view.show_lfs();
+            }
             let brought = tasks::brought(ui, pane);
             match tasks::banner(ui, &mut view.tasks, pane).or(brought) {
                 Some(TaskEvent::WorkTree) => view.select_work(),
@@ -938,6 +955,57 @@ fn bar_panel(
                 None => {}
             }
         });
+}
+
+/// Where the repository keeps files in Git LFS but they can't be whole here (git-lfs missing,
+/// or not set up), a banner saying so and how to mend it; returns whether LFS's page was asked.
+fn lfs_banner(ui: &mut Ui, shared: &Shared<'_>, pane: &mut TaskPane<'_>) -> bool {
+    let Some(trouble) = shared.lfs.and_then(|lfs| lfs.trouble()) else {
+        return false;
+    };
+    let palette = shared.palette;
+    let mut open_page = false;
+    ui.scope_builder(UiBuilder::new().id(Id::new(("lfs-banner", shared.id))), |ui| {
+        ui.add_space(4.0);
+        Frame::new()
+            .fill(palette.warn.gamma_multiply(0.12))
+            .stroke(Stroke::new(1.0, palette.warn))
+            .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
+            .inner_margin(Margin::symmetric(12, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                let (headline, how) = match trouble {
+                    crate::lfs::LfsTrouble::NotInstalled => (
+                        "This repository keeps large files in Git LFS, but git-lfs isn't installed.",
+                        "Those files are only pointers here. Install git-lfs (its package; Git \
+                         for Windows has it), then read the repository again.",
+                    ),
+                    crate::lfs::LfsTrouble::NotSetUp => (
+                        "This repository keeps large files in Git LFS, but it isn't set up here.",
+                        "Those files are only pointers, and pushes would leave them behind. \
+                         Setting it up adds LFS's filters and hooks to this repository.",
+                    ),
+                };
+                ui.add(
+                    Label::new(
+                        RichText::new(format!("{}  {headline}", icon::WARNING))
+                            .color(palette.warn)
+                            .semibold(),
+                    )
+                    .wrap(),
+                );
+                ui.add(Label::new(how).wrap());
+                ui.horizontal(|ui| {
+                    if trouble == crate::lfs::LfsTrouble::NotSetUp
+                        && widgets::primary(ui, !shared.busy, "Set up Git LFS here").clicked()
+                    {
+                        pane.start(Task::Lfs(crate::lfs::LfsTask::Install));
+                    }
+                    open_page = widgets::secondary(ui, true, "Open Git LFS").clicked();
+                });
+            });
+    });
+    open_page
 }
 
 /// Patch files dropped on the window, shown to apply (others are left alone); a hint while
@@ -1159,6 +1227,8 @@ pub(super) struct Shared<'a> {
     pub(super) home: Option<&'a Path>,
     /// What egit did here, to take back, and what it took back, to do again.
     journal: &'a Journal,
+    /// Its Git LFS, once read.
+    pub(super) lfs: Option<&'a Arc<crate::lfs::LfsState>>,
 }
 
 impl Shared<'_> {
@@ -1260,8 +1330,14 @@ fn top_bar(
         ((icon::GIT_DIFF, "Patches"), true),
         ((icon::INFO, "Repository"), true),
     ];
+    // Git LFS's menu, where the repository keeps files in it.
+    let lfs = shared
+        .lfs
+        .is_some_and(|lfs| lfs.used())
+        .then_some(((icon::HARD_DRIVES, "LFS"), true));
     let words: f32 = tools
         .iter()
+        .chain(lfs.as_ref())
         .map(|&(tool, menu)| {
             widgets::tool_width(ui, tool, Look::Full, menu)
                 - widgets::tool_width(ui, tool, Look::Compact, menu)
@@ -1380,7 +1456,10 @@ fn left_bar(
     if let Some(asked) = asked {
         carry_out(asked, shared, view, task_pane.actions);
     }
-    repository_menu(ui, shared, look, task_pane.actions);
+    lfs_menu(ui, shared, view, look, task_pane.actions);
+    if repository_menu(ui, shared, look, task_pane.actions) {
+        view.show_lfs();
+    }
     // What comes and goes follows the buttons: ids are counted in order, and a click
     // pressed on one id and released on another is lost.
     let rows = history.shown.rows();
@@ -1407,9 +1486,15 @@ fn left_bar(
 /// The top bar's spinner's size, while the history is read.
 const SPINNER: f32 = 16.0;
 
-/// The repository's menu: its overview and settings (each a page in place of the history), and
-/// reading it all again.
-fn repository_menu(ui: &mut Ui, shared: &Shared<'_>, look: Look, actions: &mut Vec<Action>) {
+/// The repository's menu: its overview and settings (each a page in place of the history), Git
+/// LFS's page, and reading it all again; returns whether Git LFS's page was asked for.
+fn repository_menu(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    look: Look,
+    actions: &mut Vec<Action>,
+) -> bool {
+    let mut lfs = false;
     widgets::tool_menu(ui, icon::INFO, "Repository", look, |ui| {
         ui.set_min_width(220.0);
         for (entry, panel) in [
@@ -1423,11 +1508,90 @@ fn repository_menu(ui: &mut Ui, shared: &Shared<'_>, look: Look, actions: &mut V
                 actions.push(Action::ShowPanel(shared.id, panel));
             }
         }
+        lfs = actions::item(ui, (icon::HARD_DRIVES, "Git LFS"), Ok(()));
         ui.separator();
         if actions::shortcut_item(ui, (icon::ARROWS_CLOCKWISE, "Read it again"), "⌘R") {
             actions.push(Action::Refresh(shared.id));
         }
     });
+    lfs
+}
+
+/// Git LFS's menu, where the repository keeps files in it: its state, moving its files, and its
+/// page.
+fn lfs_menu(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    view: &mut HistoryView,
+    look: Look,
+    actions: &mut Vec<Action>,
+) {
+    let Some(lfs) = shared.lfs.filter(|lfs| lfs.used()) else {
+        return;
+    };
+    let mut page = false;
+    widgets::tool_menu(ui, icon::HARD_DRIVES, "LFS", look, |ui| {
+        ui.set_min_width(260.0);
+        let state = match (lfs.version, lfs.trouble()) {
+            (_, Some(crate::lfs::LfsTrouble::NotInstalled)) => "git-lfs isn't installed".to_owned(),
+            (_, Some(crate::lfs::LfsTrouble::NotSetUp)) => "Not set up here".to_owned(),
+            (Some(version), None) => format!("git-lfs {version}, set up here"),
+            (None, None) => String::new(),
+        };
+        actions::menu_header(ui, &state);
+        let allowed = if shared.busy {
+            Err("Another task is running")
+        } else if lfs.trouble().is_some() {
+            Err("Set Git LFS up first: see its page")
+        } else {
+            Ok(())
+        };
+        let mut task = |task| actions.push(Action::Task(shared.id, Task::Lfs(task)));
+        for (glyph, label, transfer) in [
+            (icon::ARROW_DOWN, "Pull LFS files", LfsTransfer::Pull),
+            (
+                icon::DOWNLOAD_SIMPLE,
+                "Fetch LFS files",
+                LfsTransfer::Fetch { all: false },
+            ),
+            (
+                icon::FILE_ARROW_DOWN,
+                "Check out LFS files",
+                LfsTransfer::Checkout,
+            ),
+        ] {
+            if actions::item(ui, (glyph, label), allowed) {
+                task(crate::lfs::LfsTask::Transfer(transfer));
+            }
+        }
+        for remote in shared
+            .config
+            .map(crate::tasks::remote_names)
+            .unwrap_or_default()
+        {
+            if actions::item(
+                ui,
+                (icon::ARROW_UP, &format!("Push LFS files to {remote}")),
+                allowed,
+            ) {
+                task(crate::lfs::LfsTask::Transfer(LfsTransfer::Push {
+                    remote: remote.as_str().into(),
+                }));
+            }
+        }
+        if actions::item(ui, (icon::BROOM, "Prune LFS files"), allowed) {
+            task(crate::lfs::LfsTask::Prune);
+        }
+        ui.separator();
+        page = actions::item(
+            ui,
+            (icon::HARD_DRIVES, "Patterns, files, and locks…"),
+            Ok(()),
+        );
+    });
+    if page {
+        view.show_lfs();
+    }
 }
 
 /// The button opening the search bar over the commit table (shown in place of a file or a
@@ -1774,6 +1938,14 @@ fn tool(
             }
             Some(PullRequestEvent::Refresh) => {
                 actions.push(Action::RefreshPullRequests(shared.id));
+                None
+            }
+            None => None,
+        },
+        Some(Tool::Lfs(page)) => match super::lfs::show(ui, shared, shared.lfs, page) {
+            Some(LfsEvent::Close) => Some(BlameEvent::Close),
+            Some(LfsEvent::Task(task)) => {
+                actions.push(Action::Task(shared.id, task));
                 None
             }
             None => None,

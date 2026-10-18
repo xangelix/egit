@@ -63,6 +63,8 @@ pub(crate) struct RepoTab {
     pub(crate) worktrees: Bind<Arc<[Worktree]>, Problem>,
     /// The submodules, by path.
     pub(crate) submodules: Bind<Arc<[Submodule]>, Problem>,
+    /// Its Git LFS: installed, set up, the patterns it tracks.
+    pub(crate) lfs: Bind<Arc<crate::lfs::LfsState>, Problem>,
     pub(crate) config_table: SnapshotTable,
     pub(crate) history: HistoryState,
     pub(crate) history_view: HistoryView,
@@ -122,6 +124,7 @@ impl RepoTab {
             stashes: Bind::new(true),
             worktrees: Bind::new(true),
             submodules: Bind::new(true),
+            lfs: Bind::new(true),
             config_table: SnapshotTable::new(format!("repo-config-{id}")),
             writing_commit_graph: Bind::new(true),
             staging: Bind::new(true),
@@ -471,6 +474,10 @@ impl RepoTab {
             submodules(&git_, &repository)
                 .map(Into::into)
                 .map_err(|error| Problem::git("The submodules couldn't be read", &error))
+        }));
+        let (git_, repository) = read(&self.repository);
+        self.lfs.request(jobs::blocking(move || {
+            crate::lfs::read_lfs(&git_, &repository, crate::lfs::Reading::WhereUsed).map(Arc::new)
         }));
     }
 
