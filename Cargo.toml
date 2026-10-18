@@ -45,6 +45,8 @@ getrandom = "0.4.3"
 libc = "0.2.190"
 rustix = { version = "1.1.5", features = ["event", "net", "process"] }
 serde = { version = "1.0.229", features = ["derive"] }
+# Gravatar names pictures by an address's SHA-256 (already in the tree through gix-hash).
+sha2 = { version = "0.11.1", default-features = false }
 serde_json = "1.0.154"
 # Images a change replaced, decoded to show side by side (the formats a repository commonly
 # holds; already in the tree through the clipboard's crate).

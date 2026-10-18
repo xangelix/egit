@@ -1,6 +1,7 @@
 //! The application driven as a user drives it.
 
 mod audit;
+mod avatars;
 mod bisect;
 mod columns;
 mod corpus;

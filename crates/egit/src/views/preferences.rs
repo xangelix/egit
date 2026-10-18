@@ -3,7 +3,7 @@
 //! first (side by side, lines wrapped, a tab's width; changed files as a list or a tree), and
 //! commit dates; then the keyboard shortcuts. Each change is in effect at once, and kept.
 
-use egui::{ComboBox, Grid, RichText, Ui};
+use egui::{ComboBox, Grid, Label, RichText, Ui};
 
 use crate::app::{Action, AppState};
 use crate::commands::{Command, keys_text};
@@ -81,6 +81,21 @@ fn appearance(ui: &mut Ui, state: &mut AppState, preferences: &mut Preferences) 
                 ],
             );
         });
+        widgets::fact(ui, LABEL, "People", |ui| {
+            widgets::segmented(
+                ui,
+                &mut preferences.pictures,
+                &[(true, "Their pictures"), (false, "Their initials")],
+            );
+        });
+        ui.add(
+            Label::new(muted(
+                ui,
+                "Pictures come from GitHub (for its no-reply addresses) and Gravatar, which are \
+                 sent each author's email, hashed; they are kept on this computer.",
+            ))
+            .wrap(),
+        );
     });
 }
 

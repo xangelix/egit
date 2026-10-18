@@ -1424,4 +1424,31 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
         ],
     },
+    Topic {
+        id: "pref-pictures",
+        group: Group::Egit,
+        title: "People's pictures",
+        on: &["People", "Their pictures", "Their initials"],
+        what: "With Their pictures, each author's picture is fetched once and drawn in place of \
+               their initials: GitHub's for its no-reply addresses (12345+login@users.\
+               noreply.github.com), else Gravatar's. Those services are sent the author's email \
+               (Gravatar, its SHA-256), never anything else. Each picture is kept on this \
+               computer, 128 pixels square; someone without one keeps their initials, asked again \
+               after a week. Their initials fetches nothing.",
+        git: "",
+        cases: &[
+            (
+                "Someone's picture is wrong or old?",
+                "It is what Gravatar or GitHub has for that email. Delete egit's pictures folder in your cache folder to fetch them all again.",
+            ),
+            (
+                "Offline?",
+                "Initials show, and the pictures are asked for again later; those fetched before come from the disk.",
+            ),
+            (
+                "Two names, one picture?",
+                "Pictures follow the email: a person committing with two addresses may show two.",
+            ),
+        ],
+    },
 ];

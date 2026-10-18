@@ -507,8 +507,8 @@ writes paths), never `OsStrExt`.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test;
     `set_mode` (a script's permission bits, where files have them).
 - `crates/egit-forge` — forges' web APIs: GitHub's (github.com, Enterprise Server) and GitLab's
-  (gitlab.com, self-managed); no egui. egit's only network connections of its own (git makes
-  every other).
+  (gitlab.com, self-managed), and people's pictures; no egui. egit's only network connections
+  of its own (git makes every other).
   - `host.rs` — `ForgeKind` (GitHub, GitLab; `name`). `ForgeHost`: a kind and a host:
     github.com (APIs on `api.github.com`), an Enterprise host (`/api/graphql`, `/api/v3`),
     GitLab's (`/api/graphql`, `/api/v4`); `parse` reads a listed entry (`host[:port]`,
@@ -550,6 +550,13 @@ writes paths), never `OsStrExt`.
     conflicts); REST for the project (`GET /projects/:path`: its id, default branch, the
     project it was forked from) and opening one (in the branch's own project; from a fork,
     aimed at the target's id; a draft by GitLab's own `Draft:` mark).
+  - `pictures.rs` — `PictureSources` (`public`: GitHub's avatars by account number, its
+    profiles by login, Gravatar's): `url` for an email, GitHub's for its no-reply addresses
+    (`12345+login@users.noreply.github.com`; an older `login@…` by its profile), else
+    Gravatar's by the trimmed lower-case address's SHA-256 (`sha2`), `d=404` so someone without
+    one says so. `Pictures::fetch`: no credential, so redirects are followed, HTTPS only (but
+    every source on the loopback address, for tests), 1 MiB at most; `Fetched::Found` or
+    `Missing` (404).
   - `testing.rs` (feature `testing`) — `FakeForge`: either forge's API on the loopback address
     (pages, details, repository, who is signed in, opening; the bearer token checked; a rate
     limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each
@@ -639,7 +646,8 @@ writes paths), never `OsStrExt`.
   - `preferences.rs` — `Preferences` (kept in the settings, every field defaulted so older
     settings read): the text's size (70–200%, egui's zoom, which ⌘+ ⌘− ⌘0 change too: followed
     back), the background fetch (`FetchEvery`: never, every minute, 5 (the default), 15, or 30
-    minutes), the sidebar shown when a repository opens, a file's first look (`FilePreferences`:
+    minutes), the sidebar shown when a repository opens, people's pictures or their initials
+    (`pictures`), a file's first look (`FilePreferences`:
     diffs side by side, lines wrapped, a tab's width of 2, 4, or 8 cells, lists of changed
     files as a list or a tree of their folders (`FileLists`, chosen too by each list's header),
     and the merge editor's sides above its merged file: `merge_panes`), and commit dates
@@ -946,6 +954,18 @@ writes paths), never `OsStrExt`.
     apply (files, patches first); for tests a folder answering them all (`in_folder`).
     `Action::AskFiles` asks, and `AppState::poll` turns the answer into a task, or shows the
     patches (`Action::OpenPatches`).
+  - `avatars.rs` — people's pictures (`Preferences::pictures`, on by default): `install` (the
+    real application only: tests fetch nothing) starts two worker threads taking the newest
+    request first (the rows on screen; past 128 waiting, the oldest dropped), each picture read
+    from the cache folder (`cache_folder`: XDG's, macOS's `Library/Caches`, `LOCALAPPDATA`;
+    `egit/pictures/<key>.png`, or `.none` for someone without one, believed a week) or fetched
+    (`egit_forge::Pictures`), cropped square, scaled to 128 × 128 (Lanczos) and kept, then
+    scaled to 64, 32, and 16 too (egui's renderer makes no mipmaps), each masked to a circle a
+    pixel inside its edge, in one tile (192 × 128) of an atlas of 80 (2048 × 1024, one texture:
+    `set_partial`, up to 8 a frame in `poll`), the one drawn least recently making room.
+    `picture`: an email's atlas part, the smallest level at least its size on screen, asking
+    for it otherwise (keyed by FNV-1a of the address in lower case: nothing allocated to look
+    it up); a failed fetch is tried again after ten minutes.
   - `fonts.rs` — system fonts for characters egui's lack (CJK, most scripts): views note them
     (`note_missing`, `note_text`, nothing to check for ASCII); `Fallbacks::poll` (each frame)
     looks once per character, in a job, through the system's font directories (XDG's; macOS's
@@ -1393,8 +1413,8 @@ writes paths), never `OsStrExt`.
     one lightens under the pointer), cards, origin labels, problem boxes; `avatar.rs`: someone
     as their initials (their name's first and last words', else their email's) on a colour
     of the palette's `avatars` hashed from their email (FNV-1a, any case), so one person looks
-    alike everywhere; drawn, never fetched (`avatar`; `avatars` overlapping a little, three
-    at most and "+2"); `toggles.rs`: a
+    alike everywhere, or their picture once fetched (`avatars.rs`: a quad of its atlas on their
+    colour, ringed alike) (`avatar`; `avatars` overlapping a little, three at most and "+2"); `toggles.rs`: a
     checkbox (a square box, filled and ticked when checked), radio buttons, and a segmented
     control (sized from its words before it is drawn, a control's height, so it centres on its
     row as any widget does; its 24-point segments' corners following its), each a whole row
@@ -1471,7 +1491,10 @@ writes paths), never `OsStrExt`.
     `EGIT_REQUIRE_LFS`).
     `src/tests/picked.rs` picks two commits by ⇧-click, adds and takes away a third by ⌘-click,
     signs the two from their menu (the one after them made again too, the first left alone;
-    their signatures good in `git log`), and undoes it. `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
+    their signatures good in `git log`), and undoes it. `src/tests/avatars.rs` serves pictures from a stand-in for Gravatar on the
+    loopback address: one drawn, one without (404) kept to initials, both kept on disk and a
+    window opened after asking nothing; and keeps to initials when the preferences say so.
+    `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
     current one onto another (rebased), between the sidebar and the graph either way.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.

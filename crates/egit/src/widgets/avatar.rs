@@ -1,6 +1,6 @@
-//! People as their initials in a circle of a colour of their own, picked by their email so one
-//! person looks alike everywhere. Drawn here and never fetched: no address leaves egit to find
-//! a picture.
+//! People as their pictures (when the preferences fetch them, and once they are in: see
+//! `avatars`), else their initials in a circle of a colour of their own, picked by their email
+//! so one person looks alike everywhere.
 
 use egui::{Align2, Color32, FontId, Pos2, Sense, Stroke, Ui, Vec2};
 
@@ -58,6 +58,19 @@ fn paint_avatar(ui: &Ui, (center, diameter): (Pos2, f32), person: (&str, &str), 
     let palette = Palette::of(ui.ctx());
     let radius = diameter / 2.0;
     let painter = ui.painter();
+    // Their picture: a quad of the atlas, on their colour (a picture's clear parts show it),
+    // ringed as initials are.
+    if let Some((atlas, uv)) = crate::avatars::picture(ui.ctx(), person.1, diameter) {
+        painter.circle_filled(center, radius - 1.0, color(palette, person));
+        painter.image(
+            atlas,
+            egui::Rect::from_center_size(center, Vec2::splat(diameter)),
+            uv,
+            Color32::WHITE,
+        );
+        painter.circle_stroke(center, radius, Stroke::new(1.5, edge));
+        return;
+    }
     painter.circle(
         center,
         radius,

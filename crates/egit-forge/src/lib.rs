@@ -3,6 +3,8 @@
 //! credentials git's helpers keep, and pull requests (GitHub's) or merge requests (GitLab's):
 //! read, detailed, and opened. No egui.
 //!
+//! And people's pictures, from GitHub and Gravatar, by their email (when the preferences ask).
+//!
 //! egit's own network connections are these alone; git makes every other. They go over
 //! HTTPS through rustls on aws-lc-rs, checked against the system's trust store.
 
@@ -15,6 +17,7 @@ mod gitlab;
 mod host;
 mod http;
 mod model;
+mod pictures;
 mod repository;
 #[cfg(feature = "testing")]
 pub mod testing;
@@ -27,4 +30,5 @@ pub use model::{
     Check, CheckState, Mergeable, NewPullRequest, Opened, PullRequest, PullRequestDetails,
     PullRequestPage, RepositoryInfo, Review, ReviewDecision, ReviewState,
 };
+pub use pictures::{Fetched, PictureSources, Pictures};
 pub use repository::{ForgeRepository, forge_repository, resolve_ssh_alias};

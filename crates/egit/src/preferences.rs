@@ -137,6 +137,9 @@ pub(crate) struct Preferences {
     pub(crate) files: FilePreferences,
     /// How commit dates show.
     pub(crate) dates: Dates,
+    /// Whether people's pictures are fetched (from GitHub and Gravatar) and drawn in place of
+    /// their initials.
+    pub(crate) pictures: bool,
 }
 
 impl Default for Preferences {
@@ -147,6 +150,7 @@ impl Default for Preferences {
             sidebar: true,
             files: FilePreferences::default(),
             dates: Dates::default(),
+            pictures: true,
         }
     }
 }
@@ -172,6 +176,7 @@ impl Preferences {
             8
         };
         TAB_WIDTH.store(width, Ordering::Relaxed);
+        crate::avatars::set_enabled(ctx, self.pictures);
     }
 
     /// The text's size as egui has it now (the keyboard's ⌘+ and ⌘− change it), in percent.

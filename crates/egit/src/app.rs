@@ -184,6 +184,12 @@ impl EgitApp {
             env,
             unset: Vec::new(),
         };
+        // People's pictures, fetched while the preferences ask (the tests fetch none).
+        crate::avatars::install(
+            &creation.egui_ctx,
+            &egit_forge::PictureSources::public(),
+            crate::avatars::cache_folder(home_dir.as_deref()).as_deref(),
+        );
         Self::start(
             &creation.egui_ctx,
             settings,
@@ -503,6 +509,7 @@ impl AppState {
     fn poll(&mut self, ctx: &egui::Context) {
         self.prompts.poll();
         self.fonts.poll(ctx);
+        crate::avatars::poll(ctx);
         // Back from an editor or a terminal: what the user did there is what they look for.
         let focused = ctx.input(|input| input.focused);
         let regained = focused && !std::mem::replace(&mut self.focused, focused);
