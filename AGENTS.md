@@ -32,6 +32,7 @@ it.
 | 18 | Bisect, and rebasing merges | done; awaiting the owner's review |
 | 19 | Polish: preferences, a command palette and shortcuts, the accessibility audit | done; awaiting the owner's review |
 | 20 | macOS and Windows | done; linted for both from Linux, CI's runs left to the owner |
+| 21 | Ergonomics: one look for every control | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -605,7 +606,8 @@ writes paths), never `OsStrExt`.
     `HistoryState` and `HistoryView`, its `WriteLock` (writing a commit-graph), its
     `Journal` (what to undo and redo; `undo` runs the next as a task, and a commit made notes
     how to take it back),
-    its own tiles (`RepoPanel::{History, Overview, Configuration}`), and its `Watcher`
+    what it shows (`panel`: `RepoPanel::{History, Overview, Configuration}`, the pages a
+    bar over them away, `Action::ShowPanel`), and its `Watcher`
     (`follow_changes`: refs or operation state changed → status read again, refs → history
     read again; config → config; the index, refs, state, or a file → the `WorkTree`'s
     status; a task ended → status, configuration (an upstream set, say), and work tree read
@@ -831,9 +833,13 @@ writes paths), never `OsStrExt`.
     the user's `LANG` first; outlines required, so no colour bitmaps) and adds what it finds as
     lowest-priority fallbacks to both families. Kept fonts are leaked once into `'static`
     slices: egui copies owned font data on every rebuild of its fonts, but borrows static.
-  - `views/history.rs` — the top bar (the commit count, how many files have uncommitted
-    changes: a button showing the working tree beside the history in place of a commit's
-    details, as it always is before the first commit; and `views/tasks.rs`'s bar), and the
+  - `views/history.rs` — the top bar: Undo and Redo, then the views and menus as quiet tools
+    (Search, Reflog, Stash, Patches, and Repository: its Overview, Settings, and reading it
+    again), their words beside their icons where the bar has room for all it shows
+    (`Look::Full`), their icons alone elsewhere (`Look::Compact`, their words on hover), the
+    commit count, how many files are uncommitted (a button showing the working tree beside
+    the history in place of a commit's details, as it always is before the first commit),
+    the requests; at its right `views/tasks.rs`'s bar. Then the
     commit table on egui-table-kit's layout `Table` (its `TableKit` keeps per-row state a
     graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
@@ -851,7 +857,9 @@ writes paths), never `OsStrExt`.
     and the changed files (`ChangesTable`), with the lines each gained and lost once counted
     (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
     clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or
-    "History" goes back): its diff against the first parent (unified or side by side, with
+    "History" goes back; its bar: back, how the file changed and its path, Blame and File
+    history at the right; then Diff or File, Unified or Side by side, as segmented choices):
+    its diff against the first parent (unified or side by side, with
     "Whole file" for all of its context), or the file as the commit left it (as it was, if
     deleted; read the first time it is asked for, `read_file`), or a placeholder for binary
     files, LFS pointers, submodules, and files over 256 MiB. A `FileView` of a work tree's
@@ -861,11 +869,12 @@ writes paths), never `OsStrExt`.
     conflict shows `views/merge.rs`'s `MergeView` instead (and "Stage file", resolving it as
     the work tree has it), reading the conflict again when the status changes (its choices kept
     while its sides are the same), then, resolved, its staged changes. `MergeView`: "Conflict 2
-    of 5: <its choice>", Previous and Next (Alt+↑ and Alt+↓), how many are left, "Show the
-    base", "Save resolution" once none is open; "Take" Current, Incoming, both either way, or
-    Base (moving on to the next open conflict), "Edit…" (its text in a code field, Apply or
-    Cancel; a line ending is added unless it ends the file), "Reopen", "All current", "All
-    incoming"; lines selected in a conflict select it. A conflict that isn't two texts says
+    of 5" and its choice, Previous and Next (Alt+↑ and Alt+↓), how many are left, "Show the
+    base", "Save resolution" (at the right) once none is open; then "Take" Current, Incoming,
+    Both (current first), or Base (moving on to the next open conflict), "Edit…" (its text in
+    a code field, Apply or Cancel; a line ending is added unless it ends the file), and More:
+    both incoming first, Reopen, All current, All incoming; lines selected in a conflict
+    select it. A conflict that isn't two texts says
     what each side did and offers keeping a side or deleting the file. `Shared::operation`
     and `branch` label the sides.
     `views/work.rs` — `WorkPanel`: "Not staged" and "Staged", each a table-kit list (indices
@@ -1050,11 +1059,14 @@ writes paths), never `OsStrExt`.
     sidebar), diffs and files (side by side, wrapped, tab width), and every keyboard shortcut;
     each change pushes `Action::SetPreferences`, in effect at once (each tab's fetch interval
     and sidebar too) and kept.
-  - `views/` — `home` (open by dialog or typed path, the problem and its remedy, recent
-    repositories in egui-table-kit, who you are), `profile` (identity and signing editable;
+  - `views/` — `home` (who commits and the profile's button first, then open by dialog or
+    typed path, the problem and its remedy, recent repositories in egui-table-kit, and
+    cloning), `profile` (identity and signing editable;
     credentials, the GitHub Enterprise and self-managed GitLab hosts (added and removed as
     `egit.githubHost` and `egit.gitlabHost`), pull and push, and every setting, each with its
-    origin), `repo` (overview and settings table), `status_bar` (git's version and path, the
+    origin), `repo` (the history, or a page: the overview or the settings table, under a bar
+    going back to the history (or Escape) and switching between the two), `status_bar` (git's
+    version and path, the
     theme, Commands and Preferences, a warning when
     questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
     `AskpassServer` at launch and gives git its environment; questions queue and show one
@@ -1066,7 +1078,11 @@ writes paths), never `OsStrExt`.
     O(1) `cell_at`. Every table asks table-kit to center its text across a row
     (`with_cell_align(Align::Center)`: unasked, it lays text out as `ui.horizontal` does, from
     the top of a cell shorter than the theme's widgets), and the custom cells here lay out
-    across the cell's own height likewise. `SnapshotTable` and `ChangesTable`, whose state
+    across the cell's own height likewise; `styled` (every table: selected rows in the text's
+    own colour, no table-kit outline) and `list` (file lists: a narrow column of
+    `status_cell`s, a coloured letter for how each file changed (`status_mark`: A, M, D, R, C,
+    T, U, !), named by the word, the path filling the rest, no header). `SnapshotTable` and
+    `ChangesTable`, whose state
     starts over only when their snapshot or commit is replaced. A file's cell is named by its path ("old → new" for
     a rename); `file_cell` draws its counts at its right, so the narrow details panel needs no
     third column, and its (new) path in what is left, losing its start first, from a folder's
@@ -1074,13 +1090,25 @@ writes paths), never `OsStrExt`.
     and a rename's old one on hover.
   - `theme.rs` (palettes, WCAG AA checked by tests, text over every line background too: diff
     lines and words, a conflict's sides and headers, resolved lines, rows a search found;
-    a selected or found row under the pointer (`selected_hover`) too; Phosphor icons),
-    `widgets.rs` (cards, buttons, origin labels, problem boxes; `TARGET`, the 24 points every
-    control takes each way: `small` buttons, `line_field` text fields as tall as buttons,
-    `icon_button` exactly its place, `row_fill` a list row's background (a selected one
-    lightens under the pointer); `focus_ring`, drawn once a frame around the control with the
-    keyboard focus after a key (Tab, an arrow) or an assistive technology moved it, gone at the
-    next press of the pointer, as a browser's `:focus-visible`), `format.rs` (`~` paths, "5 minutes ago",
+    a selected or found row under the pointer (`selected_hover`) too, and text on the danger
+    colour; Phosphor icons; one scale of text: `SMALL` 11.5, `BODY` 13, `CODE` 12.5, `HEADING`
+    14, `TITLE` 18, and `CONTROL` (28), the height of buttons, fields, and menus' buttons;
+    every control has an edge: `field` behind what is typed, `border_strong` under the
+    pointer), `widgets/` (the pieces every view is built from, so each looks and answers
+    alike: titles (`page_title` 22, `panel_title` 16, `heading`), buttons by kind (`primary`,
+    `danger` for what loses something, `secondary`, `small`, `link`; a toolbar's quiet `tool`,
+    `tool_menu` with its caret, and `icon_tool`, named in words, `Look::Full` or `Compact`;
+    words never wrap inside a button), `toolbar_separator`, `section_header` (a title, its
+    count, its buttons at the right), facts in aligned columns (`fact`, `fact_top`,
+    `form_row` naming its field; `FACT_LABEL` on pages), `line_field` text fields as tall as
+    buttons, `icon_button` exactly its place, `row_fill` a list row's background (a selected
+    one lightens under the pointer), cards, origin labels, problem boxes; `toggles.rs`: a
+    checkbox (a square box, filled and ticked when checked), radio buttons, and a segmented
+    control, each a whole row to click; `TARGET`, the 24 points every control takes each way;
+    `focus_ring`, drawn once a frame around the control with the keyboard focus after a key
+    (Tab, an arrow) or an assistive technology moved it, gone at the next press of the
+    pointer, as a browser's `:focus-visible`, never around a field (its edge shows it) or an
+    area as large as the commit table (its selection shows it)), `format.rs` (`~` paths, "5 minutes ago",
     dates, a long command's progress), `settings.rs` (theme, recent repositories, open tabs,
     the clone folder; non-UTF-8 paths kept as
     bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
@@ -1103,7 +1131,9 @@ writes paths), never `OsStrExt`.
     `pointing_hand` sets it for every enabled control that clicks), it is 24 points each way
     (WCAG 2.5.8), and the keyboard focus shows on it; each looked at with the focus elsewhere
     (given back after), but a field that takes the focus back whenever nothing has it (a
-    dialog's). `src/tests/polish.rs` drives preferences (changed from the status bar, in effect
+    dialog's), and each found afresh before it is looked at (focusing a commit's row selects
+    it, which changes the details beside). A screen is rendered once what it shows has landed
+    (a commit's details, their lines counted): the audit's checks take many frames. `src/tests/polish.rs` drives preferences (changed from the status bar, in effect
     for a repository opened after: dates as how long ago, a diff side by side, no background
     fetch; kept) and the palette (a command found by a few letters, one that can't run saying
     why, a branch switched to) and the shortcuts (⌘B, ⌘,, ⌘W, ⌘1). `src/tests/menus.rs` drives the menus' newer
