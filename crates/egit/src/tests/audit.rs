@@ -119,9 +119,10 @@ pub(crate) fn run(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<Strin
         }
     }
 
+    // A floating scroll bar lies over what it scrolls by design (shown as the pointer nears).
     let shown: Vec<&Element> = after
         .iter()
-        .filter(|element| element.visible.is_positive())
+        .filter(|element| element.visible.is_positive() && element.role != Role::ScrollBar)
         .collect();
     for (index, a) in shown.iter().enumerate() {
         for b in shown.iter().skip(index.saturating_add(1)) {

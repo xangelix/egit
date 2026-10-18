@@ -24,7 +24,7 @@ use egui::{
 };
 use egui_async::Bind;
 use egui_table_kit::layout::{
-    CellInfo, Column, HeaderCellInfo, HeaderRow, PrefetchInfo, Table, TableDelegate, TableState,
+    CellInfo, Column, HeaderCellInfo, HeaderRow, PrefetchInfo, Table, TableDelegate,
 };
 
 use super::actions::{self, Ask, Menus};
@@ -2018,12 +2018,17 @@ fn commit_table(
     }
 
     let salt = ("history", shared.id);
-    let columns = columns(ui, salt, history.shown.widest());
+    let place = ui.available_rect_before_wrap();
+    let room = place.width() - ui.spacing().scroll.allocated_width();
+    let widths = column_widths(ui, room, history.shown.widest());
+    let columns = columns(widths);
     let all = columns.len();
     // Under the titles, pinned as they are, the work in progress when there is some: the
     // graph's column, then the rest as one.
     let mut headers = vec![HeaderRow::new(HEADER_HEIGHT)];
+    let mut height = HEADER_HEIGHT;
     if let Some(status) = shared.work_status.filter(|status| !status.is_empty()) {
+        height += ROW_HEIGHT;
         view.work_counts.of(status);
         headers.push(HeaderRow {
             height: ROW_HEIGHT,
@@ -2057,6 +2062,14 @@ fn commit_table(
         now: crate::format::now(),
     };
     table.show(ui, &mut rows);
+    let shown_rows = f32::from(u16::try_from(shown.rows()).unwrap_or(u16::MAX));
+    let work = height > HEADER_HEIGHT;
+    column_lines(
+        ui,
+        place,
+        widths,
+        (shown_rows.mul_add(ROW_HEIGHT, height), work),
+    );
     let asked = rows.asked.take();
     if let Some(row) = rows.clicked {
         view.select(shown, row, None);
@@ -2252,45 +2265,225 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
     }
 }
 
-/// The table's columns: the graph, sized for the history's lanes; the message, taking what
-/// the others leave; author, date, and name.
-fn columns(ui: &Ui, salt: (&str, RepoId), widest: usize) -> Vec<Column> {
-    let lanes = widest.clamp(1, FIRST_LANES);
-    let graph_width = f32::from(u16::try_from(lanes).unwrap_or(1))
-        .mul_add(LANE_WIDTH, GRAPH_MARGIN * 2.0)
-        .max(FIRST_GRAPH_WIDTH);
-    let mut columns = vec![
-        Column::new(graph_width)
-            .range(GRAPH_MARGIN * 2.0 + LANE_WIDTH..=1_200.0)
-            .id(Id::new("graph")),
-        Column::new(MIN_MESSAGE_WIDTH)
-            .range(MIN_MESSAGE_WIDTH..=f32::INFINITY)
-            .resizable(false)
-            .id(Id::new("message")),
-        Column::new(150.0).range(60.0..=480.0).id(Id::new("author")),
-        Column::new(132.0).range(90.0..=240.0).id(Id::new("date")),
-        Column::new(84.0).range(60.0..=240.0).id(Id::new("commit")),
-    ];
-    // The message takes what the others (at their remembered widths) leave.
-    let remembered = TableState::load(ui.ctx(), TableState::id(ui, egui::IdSalt::new(salt)))
-        .map(|state| state.col_widths)
-        .unwrap_or_default();
-    let others: f32 = columns
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| *index != 1)
-        .map(|(index, column)| {
-            remembered
-                .get(&column.id_for(index))
-                .copied()
-                .unwrap_or(column.current)
-        })
-        .sum();
-    let room = ui.available_width() - others - ui.spacing().scroll.allocated_width();
-    if let Some(message) = columns.get_mut(1) {
-        message.current = room.max(MIN_MESSAGE_WIDTH);
+/// The commit table's columns' widths as the user set them, by dragging the lines between
+/// them (egit's own: [`column_lines`]); kept in egui's memory, so they hold across runs and
+/// repositories. The message takes what the others leave.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct ColumnWidths {
+    /// The graph's, once set: until then as wide as its first lanes need.
+    graph: Option<f32>,
+    author: f32,
+    date: f32,
+    commit: f32,
+}
+
+impl Default for ColumnWidths {
+    fn default() -> Self {
+        Self {
+            graph: None,
+            author: AUTHOR_WIDTH,
+            date: DATE_WIDTH,
+            commit: COMMIT_WIDTH,
+        }
     }
-    columns
+}
+
+/// The columns' first widths, and how narrow and wide each may be.
+const AUTHOR_WIDTH: f32 = 150.0;
+const DATE_WIDTH: f32 = 140.0;
+const COMMIT_WIDTH: f32 = 84.0;
+const GRAPH_RANGE: (f32, f32) = (GRAPH_MARGIN * 2.0 + LANE_WIDTH, 1_200.0);
+const AUTHOR_RANGE: (f32, f32) = (60.0, 480.0);
+const DATE_RANGE: (f32, f32) = (90.0, 240.0);
+const COMMIT_RANGE: (f32, f32) = (60.0, 240.0);
+
+/// Where the widths are kept.
+fn widths_id() -> Id {
+    Id::new("commit-table-columns")
+}
+
+/// This frame's widths, graph, message, author, date, commit: the message's what the others
+/// leave of `room` (never under its least).
+fn column_widths(ui: &Ui, room: f32, widest: usize) -> [f32; 5] {
+    let kept: ColumnWidths = ui
+        .ctx()
+        .data_mut(|data| *data.get_persisted_mut_or_default::<ColumnWidths>(widths_id()));
+    let lanes = widest.clamp(1, FIRST_LANES);
+    let graph = kept.graph.unwrap_or_else(|| {
+        f32::from(u16::try_from(lanes).unwrap_or(1))
+            .mul_add(LANE_WIDTH, GRAPH_MARGIN * 2.0)
+            .max(FIRST_GRAPH_WIDTH)
+    });
+    let mut widths = [
+        graph,
+        MIN_MESSAGE_WIDTH,
+        kept.author,
+        kept.date,
+        kept.commit,
+    ];
+    // Too narrow for each at its width (a panel open beside): the others give way, as drawn
+    // only (what is kept stays), the graph first (it pans), then the author, the date, and
+    // the commit, each down to its least, so the rows end where the table does.
+    let mut over = widths.iter().sum::<f32>() - room;
+    for (at, least) in [
+        (0, GRAPH_RANGE.0),
+        (2, AUTHOR_RANGE.0),
+        (3, DATE_RANGE.0),
+        (4, COMMIT_RANGE.0),
+    ] {
+        if let Some(width) = widths.get_mut(at)
+            && over > 0.0
+        {
+            let given = (*width - least).clamp(0.0, over);
+            *width -= given;
+            over -= given;
+        }
+    }
+    if let Some(message) = widths.get_mut(1) {
+        *message = (MIN_MESSAGE_WIDTH - over).max(MIN_MESSAGE_WIDTH);
+    }
+    widths
+}
+
+/// The table's columns at `widths`: none resizable by table-kit, whose resizing moves a
+/// column's right edge (the message, filling what is left, would then move its left one along,
+/// each frame); egit moves the lines between them itself ([`column_lines`]). Ids of their own,
+/// so widths table-kit kept for the old columns don't apply.
+fn columns(widths: [f32; 5]) -> Vec<Column> {
+    ["graph", "message", "author", "date", "commit"]
+        .iter()
+        .zip(widths)
+        .map(|(name, width)| {
+            Column::new(width)
+                .range(width..=width)
+                .resizable(false)
+                .id(Id::new(("commit-column", *name)))
+        })
+        .collect()
+}
+
+/// The lines between the columns, drawn over the table (`place`: where it is, `widths` as
+/// drawn, `height` its titles' and rows', `work`: whether the work in progress's row, one cell
+/// right of the graph, is under the titles), each dragged to move, trading width between the
+/// columns either side of it (the message's by filling what is left), so it follows the
+/// pointer and nothing else moves. A double click puts both back as they were at first.
+fn column_lines(ui: &Ui, place: Rect, widths: [f32; 5], (height, work): (f32, bool)) {
+    let [graph, message, author, date, _] = widths;
+    let left = place.left();
+    let xs = [
+        left + graph,
+        left + graph + message,
+        left + graph + message + author,
+        left + graph + message + author + date,
+    ];
+    let bottom = (place.top() + height).min(place.bottom());
+    let titles = place.top() + HEADER_HEIGHT;
+    // Where the lines are, for tests to drag them.
+    #[cfg(test)]
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(Id::new("commit-column-xs"), xs));
+    let palette = Palette::of(ui.ctx());
+    let radius = ui.style().interaction.resize_grab_radius_side;
+    for (at, x) in xs.into_iter().enumerate() {
+        let line = Rect::from_x_y_ranges(x - radius..=x + radius, place.top()..=bottom);
+        let response = ui.interact(
+            line,
+            Id::new(("commit-column-line", at)),
+            Sense::click_and_drag(),
+        );
+        let active = response.hovered() || response.dragged();
+        if active {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+        }
+        let stroke = if response.dragged() {
+            Stroke::new(2.0, palette.accent)
+        } else if active {
+            Stroke::new(1.0, palette.border_strong)
+        } else {
+            Stroke::new(1.0, palette.border)
+        };
+        // Through the titles and the rows; the work in progress's row is one cell past the
+        // graph's.
+        let painter = ui.painter();
+        if work && at > 0 {
+            painter.vline(x, egui::Rangef::new(place.top(), titles), stroke);
+            painter.vline(x, egui::Rangef::new(titles + ROW_HEIGHT, bottom), stroke);
+        } else {
+            painter.vline(x, egui::Rangef::new(place.top(), bottom), stroke);
+        }
+        let mut kept: ColumnWidths = ui
+            .ctx()
+            .data_mut(|data| *data.get_persisted_mut_or_default::<ColumnWidths>(widths_id()));
+        let before = kept;
+        if response.double_clicked() {
+            reset_columns(&mut kept, at);
+        } else if response.dragged()
+            && let Some(pointer) = response.interact_pointer_pos()
+        {
+            move_line(&mut kept, at, (left, widths, pointer.x));
+        }
+        if kept != before {
+            ui.ctx()
+                .data_mut(|data| data.insert_persisted(widths_id(), kept));
+            ui.ctx().request_repaint();
+        }
+    }
+}
+
+/// Puts the columns line `at` trades between back as they were at first.
+fn reset_columns(kept: &mut ColumnWidths, at: usize) {
+    let first = ColumnWidths::default();
+    match at {
+        0 => kept.graph = None,
+        1 => kept.author = first.author,
+        2 => {
+            kept.author = first.author;
+            kept.date = first.date;
+        }
+        _ => {
+            kept.date = first.date;
+            kept.commit = first.commit;
+        }
+    }
+}
+
+/// Moves line `at` to `x` (`left`: the table's left edge): the columns either side take the
+/// widths that put it there, within their ranges; beside the message, the message fills what is
+/// left, never under its least.
+fn move_line(kept: &mut ColumnWidths, at: usize, (left, widths, x): (f32, [f32; 5], f32)) {
+    let [graph, message, author, date, commit] = widths;
+    // How much a column beside the message may grow before the message is at its least.
+    let spare = (message - MIN_MESSAGE_WIDTH).max(0.0);
+    let grow = |wanted: f32, current: f32, (least, most): (f32, f32)| {
+        wanted.min(current + spare).clamp(least, most)
+    };
+    // Two columns trading width: the left one's within both their ranges.
+    let trade = |wanted: f32, both: f32, (first, second): ((f32, f32), (f32, f32))| {
+        let least = first.0.max(both - second.1);
+        let most = first.1.min(both - second.0);
+        let first = if least <= most {
+            wanted.clamp(least, most)
+        } else {
+            wanted
+        };
+        (first, both - first)
+    };
+    let author_left = left + graph + message;
+    match at {
+        0 => kept.graph = Some(grow(x - left, graph, GRAPH_RANGE)),
+        1 => kept.author = grow(author_left + author - x, author, AUTHOR_RANGE),
+        2 => {
+            let (wide, narrow) = trade(x - author_left, author + date, (AUTHOR_RANGE, DATE_RANGE));
+            kept.author = wide;
+            kept.date = narrow;
+        }
+        _ => {
+            let date_left = author_left + author;
+            let (wide, narrow) = trade(x - date_left, date + commit, (DATE_RANGE, COMMIT_RANGE));
+            kept.date = wide;
+            kept.commit = narrow;
+        }
+    }
 }
 
 /// Moves the selection with the arrow, page, Home, and End keys.

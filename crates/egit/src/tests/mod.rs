@@ -2,6 +2,7 @@
 
 mod audit;
 mod bisect;
+mod columns;
 mod corpus;
 mod dragging;
 mod help;

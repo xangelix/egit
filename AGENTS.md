@@ -959,8 +959,14 @@ writes paths), never `OsStrExt`.
     it); in the details too; painted 18 points tall, so badges in rows next to each other never touch; one that
     doesn't fit in its cell is counted, "+2", rather than cut at the column's edge; in the
     details they wrap); a signed commit's seal by its verdict (good, doubtful, bad, or
-    unchecked, its meaning on hover); a focusable area takes ↑ ↓ PgUp PgDn Home End. The message column
-    is sized each frame from the others' remembered widths. `HistoryView::follow` keeps the
+    unchecked, its meaning on hover); a focusable area takes ↑ ↓ PgUp PgDn Home End. The
+    columns' widths are egit's own (`ColumnWidths`, kept with the settings; table-kit's
+    columns fixed at them): the message fills what the others leave, and when that's under
+    its least (a panel open beside) the others give way as drawn, the graph first, then the
+    author, date, and commit, so rows end where the table does. `column_lines` draws a line
+    between each two columns over the table, every one dragged to trade width between its
+    two columns (the message's by filling what is left), so the line follows the pointer and
+    nothing else moves; a double click puts them back. `HistoryView::follow` keeps the
     selection and the top row's commit in place when a re-read takes over. The table's
     column titles are small and muted, and so is all but the subject (author, date, commit),
     which leads its row; the author's column shows the author's avatar and the co-authors'
@@ -1361,7 +1367,8 @@ writes paths), never `OsStrExt`.
     (egui_kittest) against a sandboxed git; renders `target/gui-screens/*.png` where a wgpu
     adapter exists (`EGIT_GUI_RENDER=1` requires one, `0` skips). Look at them after any
     interface change. Every rendered screen first passes `src/tests/audit.rs` (after eshine's):
-    no egui id clashes, no text or control drawn partly over another on the same layer,
+    no egui id clashes, no text or control drawn partly over another on the same layer (a
+    floating scroll bar aside: it lies over what it scrolls),
     nothing moving while idle, and every control named in words or numbers (link a field to
     its visible label with `labelled_by`), and every one-line field a control's height, its
     text centred top to bottom and 8 points from its side. `EGIT_GUI_RECTS=1` writes each
