@@ -1082,6 +1082,65 @@ fn staged_changes_are_committed_and_amended_from_the_form() {
 }
 
 #[test]
+fn ctrl_enter_commits_from_the_form_or_anywhere_beside_it() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(&repo, "notes", "one\n", "Start")
+        .unwrap();
+    let subject = |sandbox: &Sandbox| -> String {
+        let out = sandbox.run(&repo, "log", &["-1", "--format=%s"]).unwrap();
+        String::from_utf8(out.stdout).unwrap().trim_end().to_owned()
+    };
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+    let commit_keys = |harness: &mut Harness<'_, EgitApp>| {
+        harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+        harness.run_steps(2);
+    };
+    let stage = |harness: &mut Harness<'_, EgitApp>, contents: &str| {
+        std::fs::write(repo.join("notes"), contents).unwrap();
+        wait_for_label(harness, &uncommitted(1));
+        harness.get_by_label(&uncommitted(1)).click();
+        wait_for_label(harness, "Stage all");
+        harness.get_by_label("Stage all").click();
+        wait_for_label(harness, "Commit 1 file");
+    };
+
+    // From the summary, the description below it left empty; the keys are shown by the button.
+    stage(&mut harness, "two\n");
+    let keys = crate::commands::keys_text("⌘Enter");
+    wait_for_label(&mut harness, &keys);
+    type_into(&mut harness, Role::TextInput, "Summary", "From the summary");
+    commit_keys(&mut harness);
+    settle(&mut harness, "the commit", |_| {
+        subject(&sandbox) == "From the summary"
+    });
+    wait_for_label(&mut harness, "Nothing staged yet.");
+
+    // With another field holding the keys (the sidebar's filter), they're its: nothing commits.
+    stage(&mut harness, "three\n");
+    type_into(&mut harness, Role::TextInput, "Summary", "From anywhere");
+    type_into(&mut harness, Role::TextInput, "Filter", "x");
+    commit_keys(&mut harness);
+    harness.run_steps(4);
+    assert_eq!(subject(&sandbox), "From the summary");
+
+    // No field holding them (Escape lets the filter go, and clears it): the form commits.
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
+    commit_keys(&mut harness);
+    settle(&mut harness, "the second commit", |_| {
+        subject(&sandbox) == "From anywhere"
+    });
+}
+
+#[test]
 fn signed_commits_show_whether_their_signatures_hold() {
     let has_ssh_keygen = std::process::Command::new("ssh-keygen")
         .arg("--version")

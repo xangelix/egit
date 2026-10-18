@@ -63,7 +63,8 @@ pub(super) const TOPICS: &[Topic] = &[
         what: "Everything after the summary: why the change was made, what it leaves out, \
                links. git keeps it after a blank line under the summary. Only whitespace is \
                cleaned up: trailing spaces and blank lines at the ends go, and a line starting \
-               with # is kept (git's own editor would drop it). ⌘Enter in it commits.",
+               with # is kept (git's own editor would drop it). ⌘Enter (Ctrl+Enter) commits, \
+               from it, the summary, or anywhere beside them.",
         git: "git commit --file=- --cleanup=whitespace",
         cases: &[
             (

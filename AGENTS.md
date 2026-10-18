@@ -1205,7 +1205,9 @@ writes paths), never `OsStrExt`.
     stage or unstage it or the folder, "Discard changes…" or "Discard the folder's changes…",
     Show changes, Copy path; "Discard all…"; each item's paths gathered only when chosen); then
     the commit form: summary
-    (warned past 72 characters), description (⌘Enter commits), co-authors (chips with their
+    (warned past 72 characters), description (⌘Enter commits from either, or from anywhere
+    while no other field or dialog has the keys; the keys shown beside the commit button, not
+    in its name), co-authors (chips with their
     avatars, each removable; "Co-author" opens a picker: a field typed into at once, the
     recent authors (`recent_authors` of the last 5,000 commits, read when it first opens; the
     user's own `user.email` left out) matching it by name or email, most commits first, eight

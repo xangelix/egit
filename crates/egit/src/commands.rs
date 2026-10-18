@@ -265,7 +265,7 @@ const SHORTCUTS: [(&str, &str); 20] = [
     ("⌘Z, ⇧⌘Z", "Undo, redo"),
     ("↑ ↓, PgUp PgDn, Home End", "Move through a list"),
     ("Escape", "Back to the history (from a file, the reflog, …)"),
-    ("⌘Enter", "Commit (in the description)"),
+    ("⌘Enter", "Commit what is staged (the working tree's form)"),
     (
         "P R S F D",
         "Pick, reword, squash, fix up, drop (the rebase editor)",

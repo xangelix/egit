@@ -348,7 +348,7 @@ fn commit_form(
         form.description = take_co_authors(description, form);
     }
     widgets::section_header(ui, ("Commit", None, "Commit"), |_| {});
-    let description = message_fields(ui, form);
+    let fields = message_fields(ui, form);
     co_authors_row(ui, form, side);
     options(ui, form, side);
     hooks_row(ui, form, side);
@@ -363,11 +363,22 @@ fn commit_form(
             count(u64::try_from(staged).unwrap_or(u64::MAX))
         )
     };
-    let shortcut = description.has_focus()
+    // ⌘Enter (Ctrl+Enter) commits from the summary or the description (neither takes it: a
+    // line ends, or a field lets go, on Enter alone), or from anywhere on the screen while no
+    // other field or dialog has the keys.
+    let in_form = fields.iter().any(Response::has_focus);
+    let keys_free = !ui.ctx().text_edit_focused()
+        && ui.ctx().memory(|memory| memory.top_modal_layer().is_none());
+    let shortcut = (in_form || keys_free)
         && ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Enter));
+    let keys = crate::commands::keys_text("⌘Enter");
     let mut asked = None;
     ui.horizontal(|ui| {
-        if widgets::primary(ui, ready, &label).clicked() || (shortcut && ready) {
+        let button = widgets::primary(ui, ready, &label)
+            .on_hover_text(format!("Commit what is staged ({keys})"));
+        // Its keys beside it, not in it: its name stays its words.
+        ui.label(muted(ui, keys.as_ref()).small());
+        if button.clicked() || (shortcut && ready) {
             asked = Some(WorkEvent::Commit(NewCommit {
                 message: form.message(),
                 amend: form.amend,
@@ -440,16 +451,17 @@ fn committing(ui: &mut Ui, side: &CommitSide<'_>) -> Option<WorkEvent> {
     asked
 }
 
-/// The summary and the description; returns the description's field (⌘Enter there commits).
-fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
+/// The summary and the description; returns their fields (⌘Enter in either commits).
+fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> [Response; 2] {
     let summary_label = ui.label(muted(ui, "Summary"));
     crate::help::note_topic(ui, summary_label.rect, "commit-summary");
-    ui.add(
-        crate::widgets::line_field(&mut form.summary)
-            .hint_text("What it does, in a line")
-            .desired_width(f32::INFINITY),
-    )
-    .labelled_by(summary_label.id);
+    let summary = ui
+        .add(
+            crate::widgets::line_field(&mut form.summary)
+                .hint_text("What it does, in a line")
+                .desired_width(f32::INFINITY),
+        )
+        .labelled_by(summary_label.id);
     let length = form.summary.trim().chars().count();
     if length > 72 {
         ui.label(
@@ -462,7 +474,7 @@ fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
     }
     let description_label = ui.label(muted(ui, "Description"));
     crate::help::note_topic(ui, description_label.rect, "commit-description");
-    crate::widgets::bounded_text_area(
+    let description = crate::widgets::bounded_text_area(
         ui,
         crate::widgets::text_area(&mut form.description)
             .hint_text("Why, and anything else worth knowing")
@@ -471,7 +483,8 @@ fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
         DESCRIPTION_HEIGHT,
         "commit-description",
     )
-    .labelled_by(description_label.id)
+    .labelled_by(description_label.id);
+    [summary, description]
 }
 
 /// The tallest the commit form's description gets before it scrolls: the form keeps its room.
