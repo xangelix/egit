@@ -82,7 +82,17 @@ pub(super) fn render(harness: &mut Harness<'_, EgitApp>, name: &str) {
     if !rendering() {
         return;
     }
-    let image = harness.render().unwrap();
+    // The adapter is shared by every test running: under load a frame's wait can time out.
+    let mut tries = 0_u8;
+    let image = loop {
+        match harness.render() {
+            Ok(image) => break image,
+            Err(error) if tries < 3 && error.contains("timed out") => {
+                tries = tries.saturating_add(1);
+            }
+            Err(error) => panic!("{name}: {error}"),
+        }
+    };
     image.save(screens().join(format!("{name}.png"))).unwrap();
 }
 
