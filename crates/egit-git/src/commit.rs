@@ -17,6 +17,34 @@ pub struct Signature {
     pub offset_minutes: i32,
 }
 
+/// Someone named in a message (a co-author): their name and email.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Person {
+    /// Their name.
+    pub name: BString,
+    /// Their email.
+    pub email: BString,
+}
+
+impl Person {
+    /// Reads `Name <email>` (what a trailer names), or nothing when it isn't one.
+    #[must_use]
+    pub fn parse(text: &[u8]) -> Option<Self> {
+        let open = text.find_byte(b'<')?;
+        let close = text.rfind_byte(b'>')?;
+        let name = text.get(..open)?.trim_ascii();
+        let email = text.get(open.checked_add(1)?..close)?.trim_ascii();
+        let rest = text.get(close.checked_add(1)?..)?.trim_ascii();
+        (!name.is_empty() && !email.is_empty() && rest.is_empty()).then(|| Self {
+            name: name.into(),
+            email: email.into(),
+        })
+    }
+}
+
+/// The key of a trailer naming a co-author (compared in any case, as git compares keys).
+pub const CO_AUTHORED_BY: &str = "Co-authored-by";
+
 /// A commit object.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
@@ -116,6 +144,28 @@ impl Commit {
         subject
     }
 
+    /// Who the message's `Co-authored-by` trailers name (in any case, as GitHub and git
+    /// read them), in order, each once.
+    #[must_use]
+    pub fn co_authors(&self) -> Vec<Person> {
+        let mut found: Vec<Person> = Vec::new();
+        for line in self.message.lines() {
+            let line = line.trim_ascii();
+            let Some((key, value)) = line.split_once_str(b":") else {
+                continue;
+            };
+            if key
+                .trim_ascii()
+                .eq_ignore_ascii_case(CO_AUTHORED_BY.as_bytes())
+                && let Some(person) = Person::parse(value)
+                && !found.contains(&person)
+            {
+                found.push(person);
+            }
+        }
+        found
+    }
+
     /// The message after the subject's paragraph, without the blank lines around it.
     #[must_use]
     pub fn body(&self) -> &BStr {
@@ -211,6 +261,33 @@ mod tests {
         assert_eq!(parsed.parents[0].to_string(), PARENT);
         assert_eq!(parsed.encoding, Some(BString::from("ISO-8859-1")));
         assert!(parsed.signed);
+    }
+
+    #[test]
+    fn co_authors_come_from_their_trailers_in_any_case() {
+        let parsed = Commit::parse(&commit(
+            "",
+            "Pair on it\n\nWhy.\n\nCo-authored-by: Ada Lovelace <ada@example.com>\n\
+             co-authored-by:  Alan Turing  <alan@example.com> \n\
+             Co-Authored-By: Ada Lovelace <ada@example.com>\n\
+             Co-authored-by: nobody\n\
+             Signed-off-by: Zoë Example <zoe@example.com>\n",
+        ))
+        .unwrap();
+        let names: Vec<_> = parsed
+            .co_authors()
+            .into_iter()
+            .map(|person| (person.name.to_string(), person.email.to_string()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("Ada Lovelace".to_owned(), "ada@example.com".to_owned()),
+                ("Alan Turing".to_owned(), "alan@example.com".to_owned()),
+            ]
+        );
+        assert_eq!(Person::parse(b"Name <a@b> trailing"), None);
+        assert_eq!(Person::parse(b" <a@b>"), None);
     }
 
     #[test]

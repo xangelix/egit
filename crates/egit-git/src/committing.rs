@@ -21,6 +21,9 @@ pub struct NewCommit {
     pub sign_off: bool,
     /// Sign it (`-S`), don't (`--no-gpg-sign`), or as `commit.gpgSign` says (`None`).
     pub sign: Option<bool>,
+    /// Trailers to add (`Co-authored-by: Name <email>`), each by `--trailer`: git places them
+    /// with any the message ends with, after a blank line.
+    pub trailers: Vec<String>,
 }
 
 /// A commit made.
@@ -55,6 +58,9 @@ pub fn create_commit(
     }
     if commit.sign_off {
         command = command.arg("--signoff");
+    }
+    for trailer in &commit.trailers {
+        command = command.arg("--trailer").arg(trailer);
     }
     match commit.sign {
         Some(true) => command = command.arg("--gpg-sign"),

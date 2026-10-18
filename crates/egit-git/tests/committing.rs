@@ -1,4 +1,5 @@
-//! Making commits with the real git: messages, amending, sign-off, hooks, and declining to sign.
+//! Making commits with the real git: messages, amending, sign-off, trailers, hooks, and
+//! declining to sign; and who wrote the recent ones.
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
 #![allow(
@@ -12,7 +13,7 @@
 use std::path::Path;
 
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, NewCommit, Repository, create_commit, reword_head};
+use egit_git::{CancelToken, NewCommit, Repository, create_commit, recent_authors, reword_head};
 
 /// `HEAD`'s message.
 fn message(sandbox: &Sandbox, repo: &Path) -> String {
@@ -219,4 +220,113 @@ fn rewording_head_changes_only_its_message() {
         .unwrap()
         .stdout;
     assert_eq!(count, b"1\n");
+}
+
+#[test]
+fn trailers_name_co_authors_after_the_message() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = staged(&sandbox);
+    commit(
+        &sandbox,
+        &repo,
+        &NewCommit {
+            message: "Pair on it\n\nWhy.".to_owned(),
+            sign_off: true,
+            trailers: vec![
+                "Co-authored-by: Ada Lovelace <ada@example.com>".to_owned(),
+                "Co-authored-by: Alan Turing <alan@example.com>".to_owned(),
+            ],
+            ..NewCommit::default()
+        },
+    )
+    .unwrap();
+    let said = message(&sandbox, &repo);
+    let mut lines = said.lines();
+    assert_eq!(lines.next(), Some("Pair on it"));
+    let trailers: Vec<&str> = said
+        .lines()
+        .skip_while(|line| !line.contains(':'))
+        .collect();
+    assert!(
+        trailers.contains(&"Co-authored-by: Ada Lovelace <ada@example.com>"),
+        "{said}"
+    );
+    assert!(
+        trailers.contains(&"Co-authored-by: Alan Turing <alan@example.com>"),
+        "{said}"
+    );
+    assert!(
+        trailers
+            .iter()
+            .any(|line| line.starts_with("Signed-off-by: ")),
+        "{said}"
+    );
+    // Parsed back as git wrote them.
+    let raw = sandbox
+        .run(&repo, "cat-file", &["commit", "HEAD"])
+        .unwrap()
+        .stdout;
+    let names: Vec<String> = egit_git::Commit::parse(&raw)
+        .unwrap()
+        .co_authors()
+        .into_iter()
+        .map(|person| person.name.to_string())
+        .collect();
+    assert_eq!(names, ["Ada Lovelace", "Alan Turing"]);
+}
+
+#[test]
+fn recent_authors_are_counted_through_the_mailmap() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    // Nobody before the first commit.
+    let none = recent_authors(sandbox.git(), &repository, 100, &CancelToken::new()).unwrap();
+    assert_eq!(none, []);
+    let by = |author: &str, subject: &str| {
+        sandbox
+            .run(
+                &repo,
+                "commit",
+                &[
+                    "--allow-empty",
+                    "-m",
+                    subject,
+                    &format!("--author={author}"),
+                ],
+            )
+            .unwrap();
+    };
+    by("Ada <ada@example.com>", "one");
+    by("Alan Turing <alan@example.com>", "two");
+    by("A. Lovelace <ADA@example.com>", "three");
+    by("Ada L <ada@old.example.com>", "four");
+    // One person, however many addresses: the mailmap names them alike.
+    std::fs::write(
+        repo.join(".mailmap"),
+        "Ada Lovelace <ada@example.com> <ada@old.example.com>\n",
+    )
+    .unwrap();
+    let authors = recent_authors(sandbox.git(), &repository, 100, &CancelToken::new()).unwrap();
+    let found: Vec<(String, String, u32)> = authors
+        .iter()
+        .map(|author| {
+            (
+                author.person.name.to_string(),
+                author.person.email.to_string(),
+                author.commits,
+            )
+        })
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("Ada Lovelace".to_owned(), "ada@example.com".to_owned(), 3),
+            ("Alan Turing".to_owned(), "alan@example.com".to_owned(), 1),
+        ]
+    );
+    // At most the last `limit` commits.
+    let last = recent_authors(sandbox.git(), &repository, 1, &CancelToken::new()).unwrap();
+    assert_eq!(last.len(), 1);
+    assert_eq!(last[0].person.email, "ada@example.com");
 }

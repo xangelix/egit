@@ -35,6 +35,7 @@ mod object_id;
 mod objects;
 mod output;
 mod patch;
+mod people;
 mod process;
 mod profile;
 mod progress;
@@ -70,7 +71,7 @@ pub use branch::{
 };
 pub use cancel::CancelToken;
 pub use command::{Access, GitCommand, SecretOutput, Streamed};
-pub use commit::{Commit, CommitParseError, Signature};
+pub use commit::{CO_AUTHORED_BY, Commit, CommitParseError, Person, Signature};
 pub use committing::{Committed, NewCommit, create_commit, reword_head};
 pub use config::{
     ConfigEntry, ConfigPlace, ConfigScope, ConfigSnapshot, ConfigTarget, add_config_value,
@@ -101,6 +102,7 @@ pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};
 pub use patch::{Direction, LinesError, apply_lines, write_index_content};
+pub use people::{Author, recent_authors};
 pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use progress::{Progress, ProgressReport};
 pub use rebase::{
