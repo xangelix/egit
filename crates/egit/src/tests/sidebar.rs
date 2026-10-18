@@ -112,6 +112,19 @@ fn the_sidebar_lists_filters_shows_and_hides() {
         "the worktree here"
     );
     render(&mut harness, "sidebar");
+    // The filter's word sits level with its field, and so does the button hiding the sidebar.
+    let field = harness
+        .get_by_role_and_label(Role::TextInput, "Filter")
+        .rect();
+    for beside in [
+        harness.get_by_role_and_label(Role::Label, "Filter").rect(),
+        harness.get_by_label("Hide the sidebar").rect(),
+    ] {
+        assert!(
+            (beside.center().y - field.center().y).abs() < 1.0,
+            "{beside:?} beside {field:?}"
+        );
+    }
     row(&harness, "feature/").click();
     harness.run_steps(2);
     assert!(!shown(&harness, "feature/ui"), "folded");

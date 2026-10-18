@@ -1336,8 +1336,9 @@ writes paths), never `OsStrExt`.
     nothing spaced from it, so stacked bars make one strip and every view's back button is in
     one place), `panel_head` and `HEAD` (a panel's first row, 40 points: the sidebar's filter,
     the commit table's column titles, the details' title line up across the window; its first
-    line centred on the band, by what it holds (`Head`: a control, a title, text), and what
-    wraps grows downwards, keeping that line's room above it), facts in
+    line centred on the band, by what it holds (`Head`: a control, a title, text; beside a
+    control, a label or a smaller button centres on it), and what wraps grows downwards,
+    keeping that line's room above it), facts in
     aligned columns (`fact`, `fact_top` (its first line as far down as a one-line fact's, so
     facts keep one rhythm),
     `form_row` naming its field; `FACT_LABEL` on pages), `line_field` one-line fields a

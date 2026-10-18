@@ -95,13 +95,19 @@ pub(crate) fn panel_head<R>(
         Head::Text => ui.text_style_height(&egui::TextStyle::Body),
     };
     let inset = ((HEAD - line) / 2.0).max(0.0);
+    // Beside a control, a label or a smaller button centres on it; a title's or text's line
+    // is what it holds, and what wraps grows downwards from its top.
+    let align = match holds {
+        Head::Control => egui::Align::Center,
+        Head::Title | Head::Text => egui::Align::Min,
+    };
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         ui.add_space(inset);
         let inner = ui
             .allocate_ui_with_layout(
                 egui::vec2(ui.available_width(), line),
-                egui::Layout::left_to_right(egui::Align::Min),
+                egui::Layout::left_to_right(align),
                 |ui| {
                     ui.set_min_height(line);
                     add_contents(ui)
