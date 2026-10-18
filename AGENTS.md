@@ -555,8 +555,7 @@ writes paths), never `OsStrExt`.
     to stop between them; `matches_case` is smart case; `Needle`, a query made ready for
     many short texts (a finder built once, or ASCII folded).
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
-  (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io; rows' rounding (`with_row_rounding`)
-    is a commit not yet pushed: bump
+  (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io: bump
   `rev` to the owner's pushed commit after each change made there; until it is pushed, cargo
   fetches it from the clone: `GIT_CONFIG_COUNT=1
   GIT_CONFIG_KEY_0=url.$HOME/egui-table-kit.insteadOf
