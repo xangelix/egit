@@ -37,6 +37,7 @@ egui.workspace = true
 egui-async.workspace = true
 egui-phosphor.workspace = true
 egui-table-kit.workspace = true
+egui_plot.workspace = true
 egui_tiles.workspace = true
 image.workspace = true
 jiff.workspace = true

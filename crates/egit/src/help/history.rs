@@ -1114,6 +1114,137 @@ pub(super) const TOPICS: &[Topic] = &[
         )],
     },
     Topic {
+        id: "stats",
+        group: Group::Looking,
+        title: "Statistics",
+        on: &["Stats: * commits", "Stats: 1 commit"],
+        what: "The history shown, in figures and charts, in place of the commit table: how many \
+               commits and by whom, when they were made, the files at HEAD by language, and the \
+               lines the newest commits changed. Every commit is read once, in the background \
+               (through gitoxide on several threads); closed and opened again, the page shows \
+               at once, and reads again only once the history has.",
+        git: "each commit read (gitoxide, else git cat-file); git check-mailmap --stdin; git \
+              ls-tree -r -l HEAD; git log --no-walk --shortstat (the newest 10,000)",
+        cases: &[
+            (
+                "Only some branches counted?",
+                "It counts what the history shows: with branches hidden or one shown alone, those it shows.",
+            ),
+            (
+                "Someone counted twice?",
+                "The same person under two emails: a .mailmap line joins them (Name <email> <old email>).",
+            ),
+            (
+                "Lines not counted?",
+                "Not in a partial clone: git would fetch every file's contents to count them.",
+            ),
+            (
+                "A huge repository?",
+                "Reading its commits takes a second or two for a million; the lines are counted for the newest 10,000 only, after the rest.",
+            ),
+        ],
+    },
+    Topic {
+        id: "stats-commits",
+        group: Group::Looking,
+        title: "Commits each month",
+        on: &["Commits each month"],
+        what: "Every commit the history shows, by the month its author made it (the author's \
+               date, which a rebase keeps; the committer's would be when it was last made \
+               again). Rest the pointer on a month for its count.",
+        git: "",
+        cases: &[(
+            "Commits in 1970, or in the future?",
+            "Their authors' clocks said so (an import, a wrong clock): git keeps the date as given.",
+        )],
+    },
+    Topic {
+        id: "stats-calendar",
+        group: Group::Looking,
+        title: "Contributions",
+        on: &["Contributions"],
+        what: "The year up to the latest commit, a square a day and a column a week (Monday at \
+               the top), darker the more commits that day had, by its authors' own clocks.",
+        git: "",
+        cases: &[],
+    },
+    Topic {
+        id: "stats-punch",
+        group: Group::Looking,
+        title: "When commits are made",
+        on: &["When commits are made"],
+        what: "Each weekday's hours, a circle each, larger the more commits were made then, as \
+               their authors' clocks said: when people work, wherever they are.",
+        git: "",
+        cases: &[],
+    },
+    Topic {
+        id: "stats-active",
+        group: Group::Looking,
+        title: "Authors active each month",
+        on: &["Authors active each month"],
+        what: "How many people made at least one commit each month, through the mailmap: how \
+               the project's team grew and shrank.",
+        git: "git check-mailmap --stdin",
+        cases: &[],
+    },
+    Topic {
+        id: "stats-authors",
+        group: Group::Looking,
+        title: "Most commits",
+        on: &["Most commits"],
+        what: "The people with the most commits, each with the years they made them, and (once \
+               counted) the lines they added and removed in the newest commits. One person \
+               under several names or emails is one, through the repository's .mailmap.",
+        git: "git check-mailmap --stdin",
+        cases: &[],
+    },
+    Topic {
+        id: "stats-languages",
+        group: Group::Looking,
+        title: "Languages at HEAD",
+        on: &["Languages at HEAD"],
+        what: "The files the current commit holds, by language from their names (extensions, \
+               and names such as Makefile), by size; by count in a partial clone, where sizes \
+               aren't known. Submodules are left out.",
+        git: "git ls-tree -r -z -l HEAD",
+        cases: &[],
+    },
+    Topic {
+        id: "stats-largest",
+        group: Group::Looking,
+        title: "Largest files at HEAD",
+        on: &["Largest files at HEAD"],
+        what: "The largest files the current commit holds, as git stores them (an LFS file's \
+               pointer, not the file it stands for).",
+        git: "git ls-tree -r -z -l HEAD",
+        cases: &[],
+    },
+    Topic {
+        id: "stats-lines",
+        group: Group::Looking,
+        title: "Lines changed",
+        on: &["Lines changed"],
+        what: "The lines the newest commits added (above) and removed (below) each month, each \
+               commit against its first parent; merges add none. Counted after the rest, for \
+               the newest 10,000 commits at most: each is diffed.",
+        git: "git log --no-walk=unsorted --stdin --shortstat",
+        cases: &[(
+            "A commit of a million lines?",
+            "Often generated or vendored files committed whole: How large commits are shows how rare that is.",
+        )],
+    },
+    Topic {
+        id: "stats-sizes",
+        group: Group::Looking,
+        title: "How large commits are",
+        on: &["How large commits are"],
+        what: "How many of the newest commits changed no line, under ten, under a hundred, and so \
+               on: lines added and removed together.",
+        git: "git log --no-walk=unsorted --stdin --shortstat",
+        cases: &[],
+    },
+    Topic {
         id: "details-split",
         group: Group::Egit,
         title: "The details' two parts",

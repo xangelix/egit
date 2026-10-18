@@ -238,6 +238,11 @@ impl History {
         self.names.row_of(id, near)
     }
 
+    /// Which history it is, without holding it ([`Names::identity`]).
+    pub(crate) fn identity(&self) -> (u64, usize) {
+        self.names.identity()
+    }
+
     /// Its rows' commits' names so far, for a job to read (shared, not copied).
     pub(crate) fn names(&self) -> Names {
         self.names.clone()
@@ -259,6 +264,16 @@ impl Names {
             format,
             chunks: Vec::new(),
         }
+    }
+
+    /// Which history it names, without holding it: its rows, and where its first chunk is (a
+    /// history read again has chunks of its own).
+    pub(crate) fn identity(&self) -> (u64, usize) {
+        let first = self
+            .chunks
+            .first()
+            .map_or(0, |chunk| Arc::as_ptr(chunk).cast::<u8>().addr());
+        (self.rows(), first)
     }
 
     /// How many rows it names.

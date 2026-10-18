@@ -1,8 +1,9 @@
 //! The history at a large repository's scale, measured: how soon the first rows show, how long
 //! the whole history takes, and how long frames take while jumping all over it and scrolling;
 //! then searching it (messages, authors, a path, a name): how soon the first commit is found,
-//! how long it takes, and the memory it holds while it runs and after; and how soon it is shown
-//! narrowed to the current branch and pinned, then whole again.
+//! how long it takes, and the memory it holds while it runs and after; its Stats page (how soon
+//! its figures and lines land, the memory meanwhile, frames scrolling it); and how soon it is
+//! shown narrowed to the current branch and pinned, then whole again.
 //!
 //! Not run by default, as it needs a large repository (Linux's, say) and a release build:
 //!
@@ -188,7 +189,49 @@ fn a_large_history_opens_at_once_and_scrolls_within_a_frame() {
     }
     let names = harness.state().state.repos[0].history.shown.names();
     searches(&repo, &names);
+    statistics(&mut harness);
     scoped(&mut harness, &repo);
+}
+
+/// The Stats page: how soon its figures land, then its lines, the memory it held meanwhile,
+/// and frames scrolling it.
+fn statistics(harness: &mut Harness<'_, EgitApp>) {
+    reset_peak_memory();
+    let start = Instant::now();
+    harness.state_mut().state.repos[0].history_view.open_stats();
+    step_until(harness, Duration::from_secs(600), |app| {
+        app.state.repos[0].history_view.stats_landed().0
+    });
+    println!(
+        "statistics after {:?}, peak memory {:.0} MB; now {:.0} MB allocated, {:.0} MB of files \
+         mapped",
+        start.elapsed(),
+        peak_memory_mb(),
+        memory_mb("RssAnon:"),
+        memory_mb("RssFile:")
+    );
+    step_until(harness, Duration::from_mins(30), |app| {
+        app.state.repos[0].history_view.stats_landed().1
+    });
+    println!("lines counted after {:?}", start.elapsed());
+    harness.hover_at(egui::pos2(800.0, 500.0));
+    let mut frames = Vec::new();
+    for _ in 0..120 {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -60.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let frame = Instant::now();
+        harness.step();
+        frames.push(frame.elapsed());
+    }
+    report("statistics page", frames);
+    harness.state_mut().state.repos[0].history_view.open_stats();
+    // Back to the history for what follows.
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(3);
 }
 
 /// The history narrowed to the current branch and pinned, then every branch's again: how soon

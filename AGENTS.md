@@ -96,7 +96,11 @@ it.
   how long all took, and the memory held: Linux's messages or authors in 0.6 s (the first in
   4 ms), peaking at 1 GB while the packs are read (mapped: released as it ends); a name at
   once (17 ms, the index built). Last, the history narrowed to the current branch and pinned,
-  then whole again: each read again and shown once whole (Linux: 1.4–1.5 s).
+  then whole again: each read again and shown once whole (Linux: 1.4–1.5 s). And the Stats
+  page: its figures land in 0.7 s for Linux (65 ms for git's own 86k commits), peaking at
+  1.2 GB while the packs are read (mapped, released as it ends; 44 MB more allocated after,
+  most of it the page's own drawing); the newest 10,000 commits' lines counted in 2.1 s (git's;
+  none in Linux's partial clone); the page scrolled at 0.36–0.51 ms p99.
 - gitoxide's reads: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit-gix --release
   --test measure -- --ignored --nocapture` times each against git's (the walk both ways,
   commits read fresh and warm, the walk's tips, references); `EGIT_GIX=0` leaves the
@@ -679,7 +683,8 @@ writes paths), never `OsStrExt`.
     to stop between them; `matches_case` is smart case; `Needle`, a query made ready for
     many short texts (a finder built once, or ASCII folded).
 - `crates/egit` — the application (`egit_app` library, `egit` executable). eframe/egui 0.36
-  (wgpu), `egui_tiles` 0.17, `egui-table-kit` 0.7 (a git revision ahead of crates.io: bump
+  (wgpu), `egui_tiles` 0.17, `egui_plot` 0.37 (egui's charts: the Stats page), `egui-table-kit`
+  0.7 (a git revision ahead of crates.io: bump
   `rev` to the owner's pushed commit after each change made there; until it is pushed, cargo
   fetches it from the clone: `GIT_CONFIG_COUNT=1
   GIT_CONFIG_KEY_0=url.$HOME/egui-table-kit.insteadOf
@@ -800,6 +805,17 @@ writes paths), never `OsStrExt`.
     total). `HistoryState`: the history shown,
     and a re-read (`reload`) that takes over only once complete (`replaced`), so the table
     never empties or jumps meanwhile.
+  - `stats.rs` — a history's statistics, for its Stats page: `read_stats` reads every row's
+    commit once, through gitoxide on up to 8 threads a block of rows at a time (else one
+    `cat-file`), each thread parsing headers into compact `Read`s (an author line's FNV-1a
+    hash, time, offset, merge) and the contacts it hadn't met, handed to one `Tally` over a
+    bounded channel: commits each day and month and each weekday's hour by their authors'
+    clocks, merges, each contact's commits, first and last, and months active; then the
+    contacts through the mailmap as people by email (`AuthorStats`, the most commits first),
+    authors active each month, and the files at `HEAD` by language (`language_of`, from names)
+    and the largest (`FileStats`). `read_lines`: the newest `LINES_COUNTED` (10,000) commits'
+    lines (`commit_lines`) each month, by author, and by size (`LineStats`). `Stats::streak`,
+    `busiest`; `day_of`, `month_of`, `date_of`.
   - `search.rs` — searching the history: `SearchKind` (message, author, path, commit); a
     `Search` (a detached job, stopped when dropped) marks what it finds in `Found`, a bit a
     row the table reads as it draws (atomic: no lock; `next`, `previous` wrapping, `rank` for
@@ -1077,7 +1093,10 @@ writes paths), never `OsStrExt`.
     branches' latest, sync addresses; their page), and Repository: its Overview, Settings,
     the submodules' and Git LFS's pages, and reading it again), their words beside their icons where the bar has room for all it shows
     (`Look::Full`), their icons alone elsewhere (`Look::Compact`, their words on hover), the
-    commit count (a spinner beside it while the history is read), why the work tree couldn't
+    commit count as a button, "Stats: 222 commits", opening the Stats page in the commit
+    table's place (`Tool::Stats`; closed, it is kept, `stats_kept`, and shows again at once
+    while the history is the same: `Names::identity`) (a spinner beside it while the history is
+    read), why the work tree couldn't
     be read (when it couldn't), the requests; at its right `views/tasks.rs`'s bar (drawn first,
     into the row; its words capped at 300 points). The look is chosen from `BarRoom`: the left
     part's width drawn compact last frame (room kept for the spinner, so its coming never
@@ -1353,6 +1372,18 @@ writes paths), never `OsStrExt`.
     input, `RowsInput`: typing in the filter over more than 5,000 refs makes them in a job, one
     at a time, the last rows shown until the latest land) and drawn
     with `show_rows`, their text painted.
+    `views/stats.rs` — `StatsView`, the Stats page in the commit table's place (Escape or
+    History goes back): read when shown and again once the history is (what was read shows
+    meanwhile; "Reading 1,200 of 5,000 commits…" at first), its lines after; tiles (commits and
+    merges, authors, days with commits, first and latest commit, the longest streak, the busiest
+    day, files at `HEAD`), as many to a row as fit; cards in pairs where there is room (860
+    points): commits each month and authors active each month (egui_plot: no zooming, the page
+    scrolls; solid bars; years along the bottom; a month's count on hover), the year of
+    contributions to the latest commit (a calendar painted a square a day), when commits are
+    made (a punch card, circles by weekday and hour), the authors with the most commits (their
+    avatars, years, lines, a bar), languages at `HEAD` (a bar of shares and a legend), the lines
+    changed each month (added above, removed below) and how large commits are, and the largest
+    files. Each chart is named for those who can't see it.
     `views/lfs.rs` — `LfsView`, Git LFS's page in the commit table's place (the LFS menu's
     "Patterns, files, and locks…", the Repository menu's "Git LFS", the banner; Escape or
     History goes back): what LFS is and whether it is installed and set up here (how to,
@@ -1630,6 +1661,9 @@ writes paths), never `OsStrExt`.
     lines show as they come, the output closing after it went well; refused (the output kept
     open with its words); skipped; cancelled part-way from the output's bar (no commit); and
     the Overview's Hooks card lists it.
+    `src/tests/stats.rs` opens the Stats page from the top bar on dated commits by two authors
+    (one under two names, joined by the mailmap) and renders it, at its window's size and
+    whole; closed and opened again, it shows at once.
     `src/tests/exporting.rs` picks two commits apart, copies them as separate patches and a
     changelog, saves them as one patch and as separate patches (a folder answering), then
     compares them (a file's diff opened, swapped, closed).

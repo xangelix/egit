@@ -652,7 +652,7 @@ fn the_history_shows_branches_merges_and_a_commits_changes() {
         settle(&mut harness, "the profile", profile_loaded);
         open_path(&mut harness, &repo);
         settle(&mut harness, "the history", history_shown);
-        harness.get_by_label("6 commits");
+        harness.get_by_label("Stats: 6 commits");
         for subject in [
             "Start the docs",
             "Merge the parser",
@@ -1027,7 +1027,7 @@ fn staged_changes_are_committed_and_amended_from_the_form() {
     );
     render(&mut harness, "work-tree-commit");
     harness.get_by_label("Commit 2 files").click();
-    wait_for_label(&mut harness, "2 commits");
+    wait_for_label(&mut harness, "Stats: 2 commits");
     assert_eq!(
         last(&sandbox, "%B"),
         "Write the notes down\n\n# Why\nBecause."
@@ -2220,7 +2220,7 @@ fn a_long_history_without_a_commit_graph_is_offered_one() {
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &repo);
     settle(&mut harness, "the history", history_shown);
-    harness.get_by_label("10,000 commits");
+    harness.get_by_label("Stats: 10,000 commits");
     harness.get_by_role_and_label(Role::Button, "Commit number 10000");
     render(&mut harness, "history-commit-graph-offer");
 

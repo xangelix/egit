@@ -24,6 +24,7 @@ mod reflog;
 pub(crate) mod repo;
 mod search;
 mod sidebar;
+mod stats;
 pub(crate) mod status_bar;
 mod submodules;
 mod tasks;

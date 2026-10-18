@@ -40,6 +40,7 @@ use super::rebase::{self, RebaseEvent, RebaseView};
 use super::reflog::{self, ReflogEvent, ReflogView};
 use super::search::{self, HistorySearch};
 use super::sidebar::{self, Lists, Sidebar, SidebarEvent};
+use super::stats::{StatsEvent, StatsView};
 use super::submodules::SubmodulesEvent;
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
@@ -208,6 +209,9 @@ pub(crate) struct HistoryView {
     compare: Option<Comparison>,
     /// What their panel asked for this frame.
     picked_asked: Option<PickedEvent>,
+    /// The Stats page, kept while it is closed: opened again, it shows at once (and reads
+    /// again only for a history read again).
+    stats_kept: Option<Box<StatsView>>,
 }
 
 /// A ref dropped onto another, where.
@@ -273,6 +277,7 @@ enum Tool {
     Reflog(Box<ReflogView>),
     Lfs(Box<super::lfs::LfsView>),
     Submodules(Box<super::submodules::SubmodulesView>),
+    Stats(Box<StatsView>),
 }
 
 /// The lines a commit's files gained and lost, counted after its files are listed.
@@ -408,6 +413,7 @@ impl HistoryView {
             picked: Picked::default(),
             compare: None,
             picked_asked: None,
+            stats_kept: None,
         }
     }
 
@@ -638,6 +644,40 @@ impl HistoryView {
     fn show_submodules(&mut self) {
         self.file = None;
         self.tool = Some(Tool::Submodules(Box::default()));
+    }
+
+    /// Shows the Stats page (for tests: the top bar's button toggles it).
+    #[cfg(test)]
+    pub(crate) fn open_stats(&mut self) {
+        if !matches!(self.tool, Some(Tool::Stats(_))) {
+            self.toggle_stats();
+        }
+    }
+
+    /// Whether the Stats page's figures have landed, and its lines (or they aren't counted).
+    #[cfg(test)]
+    pub(crate) fn stats_landed(&mut self) -> (bool, bool) {
+        match &mut self.tool {
+            Some(Tool::Stats(page)) => page.landed(),
+            _ => (false, false),
+        }
+    }
+
+    /// Shows the Stats page in the commit table's place, or (shown) the history again.
+    fn toggle_stats(&mut self) {
+        self.file = None;
+        if matches!(self.tool, Some(Tool::Stats(_))) {
+            self.close_tool();
+        } else {
+            self.tool = Some(Tool::Stats(self.stats_kept.take().unwrap_or_default()));
+        }
+    }
+
+    /// Closes the tool in the commit table's place (the Stats page is kept).
+    fn close_tool(&mut self) {
+        if let Some(Tool::Stats(stats)) = self.tool.take() {
+            self.stats_kept = Some(stats);
+        }
     }
 
     /// Shows the sidebar or hides it.
@@ -1621,7 +1661,19 @@ fn left_bar(
         format!("{} commits", count(rows))
     };
     widgets::toolbar_separator(ui);
-    ui.label(muted(ui, commits));
+    let stats_open = matches!(view.tool, Some(Tool::Stats(_)));
+    if widgets::tool(
+        ui,
+        icon::CHART_BAR,
+        &format!("Stats: {commits}"),
+        stats_open,
+        Look::Full,
+    )
+    .on_hover_text("The history in figures and charts")
+    .clicked()
+    {
+        view.toggle_stats();
+    }
     let spacing = ui.spacing().item_spacing.x;
     let mut kept = 0.0;
     if history.is_loading() {
@@ -2330,6 +2382,8 @@ fn tool(
         },
         Some(Tool::Submodules(page)) => super::submodules::show(ui, shared, page)
             .and_then(|event| submodules_event(event, shared, actions)),
+        Some(Tool::Stats(page)) => super::stats::show(ui, shared, &history.shown, page)
+            .map(|StatsEvent::Close| BlameEvent::Close),
         Some(Tool::Lfs(page)) => match super::lfs::show(ui, shared, shared.lfs, page) {
             Some(LfsEvent::Close) => Some(BlameEvent::Close),
             Some(LfsEvent::Task(task)) => {
@@ -2363,7 +2417,7 @@ fn tool(
         view.open_tool(shared, &history.objects, wanted);
     }
     match asked {
-        Some(BlameEvent::Close) => view.tool = None,
+        Some(BlameEvent::Close) => view.close_tool(),
         Some(BlameEvent::ShowCommit(id)) => {
             view.tool = None;
             let near = view.selected.map_or(0, |selected| selected.row);
