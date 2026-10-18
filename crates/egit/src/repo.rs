@@ -90,7 +90,8 @@ pub(crate) struct RepoTab {
     forge_config: Option<Arc<ConfigSnapshot>>,
     /// The background fetches the forge last followed.
     forge_fetches: u64,
-    pub(crate) panels: egui_tiles::Tree<RepoPanel>,
+    /// What the tab shows: the history, or a page about the repository.
+    pub(crate) panel: RepoPanel,
     /// Commands that write to the repository take it.
     writes: WriteLock,
     /// Notices what changes the repository outside egit.
@@ -133,14 +134,7 @@ impl RepoTab {
             forge: RepoForge::new(ctx),
             forge_config: None,
             forge_fetches: 0,
-            panels: egui_tiles::Tree::new_tabs(
-                egui::Id::new(("repo-panels", id)),
-                vec![
-                    RepoPanel::History,
-                    RepoPanel::Overview,
-                    RepoPanel::Configuration,
-                ],
-            ),
+            panel: RepoPanel::History,
             writes: WriteLock::default(),
             watching,
             waker: ctx.clone(),

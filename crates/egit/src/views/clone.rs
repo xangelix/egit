@@ -7,14 +7,14 @@
 use std::path::{Path, PathBuf};
 
 use egit_git::{CancelToken, CloneOptions, Git, GitError, Progress, clone};
-use egui::{Align, Key, Layout, RichText, Ui, vec2};
+use egui::{Align, Key, Layout, RichText, Ui};
 use egui_async::Bind;
 
 use crate::app::Action;
 use crate::format::{self, display_path};
 use crate::jobs;
 use crate::problem::Problem;
-use crate::theme::{Palette, icon};
+use crate::theme::{CONTROL, Palette, icon};
 use crate::widgets::{self, muted};
 
 /// A clone asked for.
@@ -263,66 +263,56 @@ pub(crate) fn card(
     });
 }
 
+/// The width of the clone form's labels.
+const FORM_LABEL: f32 = 72.0;
+
 /// The address, folder, name, and options; returns whether Enter was pressed in the address.
 fn fields(ui: &mut Ui, view: &mut CloneView, actions: &mut Vec<Action>) -> bool {
     let palette = Palette::of(ui.ctx());
-    let width = (ui.available_width() - 90.0).max(200.0);
     let mut submitted = false;
-    egui::Grid::new("clone-fields")
-        .num_columns(2)
-        .spacing([12.0, 8.0])
-        .show(ui, |ui| {
-            let label = ui.label(muted(ui, "Address"));
-            let field = ui
-                .add_sized(
-                    [width, 20.0],
-                    crate::widgets::line_field(&mut view.url)
-                        .hint_text("https://github.com/owner/repository.git"),
-                )
-                .labelled_by(label.id);
-            if field.changed() && !view.name_edited {
-                view.name = name_from_url(&view.url);
-            }
-            submitted = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-            ui.end_row();
-
-            let label = ui.label(muted(ui, "Into"));
-            // From the right, so the field ends where the address does.
-            let row = Layout::right_to_left(Align::Center);
-            ui.allocate_ui_with_layout(vec2(width, 20.0), row, |ui| {
-                let picking = view.picking.is_pending();
-                if widgets::secondary(ui, !picking, &format!("{}  Choose…", icon::FOLDER_OPEN))
-                    .clicked()
-                {
-                    actions.push(Action::PickCloneFolder);
-                }
-                let field = ui
-                    .add_sized(
-                        [ui.available_width(), 20.0],
-                        crate::widgets::line_field(&mut view.folder_text).hint_text("~/src"),
-                    )
-                    .labelled_by(label.id);
-                if field.changed() {
-                    view.folder = None;
-                }
-            });
-            ui.end_row();
-
-            let label = ui.label(muted(ui, "Named"));
-            let field = ui
-                .add_sized(
-                    [width.min(320.0), 20.0],
-                    crate::widgets::line_field(&mut view.name).hint_text("repository"),
-                )
-                .labelled_by(label.id);
-            if field.changed() {
-                view.name_edited = !view.name.is_empty();
-            }
-            ui.end_row();
-        });
+    let field = widgets::form_row(ui, FORM_LABEL, "Address", |ui| {
+        ui.add_sized(
+            [ui.available_width(), CONTROL],
+            widgets::line_field(&mut view.url).hint_text("https://github.com/owner/repository.git"),
+        )
+    });
+    if field.changed() && !view.name_edited {
+        view.name = name_from_url(&view.url);
+    }
+    submitted |= field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+    let picking = view.picking.is_pending();
+    let mut choose = false;
+    let field = widgets::form_row(ui, FORM_LABEL, "Into", |ui| {
+        // From the right: the button, then the field filling what is left.
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            choose = widgets::secondary(ui, !picking, &format!("{}  Choose…", icon::FOLDER_OPEN))
+                .clicked();
+            ui.add_sized(
+                [ui.available_width(), CONTROL],
+                widgets::line_field(&mut view.folder_text).hint_text("~/src"),
+            )
+        })
+        .inner
+    });
+    if choose {
+        actions.push(Action::PickCloneFolder);
+    }
+    if field.changed() {
+        view.folder = None;
+    }
+    let field = widgets::form_row(ui, FORM_LABEL, "Named", |ui| {
+        ui.add_sized(
+            [ui.available_width().min(360.0), CONTROL],
+            widgets::line_field(&mut view.name).hint_text("repository"),
+        )
+    });
+    if field.changed() {
+        view.name_edited = !view.name.is_empty();
+    }
     ui.add_space(4.0);
-    ui.checkbox(&mut view.options.submodules, "Its submodules too");
-    ui.checkbox(
+    crate::widgets::checkbox(ui, &mut view.options.submodules, "Its submodules too");
+    crate::widgets::checkbox(
+        ui,
         &mut view.options.partial,
         "Partial clone: files' contents are fetched when first needed",
     );

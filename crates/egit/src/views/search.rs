@@ -10,12 +10,13 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use egit_git::ConfigSnapshot;
-use egui::{Frame, Key, Margin, RichText, Ui};
+use egui::{Align, Frame, Key, Layout, Margin, RichText, Ui};
 
 use crate::format::count;
 use crate::history::History;
 use crate::search::{self, Asked, Found, RowIndex, Search, SearchKind};
 use crate::theme::{Palette, icon};
+use crate::widgets;
 
 use super::history::Shared;
 
@@ -24,9 +25,6 @@ const PAUSE: f64 = 0.3;
 
 /// How often a running search's progress is drawn.
 const PROGRESS_EVERY: Duration = Duration::from_millis(60);
-
-/// The query field's width.
-const FIELD_WIDTH: f32 = 260.0;
 
 /// The search bar's state.
 #[derive(Debug, Default)]
@@ -218,49 +216,55 @@ pub(super) fn bar(
                     })
                     .response
                     .labelled_by(label.id);
-                let field = ui
-                    .add(
-                        crate::widgets::line_field(&mut search.query)
-                            .hint_text(search.kind.hint())
-                            .desired_width(FIELD_WIDTH),
-                    )
-                    .labelled_by(label.id);
-                if field.changed() || search.kind != before {
-                    search.edited = Some(ui.input(|input| input.time));
-                    search.search = None;
-                    search.moved = false;
-                }
-                if std::mem::take(&mut search.focus) {
-                    field.request_focus();
-                }
-                if field.lost_focus() {
-                    if ui.input(|input| input.key_pressed(Key::Escape)) {
+                // From the right: closing, stepping, how many; the field fills what is left.
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::icon_tool(ui, true, icon::X, "Close")
+                        .on_hover_text("Close the search (Escape)")
+                        .clicked()
+                    {
                         close = true;
-                    } else if ui.input(|input| input.key_pressed(Key::Enter)) {
-                        let back = ui.input(|input| input.modifiers.shift);
-                        step = Some(if back { Step::Previous } else { Step::Next });
-                        search.focus = true;
                     }
-                }
-                status(ui, search, history, selected, palette);
-                let any = search.found().is_some_and(|found| found.count() > 0);
-                if ui
-                    .add_enabled(any, crate::widgets::small("Previous"))
-                    .on_hover_text("Shift+Enter")
-                    .clicked()
-                {
-                    step = Some(Step::Previous);
-                }
-                if ui
-                    .add_enabled(any, crate::widgets::small("Next"))
-                    .on_hover_text("Enter")
-                    .clicked()
-                {
-                    step = Some(Step::Next);
-                }
-                if ui.add(crate::widgets::small("Close")).clicked() {
-                    close = true;
-                }
+                    let any = search.found().is_some_and(|found| found.count() > 0);
+                    if widgets::icon_tool(ui, any, icon::ARROW_DOWN, "Next")
+                        .on_hover_text("Next (Enter)")
+                        .clicked()
+                    {
+                        step = Some(Step::Next);
+                    }
+                    if widgets::icon_tool(ui, any, icon::ARROW_UP, "Previous")
+                        .on_hover_text("Previous (Shift+Enter)")
+                        .clicked()
+                    {
+                        step = Some(Step::Previous);
+                    }
+                    status(ui, search, history, selected, palette);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        let field = ui
+                            .add(
+                                widgets::line_field(&mut search.query)
+                                    .hint_text(search.kind.hint())
+                                    .desired_width(ui.available_width().max(120.0)),
+                            )
+                            .labelled_by(label.id);
+                        if field.changed() || search.kind != before {
+                            search.edited = Some(ui.input(|input| input.time));
+                            search.search = None;
+                            search.moved = false;
+                        }
+                        if std::mem::take(&mut search.focus) {
+                            field.request_focus();
+                        }
+                        if field.lost_focus() {
+                            if ui.input(|input| input.key_pressed(Key::Escape)) {
+                                close = true;
+                            } else if ui.input(|input| input.key_pressed(Key::Enter)) {
+                                let back = ui.input(|input| input.modifiers.shift);
+                                step = Some(if back { Step::Previous } else { Step::Next });
+                                search.focus = true;
+                            }
+                        }
+                    });
+                });
             });
         });
     if close {

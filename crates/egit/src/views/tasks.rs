@@ -260,6 +260,10 @@ fn progress_text(tasks: &Tasks) -> String {
 /// How the last task ended (until dismissed or another starts): a line, a problem, or the
 /// dialog it leads to.
 pub(crate) fn outcome(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
+    // Nothing to say: no room taken (a place, even empty, takes the row's spacing).
+    if pane.tasks.is_busy() || view.seen == pane.tasks.started {
+        return;
+    }
     own_ids(ui, "outcome", pane.id, UiBuilder::new(), |ui| {
         outcome_lines(ui, view, pane);
     });
@@ -736,6 +740,9 @@ pub(crate) fn banner(
     view: &mut TasksView,
     pane: &mut TaskPane<'_>,
 ) -> Option<TaskEvent> {
+    if pane.operations.is_empty() {
+        return None;
+    }
     own_ids(ui, "banner", pane.id, UiBuilder::new(), |ui| {
         operation_banner(ui, view, pane)
     })

@@ -83,11 +83,16 @@ impl HomeView {
 /// Draws the Home tab.
 pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
     super::page(ui, "home", |ui| {
-        ui.label(RichText::new("egit").size(30.0).strong());
+        widgets::page_title(ui, "egit");
         ui.label(muted(ui, "A fast, native git client."));
         ui.add_space(16.0);
         git_problem(ui, state);
+        // What is used every day first: who commits, what to open; cloning, now and then.
+        profile_card(ui, state);
+        ui.add_space(12.0);
         open_card(ui, state);
+        ui.add_space(12.0);
+        recent_card(ui, state);
         ui.add_space(12.0);
         let ready = state.git.is_ok();
         clone::card(
@@ -97,10 +102,6 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
             state.home_dir.as_deref(),
             &mut state.actions,
         );
-        ui.add_space(12.0);
-        recent_card(ui, state);
-        ui.add_space(12.0);
-        profile_card(ui, state);
     });
 }
 
@@ -213,7 +214,8 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
         let name = 200.0;
         let opened = 140.0;
         let location = (ui.available_width() - name - opened).max(160.0);
-        let output = TableKit::new("home-recent", &provider, &mut table.state)
+        let table_kit = TableKit::new("home-recent", &provider, &mut table.state);
+        let output = crate::tables::styled(table_kit, ui)
             .with_columns(vec![
                 Column::new(name).range(120.0..=400.0),
                 Column::new(location)
@@ -222,8 +224,6 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
                 Column::new(opened).range(80.0..=240.0),
             ])
             .with_row_height(ROW_HEIGHT)
-            .with_cell_align(egui::Align::Center)
-            .with_selected_hover_color(crate::theme::Palette::of(ui.ctx()).selected_hover)
             .with_max_height(Some(height))
             .show_with_output(ui, |_, _, _, _| None);
         let output = match output {
@@ -278,50 +278,65 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
     });
 }
 
+/// Who commits, on one line: the name and email, whether commits are signed, and the profile's
+/// button at the right.
 fn profile_card(ui: &mut Ui, state: &mut AppState) {
     let palette = Palette::of(ui.ctx());
     widgets::card(ui, |ui| {
-        widgets::heading(ui, "You");
-        match state.user_config.read_as_ref() {
-            None => widgets::working(ui, "Reading your git settings…"),
-            Some(Err(problem)) => widgets::problem_box(ui, problem, |_| {}),
-            Some(Ok(snapshot)) => {
-                let profile = snapshot.profile();
-                let name = profile.name().map(|entry| entry.text().to_string());
-                let email = profile.email().map(|entry| entry.text().to_string());
-                match (name, email) {
-                    (Some(name), Some(email)) => {
-                        ui.label(RichText::new(format!("{name} <{email}>")).strong());
-                    }
-                    _ => {
-                        ui.label(
-                            RichText::new(format!(
-                                "{}  Your name or email isn't set: git won't let you commit.",
-                                icon::WARNING
-                            ))
-                            .color(palette.warn),
-                        );
-                    }
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(icon::USER_CIRCLE)
+                    .size(20.0)
+                    .color(palette.muted),
+            );
+            match state.user_config.read_as_ref() {
+                None => widgets::working(ui, "Reading your git settings…"),
+                Some(Err(problem)) => {
+                    ui.label(RichText::new(problem.title.as_str()).color(palette.danger));
                 }
-                let signing = profile.signing();
-                let signs = if signing.commits.value {
-                    format!("Commits are signed ({}).", signing.format.value.name())
-                } else {
-                    "Commits aren't signed by default.".to_owned()
-                };
-                ui.label(muted(ui, signs));
+                Some(Ok(snapshot)) => {
+                    let profile = snapshot.profile();
+                    let name = profile.name().map(|entry| entry.text().to_string());
+                    let email = profile.email().map(|entry| entry.text().to_string());
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        match (name, email) {
+                            (Some(name), Some(email)) => {
+                                ui.label(RichText::new(format!("{name} <{email}>")).strong());
+                            }
+                            _ => {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{}  Your name or email isn't set: git won't let you \
+                                         commit.",
+                                        icon::WARNING
+                                    ))
+                                    .color(palette.warn),
+                                );
+                            }
+                        }
+                        let signing = profile.signing();
+                        let signs = if signing.commits.value {
+                            format!("Commits are signed ({}).", signing.format.value.name())
+                        } else {
+                            "Commits aren't signed by default.".to_owned()
+                        };
+                        ui.label(muted(ui, signs));
+                    });
+                }
             }
-        }
-        ui.add_space(6.0);
-        if widgets::secondary(
-            ui,
-            true,
-            &format!("{}  Edit your profile", icon::USER_CIRCLE),
-        )
-        .clicked()
-        {
-            state.actions.push(Action::ShowProfile);
-        }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if widgets::secondary(
+                    ui,
+                    true,
+                    &format!("{}  Edit your profile", icon::USER_CIRCLE),
+                )
+                .clicked()
+                {
+                    state.actions.push(Action::ShowProfile);
+                }
+            });
+        });
     });
 }
 

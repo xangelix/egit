@@ -42,8 +42,9 @@ use crate::tasks::{Task, remote_names};
 use crate::theme::{Palette, icon};
 use crate::widgets::{TARGET, muted};
 
-/// A row's height: a whole target to hit.
-const ROW_HEIGHT: f32 = TARGET;
+/// A row's height: a whole target to hit, and rows touch (no gap where the pointer finds
+/// nothing).
+const ROW_HEIGHT: f32 = 28.0;
 
 /// How far each level of a tree is indented.
 const INDENT: f32 = 14.0;
@@ -830,6 +831,8 @@ pub(super) fn show(
     if std::mem::take(&mut view.filter.to_top) {
         scroll = scroll.vertical_scroll_offset(0.0);
     }
+    // Rows touch: no spacing between them (`show_rows` counts it in their pitch).
+    ui.spacing_mut().item_spacing.y = 0.0;
     scroll.show_rows(ui, ROW_HEIGHT, count, |ui, visible| {
         for at in visible {
             let Some(row) = view.rows.get(at).cloned() else {

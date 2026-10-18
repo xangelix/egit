@@ -220,15 +220,16 @@ fn branches_tags_and_stashes_are_brought_back() {
 
     // Changes stashed, taken back (they're back in the work tree); a stash dropped, kept.
     let stash = |count: usize| match count {
-        0 => format!("{}  Stash", icon::ARCHIVE),
-        count => format!("{}  Stashes · {count}", icon::ARCHIVE),
+        0 => "Stash".to_owned(),
+        count => format!("Stashes · {count}"),
     };
     std::fs::write(repo.join("f"), "changed\n").unwrap();
     wait_for_label(&mut harness, &uncommitted(1));
     harness.get_by_label(&stash(0)).click();
     click_when_enabled(&mut harness, "Stash the changes…");
     wait_for_label(&mut harness, "Stash your changes");
-    harness.get_by_label("Stash").click();
+    // The dialog's (the top bar's menu is named so too).
+    harness.get_all_by_label("Stash").last().unwrap().click();
     wait_for_label(&mut harness, "Stashed your changes.");
     assert_eq!(std::fs::read_to_string(repo.join("f")).unwrap(), "two\n");
     click_when_enabled(&mut harness, "Undo");
@@ -243,7 +244,8 @@ fn branches_tags_and_stashes_are_brought_back() {
     harness.get_by_label(&stash(0)).click();
     click_when_enabled(&mut harness, "Stash the changes…");
     wait_for_label(&mut harness, "Stash your changes");
-    harness.get_by_label("Stash").click();
+    // The dialog's (the top bar's menu is named so too).
+    harness.get_all_by_label("Stash").last().unwrap().click();
     wait_for_label(&mut harness, &stash(1));
     let stashed = rev(&sandbox, &repo, "refs/stash");
     harness.get_by_label(&stash(1)).click();
@@ -271,9 +273,7 @@ fn the_reflog_shows_where_head_has_been_and_keeps_what_nothing_reaches() {
     let two = rev(&sandbox, &repo, "HEAD").unwrap();
     let mut harness = opened(&sandbox, &repo);
 
-    harness
-        .get_by_label(&format!("{}  Reflog", icon::CLOCK_COUNTER_CLOCKWISE))
-        .click();
+    harness.get_by_label("Reflog").click();
     wait_for_label(&mut harness, "Reflog of HEAD");
     wait_for_label(&mut harness, "commit: Three");
     // The newest move is selected: the reset, to Two, which the history shows.

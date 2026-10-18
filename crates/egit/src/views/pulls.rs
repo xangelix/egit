@@ -272,11 +272,7 @@ fn empty(
                 .find(|account| account.host().name() == host);
             let kind = account.map_or_else(|| shared.forge.kind(), |account| account.host().kind());
             widgets::card(ui, |ui| {
-                ui.label(
-                    RichText::new(format!("{}  Sign in to {host}", icon::SIGN_IN))
-                        .strong()
-                        .size(15.0),
-                );
+                widgets::heading(ui, &format!("{}  Sign in to {host}", icon::SIGN_IN));
                 ui.add_space(4.0);
                 if *refused {
                     ui.label(format!(
@@ -572,7 +568,7 @@ fn details(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(&pull.title).strong().size(16.0));
+                widgets::panel_title(ui, pull.title.as_str());
                 ui.label(muted(ui, request_number(kind, pull.number)));
                 if pull.draft {
                     chip(ui, "Draft", palette.muted);

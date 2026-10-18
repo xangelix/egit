@@ -263,11 +263,13 @@ fn bar(
     let in_history = view.shown.and_then(|(_, row)| row).is_some();
     Frame::new()
         .fill(shared.palette.panel)
-        .inner_margin(Margin::symmetric(8, 6))
+        .inner_margin(Margin::symmetric(12, 6))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
+            ui.horizontal(|ui| {
+                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
+                    .on_hover_text("Back to the history (Escape)")
+                    .clicked()
                 {
                     event = Some(ReflogEvent::Close);
                 }
@@ -277,11 +279,15 @@ fn bar(
                     moves => format!("{} moves", count(u64::try_from(moves).unwrap_or(u64::MAX))),
                 };
                 ui.label(muted(ui, moves));
+            });
+            // What can be done from the move selected, on a row of its own.
+            ui.horizontal_wrapped(|ui| {
                 let Some(entry) = selected else {
                     return;
                 };
+                ui.label(muted(ui, "This move:"));
                 let commit = entry.commit;
-                let show = ui.add_enabled(in_history, egui::Button::new("Show the commit"));
+                let show = widgets::secondary(ui, in_history, "Show the commit");
                 let show = show.on_disabled_hover_text(
                     "It isn't in the history shown: no branch or tag reaches it. Create a \
                      branch here to keep it.",
@@ -301,27 +307,34 @@ fn bar(
                 }
                 let can = menus.can_change();
                 ui.add_enabled_ui(can.is_ok(), |ui| {
-                    ui.menu_button(format!("Reset {current} to here"), |ui| {
-                        for (label, mode) in [
-                            ("Soft: keep the changes staged", ResetMode::Soft),
-                            ("Mixed: keep the changes, unstaged", ResetMode::Mixed),
-                            (
-                                "Keep: keep uncommitted changes (refused if in the way)",
-                                ResetMode::Keep,
-                            ),
-                        ] {
-                            if ui.button(label).clicked() {
-                                ask(Ask::Task(Task::Reset(commit, mode)));
+                    let name = format!("Reset {current} to here");
+                    let button = egui::Button::new(format!("{name}  {}", icon::CARET_DOWN))
+                        .wrap_mode(egui::TextWrapMode::Extend);
+                    let (response, _) =
+                        egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                            for (label, mode) in [
+                                ("Soft: keep the changes staged", ResetMode::Soft),
+                                ("Mixed: keep the changes, unstaged", ResetMode::Mixed),
+                                (
+                                    "Keep: keep uncommitted changes (refused if in the way)",
+                                    ResetMode::Keep,
+                                ),
+                            ] {
+                                if ui.button(label).clicked() {
+                                    ask(Ask::Task(Task::Reset(commit, mode)));
+                                    ui.close();
+                                }
+                            }
+                            if ui.button("Hard: discard the changes…").clicked() {
+                                ask(Ask::Dialog(Dialog::HardReset { at: commit }));
                                 ui.close();
                             }
-                        }
-                        if ui.button("Hard: discard the changes…").clicked() {
-                            ask(Ask::Dialog(Dialog::HardReset { at: commit }));
-                            ui.close();
-                        }
-                    })
-                    .response
-                    .on_disabled_hover_text(can.err().unwrap_or_default());
+                        });
+                    // Named in words: the caret only shows it opens a menu.
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, can.is_ok(), &name)
+                    });
+                    response.on_disabled_hover_text(can.err().unwrap_or_default());
                 });
                 if widgets::secondary(ui, can.is_ok(), "Switch here, without a branch").clicked() {
                     ask(Ask::Task(Task::Switch(SwitchTo::Detached(commit))));

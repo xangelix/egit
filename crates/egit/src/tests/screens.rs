@@ -185,6 +185,10 @@ pub(super) fn history_of(rows: u64) -> impl Fn(&mut EgitApp) -> bool {
 
 /// Clicks a repository's panel tab.
 fn show_panel(harness: &mut Harness<'_, EgitApp>, panel: &str) {
+    harness
+        .get_by_role_and_label(Role::Button, "Repository")
+        .click();
+    wait_for_label(harness, panel);
     harness.get_by_label_contains(panel).click();
     harness.run_steps(4);
 }
@@ -628,7 +632,8 @@ fn the_history_shows_branches_merges_and_a_commits_changes() {
     });
     harness.get_by_label("1 file changed");
     harness.get_by_role_and_label(Role::Label, "parser.rs");
-    harness.get_by_role_and_label(Role::Label, "Added");
+    // How it changed: a letter, named in words.
+    harness.get_by_role_and_label(Role::Button, "Added");
     // The commit's lines, and the file's.
     assert_eq!(harness.query_all_by_label("+1").count(), 2);
     assert_eq!(harness.query_all_by_label("−0").count(), 2);
@@ -754,12 +759,11 @@ fn a_git_lfs_pointers_diff_shows_what_it_stands_for() {
 
 /// The label of the history's count of files with uncommitted changes.
 pub(super) fn uncommitted(files: usize) -> String {
-    let files = if files == 1 {
-        "1 file".to_owned()
+    if files == 1 {
+        "1 uncommitted file".to_owned()
     } else {
-        format!("{files} files")
-    };
-    format!("{}  {files} with uncommitted changes", icon::PENCIL_SIMPLE)
+        format!("{files} uncommitted files")
+    }
 }
 
 #[test]
@@ -1078,6 +1082,10 @@ fn signed_commits_show_whether_their_signatures_hold() {
         &format!("{}  Good signature", icon::SEAL_CHECK),
     );
     harness.get_by_label("by tests@egit.invalid");
+    // The details settled (their lines counted) before they are looked at control by control.
+    settle(&mut harness, "the lines counted", |app| {
+        app.state.repos[0].history_view.counts_shown()
+    });
     render(&mut harness, "history-signed");
 }
 
@@ -1389,13 +1397,13 @@ fn conflicts_are_resolved_in_the_merge_editor() {
     harness
         .get_by_role_and_label(Role::Button, "notes.txt")
         .click();
-    wait_for_label(&mut harness, "Conflict 1 of 2: not resolved");
-    wait_for_label(&mut harness, "2 left to resolve.");
+    wait_for_label(&mut harness, "Conflict 1 of 2");
+    wait_for_label(&mut harness, "· 2 left");
     render(&mut harness, "merge-editor");
 
     // The incoming side for the first; the pick moves on to the second, edited by hand.
     harness.get_by_label("Incoming").click();
-    wait_for_label(&mut harness, "Conflict 2 of 2: not resolved");
+    wait_for_label(&mut harness, "Conflict 2 of 2");
     harness.get_by_label("Edit…").click();
     let editor = "Conflict 2 resolves to (Escape cancels):";
     wait_for_label(&mut harness, editor);
@@ -1411,7 +1419,7 @@ fn conflicts_are_resolved_in_the_merge_editor() {
         "beta (both)\n",
     );
     harness.get_by_label("Apply").click();
-    wait_for_label(&mut harness, "All resolved.");
+    wait_for_label(&mut harness, "· all resolved");
     render(&mut harness, "merge-resolved");
     click_when_enabled(&mut harness, &format!("{}  Save resolution", icon::CHECK));
     let resolved = notes("alpha (theirs)", "beta (both)");
@@ -1526,7 +1534,7 @@ fn branches_are_switched_to_made_and_deleted_from_the_graph() {
     render(&mut harness, "stash-and-switch");
     harness.get_by_label("Stash and switch").click();
     wait_for_label(&mut harness, "Stashed your changes, and switched to other.");
-    wait_for_label(&mut harness, &format!("{}  Stashes · 1", icon::ARCHIVE));
+    wait_for_label(&mut harness, "Stashes · 1");
 
     // A branch made at a commit, and switched to.
     harness
@@ -1649,8 +1657,8 @@ fn changes_are_stashed_popped_and_dropped() {
     open_path(&mut harness, &repo);
     settle(&mut harness, "the history", history_shown);
     let stash = |count: usize| match count {
-        0 => format!("{}  Stash", icon::ARCHIVE),
-        count => format!("{}  Stashes · {count}", icon::ARCHIVE),
+        0 => "Stash".to_owned(),
+        count => format!("Stashes · {count}"),
     };
 
     std::fs::write(repo.join("f"), "changed\n").unwrap();
@@ -1665,7 +1673,8 @@ fn changes_are_stashed_popped_and_dropped() {
         "Message (optional)",
         "Half done",
     );
-    harness.get_by_label("Stash").click();
+    // The dialog's (the top bar's menu is named so too).
+    harness.get_all_by_label("Stash").last().unwrap().click();
     wait_for_label(&mut harness, "Stashed your changes.");
     wait_for_label(&mut harness, &stash(1));
     assert_eq!(std::fs::read_to_string(repo.join("f")).unwrap(), "two\n");
@@ -1686,7 +1695,7 @@ fn changes_are_stashed_popped_and_dropped() {
     // Enabled once the work tree's status says there are changes.
     click_when_enabled(&mut harness, "Stash the changes…");
     wait_for_label(&mut harness, "Stash your changes");
-    harness.get_by_label("Stash").click();
+    harness.get_all_by_label("Stash").last().unwrap().click();
     wait_for_label(&mut harness, &stash(1));
     harness.get_by_label(&stash(1)).click();
     wait_for_label(&mut harness, "Drop…");
@@ -1987,7 +1996,7 @@ fn a_changed_file_opens_in_place_of_the_history() {
     harness.get_by_label("Side by side").click();
     settle(&mut harness, "the sides", parser_shown);
     render(&mut harness, "history-diff-split");
-    harness.get_by_label("Side by side").click();
+    harness.get_by_label("Unified").click();
 
     harness.get_by_label("Whole file").click();
     settle(&mut harness, "the whole file's diff", parser_shown);
@@ -2488,9 +2497,7 @@ fn pull_requests_without_credentials_offer_to_sign_in() {
                 )
         })
     });
-    harness
-        .get_by_label(&format!("{}  Pull requests", icon::GIT_PULL_REQUEST))
-        .click();
+    harness.get_by_label("Pull requests").click();
     let host = fake.address();
     wait_for_label(
         &mut harness,

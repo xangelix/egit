@@ -155,11 +155,7 @@ impl Prompts {
         let modal = Modal::new(Id::new("askpass")).frame(frame).show(ctx, |ui| {
             ui.set_width(480.0);
             let (glyph, title) = title(kind);
-            ui.label(
-                RichText::new(format!("{glyph}  {title}"))
-                    .size(18.0)
-                    .strong(),
-            );
+            widgets::panel_title(ui, format!("{glyph}  {title}"));
             if let Some(context) = prompt.context() {
                 ui.label(muted(ui, format!("While {}", lowercase_first(context))));
             }

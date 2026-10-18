@@ -179,10 +179,22 @@ fn interaction(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<String> 
         .ctx
         .memory(egui::Memory::focused)
         .map(|id| id.accesskit_id().0);
-    for control in controls
+    for listed in controls
         .iter()
         .filter(|control| Some(control.node) != holder)
     {
+        // As it is now: checking one control can move others (focusing a commit's row selects
+        // it, and the details beside change).
+        let Some(control) = elements(harness)
+            .into_iter()
+            .find(|element| element.node == listed.node)
+            .filter(|element| {
+                element.visible.is_positive() && element.visible.area() >= 0.5 * element.rect.area()
+            })
+        else {
+            continue;
+        };
+        let control = &control;
         let center = control.visible.center();
         let top = harness
             .ctx

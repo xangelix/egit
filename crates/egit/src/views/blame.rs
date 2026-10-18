@@ -228,8 +228,7 @@ fn bar(ui: &mut Ui, shared: &Shared<'_>, view: &mut BlameView, done: bool) -> Op
                 ui.label(muted(ui, at));
                 ui.add_space(8.0);
                 let mut follow = view.moves == Moves::Writing;
-                if ui
-                    .checkbox(&mut follow, "Follow moved lines")
+                if crate::widgets::checkbox(ui, &mut follow, "Follow moved lines")
                     .on_hover_text(
                         "A line moved within the file is the commit's that wrote it, not the \
                          one that moved it. Slower on a large file.",

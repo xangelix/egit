@@ -23,7 +23,7 @@ use crate::history::Scope;
 use crate::jobs::{self, WriteLock};
 use crate::preferences::Preferences;
 use crate::problem::{OpenProblem, Problem};
-use crate::repo::{RepoId, RepoTab};
+use crate::repo::{RepoId, RepoPanel, RepoTab};
 use crate::settings::{Settings, StoredPath};
 use crate::staging::StageRequest;
 use crate::tabs::{self, Pane};
@@ -125,6 +125,8 @@ pub(crate) enum Action {
     SaveProfile(Vec<ConfigChange>),
     /// Read a repository's state again.
     Refresh(RepoId),
+    /// Show a page of a repository's tab (or its history).
+    ShowPanel(RepoId, RepoPanel),
     /// Write a commit-graph file for a repository.
     WriteCommitGraph(RepoId),
     /// Stage or unstage in a repository.
@@ -341,6 +343,7 @@ impl EgitApp {
             Action::Forget(path) => state.settings.forget(&path),
             Action::ShowProfile => tabs::show(&mut self.tabs, Pane::Profile),
             Action::SaveProfile(changes) => state.save_profile(changes),
+            Action::ShowPanel(id, panel) => state.show_panel(id, panel),
             Action::Refresh(id) => {
                 if let Some(git) = state.git()
                     && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
@@ -453,6 +456,13 @@ impl EgitApp {
 }
 
 impl AppState {
+    /// Shows repository `id`'s `panel` (its history, or a page about it).
+    fn show_panel(&mut self, id: RepoId, panel: RepoPanel) {
+        if let Some(repo) = self.repos.iter_mut().find(|repo| repo.id == id) {
+            repo.panel = panel;
+        }
+    }
+
     /// Starts cloning as `request` says (once git is found).
     fn start_clone(&mut self, request: CloneRequest) {
         if let Some(git) = self.git() {

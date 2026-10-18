@@ -85,7 +85,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
                     (ThemeChoice::Light, format!("{}  Light", icon::SUN)),
                     (ThemeChoice::Dark, format!("{}  Dark", icon::MOON)),
                 ] {
-                    if ui.radio(current == choice, text).clicked() {
+                    if crate::widgets::radio(ui, current == choice, text).clicked() {
                         state.actions.push(Action::SetTheme(choice));
                         ui.close();
                     }

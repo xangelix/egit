@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use bstr::BString;
 use egit_git::{CancelToken, Merge, Operation, Piece, WholeOnly};
-use egui::{Frame, Key, Margin, Modifiers, RichText, TextEdit, Ui};
+use egui::{Align, Frame, Key, Layout, Margin, Modifiers, RichText, TextEdit, Ui};
 use egui_async::Bind;
 
 use super::history::{ID_DIGITS, Shared};
@@ -383,10 +383,10 @@ fn bars(
 ) {
     Frame::new()
         .fill(shared.palette.panel)
-        .inner_margin(Margin::symmetric(8, 4))
+        .inner_margin(Margin::symmetric(12, 6))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| step_bar(ui, shared, view, file, actions));
+            ui.horizontal(|ui| step_bar(ui, shared, view, file, actions));
             ui.horizontal_wrapped(|ui| pick_bar(ui, view, file));
         });
 }
@@ -402,71 +402,76 @@ fn step_bar(
     let count = view.choices.len();
     let open = view.open_conflicts();
     let editing = view.editing.is_some();
+    let first = view.selected == 0;
+    let last = view.selected.saturating_add(1) >= count;
+    if widgets::icon_tool(ui, !first && !editing, icon::ARROW_UP, "Previous")
+        .on_hover_text(format!("The conflict before (Alt+{})", icon::ARROW_UP))
+        .clicked()
+    {
+        view.select(view.selected.saturating_sub(1));
+    }
+    if widgets::icon_tool(ui, !last && !editing, icon::ARROW_DOWN, "Next")
+        .on_hover_text(format!("The conflict after (Alt+{})", icon::ARROW_DOWN))
+        .clicked()
+    {
+        view.select(view.selected.saturating_add(1));
+    }
     let choice = view.choices.get(view.selected).map_or("", Choice::name);
     ui.label(
         RichText::new(format!(
-            "Conflict {} of {count}: {choice}",
+            "Conflict {} of {count}",
             view.selected.saturating_add(1).min(count)
         ))
         .strong(),
     );
-    let first = view.selected == 0;
-    let last = view.selected.saturating_add(1) >= count;
-    if widgets::secondary(
-        ui,
-        !first && !editing,
-        &format!("{}  Previous", icon::ARROW_UP),
-    )
-    .on_hover_text(format!("The conflict before (Alt+{})", icon::ARROW_UP))
-    .clicked()
-    {
-        view.select(view.selected.saturating_sub(1));
-    }
-    if widgets::secondary(
-        ui,
-        !last && !editing,
-        &format!("{}  Next", icon::ARROW_DOWN),
-    )
-    .on_hover_text(format!("The conflict after (Alt+{})", icon::ARROW_DOWN))
-    .clicked()
-    {
-        view.select(view.selected.saturating_add(1));
-    }
+    ui.label(muted(ui, choice));
     let left = match open {
-        0 => "All resolved.".to_owned(),
-        1 => "1 left to resolve.".to_owned(),
-        open => format!("{open} left to resolve."),
+        0 => "· all resolved".to_owned(),
+        open => format!("· {open} left"),
     };
     ui.label(muted(ui, left));
-    if ui.checkbox(&mut view.show_base, "Show the base").changed() {
-        view.changed();
-    }
-    if widgets::primary(
-        ui,
-        open == 0 && !editing,
-        &format!("{}  Save resolution", icon::CHECK),
-    )
-    .on_disabled_hover_text("Resolve every conflict first")
-    .clicked()
-    {
-        let how = Resolve::Merged(view.choices.clone().into());
-        resolve(shared, file, how, actions);
-    }
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        if widgets::primary(
+            ui,
+            open == 0 && !editing,
+            &format!("{}  Save resolution", icon::CHECK),
+        )
+        .on_disabled_hover_text("Resolve every conflict first")
+        .clicked()
+        {
+            let how = Resolve::Merged(view.choices.clone().into());
+            resolve(shared, file, how, actions);
+        }
+        if widgets::checkbox(ui, &mut view.show_base, "Show the base").changed() {
+            view.changed();
+        }
+    });
 }
 
 /// What to take for the selected conflict, and for all of them.
 fn pick_bar(ui: &mut Ui, view: &mut MergeView, file: &ConflictFile) {
     let count = view.choices.len();
     let editing = view.editing.is_some();
+    let ready = count > 0 && !editing;
     ui.label(muted(ui, "Take"));
-    for (label, choice) in [
-        ("Current", Choice::Current),
-        ("Incoming", Choice::Incoming),
-        ("Current, then incoming", Choice::CurrentThenIncoming),
-        ("Incoming, then current", Choice::IncomingThenCurrent),
-        ("Base", Choice::Base),
+    for (label, choice, hover) in [
+        ("Current", Choice::Current, "This branch's side"),
+        ("Incoming", Choice::Incoming, "The side coming in"),
+        (
+            "Both",
+            Choice::CurrentThenIncoming,
+            "Both sides, this branch's first",
+        ),
+        (
+            "Base",
+            Choice::Base,
+            "As it was before either side changed it",
+        ),
     ] {
-        if widgets::secondary(ui, count > 0 && !editing, label).clicked() {
+        if widgets::secondary(ui, ready, label)
+            .on_hover_text(hover)
+            .clicked()
+        {
             view.choose(choice);
         }
     }
@@ -485,24 +490,39 @@ fn pick_bar(ui: &mut Ui, view: &mut MergeView, file: &ConflictFile) {
         .choices
         .get(view.selected)
         .is_some_and(|choice| *choice != Choice::Open);
-    if widgets::secondary(ui, resolved && !editing, "Reopen").clicked()
-        && let Some(slot) = view.choices.get_mut(view.selected)
-    {
-        *slot = Choice::Open;
-        view.changed();
-        view.scroll_to = Some(view.selected);
-    }
-    ui.add_space(12.0);
-    for (label, choice) in [
-        ("All current", Choice::Current),
-        ("All incoming", Choice::Incoming),
-    ] {
-        if widgets::secondary(ui, count > 0 && !editing, label).clicked() {
-            view.choices.fill(choice);
+    // The rarer choices, a menu away.
+    widgets::tool_menu(ui, icon::DOTS_THREE, "More", widgets::Look::Full, |ui| {
+        ui.set_min_width(240.0);
+        if ui
+            .add_enabled(ready, egui::Button::new("Both, incoming first"))
+            .clicked()
+        {
+            view.choose(Choice::IncomingThenCurrent);
+        }
+        if ui
+            .add_enabled(
+                resolved && !editing,
+                egui::Button::new("Reopen this conflict"),
+            )
+            .clicked()
+            && let Some(slot) = view.choices.get_mut(view.selected)
+        {
+            *slot = Choice::Open;
             view.changed();
             view.scroll_to = Some(view.selected);
         }
-    }
+        ui.separator();
+        for (label, choice) in [
+            ("All current", Choice::Current),
+            ("All incoming", Choice::Incoming),
+        ] {
+            if ui.add_enabled(ready, egui::Button::new(label)).clicked() {
+                view.choices.fill(choice);
+                view.changed();
+                view.scroll_to = Some(view.selected);
+            }
+        }
+    });
 }
 
 /// The selected conflict's text to edit: what it resolves to, or both sides while open;

@@ -331,12 +331,14 @@ fn summary(
             ui.add_space(6.0);
             if summary.kind == PatchKind::Mailbox {
                 ui.horizontal_wrapped(|ui| {
-                    ui.radio_value(
+                    crate::widgets::radio_value(
+                        ui,
                         &mut view.options.as_commits,
                         true,
                         "As commits, keeping their authors and messages",
                     );
-                    ui.radio_value(
+                    crate::widgets::radio_value(
+                        ui,
                         &mut view.options.as_commits,
                         false,
                         "As changes to commit yourself",
@@ -345,12 +347,14 @@ fn summary(
             }
             let as_commits = view.options.as_commits && summary.kind == PatchKind::Mailbox;
             if as_commits {
-                ui.checkbox(
+                crate::widgets::checkbox(
+                    ui,
                     &mut view.options.sign_off,
                     "Add a Signed-off-by line to each",
                 );
             } else {
-                ui.checkbox(
+                crate::widgets::checkbox(
+                    ui,
                     &mut view.options.staged,
                     "Stage them (merging in three ways where they don't apply as they are)",
                 );
@@ -479,19 +483,17 @@ fn files_list(ui: &mut Ui, shared: &Shared<'_>, summary: &PatchSummary) {
     ui.add_space(4.0);
     for file in summary.files.iter().take(LISTED) {
         ui.horizontal_wrapped(|ui| {
-            match &file.change {
-                PatchChange::Added => {
-                    ui.label(RichText::new("new").color(palette.ok));
-                }
-                PatchChange::Deleted => {
-                    ui.label(RichText::new("deleted").color(palette.danger));
-                }
-                PatchChange::Renamed { from } => {
-                    ui.label(muted(ui, format!("from {}", from.to_str_lossy())));
-                }
-                PatchChange::Modified => {}
-            }
+            let word = match &file.change {
+                PatchChange::Added => "Added",
+                PatchChange::Deleted => "Deleted",
+                PatchChange::Renamed { .. } => "Renamed",
+                PatchChange::Modified => "Modified",
+            };
+            crate::tables::status_mark(ui, word, palette);
             ui.label(file.path.to_str_lossy());
+            if let PatchChange::Renamed { from } = &file.change {
+                ui.label(muted(ui, format!("from {}", from.to_str_lossy())));
+            }
             match file.lines {
                 Some((added, removed)) => {
                     ui.label(RichText::new(format!("+{}", count(added))).color(palette.ok));

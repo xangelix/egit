@@ -11,7 +11,7 @@ use egit_forge::{ForgeRepository, NewPullRequest, repository_info};
 
 use crate::forge::request_noun;
 use egit_git::{CancelToken, Commit, ObjectKind, commits_between};
-use egui::{Id, Modal, RichText, TextEdit, Ui};
+use egui::{Id, Modal, TextEdit, Ui};
 use egui_async::Bind;
 
 use super::history::Shared;
@@ -218,11 +218,7 @@ enum Answer {
 /// The form; its answer, once given.
 fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<Answer> {
     let noun = request_noun(form.head.host().kind());
-    ui.label(
-        RichText::new(format!("Create a {noun}"))
-            .size(18.0)
-            .strong(),
-    );
+    widgets::panel_title(ui, format!("Create a {noun}"));
     ui.add_space(8.0);
     ui.add(
         egui::Label::new(format!(
@@ -263,7 +259,7 @@ fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<
         if prepared.targets.len() > 1 {
             ui.label(muted(ui, "Into"));
             for (index, (target, default)) in prepared.targets.iter().enumerate() {
-                if ui.radio(form.target == index, target.full_name()).clicked() {
+                if crate::widgets::radio(ui, form.target == index, target.full_name()).clicked() {
                     form.target = index;
                     if let Some(default) = default {
                         form.base.clone_from(default);
@@ -281,7 +277,7 @@ fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<
                 .desired_width(f32::INFINITY),
         )
         .labelled_by(label.id);
-        ui.checkbox(&mut form.draft, "Draft");
+        crate::widgets::checkbox(ui, &mut form.draft, "Draft");
         ui.add_space(12.0);
     }
     let into = prepared

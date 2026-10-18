@@ -14,8 +14,8 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use super::patches::wait_for_text;
 use super::screens::{
-    click_when_enabled, harness, history_of, history_shown, menu_item, open_path, profile_loaded,
-    render, settle, wait_for_label,
+    harness, history_of, history_shown, menu_item, open_path, profile_loaded, render, settle,
+    wait_for_label,
 };
 use crate::app::EgitApp;
 use crate::theme::icon;
@@ -89,38 +89,7 @@ fn a_bisection_finds_the_first_bad_commit_from_the_banner() {
     render(&mut harness, "bisect");
 
     // Each commit checked out marked from the banner, until the first bad one.
-    for _ in 0..10 {
-        if harness
-            .query_all_by_label_contains("is the first bad commit")
-            .next()
-            .is_some()
-        {
-            break;
-        }
-        let number: u32 = std::fs::read_to_string(repo.join("f"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        let mark = if number >= 7 { "Bad" } else { "Good" };
-        // Clicked in the frame it is found: the banner is drawn again as the status is read.
-        click_when_enabled(&mut harness, mark);
-        settle(
-            &mut harness,
-            "the mark taken in",
-            bisected(|left| !matches!(left, egit_git::BisectLeft::NeedsGood)),
-        );
-        let checked = rev(&sandbox, &repo, "HEAD");
-        settle(&mut harness, "the status read again", move |app| {
-            let repo = &mut app.state.repos[0];
-            !repo.tasks.is_busy()
-                && repo.status.ok_ref().is_some_and(|status| {
-                    status.bisect.as_ref().is_some_and(|bisection| {
-                        matches!(bisection.left, egit_git::BisectLeft::Found(_))
-                    }) || matches!(&status.head, egit_git::Head::Detached(commit) if commit.id == checked)
-                })
-        });
-    }
+    mark_until_found(&mut harness, &sandbox, &repo);
     wait_for_text(
         &mut harness,
         &format!("{} is the first bad commit.", seventh.abbreviated(8)),
@@ -131,6 +100,11 @@ fn a_bisection_finds_the_first_bad_commit_from_the_banner() {
             .history_view
             .selected_row()
             .is_some_and(|row| app.state.repos[0].history.shown.id(row) == Some(seventh))
+    });
+    // Its details read and their lines counted: they land in the background.
+    settle(&mut harness, "its details", |app| {
+        app.state.repos[0].history_view.details_shown()
+            && app.state.repos[0].history_view.counts_shown()
     });
     render(&mut harness, "bisect-found");
 
@@ -248,4 +222,68 @@ fn a_branch_is_rebased_keeping_its_merges() {
     assert_eq!(merges(&sandbox, &repo), "1", "still a merge");
     assert!(!repo.join("s1").exists(), "its commit dropped");
     assert!(repo.join("s2").exists());
+}
+
+/// Whether the bisection found its first bad commit.
+fn found(app: &mut EgitApp) -> bool {
+    app.state.repos[0].status.ok_ref().is_some_and(|status| {
+        status
+            .bisect
+            .as_ref()
+            .is_some_and(|bisection| matches!(bisection.left, egit_git::BisectLeft::Found(_)))
+    })
+}
+
+/// Marks each commit checked out from the banner (bad from c7 on, good before) until the first
+/// bad commit is found.
+fn mark_until_found(harness: &mut Harness<'_, EgitApp>, sandbox: &Sandbox, repo: &Path) {
+    for _ in 0..10 {
+        // From the bisection itself: its words may be a frame behind.
+        if found(harness.state_mut()) {
+            break;
+        }
+        let number: u32 = std::fs::read_to_string(repo.join("f"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        let mark = if number >= 7 { "Bad" } else { "Good" };
+        // Its button, clicked in the frame it is found (the banner is drawn again as the
+        // status is read); unless the status read since says the bisection is over.
+        let mut clicked = false;
+        for _ in 0..2_000 {
+            harness.step();
+            if found(harness.state_mut()) {
+                break;
+            }
+            if harness
+                .query_by_label(mark)
+                .is_some_and(|button| !button.accesskit_node().is_disabled())
+            {
+                harness.get_by_label(mark).click();
+                clicked = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if !clicked {
+            assert!(found(harness.state_mut()), "{mark} never came");
+            break;
+        }
+        settle(
+            harness,
+            "the mark taken in",
+            bisected(|left| !matches!(left, egit_git::BisectLeft::NeedsGood)),
+        );
+        let checked = rev(sandbox, repo, "HEAD");
+        settle(harness, "the status read again", move |app| {
+            let repo = &mut app.state.repos[0];
+            !repo.tasks.is_busy()
+                && repo.status.ok_ref().is_some_and(|status| {
+                    status.bisect.as_ref().is_some_and(|bisection| {
+                        matches!(bisection.left, egit_git::BisectLeft::Found(_))
+                    }) || matches!(&status.head, egit_git::Head::Detached(commit) if commit.id == checked)
+                })
+        });
+    }
 }

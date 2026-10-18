@@ -222,7 +222,7 @@ impl Find {
         let width = BAR_WIDTH.min(area.width());
         let rect = Rect::from_min_size(
             egui::pos2(area.right() - width - 8.0, area.top() + 6.0),
-            egui::vec2(width, 32.0),
+            egui::vec2(width, 40.0),
         );
         let status = self.status();
         let mut close = false;
@@ -261,13 +261,24 @@ impl Find {
                                 egui::Label::new(RichText::new(status).color(palette.muted))
                                     .selectable(false),
                             );
-                            if ui.add(crate::widgets::small("Previous")).clicked() {
+                            let icon = crate::theme::icon::ARROW_UP;
+                            if crate::widgets::icon_tool(ui, true, icon, "Previous")
+                                .on_hover_text("Previous (Shift+Enter)")
+                                .clicked()
+                            {
                                 step = Some(Step::Previous);
                             }
-                            if ui.add(crate::widgets::small("Next")).clicked() {
+                            let icon = crate::theme::icon::ARROW_DOWN;
+                            if crate::widgets::icon_tool(ui, true, icon, "Next")
+                                .on_hover_text("Next (Enter)")
+                                .clicked()
+                            {
                                 step = Some(Step::Next);
                             }
-                            if ui.add(crate::widgets::small("Close")).clicked() {
+                            if crate::widgets::icon_tool(ui, true, crate::theme::icon::X, "Close")
+                                .on_hover_text("Close (Escape)")
+                                .clicked()
+                            {
                                 close = true;
                             }
                         });

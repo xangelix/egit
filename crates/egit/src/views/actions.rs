@@ -946,9 +946,10 @@ pub(super) fn patches_menu(
     ui: &mut Ui,
     menus: &Menus<'_>,
     changes: WorkChanges,
+    look: crate::widgets::Look,
     asked: &mut Option<Ask>,
 ) -> Response {
-    ui.menu_button(format!("{}  Patches", crate::theme::icon::GIT_DIFF), |ui| {
+    crate::widgets::tool_menu(ui, crate::theme::icon::GIT_DIFF, "Patches", look, |ui| {
         ui.set_min_width(300.0);
         let applying = if menus.operation {
             Err("Finish or abort the operation in progress first")
@@ -987,7 +988,7 @@ pub(super) fn patches_menu(
             *asked = Some(Ask::SaveChanges(Changes::All));
         }
     })
-    .response
+    .0
 }
 
 /// The stash menu, under `button`: stashing the work tree's changes, and each stash to apply,
@@ -997,11 +998,12 @@ pub(super) fn stash_menu(
     menus: &Menus<'_>,
     stashes: &[Stash],
     has_changes: bool,
+    look: crate::widgets::Look,
     asked: &mut Option<Ask>,
 ) -> Response {
     let label = match stashes.len() {
-        0 => format!("{}  Stash", crate::theme::icon::ARCHIVE),
-        count => format!("{}  Stashes · {count}", crate::theme::icon::ARCHIVE),
+        0 => "Stash".to_owned(),
+        count => format!("Stashes · {count}"),
     };
     let busy = menus.idle();
     let can_stash = if has_changes {
@@ -1010,7 +1012,7 @@ pub(super) fn stash_menu(
         Err("There are no changes to stash")
     };
     let now = format::now();
-    ui.menu_button(label, |ui| {
+    crate::widgets::tool_menu(ui, crate::theme::icon::ARCHIVE, &label, look, |ui| {
         ui.set_min_width(320.0);
         if item(ui, "Stash the changes…", can_stash) {
             *asked = Some(Ask::Dialog(Dialog::Stash {
@@ -1055,7 +1057,7 @@ pub(super) fn stash_menu(
             ui.add_space(4.0);
         }
     })
-    .response
+    .0
 }
 
 #[cfg(test)]

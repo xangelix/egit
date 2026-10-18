@@ -38,15 +38,11 @@ fn preferences_change_how_egit_behaves_and_are_kept() {
     harness
         .get_by_label(&format!("{}  Preferences", icon::GEAR_SIX))
         .click();
-    wait_for_label(&mut harness, "Diffs side by side at first");
+    wait_for_label(&mut harness, "Side by side");
     render(&mut harness, "preferences");
-    harness.get_by_label("Diffs side by side at first").click();
-    harness
-        .get_by_label("As how long ago (5 minutes ago)")
-        .click();
-    harness
-        .get_by_label("Fetch from the remotes in the background")
-        .click();
+    harness.get_by_label("Side by side").click();
+    harness.get_by_label("5 minutes ago").click();
+    harness.get_by_label("Fetch in the background").click();
     wait_for_label(&mut harness, "Never");
     harness.get_by_label("Never").click();
     harness.run_steps(2);

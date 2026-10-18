@@ -313,25 +313,13 @@ impl ChangesTable {
         let provider = ChangeRows {
             changes: &details.changes,
         };
-        let width = ui.available_width();
-        let columns = vec![
-            egui_table_kit::layout::Column::new(96.0).range(70.0..=160.0),
-            egui_table_kit::layout::Column::new((width - 96.0).max(120.0))
-                .range(100.0..=f32::INFINITY)
-                .remainder(true),
-        ];
         let palette = Palette::of(ui.ctx());
         let state = &mut self.state;
-        let shown = TableKit::new(self.id.as_str(), &provider, state)
-            .with_columns(columns)
-            .with_row_height(ROW_HEIGHT)
-            .with_cell_align(Align::Center)
-            .with_selected_hover_color(crate::theme::Palette::of(ui.ctx()).selected_hover)
+        let shown = list(TableKit::new(self.id.as_str(), &provider, state), ui)
             .with_max_height(Some(height))
-            .with_striped(true)
-            .show_with_output(ui, |ui, cell, _, text_color| {
+            .show_with_output(ui, |ui, cell, row, text_color| {
                 if cell.col_nr != FILE_COLUMN {
-                    return None;
+                    return status_cell(ui, row, palette);
                 }
                 let row = usize::try_from(cell.row_nr).ok()?;
                 let change = details.changes.get(row)?;
@@ -357,6 +345,85 @@ impl ChangesTable {
 
 /// The row height of egit's tables.
 pub(crate) const ROW_HEIGHT: f32 = 22.0;
+
+/// A list of files as egit draws them: a narrow column for how each changed (a coloured letter:
+/// `status_cell`), its path filling the rest, no header (the letters and paths explain
+/// themselves), and selected rows in the text's own colour, without table-kit's outline.
+pub(crate) fn list<'a>(table: TableKit<'a>, ui: &Ui) -> TableKit<'a> {
+    let palette = Palette::of(ui.ctx());
+    let width = ui.available_width();
+    table
+        .with_columns(vec![
+            egui_table_kit::layout::Column::new(STATUS_WIDTH)
+                .range(STATUS_WIDTH..=STATUS_WIDTH)
+                .resizable(false),
+            egui_table_kit::layout::Column::new((width - STATUS_WIDTH).max(120.0))
+                .range(100.0..=f32::INFINITY)
+                .remainder(true)
+                .resizable(false),
+        ])
+        .with_header(false)
+        .with_row_height(ROW_HEIGHT)
+        .with_cell_align(Align::Center)
+        .with_selected_hover_color(palette.selected_hover)
+        .with_selected_text_color(palette.text)
+        .with_focus_outline(false)
+}
+
+/// Every table egit draws, but its file lists: centred text, selected rows in the text's own
+/// colour, without table-kit's outline.
+pub(crate) fn styled<'a>(table: TableKit<'a>, ui: &Ui) -> TableKit<'a> {
+    let palette = Palette::of(ui.ctx());
+    table
+        .with_cell_align(Align::Center)
+        .with_selected_hover_color(palette.selected_hover)
+        .with_selected_text_color(palette.text)
+        .with_focus_outline(false)
+}
+
+/// The width of a file list's status column.
+const STATUS_WIDTH: f32 = 30.0;
+
+/// How a file changed, as a letter on its colour's tint (the cell is still named by the word,
+/// `row`'s first cell): A added, M modified, D deleted, R renamed, C copied, T its type, U
+/// untracked, ! in conflict.
+pub(crate) fn status_cell(ui: &mut Ui, row: &dyn Row, palette: Palette) -> Option<Response> {
+    let (word, _) = row.cell(0)?;
+    let size = ui.available_size();
+    let response = ui
+        .allocate_ui_with_layout(size, Layout::left_to_right(Align::Center), |ui| {
+            status_mark(ui, &word, palette)
+        })
+        .response;
+    Some(response)
+}
+
+/// How a file changed (`word`: "Added", "Modified", …) as a letter on its colour's tint, its
+/// word on hover.
+pub(crate) fn status_mark(ui: &mut Ui, word: &str, palette: Palette) -> Response {
+    let (letter, color) = match word {
+        "Added" => ("A", palette.ok),
+        "Modified" => ("M", palette.warn),
+        "Deleted" => ("D", palette.danger),
+        "Renamed" => ("R", palette.accent),
+        "Copied" => ("C", palette.accent),
+        "Type changed" => ("T", palette.muted),
+        "Untracked" => ("U", palette.ok),
+        "Conflict" | "Unmerged" => ("!", palette.danger),
+        _ => ("·", palette.muted),
+    };
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 4.0, color.gamma_multiply(0.16));
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        letter,
+        egui::FontId::monospace(11.5),
+        color,
+    );
+    response.on_hover_text(word)
+}
 
 /// The files a commit changed: how, and which.
 struct ChangeRows<'a> {

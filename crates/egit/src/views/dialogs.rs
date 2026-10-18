@@ -192,7 +192,7 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
         } => add_worktree(ui, pane, from, path, name, open),
         Dialog::DeleteRemoteBranch { remote, branch } => delete_remote_branch(ui, remote, branch),
         Dialog::CreateTag { at, name, message } => create_tag(ui, *at, name, message),
-        Dialog::DeleteTag(name) => confirm(
+        Dialog::DeleteTag(name) => confirm_danger(
             ui,
             &format!("Delete the tag {}?", name.to_str_lossy()),
             "Here only: a remote that has it keeps its own.",
@@ -202,7 +202,7 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
         Dialog::HardReset { at } => hard_reset(ui, pane, *at),
         Dialog::DropCommit(commit) => {
             let branch = pane.branch().unwrap_or_else(|| "HEAD".to_owned());
-            confirm(
+            confirm_danger(
                 ui,
                 &format!("Drop {} from {branch}?", commit.abbreviated(ID_DIGITS)),
                 "Its changes go from the branch, and the commits after it are rewritten (git's \
@@ -217,7 +217,7 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
             untracked,
         } => stash_and_switch(ui, to, paths, *untracked),
         Dialog::Stash { message, untracked } => stash(ui, message, untracked),
-        Dialog::DropStash(stash) => confirm(
+        Dialog::DropStash(stash) => confirm_danger(
             ui,
             &format!("Drop stash@{{{}}}?", stash.index),
             &format!("{}: its changes are gone.", stash.message),
@@ -229,7 +229,7 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
         Dialog::RenameRemote { old, name } => rename_remote(ui, pane, old, name),
         Dialog::RemoveRemote(name) => {
             let name_shown = name.to_str_lossy();
-            confirm(
+            confirm_danger(
                 ui,
                 &format!("Remove the remote {name_shown}?"),
                 &format!(
@@ -247,7 +247,7 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
 
 /// A dialog's title.
 fn title(ui: &mut Ui, text: &str) {
-    ui.label(RichText::new(text).size(18.0).strong());
+    widgets::panel_title(ui, text);
     ui.add_space(8.0);
 }
 
@@ -268,6 +268,29 @@ fn confirm(
     says(ui, said);
     ui.add_space(12.0);
     buttons(ui, yes, true, go)
+}
+
+/// As [`confirm`], for what loses something: `yes` in the danger colour.
+fn confirm_danger(
+    ui: &mut Ui,
+    question: &str,
+    said: &str,
+    yes: &str,
+    go: impl FnOnce() -> Task,
+) -> Option<Answer> {
+    title(ui, question);
+    says(ui, said);
+    ui.add_space(12.0);
+    let mut answer = None;
+    widgets::buttons_row(ui, |ui| {
+        if widgets::danger(ui, true, yes).clicked() {
+            answer = Some(Answer::Run(go()));
+        }
+        if widgets::secondary(ui, true, "Cancel").clicked() {
+            answer = Some(Answer::Closed);
+        }
+    });
+    answer
 }
 
 /// The dialog's buttons: `yes` (when `ready`), starting `go`, and Cancel.
@@ -323,7 +346,11 @@ fn diverged(ui: &mut Ui, pane: &TaskPane<'_>, remember: &mut bool) -> Option<Ans
         ),
     );
     ui.add_space(8.0);
-    ui.checkbox(remember, "Remember this for the repository (pull.rebase)");
+    crate::widgets::checkbox(
+        ui,
+        remember,
+        "Remember this for the repository (pull.rebase)",
+    );
     ui.add_space(8.0);
     let mut answer = None;
     widgets::buttons_row(ui, |ui| {
@@ -352,7 +379,7 @@ fn diverged(ui: &mut Ui, pane: &TaskPane<'_>, remember: &mut bool) -> Option<Ans
 
 /// Whether to replace the remote's branch.
 fn force_push(ui: &mut Ui, options: &PushOptions) -> Option<Answer> {
-    confirm(
+    confirm_danger(
         ui,
         &format!(
             "Force push to {}/{}?",
@@ -428,7 +455,7 @@ fn abort(ui: &mut Ui, operation: Operation) -> Option<Answer> {
     ui.add_space(12.0);
     let mut answer = None;
     widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, true, "Abort").clicked() {
+        if widgets::danger(ui, true, "Abort").clicked() {
             answer = Some(Answer::Run(Task::Abort(operation)));
         }
         if widgets::secondary(ui, true, "Keep going").clicked() {
@@ -452,7 +479,7 @@ fn create_branch(
     let entered = name_field(ui, "Name", name);
     let ready = name_problem(ui, name);
     ui.add_space(4.0);
-    ui.checkbox(switch, "Switch to it");
+    crate::widgets::checkbox(ui, switch, "Switch to it");
     ui.add_space(12.0);
     let go = || {
         let name = BString::from(name.trim());
@@ -516,7 +543,7 @@ fn delete_branch(
         None => format!("Delete {name_shown}?"),
     };
     let yes = if unmerged { "Delete anyway" } else { "Delete" };
-    confirm(ui, &question, &said, yes, || match remote {
+    confirm_danger(ui, &question, &said, yes, || match remote {
         Some((remote, remote_branch)) => Task::DeleteBranchEverywhere {
             name: name.clone(),
             remote: remote.clone(),
@@ -648,7 +675,7 @@ fn add_worktree(
         ready &= named || (optional && name.trim().is_empty());
     }
     ui.add_space(4.0);
-    ui.checkbox(open, "Open it once made");
+    crate::widgets::checkbox(ui, open, "Open it once made");
     ui.add_space(12.0);
     let go = || {
         let name = name.trim();
@@ -693,7 +720,7 @@ pub(super) fn worktree_path(typed: &str, work_tree: &Path, home: Option<&Path>) 
 /// Whether to delete a remote's branch.
 fn delete_remote_branch(ui: &mut Ui, remote: &BString, branch: &BString) -> Option<Answer> {
     let remote_shown = remote.to_str_lossy();
-    confirm(
+    confirm_danger(
         ui,
         &format!("Delete {} on {remote_shown}?", branch.to_str_lossy()),
         &format!("It goes for everyone using {remote_shown}; your own branches stay as they are."),
@@ -738,7 +765,7 @@ fn create_tag(
 fn hard_reset(ui: &mut Ui, pane: &TaskPane<'_>, at: ObjectId) -> Option<Answer> {
     let commit = at.abbreviated(ID_DIGITS);
     let branch = pane.branch().unwrap_or_else(|| "HEAD".to_owned());
-    confirm(
+    confirm_danger(
         ui,
         &format!("Reset {branch} to {commit}, discarding your changes?"),
         &format!(
@@ -790,7 +817,7 @@ fn stash(ui: &mut Ui, message: &mut String, untracked: &mut bool) -> Option<Answ
     title(ui, "Stash your changes");
     let entered = name_field(ui, "Message (optional)", message);
     ui.add_space(4.0);
-    ui.checkbox(untracked, "Files git doesn't track too");
+    crate::widgets::checkbox(ui, untracked, "Files git doesn't track too");
     ui.add_space(12.0);
     let go = || Task::Stash {
         message: message.trim().to_owned(),
@@ -855,7 +882,7 @@ fn add_remote(
     ui.add_space(4.0);
     let addressed = field(ui, "Address (URL)", url);
     ui.add_space(4.0);
-    ui.checkbox(fetch, "Fetch from it now");
+    crate::widgets::checkbox(ui, fetch, "Fetch from it now");
     ui.add_space(12.0);
     let ready = name_ready && url_ready(url);
     let go = || Task::AddRemote {
@@ -934,7 +961,7 @@ fn remove_worktree(ui: &mut Ui, pane: &TaskPane<'_>, path: &Path, changes: bool)
             "Remove",
         )
     };
-    confirm(
+    confirm_danger(
         ui,
         &format!("Remove the worktree at {shown}?"),
         said,

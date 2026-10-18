@@ -9,9 +9,8 @@ use egit_git::{
     Committed, ConfigSnapshot, Git, Head, Operation, Repository, Stash, Submodule, Tracking,
     Worktree,
 };
-use egui::{Color32, Grid, RichText, Ui, WidgetText};
+use egui::{Grid, RichText, Ui};
 use egui_async::Bind;
-use egui_tiles::{TileId, Tiles, UiResponse};
 
 use crate::app::{Action, AppState};
 use crate::forge::RepoForge;
@@ -66,7 +65,59 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         journal: &repo.journal,
         actions,
     };
-    repo.panels.ui(&mut behavior, ui);
+    match repo.panel {
+        RepoPanel::History => history(ui, &mut behavior),
+        panel => {
+            let (back, switched) = page_bar(ui, panel);
+            if let Some(switched) = switched {
+                behavior.actions.push(Action::ShowPanel(id, switched));
+            }
+            // Escape goes back, as from the history's tools; a field keeps it for itself.
+            let escaped = !ui.ctx().text_edit_focused()
+                && ui
+                    .input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            if back || escaped {
+                behavior
+                    .actions
+                    .push(Action::ShowPanel(id, RepoPanel::History));
+            }
+            if panel == RepoPanel::Overview {
+                overview(ui, &mut behavior);
+            } else {
+                configuration(ui, &mut behavior);
+            }
+        }
+    }
+}
+
+/// The bar over a page of the repository's: back to the history, and which page (the other a
+/// click away). Returns whether "History" was clicked, and the page switched to.
+fn page_bar(ui: &mut Ui, panel: RepoPanel) -> (bool, Option<RepoPanel>) {
+    let palette = Palette::of(ui.ctx());
+    egui::Frame::new()
+        .fill(palette.panel)
+        .inner_margin(egui::Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let back = widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
+                    .on_hover_text("Back to the history (Escape)")
+                    .clicked();
+                let mut shown = panel;
+                let switched = widgets::segmented(
+                    ui,
+                    &mut shown,
+                    &[
+                        (RepoPanel::Overview, "Overview"),
+                        (RepoPanel::Configuration, "Settings"),
+                    ],
+                )
+                .then_some(shown);
+                (back, switched)
+            })
+            .inner
+        })
+        .inner
 }
 
 /// What a repository's panels share while they are drawn.
@@ -95,107 +146,58 @@ struct Panels<'a> {
     actions: &'a mut Vec<Action>,
 }
 
-impl egui_tiles::Behavior<RepoPanel> for Panels<'_> {
-    fn pane_ui(&mut self, ui: &mut Ui, _tile_id: TileId, panel: &mut RepoPanel) -> UiResponse {
-        match panel {
-            RepoPanel::History => {
-                let status = self.status.ok_ref();
-                let config_read = self.config.ok_ref();
-                let config = config_read.map(|config| &**config);
-                let stashes = self.stashes.read_as_ref();
-                super::history::show(
-                    ui,
-                    HistoryPane {
-                        id: self.id,
-                        git: self.git,
-                        repository: self.repository,
-                        history: self.history,
-                        view: self.history_view,
-                        head: status.map(|status| &status.head),
-                        writing_commit_graph: self.writing_commit_graph,
-                        partial_clone: config.map(ConfigSnapshot::is_partial_clone),
-                        work_tree: self.work_tree,
-                        staging: self.staging,
-                        committing: self.committing,
-                        commits_made: self.commits_made,
-                        sign_by_default: config
-                            .and_then(|config| config.get("commit.gpgSign"))
-                            .and_then(egit_git::ConfigEntry::bool)
-                            .unwrap_or(false),
-                        operations: status.map_or(&[], |status| status.operations.as_slice()),
-                        applying: status.and_then(|status| status.applying.as_ref()),
-                        bisect: status.and_then(|status| status.bisect.as_ref()),
-                        config,
-                        tasks: self.tasks,
-                        stashes: stashes
-                            .and_then(Result::ok)
-                            .map_or(&[], |stashes| &**stashes),
-                        forge: self.forge,
-                        home: self.home,
-                        journal: self.journal,
-                        lists: Lists {
-                            stashes,
-                            worktrees: self.worktrees.read_as_ref(),
-                            submodules: self.submodules.read_as_ref(),
-                            config: config_read,
-                        },
-                        actions: self.actions,
-                    },
-                );
-            }
-            RepoPanel::Overview => overview(ui, self),
-            RepoPanel::Configuration => configuration(ui, self),
-        }
-        UiResponse::None
-    }
-
-    fn tab_title_for_pane(&mut self, panel: &RepoPanel) -> WidgetText {
-        match panel {
-            RepoPanel::History => format!("{}  History", icon::GIT_COMMIT).into(),
-            RepoPanel::Overview => format!("{}  Overview", icon::INFO).into(),
-            RepoPanel::Configuration => format!("{}  Settings", icon::SLIDERS_HORIZONTAL).into(),
-        }
-    }
-
-    fn on_tab_button(
-        &mut self,
-        _tiles: &mut Tiles<RepoPanel>,
-        _tile_id: TileId,
-        button_response: egui::Response,
-    ) -> egui::Response {
-        crate::widgets::tab_hover(&button_response);
-        button_response
-    }
-
-    fn is_tab_closable(&self, _tiles: &Tiles<RepoPanel>, _tile_id: TileId) -> bool {
-        false
-    }
-
-    fn simplification_options(&self) -> egui_tiles::SimplificationOptions {
-        egui_tiles::SimplificationOptions {
-            all_panes_must_have_tabs: true,
-            ..egui_tiles::SimplificationOptions::default()
-        }
-    }
-
-    fn tab_bar_height(&self, _style: &egui::Style) -> f32 {
-        30.0
-    }
-
-    fn tab_bar_color(&self, visuals: &egui::Visuals) -> Color32 {
-        if visuals.dark_mode {
-            Palette::DARK.background
-        } else {
-            Palette::LIGHT.background
-        }
-    }
+/// The history: the commit graph, its tools, and the details beside it.
+fn history(ui: &mut Ui, panels: &mut Panels<'_>) {
+    let status = panels.status.ok_ref();
+    let config_read = panels.config.ok_ref();
+    let config = config_read.map(|config| &**config);
+    let stashes = panels.stashes.read_as_ref();
+    super::history::show(
+        ui,
+        HistoryPane {
+            id: panels.id,
+            git: panels.git,
+            repository: panels.repository,
+            history: panels.history,
+            view: panels.history_view,
+            head: status.map(|status| &status.head),
+            writing_commit_graph: panels.writing_commit_graph,
+            partial_clone: config.map(ConfigSnapshot::is_partial_clone),
+            work_tree: panels.work_tree,
+            staging: panels.staging,
+            committing: panels.committing,
+            commits_made: panels.commits_made,
+            sign_by_default: config
+                .and_then(|config| config.get("commit.gpgSign"))
+                .and_then(egit_git::ConfigEntry::bool)
+                .unwrap_or(false),
+            operations: status.map_or(&[], |status| status.operations.as_slice()),
+            applying: status.and_then(|status| status.applying.as_ref()),
+            bisect: status.and_then(|status| status.bisect.as_ref()),
+            config,
+            tasks: panels.tasks,
+            stashes: stashes
+                .and_then(Result::ok)
+                .map_or(&[], |stashes| &**stashes),
+            forge: panels.forge,
+            home: panels.home,
+            journal: panels.journal,
+            lists: Lists {
+                stashes,
+                worktrees: panels.worktrees.read_as_ref(),
+                submodules: panels.submodules.read_as_ref(),
+                config: config_read,
+            },
+            actions: panels.actions,
+        },
+    );
 }
 
 fn overview(ui: &mut Ui, panels: &mut Panels<'_>) {
     let palette = Palette::of(ui.ctx());
     super::page(ui, ("repo-overview", panels.id), |ui| {
         ui.horizontal(|ui| {
-            ui.label(RichText::new(panels.title).size(26.0).strong());
+            widgets::page_title(ui, panels.title);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let busy = panels.status.is_pending() || panels.config.is_pending();
                 if widgets::secondary(ui, !busy, &format!("{}  Refresh", icon::ARROWS_CLOCKWISE))
@@ -270,6 +272,7 @@ fn branch_card(ui: &mut Ui, head: &Head, palette: Palette) {
         ui.add_space(4.0);
         Grid::new("repo-branch")
             .num_columns(2)
+            .min_col_width(widgets::FACT_LABEL)
             .spacing([16.0, 8.0])
             .show(ui, |ui| match head {
                 Head::Branch(branch) => {
@@ -368,6 +371,7 @@ fn identity_card(ui: &mut Ui, panels: &mut Panels<'_>) {
                 ui.add_space(4.0);
                 Grid::new(("repo-identity", panels.id))
                     .num_columns(3)
+                    .min_col_width(widgets::FACT_LABEL)
                     .spacing([16.0, 8.0])
                     .show(ui, |ui| {
                         for (label, entry) in [("Name", profile.name()), ("Email", profile.email())]
@@ -406,6 +410,7 @@ fn location_card(ui: &mut Ui, repository: &Repository, home: Option<&Path>) {
         widgets::heading(ui, "Where it lives");
         Grid::new(("repo-location", repository.work_tree()))
             .num_columns(2)
+            .min_col_width(widgets::FACT_LABEL)
             .spacing([16.0, 8.0])
             .show(ui, |ui| {
                 ui.label(muted(ui, "Work tree"));

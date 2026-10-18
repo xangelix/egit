@@ -52,12 +52,12 @@ use crate::history::{
 };
 use crate::preferences::Preferences;
 use crate::problem::Problem;
-use crate::repo::RepoId;
+use crate::repo::{RepoId, RepoPanel};
 use crate::tables::ChangesTable;
 use crate::tasks::Tasks;
 use crate::theme::{Palette, icon};
 use crate::undo::Journal;
-use crate::widgets::{self, muted};
+use crate::widgets::{self, Look, muted};
 use crate::worktree::WorkTree;
 
 /// A row's height.
@@ -1104,19 +1104,27 @@ fn top_bar(
 ) {
     let palette = shared.palette;
     ui.horizontal(|ui| {
+        // Where the bar is narrow for all it shows, the views' and menus' buttons keep only
+        // their icons.
+        let has_changes = matches!(work_tree.status(), Some(Ok(status)) if !status.is_empty());
+        let has_requests = !shared.forge.repositories.is_empty();
+        let wanted = WIDE_TOP_BAR
+            + if has_changes { CHANGES_BUTTON } else { 0.0 }
+            + if has_requests { REQUESTS_BUTTON } else { 0.0 };
+        let look = if ui.available_width() < wanted {
+            Look::Compact
+        } else {
+            Look::Full
+        };
         // First: nothing before them changes width (a count would), so they stay put.
         undo_buttons(ui, shared, view, task_pane.actions);
-        let rows = history.shown.rows();
-        let commits = if rows == 1 {
-            "1 commit".to_owned()
-        } else {
-            format!("{} commits", count(rows))
-        };
-        ui.label(RichText::new(commits).strong());
+        widgets::toolbar_separator(ui);
+        search_button(ui, view, look);
+        reflog_button(ui, view, look);
         let mut asked = None;
         let has_changes = shared.work_status.is_some_and(|status| !status.is_empty());
         let menus = shared.menus(history.shown.refs());
-        actions::stash_menu(ui, &menus, task_pane.stashes, has_changes, &mut asked);
+        actions::stash_menu(ui, &menus, task_pane.stashes, has_changes, look, &mut asked);
         let changes = shared
             .work_status
             .map_or_else(actions::WorkChanges::default, |status| {
@@ -1130,14 +1138,21 @@ fn top_bar(
                     has_commit: shared.head_commit().is_some(),
                 }
             });
-        actions::patches_menu(ui, &menus, changes, &mut asked);
+        actions::patches_menu(ui, &menus, changes, look, &mut asked);
         if let Some(asked) = asked {
             carry_out(asked, shared, view, task_pane.actions);
         }
-        search_button(ui, view);
-        reflog_button(ui, view);
+        repository_menu(ui, shared, look, task_pane.actions);
         // What comes and goes follows the buttons: ids are counted in order, and a click
         // pressed on one id and released on another is lost.
+        let rows = history.shown.rows();
+        let commits = if rows == 1 {
+            "1 commit".to_owned()
+        } else {
+            format!("{} commits", count(rows))
+        };
+        widgets::toolbar_separator(ui);
+        ui.label(muted(ui, commits));
         work_tree_summary(ui, work_tree, view, palette);
         pull_requests_button(ui, shared, view);
         if history.is_loading() {
@@ -1184,13 +1199,41 @@ fn top_bar(
     }
 }
 
+/// The width from which the top bar's views and menus show their words beside their icons,
+/// and what the uncommitted files' and the requests' buttons add to it when shown.
+const WIDE_TOP_BAR: f32 = 1140.0;
+const CHANGES_BUTTON: f32 = 170.0;
+const REQUESTS_BUTTON: f32 = 150.0;
+
+/// The repository's menu: its overview and settings (each a page in place of the history), and
+/// reading it all again.
+fn repository_menu(ui: &mut Ui, shared: &Shared<'_>, look: Look, actions: &mut Vec<Action>) {
+    widgets::tool_menu(ui, icon::INFO, "Repository", look, |ui| {
+        ui.set_min_width(220.0);
+        for (text, panel) in [
+            ("Overview", RepoPanel::Overview),
+            ("Settings", RepoPanel::Configuration),
+        ] {
+            if ui.button(text).clicked() {
+                actions.push(Action::ShowPanel(shared.id, panel));
+            }
+        }
+        ui.separator();
+        if ui
+            .button("Read it again")
+            .on_hover_text(crate::commands::keys_text("⌘R"))
+            .clicked()
+        {
+            actions.push(Action::Refresh(shared.id));
+        }
+    });
+}
+
 /// The button opening the search bar over the commit table (shown in place of a file or a
 /// tool), or closing it.
-fn search_button(ui: &mut Ui, view: &mut HistoryView) {
+fn search_button(ui: &mut Ui, view: &mut HistoryView, look: Look) {
     let open = view.search.is_open();
-    let label = RichText::new(format!("{}  Search", icon::MAGNIFYING_GLASS));
-    if ui
-        .add(egui::Button::selectable(open, label))
+    if widgets::tool(ui, icon::MAGNIFYING_GLASS, "Search", open, look)
         .on_hover_text(format!(
             "Search the history ({})",
             crate::commands::keys_text("⌘F")
@@ -1230,9 +1273,8 @@ fn undo_buttons(ui: &mut Ui, shared: &Shared<'_>, view: &HistoryView, actions: &
         (icon::ARROW_CLOCKWISE, "Redo", redo, true, "⇧⌘Z"),
     ] {
         let enabled = idle && next.is_some();
-        let button = ui.add_enabled(enabled, egui::Button::new(glyph));
         // Named in words, for those who don't see the arrow.
-        button.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, name));
+        let button = widgets::icon_tool(ui, enabled, glyph, name);
         let hover = next.map_or_else(
             || {
                 if redoing {
@@ -1260,18 +1302,15 @@ fn undo_buttons(ui: &mut Ui, shared: &Shared<'_>, view: &HistoryView, actions: &
             asked = Some(redoing);
         }
     }
-    ui.add_space(8.0);
     if let Some(redo) = asked {
         actions.push(Action::Undo(shared.id, redo));
     }
 }
 
 /// The button showing `HEAD`'s reflog in the commit table's place (or going back).
-fn reflog_button(ui: &mut Ui, view: &mut HistoryView) {
+fn reflog_button(ui: &mut Ui, view: &mut HistoryView, look: Look) {
     let showing = matches!(view.tool, Some(Tool::Reflog(_)));
-    let label = RichText::new(format!("{}  Reflog", icon::CLOCK_COUNTER_CLOCKWISE));
-    if ui
-        .add(egui::Button::selectable(showing, label))
+    if widgets::tool(ui, icon::CLOCK_COUNTER_CLOCKWISE, "Reflog", showing, look)
         .on_hover_text("Where HEAD has been: every commit it was at, and what moved it")
         .clicked()
     {
@@ -1374,10 +1413,7 @@ fn pull_requests_button(ui: &mut Ui, shared: &Shared<'_>, view: &mut HistoryView
         open => format!("{} {nouns}", count(u64::try_from(open).unwrap_or(u64::MAX))),
     };
     let showing = matches!(view.tool, Some(Tool::PullRequests(_)));
-    ui.add_space(8.0);
-    let label = RichText::new(format!("{}  {text}", icon::GIT_PULL_REQUEST));
-    if ui
-        .add(egui::Button::selectable(showing, label))
+    if widgets::tool(ui, icon::GIT_PULL_REQUEST, &text, showing, Look::Full)
         .on_hover_text(format!("The open {nouns}"))
         .clicked()
     {
@@ -1401,19 +1437,25 @@ fn work_tree_summary(
         Some(Ok(status)) if !status.is_empty() => {
             let files = status.len();
             let text = if files == 1 {
-                "1 file with uncommitted changes".to_owned()
+                "1 uncommitted file".to_owned()
             } else {
                 format!(
-                    "{} files with uncommitted changes",
+                    "{} uncommitted files",
                     count(u64::try_from(files).unwrap_or(u64::MAX))
                 )
             };
-            ui.add_space(8.0);
             let label =
                 RichText::new(format!("{}  {text}", icon::PENCIL_SIMPLE)).color(palette.warn);
-            if ui
-                .add(egui::Button::selectable(view.work_selected, label))
-                .on_hover_text("Stage them, and commit")
+            let button = ui.add(
+                egui::Button::selectable(view.work_selected, label)
+                    .min_size(egui::vec2(0.0, crate::theme::CONTROL)),
+            );
+            // Named in words.
+            button.widget_info(|| {
+                WidgetInfo::selected(WidgetType::Button, true, view.work_selected, &text)
+            });
+            if button
+                .on_hover_text("Changes not yet committed: stage them, and commit")
                 .clicked()
             {
                 view.select_work();
@@ -1421,7 +1463,6 @@ fn work_tree_summary(
         }
         Some(Err(problem)) => {
             let problem = problem.to_string();
-            ui.add_space(8.0);
             ui.label(
                 RichText::new(format!(
                     "{}  The work tree couldn't be read",
@@ -2232,7 +2273,7 @@ fn work_details(
         widgets::working(ui, "Reading the work tree…");
         return;
     };
-    ui.label(RichText::new("Working tree").size(16.0).strong());
+    widgets::panel_title(ui, "Working tree");
     ui.add_space(8.0);
     let shown = egui::ScrollArea::vertical()
         .id_salt("work-details")
@@ -2387,80 +2428,70 @@ fn commit_info(
     let commit = &details.commit;
     let refs = all.at(&details.id);
     let mut go_to = None;
-    ui.add(
-        Label::new(
-            RichText::new(commit.subject().to_str_lossy())
-                .size(16.0)
-                .strong(),
-        )
-        .wrap(),
-    );
+    widgets::panel_title(ui, commit.subject().to_str_lossy());
     let body = commit.body().trim_ascii();
     if !body.is_empty() {
         ui.add_space(4.0);
         ui.add(Label::new(body.to_str_lossy()).wrap());
     }
-    ui.add_space(8.0);
-    egui::Grid::new("commit-info")
-        .num_columns(2)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
-            ui.label(muted(ui, "Commit"));
-            ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new(details.id.abbreviated(ID_DIGITS * 2).to_string()).monospace(),
-                );
-                if ui.add(crate::widgets::small("Copy")).clicked() {
-                    ui.ctx().copy_text(details.id.to_string());
-                }
-            });
-            ui.end_row();
-
-            ui.label(muted(
-                ui,
-                if commit.parents.len() == 1 {
-                    "Parent"
-                } else {
-                    "Parents"
-                },
-            ));
-            ui.horizontal_wrapped(|ui| {
-                if commit.parents.is_empty() {
-                    ui.label(muted(ui, "None: the first commit"));
-                }
-                // Buttons rather than links: egui announces a link as plain text.
-                for parent in &commit.parents {
-                    let name = parent.abbreviated(ID_DIGITS).to_string();
-                    let link = RichText::new(name)
-                        .monospace()
-                        .color(ui.visuals().hyperlink_color);
-                    let response = ui.add(egui::Button::new(link).frame_when_inactive(false));
-                    if response.on_hover_text("Go to this parent").clicked() {
-                        go_to = Some(*parent);
-                    }
-                }
-            });
-            ui.end_row();
-
-            person(ui, "Author", &commit.author);
-            let committed_apart = commit.committer.name != commit.author.name
-                || commit.committer.email != commit.author.email
-                || commit.committer.time != commit.author.time;
-            if committed_apart {
-                person(ui, "Committer", &commit.committer);
-            }
-            if commit.signed {
-                ui.label(muted(ui, "Signature"));
-                signature(ui, check, shared.palette);
-                ui.end_row();
-            }
-            if !refs.is_empty() {
-                ui.label(muted(ui, "Refs"));
-                let menus = shared.menus(all);
-                ui.horizontal_wrapped(|ui| badges(ui, (refs, None), &menus, shared.palette, asked));
-                ui.end_row();
-            }
+    ui.add_space(10.0);
+    ui.spacing_mut().item_spacing.y = 4.0;
+    widgets::fact(ui, DETAIL_LABEL, "Commit", |ui| {
+        // Within the room the copy button leaves: the details never push the panel wider.
+        let room =
+            (ui.available_width() - crate::theme::CONTROL - ui.spacing().item_spacing.x).max(0.0);
+        ui.allocate_ui(egui::vec2(room, crate::theme::CONTROL), |ui| {
+            let name = details.id.abbreviated(ID_DIGITS * 2).to_string();
+            ui.add(Label::new(RichText::new(name).monospace()).truncate());
         });
+        if widgets::icon_tool(ui, true, icon::COPY, "Copy the commit's name")
+            .on_hover_text("Copy its whole name")
+            .clicked()
+        {
+            ui.ctx().copy_text(details.id.to_string());
+        }
+    });
+    let parents = if commit.parents.len() == 1 {
+        "Parent"
+    } else {
+        "Parents"
+    };
+    widgets::fact(ui, DETAIL_LABEL, parents, |ui| {
+        if commit.parents.is_empty() {
+            ui.label(muted(ui, "None: the first commit"));
+        }
+        // Buttons rather than links: egui announces a link as plain text.
+        for parent in &commit.parents {
+            let name = parent.abbreviated(ID_DIGITS).to_string();
+            let link = RichText::new(name)
+                .monospace()
+                .color(ui.visuals().hyperlink_color);
+            if widgets::link(ui, link)
+                .on_hover_text("Go to this parent")
+                .clicked()
+            {
+                go_to = Some(*parent);
+            }
+        }
+    });
+    person(ui, "Author", &commit.author);
+    let committed_apart = commit.committer.name != commit.author.name
+        || commit.committer.email != commit.author.email
+        || commit.committer.time != commit.author.time;
+    if committed_apart {
+        person(ui, "Committer", &commit.committer);
+    }
+    if commit.signed {
+        widgets::fact_top(ui, DETAIL_LABEL, "Signature", |ui| {
+            signature(ui, check, shared.palette);
+        });
+    }
+    if !refs.is_empty() {
+        let menus = shared.menus(all);
+        widgets::fact_top(ui, DETAIL_LABEL, "Refs", |ui| {
+            ui.horizontal_wrapped(|ui| badges(ui, (refs, None), &menus, shared.palette, asked));
+        });
+    }
     go_to
 }
 
@@ -2493,22 +2524,26 @@ fn signature(ui: &mut Ui, check: Option<&SignatureCheck>, palette: Palette) {
     });
 }
 
-/// A grid row for an author or committer: name, email, and when.
+/// An author or committer: name and email, and when beneath.
 fn person(ui: &mut Ui, role: &str, signature: &egit_git::Signature) {
-    ui.label(muted(ui, role));
-    ui.vertical(|ui| {
-        ui.label(format!(
-            "{} <{}>",
-            signature.name.to_str_lossy(),
-            signature.email.to_str_lossy()
-        ));
+    widgets::fact_top(ui, DETAIL_LABEL, role, |ui| {
+        ui.add(
+            Label::new(format!(
+                "{} <{}>",
+                signature.name.to_str_lossy(),
+                signature.email.to_str_lossy()
+            ))
+            .wrap(),
+        );
         ui.label(muted(
             ui,
             date_time(signature.time, signature.offset_minutes),
         ));
     });
-    ui.end_row();
 }
+
+/// The width of the details' labels (Commit, Author, …): the panel is narrow.
+const DETAIL_LABEL: f32 = 72.0;
 
 #[cfg(test)]
 mod tests {

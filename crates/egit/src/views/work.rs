@@ -30,7 +30,7 @@ use crate::history::{Objects, read_message};
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::staging::StageRequest;
-use crate::tables::{ROW_HEIGHT, elided_start};
+use crate::tables::elided_start;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -301,7 +301,10 @@ fn options(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
     ui.horizontal_wrapped(|ui| {
         let amendable = side.head.is_some();
         if ui
-            .add_enabled(amendable, egui::Checkbox::new(&mut form.amend, "Amend"))
+            .add_enabled_ui(amendable, |ui| {
+                widgets::checkbox(ui, &mut form.amend, "Amend")
+            })
+            .inner
             .on_hover_text("Replace the last commit: its message, with what is staged")
             .changed()
             && form.amend
@@ -314,10 +317,9 @@ fn options(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
                 head,
             ));
         }
-        ui.checkbox(&mut form.sign_off, "Sign off");
+        crate::widgets::checkbox(ui, &mut form.sign_off, "Sign off");
         let mut sign = form.sign.unwrap_or(side.sign_by_default);
-        if ui
-            .checkbox(&mut sign, "Sign")
+        if crate::widgets::checkbox(ui, &mut sign, "Sign")
             .on_hover_text("With the key and program your git configuration names")
             .changed()
         {
@@ -413,26 +415,20 @@ fn list_ui(
         Side::Unstaged => ("Not staged", "Stage all"),
         Side::Staged => ("Staged", "Unstage all"),
     };
-    ui.horizontal(|ui| {
-        widgets::heading(ui, title);
-        ui.label(muted(
-            ui,
-            count(u64::try_from(list.entries.len()).unwrap_or(u64::MAX)),
-        ));
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if widgets::secondary(ui, !busy && !list.entries.is_empty(), all).clicked() {
-                let paths = list
-                    .entries
-                    .iter()
-                    .filter_map(|&index| status.entry(usize::try_from(index).ok()?))
-                    .flat_map(|entry| paths(entry, side))
-                    .collect();
-                event = Some(WorkEvent::Stage(StageRequest::Files {
-                    paths,
-                    direction: side.direction(),
-                }));
-            }
-        });
+    let entries = list.entries.len();
+    widgets::section_header(ui, title, Some(entries), |ui| {
+        if widgets::secondary(ui, !busy && !list.entries.is_empty(), all).clicked() {
+            let paths = list
+                .entries
+                .iter()
+                .filter_map(|&index| status.entry(usize::try_from(index).ok()?))
+                .flat_map(|entry| paths(entry, side))
+                .collect();
+            event = Some(WorkEvent::Stage(StageRequest::Files {
+                paths,
+                direction: side.direction(),
+            }));
+        }
     });
     if list.entries.is_empty() {
         ui.label(muted(
@@ -449,26 +445,15 @@ fn list_ui(
         indices: &list.entries,
         side,
     };
-    let width = ui.available_width();
-    let columns = vec![
-        egui_table_kit::layout::Column::new(90.0).range(70.0..=160.0),
-        egui_table_kit::layout::Column::new((width - 90.0).max(120.0))
-            .range(100.0..=f32::INFINITY)
-            .remainder(true),
-    ];
     let palette = Palette::of(ui.ctx());
     let mut button_event = None;
     let table_id = list.state.id.to_string();
-    let shown = TableKit::new(table_id.as_str(), &provider, &mut list.state)
-        .with_columns(columns)
-        .with_row_height(ROW_HEIGHT)
-        .with_cell_align(Align::Center)
-        .with_selected_hover_color(crate::theme::Palette::of(ui.ctx()).selected_hover)
+    let table = TableKit::new(table_id.as_str(), &provider, &mut list.state);
+    let shown = crate::tables::list(table, ui)
         .with_max_height(Some(height))
-        .with_striped(true)
-        .show_with_output(ui, |ui, cell, _, text_color| {
+        .show_with_output(ui, |ui, cell, row, text_color| {
             if cell.col_nr != FILE_COLUMN {
-                return None;
+                return crate::tables::status_cell(ui, row, palette);
             }
             let entry = provider.entry(usize::try_from(cell.row_nr).ok()?)?;
             let (response, clicked) = file_cell(ui, entry, side, busy, text_color);
@@ -522,7 +507,9 @@ fn file_cell(
             let button = ui
                 .add_enabled(
                     busy.then_some(false).is_none(),
-                    crate::widgets::small(glyph),
+                    egui::Button::new(glyph)
+                        .frame_when_inactive(false)
+                        .min_size(egui::vec2(crate::widgets::TARGET, crate::widgets::TARGET)),
                 )
                 .on_hover_text(verb);
             // Named for what it does to which file: a screen reader hears more than "+".

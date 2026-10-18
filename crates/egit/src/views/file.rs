@@ -14,7 +14,7 @@ use egit_git::{
     CancelToken, ChangeKind, DiffOptions, Direction, FileChange, ObjectId, Status, TreeEntry,
     Uncommitted, WHOLE_FILE,
 };
-use egui::{Frame, Key, Label, Margin, Modifiers, RichText, Ui};
+use egui::{Align, Frame, Key, Label, Layout, Margin, Modifiers, RichText, Ui};
 use egui_async::Bind;
 
 use super::history::{ID_DIGITS, Shared};
@@ -441,61 +441,89 @@ pub(super) fn show(
     open
 }
 
-/// The bar over a file view: back, the file's blame and history, and what to show; under
-/// them how the file changed. Each line wraps, so nothing overlaps however narrow it is.
+/// The bar over a file view: back, how the file changed (and its path), and its blame and
+/// history at the right; under them what to show and how.
 fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bool) {
     let palette = shared.palette;
     Frame::new()
         .fill(palette.panel)
-        .inner_margin(Margin::symmetric(8, 6))
+        .inner_margin(Margin::symmetric(12, 6))
         .show(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            ui.horizontal_wrapped(|ui| {
-                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked()
+            ui.horizontal(|ui| {
+                if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
+                    .on_hover_text("Back to the history (Escape)")
+                    .clicked()
                 {
                     *open = false;
                 }
-                if widgets::secondary(ui, true, "Blame")
-                    .on_hover_text("Which commit each of its lines came from")
-                    .clicked()
-                {
-                    file.wanted = Some(file.blame_target(shared));
-                }
-                if widgets::secondary(ui, true, "File history")
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::tool(
+                        ui,
+                        icon::CLOCK_COUNTER_CLOCKWISE,
+                        "File history",
+                        false,
+                        widgets::Look::Full,
+                    )
                     .on_hover_text("Every commit that changed it")
                     .clicked()
-                {
-                    file.wanted = Some(FileWanted::History(file.path().to_owned()));
-                }
-                ui.add_space(8.0);
-                shown_controls(ui, shared, file);
+                    {
+                        file.wanted = Some(FileWanted::History(file.path().to_owned()));
+                    }
+                    if widgets::tool(ui, icon::USER_LIST, "Blame", false, widgets::Look::Full)
+                        .on_hover_text("Which commit each of its lines came from")
+                        .clicked()
+                    {
+                        file.wanted = Some(file.blame_target(shared));
+                    }
+                    // A conflict's view has no other choices: its wrapping goes here.
+                    if file.merge.is_some() {
+                        wrap_toggle(ui, file);
+                    }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        change_line(ui, palette, file);
+                    });
+                });
             });
-            ui.horizontal_wrapped(|ui| change_line(ui, palette, file));
+            if file.merge.is_none() {
+                ui.horizontal_wrapped(|ui| shown_controls(ui, shared, file));
+            }
         });
 }
 
-/// What the file view shows: its diff or the file, wrapped or not, and (for a diff) its whole
-/// file around it and side by side. Those that come and go come last.
+/// What the file view shows: its diff or the file, (for a diff) unified or side by side and
+/// with the whole file around it, and long lines wrapped or not.
 fn shown_controls(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) {
     if file.merge.is_none() {
-        ui.selectable_value(&mut file.shown, Shown::Diff, "Diff");
-        ui.selectable_value(&mut file.shown, Shown::File, "File");
+        widgets::segmented(
+            ui,
+            &mut file.shown,
+            &[(Shown::Diff, "Diff"), (Shown::File, "File")],
+        );
+        if file.shown == Shown::Diff {
+            widgets::segmented(
+                ui,
+                &mut file.split,
+                &[(false, "Unified"), (true, "Side by side")],
+            );
+            if widgets::checkbox(ui, &mut file.whole, "Whole file").changed() {
+                file.read_diff(shared);
+            }
+        }
     }
+    wrap_toggle(ui, file);
+}
+
+/// Whether long lines wrap, in every grid the view has.
+fn wrap_toggle(ui: &mut Ui, file: &mut FileView) {
     let mut wrap = file.diff_grid.wraps();
-    if ui.checkbox(&mut wrap, "Wrap lines").changed() {
+    if widgets::checkbox(ui, &mut wrap, "Wrap lines").changed() {
         file.diff_grid.set_wrap(wrap);
         file.sides_grid.set_wrap(wrap);
         file.file_grid.set_wrap(wrap);
         if let Some(merging) = &mut file.merge {
             merging.grid.set_wrap(wrap);
         }
-    }
-    if file.merge.is_some() || file.shown != Shown::Diff {
-        return;
-    }
-    ui.checkbox(&mut file.split, "Side by side");
-    if ui.checkbox(&mut file.whole, "Whole file").changed() {
-        file.read_diff(shared);
     }
 }
 
@@ -522,14 +550,14 @@ fn change_line(ui: &mut Ui, palette: Palette, file: &mut FileView) {
         ),
     };
     ui.label(RichText::new(change).color(palette.muted));
-    ui.add(Label::new(RichText::new(file.path().to_str_lossy()).strong()).truncate());
-    if let Some(from) = from {
-        ui.label(muted(ui, from));
-    }
     if let Some(Ok(diff)) = file.diff.read_as_ref() {
         let (added, removed) = diff.changed();
         ui.label(RichText::new(format!("+{added}")).color(palette.ok));
         ui.label(RichText::new(format!("−{removed}")).color(palette.danger));
+    }
+    ui.add(Label::new(RichText::new(file.path().to_str_lossy()).strong()).truncate());
+    if let Some(from) = from {
+        ui.add(Label::new(muted(ui, from)).truncate());
     }
 }
 
@@ -570,11 +598,7 @@ fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut
                     });
                 }
                 if work.conflict {
-                    ui.label(muted(
-                        ui,
-                        "Staging it as it is marks it resolved (as after resolving it in an \
-                         editor of your own).",
-                    ));
+                    ui.label(muted(ui, "Marks it resolved as it is now"));
                     return;
                 }
                 if widgets::secondary(ui, has_lines, &format!("{verb} lines")).clicked() {

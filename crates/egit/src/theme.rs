@@ -33,6 +33,10 @@ pub(crate) struct Palette {
     pub(crate) surface_alt: Color32,
     /// Lines between things.
     pub(crate) border: Color32,
+    /// Edges that must show: a field's or a checkbox's under the pointer.
+    pub(crate) border_strong: Color32,
+    /// Behind what is typed: text fields, a checkbox's box.
+    pub(crate) field: Color32,
     /// Text.
     pub(crate) text: Color32,
     /// Secondary text.
@@ -47,6 +51,8 @@ pub(crate) struct Palette {
     pub(crate) warn: Color32,
     /// Something wrong.
     pub(crate) danger: Color32,
+    /// Text on the danger colour.
+    pub(crate) on_danger: Color32,
     /// The commit graph's lanes, in turn.
     pub(crate) lanes: [Color32; 10],
     /// Behind a diff's added lines, and its changed words.
@@ -81,6 +87,8 @@ impl Palette {
         surface: Color32::from_rgb(0x22, 0x27, 0x2E),
         surface_alt: Color32::from_rgb(0x2A, 0x30, 0x38),
         border: Color32::from_rgb(0x36, 0x3D, 0x47),
+        border_strong: Color32::from_rgb(0x55, 0x5F, 0x6D),
+        field: Color32::from_rgb(0x15, 0x18, 0x1C),
         text: Color32::from_rgb(0xE6, 0xE9, 0xEE),
         muted: Color32::from_rgb(0x9C, 0xA6, 0xB4),
         accent: Color32::from_rgb(0x3F, 0xB6, 0xA8),
@@ -88,6 +96,7 @@ impl Palette {
         ok: Color32::from_rgb(0x5B, 0xC9, 0x87),
         warn: Color32::from_rgb(0xE5, 0xB5, 0x46),
         danger: Color32::from_rgb(0xF5, 0x7A, 0x77),
+        on_danger: Color32::from_rgb(0x2A, 0x08, 0x08),
         lanes: [
             Color32::from_rgb(0x4F, 0xC3, 0xF7),
             Color32::from_rgb(0x81, 0xC7, 0x84),
@@ -122,6 +131,8 @@ impl Palette {
         surface: Color32::from_rgb(0xFF, 0xFF, 0xFF),
         surface_alt: Color32::from_rgb(0xEE, 0xF1, 0xF4),
         border: Color32::from_rgb(0xD5, 0xDB, 0xE3),
+        border_strong: Color32::from_rgb(0x9A, 0xA4, 0xB2),
+        field: Color32::from_rgb(0xFF, 0xFF, 0xFF),
         text: Color32::from_rgb(0x1A, 0x21, 0x2C),
         muted: Color32::from_rgb(0x55, 0x60, 0x71),
         accent: Color32::from_rgb(0x0A, 0x84, 0x77),
@@ -129,6 +140,7 @@ impl Palette {
         ok: Color32::from_rgb(0x18, 0x76, 0x35),
         warn: Color32::from_rgb(0x8F, 0x5B, 0x00),
         danger: Color32::from_rgb(0xC0, 0x2B, 0x26),
+        on_danger: Color32::from_rgb(0xFF, 0xFF, 0xFF),
         lanes: [
             Color32::from_rgb(0x02, 0x77, 0xBD),
             Color32::from_rgb(0x2E, 0x7D, 0x32),
@@ -164,6 +176,19 @@ impl Palette {
         }
     }
 }
+
+/// Small notes: where a setting comes from, a status bar's text.
+pub(crate) const SMALL: f32 = 11.5;
+/// The body's text, and buttons'.
+pub(crate) const BODY: f32 = 13.0;
+/// Code, names of commits, paths in a diff.
+pub(crate) const CODE: f32 = 12.5;
+/// A page's or a dialog's title.
+pub(crate) const TITLE: f32 = 18.0;
+/// A card's or a section's heading.
+pub(crate) const HEADING: f32 = 14.0;
+/// A control's height: buttons, fields, menus' buttons.
+pub(crate) const CONTROL: f32 = 28.0;
 
 /// Behind what is selected (text, a table's rows).
 pub(crate) fn selection(palette: &Palette) -> Color32 {
@@ -214,30 +239,68 @@ fn shape(style: &mut egui::Style, palette: &Palette, dark: bool) {
     visuals.selection.stroke = Stroke::new(1.0, palette.accent);
     visuals.override_text_color = None;
 
+    visuals.text_edit_bg_color = Some(palette.field);
+
+    // Every control has an edge: a field shows where to type before it is clicked, a button
+    // where it ends; the pointer darkens (or lightens) it, a press marks it with the accent.
     let radius = CornerRadius::same(6);
-    for (state, fill) in [
-        (&mut visuals.widgets.noninteractive, palette.surface),
-        (&mut visuals.widgets.inactive, palette.surface_alt),
-        (&mut visuals.widgets.hovered, palette.border),
-        (&mut visuals.widgets.active, palette.border),
-        (&mut visuals.widgets.open, palette.surface_alt),
+    for (state, fill, edge) in [
+        (
+            &mut visuals.widgets.noninteractive,
+            palette.surface,
+            palette.border,
+        ),
+        (
+            &mut visuals.widgets.inactive,
+            palette.surface_alt,
+            palette.border,
+        ),
+        (
+            &mut visuals.widgets.hovered,
+            palette.border,
+            palette.border_strong,
+        ),
+        (&mut visuals.widgets.active, palette.border, palette.accent),
+        (
+            &mut visuals.widgets.open,
+            palette.surface_alt,
+            palette.border_strong,
+        ),
     ] {
         state.corner_radius = radius;
         state.bg_fill = fill;
         state.weak_bg_fill = fill;
+        state.bg_stroke = Stroke::new(1.0, edge);
+        state.expansion = 0.0;
     }
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, palette.border);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, palette.text);
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, palette.text);
+    // Lines a control draws (a tab's cross, a menu's caret) thicken under the pointer.
     visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, palette.text);
-    visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, palette.accent.gamma_multiply(0.6));
     visuals.widgets.active.fg_stroke = Stroke::new(1.5, palette.text);
-    visuals.widgets.active.bg_stroke = Stroke::new(1.0, palette.accent);
+    visuals.widgets.open.fg_stroke = Stroke::new(1.0, palette.text);
     style.visuals = visuals;
 
+    // One scale of text: small notes, the body (and buttons), code, headings.
+    style.text_styles = [
+        (egui::TextStyle::Small, egui::FontId::proportional(SMALL)),
+        (egui::TextStyle::Body, egui::FontId::proportional(BODY)),
+        (egui::TextStyle::Button, egui::FontId::proportional(BODY)),
+        (egui::TextStyle::Monospace, egui::FontId::monospace(CODE)),
+        (egui::TextStyle::Heading, egui::FontId::proportional(TITLE)),
+    ]
+    .into();
+
+    // Controls are 28 points tall, their text 12 from their sides; things in a row 8 apart.
     style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(10.0, 4.0);
-    style.spacing.interact_size.y = 26.0;
+    style.spacing.button_padding = egui::vec2(12.0, 5.0);
+    style.spacing.interact_size = egui::vec2(28.0, CONTROL);
+    style.spacing.icon_width = 16.0;
+    style.spacing.icon_width_inner = 8.0;
+    style.spacing.icon_spacing = 8.0;
+    style.spacing.combo_height = 320.0;
+    style.spacing.menu_margin = egui::Margin::same(6);
+    style.interaction.tooltip_delay = 0.4;
 }
 
 #[cfg(test)]
@@ -270,6 +333,7 @@ mod tests {
                 palette.panel,
                 palette.surface,
                 palette.surface_alt,
+                palette.field,
             ] {
                 for (name, text) in [
                     ("text", palette.text),
@@ -283,6 +347,7 @@ mod tests {
                 }
             }
             assert!(contrast(palette.on_accent, palette.accent) >= 4.5);
+            assert!(contrast(palette.on_danger, palette.danger) >= 4.5);
         }
     }
 

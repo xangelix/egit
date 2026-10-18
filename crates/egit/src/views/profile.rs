@@ -166,7 +166,7 @@ impl Form {
 /// Draws the Profile tab.
 pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
     super::page(ui, "profile", |ui| {
-        ui.label(RichText::new("Your git profile").size(26.0).strong());
+        widgets::page_title(ui, "Your git profile");
         ui.label(muted(
             ui,
             "The settings git uses for you everywhere, read from git itself. Changes are saved to \
@@ -240,6 +240,7 @@ fn identity_card(
         ui.add_space(8.0);
         Grid::new("profile-identity")
             .num_columns(3)
+            .min_col_width(widgets::FACT_LABEL)
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
                 let label = ui.label("Name");
@@ -297,6 +298,7 @@ fn signing_card(
         ui.add_space(8.0);
         Grid::new("profile-signing")
             .num_columns(3)
+            .min_col_width(widgets::FACT_LABEL)
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
                 ui.label("Format");
@@ -306,7 +308,7 @@ fn signing_card(
                         (SigningFormat::Ssh, "SSH"),
                         (SigningFormat::X509, "X.509"),
                     ] {
-                        ui.radio_value(&mut view.form.format, format, label);
+                        crate::widgets::radio_value(ui, &mut view.form.format, format, label);
                     }
                 });
                 widgets::origin(ui, signing.format.entry, home);
@@ -329,12 +331,12 @@ fn signing_card(
                 ui.end_row();
 
                 ui.label("Commits");
-                ui.checkbox(&mut view.form.sign_commits, "Sign every commit");
+                crate::widgets::checkbox(ui, &mut view.form.sign_commits, "Sign every commit");
                 widgets::origin(ui, signing.commits.entry, home);
                 ui.end_row();
 
                 ui.label("Tags");
-                ui.checkbox(&mut view.form.sign_tags, "Sign every annotated tag");
+                crate::widgets::checkbox(ui, &mut view.form.sign_tags, "Sign every annotated tag");
                 widgets::origin(ui, signing.tags.entry, home);
                 ui.end_row();
 
@@ -404,6 +406,7 @@ fn credentials_card(ui: &mut Ui, snapshot: &ConfigSnapshot, home: Option<&Path>)
         }
         Grid::new("profile-credentials")
             .num_columns(3)
+            .min_col_width(widgets::FACT_LABEL)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
                 for helper in helpers {
@@ -498,6 +501,7 @@ impl HostList<'_> {
         ui.label(RichText::new(title).strong());
         Grid::new(("profile-forge-hosts", self.key))
             .num_columns(3)
+            .min_col_width(widgets::FACT_LABEL)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
                 for entry in snapshot.get_all(self.key) {
@@ -551,6 +555,7 @@ fn pull_push_card(ui: &mut Ui, snapshot: &ConfigSnapshot, home: Option<&Path>) {
         widgets::heading(ui, "Pull and push");
         Grid::new("profile-pull-push")
             .num_columns(3)
+            .min_col_width(widgets::FACT_LABEL)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
                 let rebase = profile.pull_rebase();
@@ -641,11 +646,9 @@ pub(crate) fn config_table(
             .range(100.0..=f32::INFINITY)
             .remainder(true),
     ];
-    let shown = TableKit::new(id, &provider, &mut table.state)
+    let shown = crate::tables::styled(TableKit::new(id, &provider, &mut table.state), ui)
         .with_columns(columns)
         .with_row_height(ROW_HEIGHT)
-        .with_cell_align(egui::Align::Center)
-        .with_selected_hover_color(crate::theme::Palette::of(ui.ctx()).selected_hover)
         .with_max_height(Some(height))
         .with_striped(true)
         .show(ui, |_, _, _, _| None);

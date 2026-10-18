@@ -87,9 +87,7 @@ fn opened(sandbox: &Sandbox, repo: &Path, folder: &Path) -> Harness<'static, Egi
 }
 
 fn patches_menu(harness: &mut Harness<'_, EgitApp>, item: &str) {
-    harness
-        .get_by_label(&format!("{}  Patches", icon::GIT_DIFF))
-        .click();
+    harness.get_by_label("Patches").click();
     wait_for_label(harness, item);
     harness.get_by_label(item).click();
 }

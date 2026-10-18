@@ -568,9 +568,8 @@ fn move_buttons(ui: &mut Ui, view: &mut RebaseView, range: &RebaseRange, at: usi
         (icon::ARROW_UP, "Move up", at > 0 && !keeping, true),
         (icon::ARROW_DOWN, "Move down", !last && !keeping, false),
     ] {
-        let button = ui.add_enabled(enabled, crate::widgets::small(glyph));
         // Named in words, for those who don't see the arrow.
-        button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+        let button = crate::widgets::icon_tool(ui, enabled, glyph, name);
         let button = if keeping {
             button.on_disabled_hover_text("The range holds merges: its order is git's")
         } else {
