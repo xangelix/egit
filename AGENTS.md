@@ -917,7 +917,13 @@ writes paths), never `OsStrExt`.
     its diff against the first parent (unified or side by side, with
     "Whole file" for all of its context), or the file as the commit left it (as it was, if
     deleted; read the first time it is asked for, `read_file`), or a placeholder for binary
-    files, LFS pointers, submodules, and files over 256 MiB. A `FileView` of a work tree's
+    files, LFS pointers, submodules, and files over 256 MiB; an image (`pictures::is_image`:
+    PNG, JPEG, GIF, WebP, BMP, ICO) shows its sides instead: before and after side by side (or
+    the image as the change left it), each with its size in pixels and bytes, scaled down to
+    fit (never up) over a checkerboard (a 32-texel patch laid as quads: transparency shows),
+    read the first time (`read_pictures`, a job: a commit's blobs, or for the work tree
+    `HEAD`'s, the index's, and the file) and kept as textures (`Textures`) until the status
+    changes. A `FileView` of a work tree's
     file (`WorkFile`: a path, which `Uncommitted` changes, the index entry its diff was read
     against) reads its diff again whenever the status changes, and has a second bar: stage
     or unstage the file, the lines selected in its unified diff, or their hunks. A file in
@@ -1166,6 +1172,12 @@ writes paths), never `OsStrExt`.
     and name; at each row's right what its list adds (`TreeRow`: lines counted, a stage
     button); made again only when the list is replaced, in a job past 5,000 files, the last
     tree shown meanwhile, in a scroll area of its own.
+  - `pictures.rs` — an image's sides read (blobs through the shared `Objects`, or the work
+    tree's file, 64 MiB at most) and decoded by `image` (PNG, JPEG, GIF, WebP, BMP, ICO;
+    20,000 pixels a side and 512 MiB of decoding at most), then scaled down to 2,048 pixels a
+    side at most (all a screen shows) into an `egui::ColorImage` shared with its texture
+    (`Picture`: its size as stored, its bytes, its pixels; a side that couldn't be read says
+    why).
   - `tables.rs` — egui-table-kit providers (`ConfigRows`, `RecentRows`, `ChangeRows`) with
     O(1) `cell_at`. Every table asks table-kit to center its text across a row
     (`with_cell_align(Align::Center)`: unasked, it lays text out as `ui.horizontal` does, from
@@ -1281,6 +1293,8 @@ writes paths), never `OsStrExt`.
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
     series saved. `src/tests/people.rs` drives co-authors: picked from the recent authors and
     typed, committed as trailers, shown in the details, taken back into the form to amend.
+    `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
+    work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,
     a folder staged whole, a commit's files alike, a list again.
     `src/tests/notices.rs` lets background fetches run: one bringing nothing says nothing, two

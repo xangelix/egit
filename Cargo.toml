@@ -46,6 +46,9 @@ libc = "0.2.190"
 rustix = { version = "1.1.5", features = ["event", "net", "process"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+# Images a change replaced, decoded to show side by side (the formats a repository commonly
+# holds; already in the tree through the clipboard's crate).
+image = { version = "0.25.10", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "webp"] }
 # The font parser egui uses: system fonts are checked with it before egui is given them.
 skrifa = { version = "0.44.0", default-features = false, features = ["std"] }
 # Syntax highlighting with Sublime grammars, through fancy-regex (no C regex library).

@@ -7,6 +7,7 @@ mod menus;
 mod notices;
 mod patches;
 mod people;
+mod pictures;
 mod polish;
 mod scale;
 mod screens;

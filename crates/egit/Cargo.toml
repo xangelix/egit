@@ -38,6 +38,7 @@ egui-async.workspace = true
 egui-phosphor.workspace = true
 egui-table-kit.workspace = true
 egui_tiles.workspace = true
+image.workspace = true
 memchr.workspace = true
 notify.workspace = true
 parking_lot.workspace = true

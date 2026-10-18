@@ -29,6 +29,7 @@ mod grid;
 mod history;
 mod jobs;
 mod merge;
+mod pictures;
 mod preferences;
 mod problem;
 mod repo;

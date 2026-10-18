@@ -5,7 +5,8 @@
 //! The change is a commit's, or one in the work tree not yet committed. A work tree's file
 //! follows the status (its diff is read again whenever it changes) and can be staged or
 //! unstaged whole, or the lines or hunks selected in its diff. A file in conflict shows the
-//! merge editor instead, until it is resolved: then its staged changes.
+//! merge editor instead, until it is resolved: then its staged changes. An image's change shows
+//! its two sides side by side (`pictures`), a binary file's other changes say what they were.
 
 use std::sync::Arc;
 
@@ -14,7 +15,7 @@ use egit_git::{
     CancelToken, ChangeKind, DiffOptions, Direction, FileChange, ObjectId, Status, TreeEntry,
     Uncommitted, WHOLE_FILE,
 };
-use egui::{Align, Frame, Key, Label, Layout, Margin, Modifiers, RichText, Ui};
+use egui::{Align, Color32, Frame, Key, Label, Layout, Margin, Modifiers, RichText, Ui};
 use egui_async::Bind;
 
 use super::history::{ID_DIGITS, Shared};
@@ -28,6 +29,7 @@ use crate::grid::TextGrid;
 use crate::history::{
     CommitDetails, FileContent, LfsPointer, Objects, read_file, read_work_tree_file,
 };
+use crate::pictures::{Picture, PictureSource, Pictures, is_image, read_pictures};
 use crate::problem::Problem;
 use crate::staging::{LinesRequest, StageRequest};
 use crate::tables::change_name;
@@ -60,6 +62,8 @@ pub(super) struct WorkFile {
     pub(super) change: &'static str,
     /// What the index held at the path when its diff was read (lines are staged against it).
     pub(super) entry: Option<TreeEntry>,
+    /// What `HEAD` holds at the path (what is staged replaces it).
+    pub(super) head: Option<TreeEntry>,
     /// Whether it is in conflict, mid-merge (its diff isn't one egit reads).
     pub(super) conflict: bool,
 }
@@ -105,6 +109,7 @@ impl WorkFile {
             which,
             change: super::work::change_name(entry, which),
             entry: entry.index(),
+            head: entry.head(),
             conflict: entry.kind == egit_git::EntryKind::Unmerged,
         }
     }
@@ -136,6 +141,9 @@ pub(super) struct FileView {
     cancel: CancelToken,
     /// The merge editor, for a work tree's file in conflict.
     merge: Option<MergeView>,
+    /// An image's sides, read the first time they are shown, and their textures.
+    pictures: Bind<Arc<Pictures>, Problem>,
+    textures: Option<Textures>,
     /// What its bar asked to see of the file instead: its blame, or its history.
     pub(super) wanted: Option<FileWanted>,
 }
@@ -207,6 +215,8 @@ impl FileView {
             file_grid,
             cancel: CancelToken::new(),
             merge: None,
+            pictures: Bind::new(true),
+            textures: None,
             wanted: None,
         };
         match &file.source {
@@ -307,7 +317,30 @@ impl FileView {
             work.entry = entry.and_then(egit_git::StatusEntry::index);
         }
         self.content = Bind::new(true);
+        self.pictures = Bind::new(true);
+        self.textures = None;
         self.read_diff(shared);
+    }
+
+    /// Where an image's sides are: a commit's blobs, or for the work tree, `HEAD`'s and the
+    /// index's (staged), the index's and the file's (not staged), or the file alone (new).
+    fn picture_sources(&self) -> (Option<PictureSource>, Option<PictureSource>) {
+        let blob = |entry: Option<TreeEntry>| {
+            entry
+                .filter(|entry| entry.mode & 0o170_000 == 0o100_000)
+                .map(|entry| PictureSource::Blob(entry.id))
+        };
+        match &self.source {
+            Source::Commit { change, .. } => (blob(change.old), blob(change.new)),
+            Source::WorkTree(work) => {
+                let file = || Some(PictureSource::WorkTree(work.path.clone()));
+                match work.which {
+                    Uncommitted::Staged => (blob(work.head), blob(work.entry)),
+                    Uncommitted::Unstaged => (blob(work.entry), file()),
+                    Uncommitted::Untracked => (None, file()),
+                }
+            }
+        }
     }
 
     /// The path it shows.
@@ -436,7 +469,7 @@ pub(super) fn show(
         return open;
     }
     match file.shown {
-        Shown::Diff => show_diff(ui, file),
+        Shown::Diff => show_diff(ui, shared, objects, file),
         Shown::File => show_file(ui, shared, objects, file),
     }
     open
@@ -708,6 +741,210 @@ pub(super) fn placeholder(ui: &mut Ui, text: String) {
         .show(ui, |ui| ui.label(muted(ui, text)));
 }
 
+/// An image's sides as textures, made once decoded (egui frees them with the view), and a
+/// checkerboard drawn behind them so transparency shows.
+struct Textures {
+    before: Option<egui::TextureHandle>,
+    after: Option<egui::TextureHandle>,
+    checks: egui::TextureHandle,
+}
+
+impl std::fmt::Debug for Textures {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Textures").finish_non_exhaustive()
+    }
+}
+
+impl Textures {
+    fn of(ctx: &egui::Context, pictures: &Pictures, palette: Palette) -> Self {
+        let texture = |name: &str, side: &crate::pictures::Side| {
+            side.as_ref()
+                .and_then(|side| side.as_ref().ok())
+                .map(|picture| {
+                    ctx.load_texture(
+                        name,
+                        Arc::clone(&picture.pixels),
+                        egui::TextureOptions::LINEAR,
+                    )
+                })
+        };
+        // A patch of four by four tiles, laid side by side across the image's place.
+        // Apart enough to see through a translucent image, in either theme.
+        let (light, dark) = if palette.dark {
+            (
+                Color32::from_rgb(0x4A, 0x51, 0x5C),
+                Color32::from_rgb(0x2E, 0x33, 0x3B),
+            )
+        } else {
+            (
+                Color32::from_rgb(0xFF, 0xFF, 0xFF),
+                Color32::from_rgb(0xD9, 0xDE, 0xE4),
+            )
+        };
+        let mut texels = Vec::with_capacity(CHECKS_PATCH.saturating_mul(CHECKS_PATCH));
+        for y in 0..CHECKS_PATCH {
+            for x in 0..CHECKS_PATCH {
+                let odd = ((x >> CHECK_SHIFT) ^ (y >> CHECK_SHIFT)) & 1 == 1;
+                texels.push(if odd { dark } else { light });
+            }
+        }
+        let checks = egui::ColorImage::new([CHECKS_PATCH, CHECKS_PATCH], texels);
+        let checks = ctx.load_texture("image-checks", checks, egui::TextureOptions::NEAREST);
+        Self {
+            before: texture("image-before", &pictures.before),
+            after: texture("image-after", &pictures.after),
+            checks,
+        }
+    }
+}
+
+/// A checkerboard's patch behind an image, in texels (a point each), and its tiles' size as a
+/// shift (8 texels).
+const CHECKS_PATCH: usize = 32;
+const CHECK_SHIFT: usize = 3;
+
+/// An image's change: its sides side by side (`both`), or the image as the change left it,
+/// each with its size in pixels and bytes, over a checkerboard, scaled down to fit.
+fn show_pictures(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    objects: &Objects,
+    file: &mut FileView,
+    both: bool,
+) {
+    if file.pictures.is_idle()
+        && let Some(git) = shared.git
+    {
+        file.pictures.request(read_pictures(
+            git.clone(),
+            Arc::clone(shared.repository),
+            objects.clone(),
+            file.picture_sources(),
+        ));
+    }
+    let pictures = match file.pictures.read_as_ref() {
+        None => {
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::working(ui, "Reading the images…"));
+            return;
+        }
+        Some(Err(problem)) => {
+            let problem = problem.clone();
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
+            return;
+        }
+        Some(Ok(pictures)) => Arc::clone(pictures),
+    };
+    let textures = file
+        .textures
+        .get_or_insert_with(|| Textures::of(ui.ctx(), &pictures, shared.palette));
+    Frame::new().inner_margin(Margin::same(16)).show(ui, |ui| {
+        let sides = [
+            ("Before", &pictures.before, textures.before.as_ref()),
+            ("After", &pictures.after, textures.after.as_ref()),
+        ];
+        let shown: Vec<_> = if both {
+            sides.into_iter().collect()
+        } else {
+            sides.into_iter().skip(1).collect()
+        };
+        let columns = shown.len();
+        ui.columns(columns, |columns| {
+            for (column, (title, side, texture)) in columns.iter_mut().zip(shown) {
+                picture_side(
+                    column,
+                    (title, side, texture),
+                    &textures.checks,
+                    shared.palette,
+                );
+            }
+        });
+    });
+}
+
+/// One side of an image's change: its title and size, then the image, or why there is none.
+fn picture_side(
+    ui: &mut Ui,
+    (title, side, texture): (&str, &crate::pictures::Side, Option<&egui::TextureHandle>),
+    checks: &egui::TextureHandle,
+    palette: Palette,
+) {
+    let facts = match side {
+        Some(Ok(Picture {
+            width,
+            height,
+            bytes,
+            ..
+        })) => format!("{width} × {height} pixels · {}", format::size(*bytes)),
+        Some(Err(_)) => "couldn't be read".to_owned(),
+        None if title == "Before" => "none: the image is new".to_owned(),
+        None => "none: the image is deleted".to_owned(),
+    };
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(title).semibold());
+        ui.label(muted(ui, facts));
+    });
+    ui.add_space(8.0);
+    match (side, texture) {
+        (Some(Ok(picture)), Some(texture)) => {
+            // As large as it is, in points, or smaller to fit; never larger.
+            let natural = egui::vec2(
+                f32::from(u16::try_from(picture.width).unwrap_or(u16::MAX)),
+                f32::from(u16::try_from(picture.height).unwrap_or(u16::MAX)),
+            );
+            let room = ui.available_size();
+            let scale = (room.x / natural.x).min(room.y / natural.y).min(1.0);
+            let scaled = egui::vec2(natural.x * scale, natural.y * scale);
+            let (rect, _) = ui.allocate_exact_size(scaled, egui::Sense::hover());
+            checkerboard(ui, rect, checks);
+            ui.painter().image(
+                texture.id(),
+                rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                Color32::WHITE,
+            );
+            ui.painter().rect_stroke(
+                rect,
+                0.0,
+                egui::Stroke::new(1.0, palette.border),
+                egui::StrokeKind::Outside,
+            );
+        }
+        (Some(Err(why)), _) => {
+            ui.add(Label::new(muted(ui, format!("It couldn't be shown: {why}"))).wrap());
+        }
+        _ => {}
+    }
+}
+
+/// The checkerboard's patch laid side by side across `rect` (the last ones cut at its edges).
+fn checkerboard(ui: &Ui, rect: egui::Rect, checks: &egui::TextureHandle) {
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+    let patch = f32::from(u8::try_from(CHECKS_PATCH).unwrap_or(u8::MAX));
+    let full = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0));
+    let mut mesh = egui::Mesh::with_texture(checks.id());
+    let mut y = rect.top();
+    loop {
+        if y >= rect.bottom() {
+            break;
+        }
+        let mut x = rect.left();
+        loop {
+            if x >= rect.right() {
+                break;
+            }
+            let place = egui::Rect::from_min_size(egui::pos2(x, y), egui::Vec2::splat(patch));
+            mesh.add_rect_with_uv(place, full, Color32::WHITE);
+            x += patch;
+        }
+        y += patch;
+    }
+    painter.add(mesh);
+}
+
 /// What a Git LFS pointer's change stands for: the file's sizes before and after; returns
 /// whether the pointer's own changes were asked for.
 fn lfs_placeholder(ui: &mut Ui, lfs: LfsChange) -> bool {
@@ -743,9 +980,10 @@ fn lfs_placeholder(ui: &mut Ui, lfs: LfsChange) -> bool {
 }
 
 /// What the commit (or the work tree) changed in the file.
-fn show_diff(ui: &mut Ui, file: &mut FileView) {
+fn show_diff(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut FileView) {
     // (A file in conflict shows the merge editor instead.)
     let work = file.work().map(|work| work.which);
+    let image = is_image(file.path());
     match file.diff.read_as_ref() {
         None => {
             Frame::new()
@@ -764,6 +1002,9 @@ fn show_diff(ui: &mut Ui, file: &mut FileView) {
             {
                 file.pointer = true;
             }
+        }
+        Some(Ok(diff)) if diff.binary() && image => {
+            show_pictures(ui, shared, objects, file, true);
         }
         Some(Ok(diff)) if diff.binary() => {
             placeholder(
@@ -833,6 +1074,7 @@ fn show_file(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut Fil
             return;
         }
     }
+    let image = is_image(file.path());
     match file.content.read_as_ref() {
         None => {
             Frame::new()
@@ -848,6 +1090,9 @@ fn show_file(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, file: &mut Fil
         Some(Ok(content)) => match &**content {
             FileContent::Text(text) => {
                 file.file_grid.show(ui, &**text);
+            }
+            FileContent::Binary { .. } if image => {
+                show_pictures(ui, shared, objects, file, false);
             }
             FileContent::Binary { size } => placeholder(
                 ui,
