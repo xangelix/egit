@@ -935,7 +935,9 @@ writes paths), never `OsStrExt`.
     it, show only it, it too, or hide it (`Scope`, `Action::Scope`), or every branch again;
     push or delete a tag), a branch badge double-clicked (switch), and the stash menu beside
     the commit count
-    ("Stash the changes…", and each stash with Apply, Pop, Drop…). Each asks a task or a
+    ("Stash the changes…", then a row per stash, its message and age, latest first, in a
+    list that scrolls past ten (only the rows in view drawn), its submenu holding its whole
+    message and Apply, Pop, Drop…). Each asks a task or a
     dialog (`Ask`), or opens the rebase editor, carried out by the history view
     (`carry_out`). The commit menu's "Rewrite" group (on a branch, nothing running): "Rebase
     interactively from here…", "Edit the message…" (the editor, that commit reworded),

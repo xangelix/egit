@@ -1013,7 +1013,7 @@ pub(super) fn stash_menu(
     };
     let now = format::now();
     crate::widgets::tool_menu(ui, crate::theme::icon::ARCHIVE, &label, look, |ui| {
-        ui.set_min_width(320.0);
+        ui.set_width(STASH_MENU_WIDTH);
         if item(ui, "Stash the changes…", can_stash) {
             *asked = Some(Ask::Dialog(Dialog::Stash {
                 message: String::new(),
@@ -1024,40 +1024,72 @@ pub(super) fn stash_menu(
             return;
         }
         ui.separator();
-        for stash in stashes {
-            let when = u64::try_from(stash.time)
-                .map_or_else(|_| String::new(), |time| format::ago(time, now));
-            ui.label(format!("stash@{{{}}} · {when}", stash.index));
-            ui.label(muted(ui, &stash.message));
-            ui.horizontal(|ui| {
-                for (label, task) in [
-                    (
-                        "Apply",
-                        Task::ApplyStash {
-                            stash: stash.clone(),
-                            pop: false,
-                        },
-                    ),
-                    (
-                        "Pop",
-                        Task::ApplyStash {
-                            stash: stash.clone(),
-                            pop: true,
-                        },
-                    ),
-                ] {
-                    if item(ui, label, busy) {
-                        *asked = Some(Ask::Task(task));
-                    }
-                }
-                if item(ui, "Drop…", busy) {
-                    *asked = Some(Ask::Dialog(Dialog::DropStash(stash.clone())));
+        ui.label(muted(ui, "Stashed, latest first").small());
+        // A row each, touching, in a list that scrolls once it is longer than a screenful:
+        // only the rows in view are drawn. Its scroll bar takes room of its own, beside the
+        // rows' ages rather than over them.
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+        egui::ScrollArea::vertical()
+            .id_salt("stash-menu-list")
+            .max_height(crate::theme::CONTROL * STASHES_SHOWN)
+            .auto_shrink([false, true])
+            .show_rows(ui, crate::theme::CONTROL, stashes.len(), |ui, rows| {
+                for stash in stashes.get(rows).unwrap_or_default() {
+                    stash_row(ui, stash, busy, now, asked);
                 }
             });
-            ui.add_space(4.0);
-        }
     })
     .0
+}
+
+/// The stash menu's width: a stash's message is cut to fit.
+const STASH_MENU_WIDTH: f32 = 380.0;
+
+/// A stash's submenu's width: its whole message wraps inside.
+const STASH_ACTIONS_WIDTH: f32 = 260.0;
+
+/// How many stashes the stash menu shows at once; the rest scroll.
+const STASHES_SHOWN: f32 = 10.0;
+
+/// One stash in the stash menu: its message and how long ago, its submenu offering Apply, Pop,
+/// and Drop under its whole message.
+fn stash_row(
+    ui: &mut Ui,
+    stash: &Stash,
+    busy: Result<(), &str>,
+    now: u64,
+    asked: &mut Option<Ask>,
+) {
+    use egui::AtomExt as _;
+    use egui::containers::menu::SubMenuButton;
+
+    let when =
+        u64::try_from(stash.time).map_or_else(|_| String::new(), |time| format::ago(time, now));
+    let button = egui::Button::new(egui::RichText::new(&stash.message).atom_shrink(true))
+        .right_text((muted(ui, &when), SubMenuButton::RIGHT_ARROW))
+        .wrap_mode(egui::TextWrapMode::Truncate)
+        .min_size(egui::vec2(ui.available_width(), crate::theme::CONTROL));
+    let (response, _) = SubMenuButton::from_button(button).ui(ui, |ui| {
+        ui.set_width(STASH_ACTIONS_WIDTH);
+        ui.label(muted(ui, format!("stash@{{{}}}", stash.index)).small());
+        ui.label(&stash.message);
+        ui.separator();
+        for (label, pop) in [("Apply", false), ("Pop", true)] {
+            if item(ui, label, busy) {
+                *asked = Some(Ask::Task(Task::ApplyStash {
+                    stash: stash.clone(),
+                    pop,
+                }));
+            }
+        }
+        if item(ui, "Drop…", busy) {
+            *asked = Some(Ask::Dialog(Dialog::DropStash(stash.clone())));
+        }
+    });
+    // Named as it reads: a screen reader hears what the row shows.
+    let name = format!("{} · {when}", stash.message);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
 }
 
 #[cfg(test)]

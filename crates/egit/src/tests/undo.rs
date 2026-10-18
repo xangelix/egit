@@ -18,7 +18,8 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use super::patches::wait_for_text;
 use super::screens::{
     click_when_enabled, double_click, harness, history_of, history_shown, menu_item, open_path,
-    profile_loaded, render, settle, two_branches, type_into, uncommitted, wait_for_label,
+    open_stash, profile_loaded, render, settle, two_branches, type_into, uncommitted,
+    wait_for_label,
 };
 use super::search::details_shown;
 use crate::app::EgitApp;
@@ -249,7 +250,7 @@ fn branches_tags_and_stashes_are_brought_back() {
     wait_for_label(&mut harness, &stash(1));
     let stashed = rev(&sandbox, &repo, "refs/stash");
     harness.get_by_label(&stash(1)).click();
-    wait_for_label(&mut harness, "Drop…");
+    open_stash(&mut harness, "WIP on main");
     harness.get_by_label("Drop…").click();
     wait_for_label(&mut harness, "Drop stash@{0}?");
     harness.get_by_label("Drop").click();

@@ -151,6 +151,37 @@ pub(super) fn click_when_enabled(harness: &mut Harness<'_, EgitApp>, label: &str
     );
 }
 
+/// Opens the stash menu's row for the stash whose message starts with `message` (the menu
+/// open), showing its Apply, Pop, and Drop….
+pub(super) fn open_stash(harness: &mut Harness<'_, EgitApp>, message: &str) {
+    let shown = |harness: &Harness<'_, EgitApp>, click: bool| {
+        let row = harness.query_all_by_role(Role::Button).find(|node| {
+            node.accesskit_node()
+                .label()
+                .is_some_and(|label| label.starts_with(message))
+        });
+        if click && let Some(row) = &row {
+            row.click();
+        }
+        row.is_some()
+    };
+    for _ in 0..2_000 {
+        harness.step();
+        if shown(harness, false) {
+            // A menu's first frame only sizes it.
+            harness.run_steps(2);
+            shown(harness, true);
+            wait_for_label(harness, "Pop");
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    gave_up(
+        harness,
+        &format!("timed out waiting for the stash {message:?}"),
+    );
+}
+
 pub(super) fn profile_loaded(app: &mut EgitApp) -> bool {
     app.state.user_config.is_ok()
 }
@@ -1680,7 +1711,7 @@ fn changes_are_stashed_popped_and_dropped() {
     assert_eq!(std::fs::read_to_string(repo.join("f")).unwrap(), "two\n");
 
     harness.get_by_label(&stash(1)).click();
-    wait_for_label(&mut harness, "On main: Half done");
+    open_stash(&mut harness, "On main: Half done");
     render(&mut harness, "stash-menu");
     harness.get_by_label("Pop").click();
     wait_for_label(&mut harness, "Popped stash@{0}.");
@@ -1698,7 +1729,7 @@ fn changes_are_stashed_popped_and_dropped() {
     harness.get_all_by_label("Stash").last().unwrap().click();
     wait_for_label(&mut harness, &stash(1));
     harness.get_by_label(&stash(1)).click();
-    wait_for_label(&mut harness, "Drop…");
+    open_stash(&mut harness, "WIP on main");
     harness.get_by_label("Drop…").click();
     wait_for_label(&mut harness, "Drop stash@{0}?");
     harness.get_by_label("Drop").click();
@@ -1706,6 +1737,47 @@ fn changes_are_stashed_popped_and_dropped() {
     wait_for_label(&mut harness, &stash(0));
     let listed = sandbox.run(&repo, "stash", &["list"]).unwrap();
     assert_eq!(listed.stdout, b"");
+}
+
+#[test]
+fn many_stashes_scroll_within_the_window() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = two_branches(&sandbox);
+    for at in 0..30 {
+        std::fs::write(repo.join("f"), format!("change {at}\n")).unwrap();
+        sandbox
+            .run(
+                &repo,
+                "stash",
+                &["push", "--message", &format!("Change {at}")],
+            )
+            .unwrap();
+    }
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    wait_for_label(&mut harness, "Stashes · 30");
+    harness.get_by_label("Stashes · 30").click();
+    open_stash(&mut harness, "On main: Change 29");
+    render(&mut harness, "stash-menu-many");
+    // A screenful listed (the rest scroll), and all of it inside the window.
+    let screen = harness.ctx.content_rect();
+    let rows: Vec<egui::Rect> = harness
+        .query_all_by_role(Role::Button)
+        .filter(|node| {
+            node.accesskit_node()
+                .label()
+                .is_some_and(|label| label.starts_with("On main: Change"))
+        })
+        .map(|node| node.rect())
+        .collect();
+    assert!((5..30).contains(&rows.len()), "{} rows", rows.len());
+    assert!(
+        rows.iter().all(|row| screen.contains_rect(*row)),
+        "{rows:?}"
+    );
+    assert!(screen.contains_rect(harness.get_by_label("Drop…").rect()));
 }
 
 #[test]
