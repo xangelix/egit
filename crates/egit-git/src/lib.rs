@@ -23,6 +23,7 @@ mod config;
 mod conflict;
 mod credential;
 mod diff;
+mod discard;
 mod env;
 mod error;
 mod format_patch;
@@ -91,6 +92,10 @@ pub use credential::{
 pub use diff::{
     DiffLine, DiffLineKind, DiffOptions, FileDiff, Uncommitted, WHOLE_FILE, file_diff,
     uncommitted_diff,
+};
+pub use discard::{
+    DiscardError, DiscardSide, DiscardedFile, KEEP_BYTES, KEEP_FILES, KeptFile, discard_files,
+    discard_lines, put_back,
 };
 pub use error::{Failure, GitError};
 pub use format_patch::{Changes, changes_patch, format_patch, format_patches, patch_file_name};

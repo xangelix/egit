@@ -54,6 +54,10 @@ pub struct FileDiff {
     pub lines: Vec<DiffLine>,
     /// Whether git found the file binary (it has no lines then).
     pub binary: bool,
+    /// The blobs it is between, as its `index` line names them (a work tree's side as git
+    /// would store it: through its clean filters); `None` without one (a change of mode alone),
+    /// or abbreviated.
+    pub blobs: Option<(ObjectId, ObjectId)>,
 }
 
 /// How a diff is made.
@@ -218,6 +222,13 @@ fn parse_streamed(command: GitCommand) -> Result<FileDiff, GitError> {
     }
 }
 
+/// `<old>..<new>`, and maybe a mode after a space: an `index` line's blobs.
+fn index_blobs(names: &[u8]) -> Option<(ObjectId, ObjectId)> {
+    let names = names.split_str(b" ").next()?;
+    let (old, new) = names.split_once_str(b"..")?;
+    Some((ObjectId::from_hex(old)?, ObjectId::from_hex(new)?))
+}
+
 /// Parses a patch a line at a time.
 #[derive(Debug, Default)]
 struct Parser {
@@ -244,6 +255,12 @@ impl Parser {
         if !self.in_hunk {
             if line.starts_with(b"Binary files ") && line.ends_with(b" differ") {
                 self.diff.binary = true;
+            }
+            // The first file's (a rename's both paths name one).
+            if self.diff.blobs.is_none()
+                && let Some(names) = line.strip_prefix(b"index ")
+            {
+                self.diff.blobs = index_blobs(names);
             }
             return Ok(());
         }
@@ -360,6 +377,8 @@ mod tests {
              \\ No newline at end of file\n",
         );
         assert!(!diff.binary);
+        let blob = |digit: &str| ObjectId::from_hex(digit.repeat(40).as_bytes()).unwrap();
+        assert_eq!(diff.blobs, Some((blob("1"), blob("2"))));
         let lines: Vec<(DiffLineKind, u32, u32)> = diff
             .lines
             .iter()
@@ -383,6 +402,20 @@ mod tests {
             diff.text,
             b"@@ -2,4 +2,4 @@ fn main()\nkeep\nold\nnew\nmore\nend\ngone\n"
         );
+    }
+
+    #[test]
+    fn reads_the_blobs_of_the_index_line() {
+        let zeros = "0".repeat(40);
+        let blobs = |line: &str| parse(line).blobs;
+        let (old, new) = blobs(&format!("index {zeros}..{}\n", "e".repeat(40))).unwrap();
+        assert!(old == old.format().zero() && new != new.format().zero());
+        assert_eq!(
+            blobs("index 1234567..89abcde 100644\n"),
+            None,
+            "abbreviated"
+        );
+        assert_eq!(blobs("old mode 100644\nnew mode 100755\n"), None);
     }
 
     #[test]

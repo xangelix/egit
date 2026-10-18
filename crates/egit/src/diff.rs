@@ -45,6 +45,8 @@ pub(crate) struct DiffDocument {
     /// where the lines share too little to mark).
     words: Mutex<HashMap<u32, Option<ChangedWords>>>,
     binary: bool,
+    /// The blobs it is between (git's `index` line), for discarding some of its lines.
+    blobs: Option<(ObjectId, ObjectId)>,
     /// Digits of the largest line number.
     digits: u32,
     added: u32,
@@ -110,6 +112,7 @@ impl DiffDocument {
             text,
             lines,
             binary,
+            blobs,
         } = diff;
         // A patch past 4 GiB shows as nothing.
         let text = Text::new(text).unwrap_or_default();
@@ -144,6 +147,7 @@ impl DiffDocument {
             measure,
             lines,
             binary,
+            blobs,
             digits: largest.max(1).ilog10().saturating_add(1),
         }
     }
@@ -190,12 +194,14 @@ impl DiffDocument {
         self.binary
     }
 
-    /// The diff it shows, as git's patch read it (for staging some of its lines).
+    /// The diff it shows, as git's patch read it (for staging or discarding some of its
+    /// lines).
     pub(crate) fn file_diff(&self) -> FileDiff {
         FileDiff {
             text: self.text.bytes().to_vec(),
             lines: self.lines.clone(),
             binary: self.binary,
+            blobs: self.blobs,
         }
     }
 
@@ -709,6 +715,7 @@ mod tests {
                     line(DiffLineKind::Added, 0, 11),
                 ],
                 binary: false,
+                blobs: None,
             },
             BString::from("lib.rs"),
         )
@@ -803,6 +810,7 @@ mod tests {
                 text: text.as_bytes().to_vec(),
                 lines: kinds.iter().map(|&kind| line(kind, 1, 1)).collect(),
                 binary: false,
+                blobs: None,
             },
             BString::from("model.bin"),
         )
@@ -866,6 +874,7 @@ mod tests {
                     line(DiffLineKind::Context, 4, 3),
                 ],
                 binary: false,
+                blobs: None,
             },
             BString::from("notes"),
         ));

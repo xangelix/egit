@@ -260,7 +260,8 @@ writes paths), never `OsStrExt`.
     work tree's side comes through clean filters and line-ending conversion, in the form git
     stores. Parsed as it streams into `FileDiff`: each line's text without
     its prefix (hunk headers as lines), its `DiffLineKind`, old and new numbers, and a
-    missing final newline; a binary file is flagged and has no lines. `lines.rs` — `Lines`,
+    missing final newline; a binary file is flagged and has no lines; `blobs`, its `index`
+    line's (the work tree's side as git would store it). `lines.rs` — `Lines`,
     the streamed-output splitter `walk_history` and `file_diff` share.
   - `patch.rs` — staging or unstaging picked lines. `apply_lines`: the index's blob with the
     picked lines of a diff moved across (`Direction::Stage`: the index against the work tree,
@@ -283,6 +284,24 @@ writes paths), never `OsStrExt`.
     `restore --staged`, works before the first commit) of whole files: paths on standard
     input (`--pathspec-from-file`, NUL-separated) as literal pathspecs; no paths do nothing
     (`reset` would otherwise unstage everything).
+  - `discard.rs` — discarding changes not staged. `discard_files`: tracked files back to what
+    the index holds (`restore --worktree`, literal paths on standard input), untracked ones
+    removed (`clean --force`, 16 KiB of paths a command); `discard_lines`: the lines a diff's
+    `picked` chooses put back, `apply_lines` of every change but those onto the index's blob,
+    written through the file's filters (`cat-file --filters --path`), refused (`Stale`) unless
+    the index holds the entry the diff was read with and the file is still the diff's side
+    (`hash-object` through its clean filters against `blobs`); a link's or a submodule's
+    lines aren't (`NotLines`). Each file is kept before and after (`KeptFile`: a blob of its
+    bytes as they are, `hash-object -w --no-filters`, `--stdin-paths` together, a link's
+    target apart; its mode), none past `KEEP_FILES` (1,000) or a file over `KEEP_BYTES`
+    (64 MiB); `put_back` writes either side again (`DiscardSide`), once every file is as the
+    other left it (by its bytes and whether it is a link), read through one `cat-file`, each
+    written beside its place and renamed over it (permissions kept, the executable bit as its
+    mode says; links made where they can be). `tests/discard.rs` discards, puts back, and does
+    again whole files (a change with some staged, a deletion, an untracked executable, a
+    link) and lines (a hunk of two; of a file whose line endings git converts; of an untracked
+    file, of a deleted one), refuses a stale diff and putting back over a change, and keeps
+    nothing of a file too large.
   - `tree.rs` — for watching a work tree's folders: `tree_folders` (a commit's folders,
     `ls-tree -r -d`) and `ignored_paths` (`check-ignore -z --stdin`, which exits 1 when none
     is; folders end with `/` so folder-only patterns match them); and `tree_entry`, one path's

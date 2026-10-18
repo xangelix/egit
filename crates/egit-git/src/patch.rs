@@ -269,15 +269,7 @@ pub fn write_index_content(
     cancel: &CancelToken,
 ) -> Result<ObjectId, LinesError> {
     let work_tree = repository.work_tree();
-    let listed = git
-        .read("ls-files")
-        .args(["--stage", "-z", "--"])
-        .arg(path.to_os_str_lossy())
-        .env("GIT_LITERAL_PATHSPECS", "1")
-        .current_dir(work_tree)
-        .cancel_token(cancel)
-        .output()?;
-    if index_entry(&listed.stdout)? != expected {
+    if index_entry_at(git, repository, path, cancel)? != expected {
         return Err(LinesError::Stale);
     }
     let hashed = git
@@ -299,6 +291,29 @@ pub fn write_index_content(
         .cancel_token(cancel)
         .output()?;
     Ok(id)
+}
+
+/// The index's entry at `path` (`ls-files --stage`): `None` when there is none.
+///
+/// # Errors
+///
+/// [`LinesError::Stale`] when it is in conflict (its sides are staged apart), and
+/// [`LinesError::Git`] when git fails or is cancelled.
+pub(crate) fn index_entry_at(
+    git: &Git,
+    repository: &Repository,
+    path: &BStr,
+    cancel: &CancelToken,
+) -> Result<Option<TreeEntry>, LinesError> {
+    let listed = git
+        .read("ls-files")
+        .args(["--stage", "-z", "--"])
+        .arg(path.to_os_str_lossy())
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()?;
+    index_entry(&listed.stdout)
 }
 
 /// The index's entry, from `ls-files --stage -z` for one path: `None` when there is none.

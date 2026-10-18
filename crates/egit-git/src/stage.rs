@@ -44,8 +44,8 @@ pub fn unstage(
     with_paths(git, repository, "reset", &["--quiet"], paths, cancel)
 }
 
-/// Runs `subcommand` with `args` on `paths`, given on standard input.
-fn with_paths(
+/// Runs `subcommand` with `args` on `paths`, given on standard input (nothing for no paths).
+pub(crate) fn with_paths(
     git: &Git,
     repository: &Repository,
     subcommand: &'static str,
