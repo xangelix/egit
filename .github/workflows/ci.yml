@@ -47,14 +47,16 @@ jobs:
       EGIT_GUI_RENDER: "1"
       # Every way of signing is tested: none may be skipped for want of its tools.
       EGIT_REQUIRE_SIGNERS: "1"
+      # Git LFS too.
+      EGIT_REQUIRE_LFS: "1"
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Mesa's software renderer, and the signers (GnuPG, gpgsm, OpenSSH)
+      - name: Install Mesa's software renderer, the signers (GnuPG, gpgsm, OpenSSH), and Git LFS
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            mesa-vulkan-drivers gnupg gpgsm openssh-client
+            mesa-vulkan-drivers gnupg gpgsm openssh-client git-lfs
 
       - name: Install the pinned toolchain
         run: rustup toolchain install
@@ -82,12 +84,13 @@ jobs:
     container: ubuntu:24.04
     env:
       EGIT_REQUIRE_SIGNERS: "1"
+      EGIT_REQUIRE_LFS: "1"
     steps:
       - name: Install system packages
         run: |
           apt-get update
           apt-get install --yes --no-install-recommends \
-            build-essential ca-certificates curl git gnupg gpgsm mesa-vulkan-drivers \
+            build-essential ca-certificates curl git git-lfs gnupg gpgsm mesa-vulkan-drivers \
             openssh-client pkg-config
 
       - uses: actions/checkout@v7

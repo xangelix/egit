@@ -30,6 +30,7 @@ mod forward;
 mod git;
 mod history;
 mod integrate;
+mod lfs;
 mod lines;
 mod object_id;
 mod objects;
@@ -98,6 +99,11 @@ pub use history::{
     walk_history, walk_history_from, write_commit_graph,
 };
 pub use integrate::{Integrated, ResetMode, cherry_pick, merge, rebase, reset, revert};
+pub use lfs::{
+    LfsFile, LfsLock, LfsPattern, LfsTransfer, LfsVersion, lfs_files, lfs_install, lfs_lock,
+    lfs_locks, lfs_patterns, lfs_prune, lfs_set_up, lfs_track, lfs_transfer, lfs_untrack,
+    lfs_version,
+};
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};
