@@ -1451,4 +1451,16 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
         ],
     },
+    Topic {
+        id: "pref-output",
+        group: Group::Egit,
+        title: "When the output opens",
+        on: &["Opens while hooks run, and when a task fails"],
+        what: "With this on, the output at a repository tab's bottom opens by itself while hooks \
+               run past a moment (a pre-commit check, a pre-push hook), and when a task fails \
+               saying something; a run it opened for that went well closes it again. Off, it \
+               opens only when you ask (⌘J, or its bar).",
+        git: "",
+        cases: &[],
+    },
 ];

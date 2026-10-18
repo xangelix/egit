@@ -43,7 +43,7 @@ use super::sidebar::{self, Lists, Sidebar, SidebarEvent};
 use super::submodules::SubmodulesEvent;
 use super::tasks::{self, TaskEvent, TaskPane, TasksView};
 use super::work::{CommitSide, WorkEvent, WorkPanel};
-use crate::app::Action;
+use crate::app::{Action, OutputAsk};
 use crate::commands::RepoCommand;
 use crate::desktop::FileQuestion;
 use crate::fonts;
@@ -120,14 +120,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) partial_clone: Option<bool>,
     /// The working tree's status.
     pub(crate) work_tree: &'a mut WorkTree,
-    /// The last staging or unstaging.
-    pub(crate) staging: &'a mut Bind<(), Problem>,
-    /// The last commit made, or being made.
-    pub(crate) committing: &'a mut Bind<Committed, Problem>,
-    /// How many commits egit has made here.
-    pub(crate) commits_made: u64,
-    /// Whether commits are signed unless asked otherwise (`commit.gpgSign`).
-    pub(crate) sign_by_default: bool,
+    /// Staging and committing.
+    pub(crate) work: WorkSide<'a>,
     /// The operations git stopped in the middle of (a merge, a rebase, …).
     pub(crate) operations: &'a [Operation],
     /// How far a `git am` stopped part-way got.
@@ -749,10 +743,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         writing_commit_graph,
         partial_clone,
         work_tree,
-        staging,
-        committing,
-        commits_made,
-        sign_by_default,
+        work,
         operations,
         applying,
         bisect,
@@ -782,7 +773,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         preferences: Preferences::of(ui.ctx()),
         config,
         busy: tasks.is_busy(),
-        committing: committing.is_pending(),
+        committing: work.committing.is_pending(),
         forge,
         scope: history.scope().clone(),
         home,
@@ -828,12 +819,6 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         return;
     }
 
-    let work = WorkSide {
-        staging,
-        committing,
-        commits_made,
-        sign_by_default,
-    };
     let sides = Sides {
         work,
         lists: &lists,
@@ -913,6 +898,10 @@ fn queued_commands(shared: &Shared<'_>, view: &mut HistoryView, pane: &mut TaskP
                 view.sidebar.focus_filter();
             }
             RepoCommand::ToggleSidebar => view.sidebar.open = !view.sidebar.open,
+            RepoCommand::ToggleOutput => {
+                pane.actions
+                    .push(Action::Output(shared.id, OutputAsk::Toggle));
+            }
             RepoCommand::Reflog => view.show_reflog("HEAD".into()),
             RepoCommand::WorkTree => view.select_work(),
             RepoCommand::PullRequests => view.show_pull_request(None),
@@ -1152,11 +1141,19 @@ fn dialogs(
 }
 
 /// What the working tree's details need besides: staging, and committing.
-struct WorkSide<'a> {
-    staging: &'a mut Bind<(), Problem>,
-    committing: &'a mut Bind<Committed, Problem>,
-    commits_made: u64,
-    sign_by_default: bool,
+pub(crate) struct WorkSide<'a> {
+    /// The last staging, while it runs and after.
+    pub(crate) staging: &'a mut Bind<(), Problem>,
+    /// The last commit made, or being made.
+    pub(crate) committing: &'a mut Bind<Committed, Problem>,
+    /// How many commits egit has made here.
+    pub(crate) commits_made: u64,
+    /// Whether commits are signed unless asked otherwise (`commit.gpgSign`).
+    pub(crate) sign_by_default: bool,
+    /// The commit under way's run (its hooks, their output), while it runs.
+    pub(crate) commit_run: Option<&'a crate::output::Run>,
+    /// The hooks the repository has.
+    pub(crate) hooks: Option<&'a egit_git::Hooks>,
 }
 
 /// The details beside the history (a commit's, or the working tree's), and the commit table
@@ -1176,6 +1173,8 @@ fn panels(
         committing,
         commits_made,
         sign_by_default,
+        commit_run,
+        hooks,
     } = work;
     side_panel(ui, shared, history, view, lists, actions);
     egui::Panel::right(Id::new(("history-details", shared.id)))
@@ -1195,6 +1194,8 @@ fn panels(
                     committing,
                     commits_made,
                     sign_by_default,
+                    run: commit_run,
+                    hooks,
                     head: shared.head.commit,
                     git: shared.git,
                     repository: shared.repository,
@@ -3401,6 +3402,10 @@ fn work_details(
         Some(WorkEvent::Open(work)) => view.open_work(shared, work),
         Some(WorkEvent::Stage(request)) => actions.push(Action::Stage(shared.id, request)),
         Some(WorkEvent::Commit(made)) => actions.push(Action::Commit(shared.id, made)),
+        Some(WorkEvent::CancelCommit) => {
+            actions.push(Action::Output(shared.id, OutputAsk::CancelCommit));
+        }
+        Some(WorkEvent::ShowOutput) => actions.push(Action::Output(shared.id, OutputAsk::Show)),
         Some(WorkEvent::Preferences(preferences)) => {
             actions.push(Action::SetPreferences(preferences));
         }

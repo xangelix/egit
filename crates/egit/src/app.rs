@@ -100,6 +100,17 @@ pub(crate) enum ConfigChange {
     Remove { key: &'static str, value: String },
 }
 
+/// What is asked of a repository's output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputAsk {
+    /// Stop the commit under way (its hooks with it).
+    CancelCommit,
+    /// Open the panel, on the latest run.
+    Show,
+    /// Open or close the panel.
+    Toggle,
+}
+
 /// What the views (and finished jobs) ask the application to do.
 #[derive(Debug)]
 pub(crate) enum Action {
@@ -135,6 +146,8 @@ pub(crate) enum Action {
     Stage(RepoId, StageRequest),
     /// Commit what a repository's index holds.
     Commit(RepoId, NewCommit),
+    /// Something of a repository's output: its commit stopped, its panel opened or toggled.
+    Output(RepoId, OutputAsk),
     /// Fetch, pull, push, or give up or carry on an operation, in a repository.
     Task(RepoId, Task),
     /// Stop a repository's running task.
@@ -356,50 +369,21 @@ impl EgitApp {
             Action::ShowProfile => tabs::show(&mut self.tabs, Pane::Profile),
             Action::SaveProfile(changes) => state.save_profile(changes),
             Action::ShowPanel(id, panel) => state.show_panel(id, panel),
-            Action::Refresh(id) => {
-                if let Some(git) = state.git()
-                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
-                {
-                    repo.refresh(&git);
-                }
-            }
+            Action::Refresh(id) => state.with_repo(id, |git, repo| repo.refresh(git)),
             Action::WriteCommitGraph(id) => {
-                if let Some(git) = state.git()
-                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
-                {
-                    repo.write_commit_graph(&git);
+                state.with_repo(id, |git, repo| repo.write_commit_graph(git));
+            }
+            Action::Stage(id, request) => state.with_repo(id, |git, repo| repo.stage(git, request)),
+            Action::Output(id, asked) => {
+                if let Some(repo) = state.repo_mut(id) {
+                    repo.output_asked(asked);
                 }
             }
-            Action::Stage(id, request) => {
-                if let Some(git) = state.git()
-                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
-                {
-                    repo.stage(&git, request);
-                }
-            }
-            Action::Commit(id, commit) => {
-                if let Some(git) = state.git()
-                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
-                {
-                    repo.commit(&git, commit);
-                }
-            }
-            Action::Task(id, task) => {
-                if let Some(git) = state.git()
-                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
-                {
-                    repo.run_task(&git, task);
-                }
-            }
-            Action::Undo(id, redo) => {
-                if let Some(git) = state.git()
-                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
-                {
-                    repo.undo(&git, redo);
-                }
-            }
+            Action::Commit(id, commit) => state.with_repo(id, |git, repo| repo.commit(git, commit)),
+            Action::Task(id, task) => state.with_repo(id, |git, repo| repo.run_task(git, task)),
+            Action::Undo(id, redo) => state.with_repo(id, |git, repo| repo.undo(git, redo)),
             Action::CancelTask(id) => {
-                if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
+                if let Some(repo) = state.repo_mut(id) {
                     repo.tasks.cancel();
                 }
             }
@@ -413,30 +397,24 @@ impl EgitApp {
             Action::ShowPalette => self.run(Command::Palette),
             Action::ShowHelp => self.run(Command::Help),
             Action::SignIn(id, host) => {
-                if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
+                if let Some(repo) = state.repo_mut(id) {
                     repo.forge.sign_in(&host);
                 }
             }
             Action::RefreshPullRequests(id) => {
-                if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
+                if let Some(repo) = state.repo_mut(id) {
                     repo.forge.refresh();
                 }
             }
             Action::OpenUrl(url) => state.opener.open(url),
-            Action::Scope(id, scope) => {
-                if let Some(git) = state.git()
-                    && let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id)
-                {
-                    repo.set_scope(&git, scope);
-                }
-            }
+            Action::Scope(id, scope) => state.with_repo(id, |git, repo| repo.set_scope(git, scope)),
             Action::AskFiles {
                 question,
                 title,
                 name,
             } => state.files.ask(question, title, name),
             Action::OpenPatches(id, files) => {
-                if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
+                if let Some(repo) = state.repo_mut(id) {
                     repo.history_view.show_patches(files);
                 }
             }
@@ -469,6 +447,20 @@ impl EgitApp {
 }
 
 impl AppState {
+    /// The repository tab `id`, if open.
+    pub(crate) fn repo_mut(&mut self, id: RepoId) -> Option<&mut RepoTab> {
+        self.repos.iter_mut().find(|repo| repo.id == id)
+    }
+
+    /// Does `act` with git and the repository tab `id`, when both are there.
+    fn with_repo(&mut self, id: RepoId, act: impl FnOnce(&Git, &mut RepoTab)) {
+        if let Some(git) = self.git()
+            && let Some(repo) = self.repo_mut(id)
+        {
+            act(&git, repo);
+        }
+    }
+
     /// Shows repository `id`'s `panel` (its history, or a page about it).
     fn show_panel(&mut self, id: RepoId, panel: RepoPanel) {
         if let Some(repo) = self.repos.iter_mut().find(|repo| repo.id == id) {
@@ -520,6 +512,12 @@ impl AppState {
             }
         }
         if let Some(git) = self.git() {
+            // Back from a terminal, a hook may have been added.
+            if regained {
+                for repo in &mut self.repos {
+                    repo.refresh_hooks(&git);
+                }
+            }
             if self.user_config.is_idle() {
                 self.refresh_user_config(&git);
             }

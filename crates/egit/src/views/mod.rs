@@ -10,6 +10,7 @@ pub(crate) mod history;
 pub(crate) mod home;
 mod lfs;
 mod merge;
+mod output;
 pub(crate) mod palette;
 mod patch;
 mod picked;

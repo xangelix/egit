@@ -11,6 +11,7 @@ mod lfs;
 mod long_text;
 mod menus;
 mod notices;
+mod output;
 mod patches;
 mod people;
 mod picked;

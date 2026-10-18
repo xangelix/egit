@@ -43,6 +43,10 @@ pub(super) enum WorkEvent {
     Stage(StageRequest),
     /// Commit what is staged.
     Commit(NewCommit),
+    /// Stop the commit under way (its hooks with it).
+    CancelCommit,
+    /// Show the output panel (what the hooks printed).
+    ShowOutput,
     /// Show lists of files so (a list, or a tree).
     Preferences(Preferences),
 }
@@ -62,6 +66,10 @@ pub(super) struct CommitSide<'a> {
     pub(super) objects: &'a Objects,
     /// The user's email here (`user.email`), not offered as their own co-author.
     pub(super) me: Option<&'a BStr>,
+    /// The commit under way's run, while it runs.
+    pub(super) run: Option<&'a crate::output::Run>,
+    /// The hooks the repository has.
+    pub(super) hooks: Option<&'a egit_git::Hooks>,
 }
 
 /// Up to this many recent commits' authors are offered as co-authors.
@@ -89,6 +97,8 @@ struct CommitForm {
     query: String,
     /// Who wrote the recent commits, offered there (read when it first opens).
     authors: Bind<Vec<Author>, Problem>,
+    /// Skip the `pre-commit` and `commit-msg` hooks (`--no-verify`), this commit only.
+    skip_hooks: bool,
 }
 
 impl CommitForm {
@@ -104,6 +114,7 @@ impl CommitForm {
             co_authors: Vec::new(),
             query: String::new(),
             authors: Bind::new(true),
+            skip_hooks: false,
         }
     }
 
@@ -286,8 +297,8 @@ impl WorkPanel {
         }
         let staged = self.staged.files.entries.len();
         let mut commit = commit;
-        if let Some(made) = commit_form(ui, &mut self.form, &mut commit, staged, busy) {
-            event = Some(WorkEvent::Commit(made));
+        if let Some(asked) = commit_form(ui, &mut self.form, &mut commit, staged, busy) {
+            event = Some(asked);
         }
         event
     }
@@ -301,7 +312,7 @@ fn commit_form(
     side: &mut CommitSide<'_>,
     staged: usize,
     busy: bool,
-) -> Option<NewCommit> {
+) -> Option<WorkEvent> {
     if side.commits_made != form.made_seen {
         *form = CommitForm {
             made_seen: side.commits_made,
@@ -322,6 +333,7 @@ fn commit_form(
     let description = message_fields(ui, form);
     co_authors_row(ui, form, side);
     options(ui, form, side);
+    hooks_row(ui, form, side);
     let ready = !busy && !form.summary.trim().is_empty() && (staged > 0 || form.amend);
     let label = if form.amend {
         "Amend the last commit".to_owned()
@@ -335,25 +347,79 @@ fn commit_form(
     };
     let shortcut = description.has_focus()
         && ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Enter));
-    let mut made = None;
+    let mut asked = None;
     ui.horizontal(|ui| {
         if widgets::primary(ui, ready, &label).clicked() || (shortcut && ready) {
-            made = Some(NewCommit {
+            asked = Some(WorkEvent::Commit(NewCommit {
                 message: form.message(),
                 amend: form.amend,
                 sign_off: form.sign_off,
                 sign: Some(form.sign.unwrap_or(side.sign_by_default)),
                 trailers: form.trailers(),
-                no_verify: false,
-            });
-        }
-        if side.committing.is_pending() {
-            ui.spinner();
-            ui.label(muted(ui, "Committing…"));
+                no_verify: form.skip_hooks,
+            }));
         }
     });
-    outcome(ui, side.committing);
-    made
+    if side.committing.is_pending()
+        && let Some(running) = committing(ui, side)
+    {
+        asked = Some(running);
+    }
+    if let Some(outcome) = outcome(ui, side.committing) {
+        asked = Some(outcome);
+    }
+    asked
+}
+
+/// The hooks a commit runs, when the repository has `pre-commit` or `commit-msg`: which, and
+/// skipping them (`--no-verify`) for this commit.
+fn hooks_row(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
+    let Some(hooks) = side.hooks else {
+        return;
+    };
+    let checks = hooks.of(&["pre-commit", "commit-msg"]);
+    if checks.is_empty() {
+        return;
+    }
+    ui.horizontal_wrapped(|ui| {
+        widgets::checkbox(ui, &mut form.skip_hooks, "Skip hooks")
+            .on_hover_text("git commit --no-verify: this commit only");
+        let runs = if form.skip_hooks {
+            "they won't run".to_owned()
+        } else {
+            format!("{} run first", checks.join(" and "))
+        };
+        ui.label(muted(ui, runs));
+    });
+}
+
+/// The commit under way: the hooks running and for how long, the output, and Cancel.
+fn committing(ui: &mut Ui, side: &CommitSide<'_>) -> Option<WorkEvent> {
+    let mut asked = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spinner();
+        let doing = match side.run {
+            Some(run) if !run.hooks.is_empty() => {
+                format!("Committing: running {}", run.hooks.join(", "))
+            }
+            _ => "Committing…".to_owned(),
+        };
+        ui.label(muted(ui, doing));
+        if let Some(run) = side.run {
+            // The seconds count on their own, in a place of their own width.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(500));
+            let palette = Palette::of(ui.ctx());
+            widgets::seconds(ui, run.elapsed(std::time::Instant::now()), palette.muted);
+        }
+        if widgets::link(ui, "Show the output").clicked() {
+            asked = Some(WorkEvent::ShowOutput);
+        }
+        if widgets::secondary(ui, true, "Cancel").clicked() {
+            asked = Some(WorkEvent::CancelCommit);
+        }
+    });
+    asked
 }
 
 /// The summary and the description; returns the description's field (⌘Enter there commits).
@@ -631,8 +697,10 @@ fn options(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
     });
 }
 
-/// What the last commit printed (its hooks' output), or why it wasn't made.
-fn outcome(ui: &mut Ui, committing: &mut Bind<Committed, Problem>) {
+/// What the last commit printed (its hooks' output), or why it wasn't made (and the way to
+/// what its hooks printed).
+fn outcome(ui: &mut Ui, committing: &mut Bind<Committed, Problem>) -> Option<WorkEvent> {
+    let mut asked = None;
     let pending = committing.is_pending();
     match committing.read_as_ref() {
         Some(Ok(committed)) if !committed.output.is_empty() && !pending => {
@@ -640,12 +708,17 @@ fn outcome(ui: &mut Ui, committing: &mut Bind<Committed, Problem>) {
             let said = ui.add(Label::new(muted(ui, output).small()).wrap());
             crate::help::note_topic(ui, said.rect, "commit-hooks");
         }
-        Some(Err(problem)) => {
+        Some(Err(problem)) if !pending => {
             let problem = problem.clone();
-            widgets::problem_box(ui, &problem, |_| {});
+            widgets::problem_box(ui, &problem, |ui| {
+                if widgets::secondary(ui, true, "Show the output").clicked() {
+                    asked = Some(WorkEvent::ShowOutput);
+                }
+            });
         }
         _ => {}
     }
+    asked
 }
 
 /// Which list.

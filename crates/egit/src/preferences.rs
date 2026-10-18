@@ -140,6 +140,9 @@ pub(crate) struct Preferences {
     /// Whether people's pictures are fetched (from GitHub and Gravatar) and drawn in place of
     /// their initials.
     pub(crate) pictures: bool,
+    /// Whether the output panel opens by itself while hooks run, and when a task fails saying
+    /// something.
+    pub(crate) output: bool,
 }
 
 impl Default for Preferences {
@@ -151,6 +154,7 @@ impl Default for Preferences {
             files: FilePreferences::default(),
             dates: Dates::default(),
             pictures: true,
+            output: true,
         }
     }
 }

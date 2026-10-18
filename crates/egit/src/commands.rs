@@ -24,6 +24,8 @@ pub(crate) enum RepoCommand {
     Search,
     FilterSidebar,
     ToggleSidebar,
+    /// Show or hide the output panel (what tasks and hooks printed).
+    ToggleOutput,
     Reflog,
     WorkTree,
     PullRequests,
@@ -77,6 +79,7 @@ impl Command {
             RepoCommand::CreateBranch,
             RepoCommand::ToggleSidebar,
             RepoCommand::FilterSidebar,
+            RepoCommand::ToggleOutput,
             RepoCommand::Refresh,
         ];
         repo.into_iter()
@@ -122,6 +125,7 @@ impl Command {
                 RepoCommand::Search => "Search the history".to_owned(),
                 RepoCommand::FilterSidebar => "Filter the sidebar".to_owned(),
                 RepoCommand::ToggleSidebar => "Show or hide the sidebar".to_owned(),
+                RepoCommand::ToggleOutput => "Show or hide the output".to_owned(),
                 RepoCommand::Reflog => "Show the reflog".to_owned(),
                 RepoCommand::WorkTree => "Show the uncommitted changes".to_owned(),
                 RepoCommand::PullRequests => format!("Show the {nouns}"),
@@ -148,6 +152,7 @@ impl Command {
             Self::Repo(RepoCommand::Redo) => "⇧⌘Z",
             Self::Repo(RepoCommand::FilterSidebar) => "⌥⌘F",
             Self::Repo(RepoCommand::ToggleSidebar) => "⌘B",
+            Self::Repo(RepoCommand::ToggleOutput) => "⌘J",
             Self::Repo(RepoCommand::Refresh) => "⌘R",
             _ => return None,
         })
@@ -161,7 +166,7 @@ impl Command {
 
 /// The shortcuts the application itself takes (the views take theirs: ⌘F, ⌘Z, …), the more
 /// specific first (⌘K alone would match ⇧⌘K too).
-fn global() -> [(Modifiers, Key, Command); 8] {
+fn global() -> [(Modifiers, Key, Command); 9] {
     [
         (Modifiers::NONE, Key::F1, Command::Help),
         // ⇧⌘P, as other editors have it.
@@ -183,6 +188,11 @@ fn global() -> [(Modifiers, Key, Command); 8] {
             Modifiers::COMMAND,
             Key::R,
             Command::Repo(RepoCommand::Refresh),
+        ),
+        (
+            Modifiers::COMMAND,
+            Key::J,
+            Command::Repo(RepoCommand::ToggleOutput),
         ),
     ]
 }

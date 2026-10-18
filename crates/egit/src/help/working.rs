@@ -1073,4 +1073,135 @@ pub(super) const TOPICS: &[Topic] = &[
             "egit keeps the missing ending as it was unless lines picked after it need one.",
         )],
     },
+    Topic {
+        id: "hooks",
+        group: Group::Everyday,
+        title: "Git's hooks",
+        on: &["Hooks", "Installed"],
+        what: "Hooks are programs git runs around what it does: pre-commit and commit-msg before a \
+               commit is made (linters, formatters, tests: a failure stops the commit), \
+               post-checkout after a switch, pre-push before a push, and more. They live in the \
+               repository's hooks folder (.git/hooks, or the one core.hooksPath names, as husky \
+               sets). egit runs git, so they run as they would in a terminal; what they print \
+               shows in the output at the tab's bottom as it comes.",
+        git: "git rev-parse --git-path hooks (where git looks); the hooks themselves, run by git",
+        cases: &[
+            (
+                "The commit seems stuck?",
+                "A hook is running (tests take a while): the output shows what it prints, and Cancel stops it, no commit made.",
+            ),
+            (
+                "A hook refused the commit?",
+                "Nothing was committed and nothing is lost: what it printed says why. Fix it, or skip the hooks for this commit.",
+            ),
+            (
+                "A hook isn't running?",
+                "On Linux and macOS it must be executable (chmod +x); a .sample file never runs. A hooks folder of the team's needs core.hooksPath set (husky does it on install).",
+            ),
+            (
+                "It works in a terminal, not here?",
+                "Hooks see egit's environment, not your shell's: a tool your shell's profile adds to PATH (nvm, pyenv) may be missing. Start egit from that shell, or give the hook the full path.",
+            ),
+            (
+                "pre-commit (the framework) wants to install environments?",
+                "The first run downloads them and takes a while; its progress shows in the output.",
+            ),
+        ],
+    },
+    Topic {
+        id: "skip-hooks",
+        group: Group::Everyday,
+        title: "Skipping hooks",
+        on: &["Skip hooks"],
+        what: "Commits without running the pre-commit and commit-msg hooks, this commit only \
+               (git commit --no-verify). prepare-commit-msg and post-commit run anyway, as git \
+               runs them. It is for a commit the hooks can't judge (work in progress, a hook \
+               that is broken), not a way around checks a team relies on: the server or CI may \
+               still check the same things.",
+        git: "git commit --no-verify",
+        cases: &[
+            (
+                "Skipped by mistake?",
+                "Amend the commit with the box unticked: the hooks run then.",
+            ),
+            (
+                "Push hooks too?",
+                "This box skips only the commit's; a pre-push hook still runs when you push.",
+            ),
+        ],
+    },
+    Topic {
+        id: "output-panel",
+        group: Group::Egit,
+        title: "The output",
+        on: &[
+            "Show the output",
+            "Hide the output",
+            "Copy the output",
+            "Clear the output",
+            "Output",
+        ],
+        what: "What the commands egit ran printed, as a terminal would show it: each command \
+               ($ git commit --file=-), then what git and its hooks printed as it came, in the \
+               colours they used, then how it ended. One run per task or commit; the bar at the \
+               tab's bottom says what ran or runs (its hooks, for how long), and opens into the \
+               lines (⌘J). It opens by itself while hooks run past a moment, and when a task fails \
+               saying something; it closes again after a run it opened for went well.",
+        git: "",
+        cases: &[
+            (
+                "Only the last run?",
+                "The list at the bar's right holds the last sixteen; Clear forgets those that ended.",
+            ),
+            (
+                "Doesn't open by itself?",
+                "Preferences, Repositories, Output: it can wait for you (⌘J).",
+            ),
+            (
+                "Reads show nothing?",
+                "Only commands that change the repository print here: reading it (the history, the status) would drown what matters.",
+            ),
+            (
+                "Copy?",
+                "Copies every line of the run shown, to paste into an issue or a chat.",
+            ),
+        ],
+    },
+    Topic {
+        id: "output-cancel",
+        group: Group::Egit,
+        title: "Cancelling what runs",
+        on: &[],
+        what: "Stops the task or commit under way: git and every program it started (its hooks \
+               among them) are asked to stop (SIGTERM to the whole group; on Windows, as Git for \
+               Windows stops a process), so they remove their lock files. A commit stopped in \
+               its pre-commit hook isn't made; a push stopped in its pre-push hook sends \
+               nothing.",
+        git: "SIGTERM to git's process group",
+        cases: &[
+            (
+                "A hook left something half done?",
+                "A hook stopped part-way may leave what it changed (files it formatted, say): look at the work tree before trying again.",
+            ),
+            (
+                "Didn't stop at once?",
+                "A program that ignores the signal goes on until it ends; egit waits for it rather than leave it running unseen.",
+            ),
+        ],
+    },
+    Topic {
+        id: "hooks-folder",
+        group: Group::Everyday,
+        title: "Where hooks live",
+        on: &["Folder"],
+        what: "The folder git looks in for hooks: the repository's .git/hooks, unless \
+               core.hooksPath names another (a team's shared folder in the repository, such as \
+               husky's .husky, set by its install script). Hooks in .git/hooks are yours alone: \
+               a clone never brings them.",
+        git: "git rev-parse --git-path hooks; git config core.hooksPath",
+        cases: &[(
+            "A teammate's hooks don't run for me?",
+            "Hooks don't travel with a clone: the project's setup (npm install for husky, pre-commit install) puts them in place.",
+        )],
+    },
 ];

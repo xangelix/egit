@@ -42,6 +42,8 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         ui.label(muted(ui, "This repository was closed."));
         return;
     };
+    // What its tasks and commits printed, at the bottom, under whatever it shows.
+    super::output::show(ui, &mut repo.output, id);
     let mut behavior = Panels {
         id,
         git,
@@ -56,6 +58,8 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         staging: &mut repo.staging,
         committing: &mut repo.committing,
         commits_made: repo.commits_made,
+        commit_run: repo.commit_run.and_then(|run| repo.output.run(run)),
+        hooks: repo.hooks.ok_ref(),
         tasks: &mut repo.tasks,
         stashes: &mut repo.stashes,
         worktrees: &mut repo.worktrees,
@@ -132,6 +136,8 @@ struct Panels<'a> {
     staging: &'a mut Bind<(), Problem>,
     committing: &'a mut Bind<Committed, Problem>,
     commits_made: u64,
+    commit_run: Option<&'a crate::output::Run>,
+    hooks: Option<&'a egit_git::Hooks>,
     tasks: &'a mut Tasks,
     stashes: &'a mut Bind<Arc<[Stash]>, Problem>,
     worktrees: &'a mut Bind<Arc<[Worktree]>, Problem>,
@@ -163,13 +169,17 @@ fn history(ui: &mut Ui, panels: &mut Panels<'_>) {
             writing_commit_graph: panels.writing_commit_graph,
             partial_clone: config.map(ConfigSnapshot::is_partial_clone),
             work_tree: panels.work_tree,
-            staging: panels.staging,
-            committing: panels.committing,
-            commits_made: panels.commits_made,
-            sign_by_default: config
-                .and_then(|config| config.get("commit.gpgSign"))
-                .and_then(egit_git::ConfigEntry::bool)
-                .unwrap_or(false),
+            work: super::history::WorkSide {
+                staging: panels.staging,
+                committing: panels.committing,
+                commits_made: panels.commits_made,
+                commit_run: panels.commit_run,
+                hooks: panels.hooks,
+                sign_by_default: config
+                    .and_then(|config| config.get("commit.gpgSign"))
+                    .and_then(egit_git::ConfigEntry::bool)
+                    .unwrap_or(false),
+            },
             operations: status.map_or(&[], |status| status.operations.as_slice()),
             applying: status.and_then(|status| status.applying.as_ref()),
             bisect: status.and_then(|status| status.bisect.as_ref()),
@@ -232,6 +242,47 @@ fn overview(ui: &mut Ui, panels: &mut Panels<'_>) {
         identity_card(ui, panels);
         ui.add_space(12.0);
         location_card(ui, panels.repository, panels.home);
+        ui.add_space(12.0);
+        hooks_card(ui, panels.hooks, panels.home);
+    });
+}
+
+/// The hooks git runs here: where it looks for them, which are there, and where their output
+/// shows.
+fn hooks_card(ui: &mut Ui, hooks: Option<&egit_git::Hooks>, home: Option<&Path>) {
+    widgets::card(ui, |ui| {
+        widgets::heading(ui, "Hooks");
+        ui.add_space(4.0);
+        let Some(hooks) = hooks else {
+            widgets::working(ui, "Reading the hooks…");
+            return;
+        };
+        widgets::fact(ui, widgets::FACT_LABEL, "Folder", |ui| {
+            let mut folder = display_path(&hooks.folder, home);
+            if hooks.configured {
+                folder.push_str(" (core.hooksPath)");
+            }
+            ui.add(egui::Label::new(folder).truncate());
+        });
+        widgets::fact(ui, widgets::FACT_LABEL, "Installed", |ui| {
+            let installed = if hooks.names.is_empty() {
+                "None".to_owned()
+            } else {
+                hooks.names.join(", ")
+            };
+            ui.add(egui::Label::new(installed).wrap());
+        });
+        ui.add(
+            egui::Label::new(muted(
+                ui,
+                format!(
+                    "git runs them as it commits, checks out, merges, rebases, and pushes; what \
+                     they print shows in the output at the tab's bottom ({}).",
+                    crate::commands::keys_text("⌘J")
+                ),
+            ))
+            .wrap(),
+        );
     });
 }
 

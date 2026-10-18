@@ -313,6 +313,65 @@ pub(crate) struct PullRequestToOpen {
 }
 
 impl Task {
+    /// The hooks git may run for it (the repository's own among them run: see `output`).
+    pub(crate) const fn hooks(&self) -> &'static [&'static str] {
+        match self {
+            Self::Push(_)
+            | Self::PushTag { .. }
+            | Self::DeleteRemoteBranch { .. }
+            | Self::DeleteBranchEverywhere { .. } => &["pre-push", "reference-transaction"],
+            Self::Pull(_) | Self::PullAndRemember { .. } | Self::Continue(_) => &[
+                "pre-merge-commit",
+                "prepare-commit-msg",
+                "commit-msg",
+                "post-merge",
+                "pre-rebase",
+                "post-checkout",
+                "post-rewrite",
+                "reference-transaction",
+            ],
+            Self::Merge { .. } => &[
+                "pre-merge-commit",
+                "prepare-commit-msg",
+                "commit-msg",
+                "post-merge",
+                "reference-transaction",
+            ],
+            Self::FastForward { .. } => &["post-merge", "reference-transaction"],
+            Self::Rebase { .. }
+            | Self::InteractiveRebase { .. }
+            | Self::DropCommit(_)
+            | Self::SquashIntoParent(_)
+            | Self::Reword { .. } => &[
+                "pre-rebase",
+                "pre-commit",
+                "prepare-commit-msg",
+                "commit-msg",
+                "post-commit",
+                "post-checkout",
+                "post-rewrite",
+                "reference-transaction",
+            ],
+            Self::CherryPick(_) | Self::Revert(_) => &[
+                "prepare-commit-msg",
+                "commit-msg",
+                "post-commit",
+                "reference-transaction",
+            ],
+            Self::Switch(_)
+            | Self::StashAndSwitch(_)
+            | Self::CheckOutPullRequest { .. }
+            | Self::AddWorktree { .. } => &["post-checkout", "reference-transaction"],
+            Self::ApplyPatch { .. } | Self::Skip(_) => &[
+                "applypatch-msg",
+                "pre-applypatch",
+                "post-applypatch",
+                "reference-transaction",
+            ],
+            _ => &["reference-transaction"],
+        }
+    }
+
     /// What it is doing, for people ("Pulling…").
     pub(crate) fn doing(&self) -> &'static str {
         match self {
@@ -552,7 +611,7 @@ impl Tasks {
     }
 
     /// Starts `task` (stopping the background fetch first); a forge's task signs in with
-    /// `accounts`; how to take it back goes to `journal`.
+    /// `accounts`; how to take it back goes to `journal`. Returns what stops it.
     pub(crate) fn start(
         &mut self,
         git: &Git,
@@ -561,7 +620,7 @@ impl Tasks {
         accounts: &[Arc<Account>],
         journal: Arc<Mutex<Vec<Landed>>>,
         task: Task,
-    ) {
+    ) -> CancelToken {
         self.background_cancel.cancel();
         // Whatever the user does next, they have seen what the fetches brought.
         self.brought = None;
@@ -612,6 +671,7 @@ impl Tasks {
         self.task = Some(task);
         self.started = self.started.wrapping_add(1);
         self.open = true;
+        self.cancel.clone()
     }
 
     /// Stops the running task (git removes what it was doing, as on the command line).

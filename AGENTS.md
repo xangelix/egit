@@ -663,7 +663,7 @@ writes paths), never `OsStrExt`.
     settings read): the text's size (70–200%, egui's zoom, which ⌘+ ⌘− ⌘0 change too: followed
     back), the background fetch (`FetchEvery`: never, every minute, 5 (the default), 15, or 30
     minutes), the sidebar shown when a repository opens, people's pictures or their initials
-    (`pictures`), a file's first look (`FilePreferences`:
+    (`pictures`), whether the output opens by itself (`output`), a file's first look (`FilePreferences`:
     diffs side by side, lines wrapped, a tab's width of 2, 4, or 8 cells, lists of changed
     files as a list or a tree of their folders (`FileLists`, chosen too by each list's header),
     and the merge editor's sides above its merged file: `merge_panes`), and commit dates
@@ -693,6 +693,7 @@ writes paths), never `OsStrExt`.
   - `commands.rs` — what the keyboard can ask: `Command` (the palette, help (F1), preferences, open,
     clone, home, profile, close the tab, a tab by number, a theme, a recent repository) and
     `RepoCommand` (fetch, pull, push, undo, redo, search, the sidebar shown or filtered, the
+    output shown or hidden (⌘J), the
     reflog, the work tree, the requests, stash, patches, a branch made or switched to, read
     again), each's words and shortcut; `pressed` takes the application's own shortcuts at a
     frame's start (⌘K and ⇧⌘P, ⌘,, ⌘O, ⌘W, ⌘B, ⌘R, ⌘1 … ⌘9; the views take theirs), the more
@@ -910,6 +911,14 @@ writes paths), never `OsStrExt`.
     `SignCommits` signs commits picked together (`plan_signing`, then `sign_commits`, how many
     made in the `Progress`; `Outcome::Signed`: made, asked for, whether any was pushed),
     undone as any task moving `HEAD` is.
+  - `output.rs` — a tab's output: `Run`s (a task or commit each: its title, `Transcript`, the
+    hooks it was expected to run (`Task::hooks`, `commit_hooks`, among those installed), its
+    start and end (`Ended`: done, failed, cancelled), its `CancelToken` while it runs), the last
+    16 kept. `RepoTab::run_task` and `commit` begin one and give git its transcript;
+    `follow` (each frame) opens the panel while the latest's hooks have run 0.4 s, or when it
+    failed saying something (once a run: closed, it stays so), and closes it 1.5 s after a run
+    it opened for went well (`Preferences::output`; the user's own opening never closes).
+    `RepoTab::hooks`, read with the configuration and when the window comes back.
   - `undo.rs` — taking back what egit did. An `Undo`: what it was in words ("the merge of
     topic", "the commit “Fix it”") and its `Change`s in order: `HEAD` moved (from, to, and
     the `ResetMode` that moves it back and forth: soft for a commit, a soft or mixed reset's
@@ -1102,7 +1111,10 @@ writes paths), never `OsStrExt`.
     at most, and whoever `Name <email>` typed names; each a `Co-authored-by` trailer), amend
     (a blank form takes the last commit's message, `read_message`, its co-author lines moved
     into the chips: git adds them back), sign off, sign (`commit.gpgSign` by default),
-    and the last commit's output (its hooks') or problem (git's whole complaint). It clears
+    and the last commit's output (its hooks') or problem (git's whole complaint, and "Show the
+    output"); where the repository has `pre-commit` or `commit-msg`, which run first and "Skip
+    hooks" (`--no-verify`, this commit only); while a commit runs, the hooks running and for how
+    long, "Show the output", and Cancel (its token: SIGTERM to git's group, its hooks with it). It clears
     once the tab's `commits_made` grows. A history of 10,000+ commits
     without a commit-graph is offered one (`Action::WriteCommitGraph`).
     `views/tasks.rs` — the task bar at the top bar's right: Push, Pull, Fetch, and the branch
@@ -1184,6 +1196,13 @@ writes paths), never `OsStrExt`.
     Sign these commits…, Copy their names, Clear the selection, the first 200 listed), and a
     right click on one opens their menu ("These 3 commits": the same). Signing asks first
     (`Dialog::SignCommits`: what is made again, what a push takes, what stays).
+    `views/output.rs` — the output panel at a repository tab's bottom (once anything ran): a
+    bar (show or hide it, ⌘J; the run shown and how it stands: its hooks running and for how
+    long, done, failed, cancelled; the runs kept; Cancel while one runs; Copy; Clear) over the
+    lines (`show_collapsible`, dragged shut it closes), only those in view laid out, following
+    new ones while at the bottom: a command after `$ `, the end in its verdict's colour, the
+    rest in the colours its tools printed (the sixteen as the theme draws them, the 256's cube
+    and exact colours as they are).
     `views/rebase.rs` — `RebaseView`, the interactive rebase editor in the commit table's
     place (Escape or "History" goes back): the range read in a job, the plan's rows newest
     first (each a commit's place in the range, a `Kind`, and a reworded message once there is
@@ -1340,7 +1359,8 @@ writes paths), never `OsStrExt`.
     cloning), `profile` (identity and signing editable;
     credentials, the GitHub Enterprise and self-managed GitLab hosts (added and removed as
     `egit.githubHost` and `egit.gitlabHost`), pull and push, and every setting, each with its
-    origin), `repo` (the history, or a page: the overview or the settings table, under a bar
+    origin), `repo` (the history, or a page: the overview (with a Hooks card: where git looks for them
+    (`core.hooksPath` said), those installed, where their output shows) or the settings table, under a bar
     going back to the history (or Escape) and switching between the two), `status_bar` (git's
     version and path, the
     theme, Commands and Preferences, a warning when
@@ -1510,6 +1530,10 @@ writes paths), never `OsStrExt`.
     their signatures good in `git log`), and undoes it. `src/tests/avatars.rs` serves pictures from a stand-in for Gravatar on the
     loopback address: one drawn, one without (404) kept to initials, both kept on disk and a
     window opened after asking nothing; and keeps to initials when the preferences say so.
+    `src/tests/output.rs` commits through a pre-commit hook: the form says it runs first; its
+    lines show as they come, the output closing after it went well; refused (the output kept
+    open with its words); skipped; cancelled part-way from the output's bar (no commit); and
+    the Overview's Hooks card lists it.
     `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
     current one onto another (rebased), between the sidebar and the graph either way.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the

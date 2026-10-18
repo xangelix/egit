@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    Bisection, CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, MailboxProgress,
-    NewCommit, ObjectId, Operation, Repository, Stash, Submodule, Worktree, bisection,
-    create_commit, stashes, submodules, worktrees, write_commit_graph,
+    Bisection, CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, Hooks,
+    MailboxProgress, NewCommit, ObjectId, Operation, Repository, Stash, Submodule, Worktree,
+    bisection, create_commit, installed_hooks, stashes, submodules, worktrees, write_commit_graph,
 };
 use egui_async::Bind;
 
@@ -14,11 +14,12 @@ use crate::commands::RepoCommand;
 use crate::forge::RepoForge;
 use crate::history::{HistoryState, Scope};
 use crate::jobs::{self, WriteLock};
+use crate::output::{Ended, Output, commit_hooks};
 use crate::preferences::Preferences;
 use crate::problem::Problem;
 use crate::staging::{self, StageRequest};
 use crate::tables::SnapshotTable;
-use crate::tasks::{Task, Tasks, has_remotes};
+use crate::tasks::{Outcome, Task, Tasks, has_remotes};
 use crate::undo::{self, Journal, Landed, Place};
 use crate::views::history::HistoryView;
 use crate::watch::{Changes, Taken, Watcher, Watching};
@@ -88,6 +89,17 @@ pub(crate) struct RepoTab {
     pub(crate) commits_made: u64,
     /// What the user asked of it: fetching, pulling, pushing, ….
     pub(crate) tasks: Tasks,
+    /// What its tasks and commits printed (hooks' output among it), and the panel showing it.
+    pub(crate) output: Output,
+    /// Whether the output panel opens by itself while hooks run (the preferences').
+    output_automatic: bool,
+    /// The runs of the task and the commit under way.
+    task_run: Option<u64>,
+    pub(crate) commit_run: Option<u64>,
+    /// What stops the commit under way.
+    commit_cancel: CancelToken,
+    /// The hooks it has, read with its configuration and when the window comes back.
+    pub(crate) hooks: Bind<Hooks, Problem>,
     /// What egit did here, to take back (and what it took back, to do again).
     pub(crate) journal: Journal,
     /// Its remotes on GitHub and GitLab, and their requests.
@@ -139,6 +151,12 @@ impl RepoTab {
             committing_open: false,
             commits_made: 0,
             tasks: Tasks::new(Instant::now()),
+            output: Output::default(),
+            output_automatic: true,
+            task_run: None,
+            commit_run: None,
+            commit_cancel: CancelToken::new(),
+            hooks: Bind::new(true),
             journal: Journal::default(),
             forge: RepoForge::new(ctx),
             forge_config: None,
@@ -168,8 +186,16 @@ impl RepoTab {
         // The history and `HEAD` follow through the repository's watcher.
         if self.committing_open && !self.committing.is_pending() {
             self.committing_open = false;
-            if self.committing.is_ok() {
+            let ended = if self.committing.is_ok() {
                 self.commits_made = self.commits_made.wrapping_add(1);
+                Ended::Done
+            } else if self.commit_cancel.is_cancelled() {
+                Ended::Cancelled
+            } else {
+                Ended::Failed
+            };
+            if let Some(run) = self.commit_run.take() {
+                self.output.end(run, ended);
             }
             self.work_tree.refresh_now();
         }
@@ -177,8 +203,19 @@ impl RepoTab {
 
     /// Commits what the index holds (after the repository's other writes).
     pub(crate) fn commit(&mut self, git: &Git, commit: NewCommit) {
+        // Its hooks' output, as git prints it, in a run of its own.
+        self.commit_cancel = CancelToken::new();
+        let hooks = self.installed_hooks(commit_hooks(commit.no_verify));
+        let title = if commit.amend {
+            "Amending"
+        } else {
+            "Committing"
+        };
+        let cancel = self.commit_cancel.clone();
+        let (run, transcript) = self.output.begin(title, hooks, Some(cancel.clone()));
+        self.commit_run = Some(run);
         let (git, repository, writes) = (
-            git.clone(),
+            git.with_transcript(&transcript),
             Arc::clone(&self.repository),
             self.writes.clone(),
         );
@@ -187,7 +224,7 @@ impl RepoTab {
             let _queued = writes.hold();
             let head = || Place::read(&git, &repository);
             let before = head();
-            let made = create_commit(&git, &repository, &commit, &CancelToken::new());
+            let made = create_commit(&git, &repository, &commit, &cancel);
             if made.is_ok() {
                 let subject = commit.message.lines().next().unwrap_or_default().trim();
                 if let Some(undo) = undo::committed(before, head(), subject, commit.amend) {
@@ -262,6 +299,15 @@ impl RepoTab {
             .ok_ref()
             .is_some_and(|config| has_remotes(config));
         let (finished, fetch_wait) = self.tasks.poll(git, &self.repository, has_remotes, now);
+        if finished && let Some(run) = self.task_run.take() {
+            let ended = match self.tasks.result.read_as_ref() {
+                Some(Ok(Outcome::Cancelled)) => Ended::Cancelled,
+                Some(Ok(_)) => Ended::Done,
+                _ => Ended::Failed,
+            };
+            self.output.end(run, ended);
+        }
+        let output_wait = self.output.follow(now, self.output_automatic);
         if finished {
             // Refs and operations follow through the watcher too; the work tree may have
             // changed under a pull, an abort, or a continue; and the configuration under a
@@ -272,7 +318,7 @@ impl RepoTab {
             self.work_tree.refresh_now();
         }
         self.follow_forge(git, finished);
-        [wait, tree_wait, Some(fetch_wait)]
+        [wait, tree_wait, Some(fetch_wait), output_wait]
             .into_iter()
             .flatten()
             .min()
@@ -280,20 +326,55 @@ impl RepoTab {
 
     /// Starts `task`.
     pub(crate) fn run_task(&mut self, git: &Git, task: Task) {
-        self.tasks.start(
-            git,
+        // Its commands' output (and its hooks'), as git prints it, in a run of its own.
+        let hooks = self.installed_hooks(task.hooks());
+        let (run, transcript) = self.output.begin(task.doing(), hooks, None);
+        self.task_run = Some(run);
+        let cancel = self.tasks.start(
+            &git.with_transcript(&transcript),
             &self.repository,
             &self.writes,
             self.forge.accounts(),
             self.journal.inbox(),
             task,
         );
+        self.output.cancel_with(run, cancel);
+    }
+
+    /// Those of `hooks` the repository has.
+    fn installed_hooks(&mut self, hooks: &'static [&'static str]) -> Vec<&'static str> {
+        self.hooks
+            .ok_ref()
+            .map(|installed| installed.of(hooks))
+            .unwrap_or_default()
+    }
+
+    /// Reads which hooks the repository has (again).
+    pub(crate) fn refresh_hooks(&mut self, git: &Git) {
+        let (git, repository) = (git.clone(), Arc::clone(&self.repository));
+        self.hooks.request(jobs::blocking(move || {
+            installed_hooks(&git, &repository)
+                .map_err(|error| Problem::git("The repository's hooks couldn't be read", &error))
+        }));
+    }
+
+    /// Carries out what was asked of its output.
+    pub(crate) fn output_asked(&mut self, asked: crate::app::OutputAsk) {
+        match asked {
+            crate::app::OutputAsk::CancelCommit => self.commit_cancel.cancel(),
+            crate::app::OutputAsk::Show => {
+                self.output.open = true;
+                self.output.picked = None;
+            }
+            crate::app::OutputAsk::Toggle => self.output.toggle(),
+        }
     }
 
     /// Puts the user's preferences in effect for this tab: how often it fetches in the
     /// background, and whether its sidebar shows (as it opens).
     pub(crate) fn prefer(&mut self, preferences: Preferences, now: Instant) {
         self.tasks.fetch_every(preferences.fetch.interval(), now);
+        self.output_automatic = preferences.output;
         self.history_view.show_sidebar(preferences.sidebar);
     }
 
@@ -350,6 +431,7 @@ impl RepoTab {
             RepoCommand::Search
             | RepoCommand::FilterSidebar
             | RepoCommand::ToggleSidebar
+            | RepoCommand::ToggleOutput
             | RepoCommand::Reflog
             | RepoCommand::WorkTree
             | RepoCommand::PullRequests
@@ -546,6 +628,8 @@ impl RepoTab {
     /// keys and signers trusted may have changed).
     pub(crate) fn refresh_config(&mut self, git: &Git) {
         self.history.signatures.forget();
+        // `core.hooksPath` may have changed.
+        self.refresh_hooks(git);
         let (git, repository) = (git.clone(), Arc::clone(&self.repository));
         self.config.request(jobs::blocking(move || {
             ConfigSnapshot::read(&git, ConfigPlace::Repository(repository.work_tree()))

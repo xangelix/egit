@@ -63,6 +63,16 @@ pub(crate) fn heading(ui: &mut Ui, text: &str) -> Response {
     response
 }
 
+/// How long something has run, "12 s", in a place of its own width: ticking, it moves nothing
+/// beside it.
+pub(crate) fn seconds(ui: &mut Ui, elapsed: std::time::Duration, color: Color32) -> Response {
+    let said = format!("{} s", elapsed.as_secs());
+    ui.add_sized(
+        [44.0, ui.text_style_height(&egui::TextStyle::Body)],
+        egui::Label::new(RichText::new(said).color(color)).selectable(false),
+    )
+}
+
 /// A heading naming something of the user's (a path, a name), explained by the help topic
 /// `topic` rather than by its words.
 pub(crate) fn heading_of(ui: &mut Ui, text: &str, topic: &'static str) -> Response {

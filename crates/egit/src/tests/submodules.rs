@@ -2,6 +2,8 @@
 //! up and mends them; their menu and page; one updated to its branch's latest, the commits that
 //! brings, recorded here and shown in its change; and one added.
 
+use crate::app::EgitApp;
+use egui_kittest::Harness;
 use std::path::{Path, PathBuf};
 
 use egit_git::testing::Sandbox;
@@ -59,6 +61,20 @@ fn opened(sandbox: &Sandbox, repo: &Path) -> egui_kittest::Harness<'static, crat
     harness
 }
 
+/// Scrolls the page until `label` is in the window, clear of the output's bar at the bottom
+/// (a button below the page's fold is clicked where it was last drawn).
+fn into_view(harness: &mut Harness<'_, EgitApp>, label: &str) {
+    for _ in 0..20 {
+        let node = harness.get_by_label(label);
+        if node.rect().bottom() < 720.0 {
+            break;
+        }
+        node.scroll_to_me();
+        harness.step();
+    }
+    harness.run_steps(2);
+}
+
 #[test]
 fn a_fresh_clones_submodules_are_mended_followed_and_recorded() {
     let sandbox = Sandbox::new().unwrap();
@@ -91,6 +107,7 @@ fn a_fresh_clones_submodules_are_mended_followed_and_recorded() {
         .get_by_label("libs/lib, at the commit recorded")
         .click();
     wait_for_label(&mut harness, "Update to its branch's latest");
+    into_view(&mut harness, "Update to its branch's latest");
     harness
         .get_by_label("Update to its branch's latest")
         .click();
@@ -102,16 +119,7 @@ fn a_fresh_clones_submodules_are_mended_followed_and_recorded() {
     );
 
     // Recorded here: staged, and its change lists the commit it brings.
-    // Below the page's fold: scrolled to first, until it is in the window.
-    for _ in 0..20 {
-        let record = harness.get_by_label("Record its commit here");
-        if record.rect().bottom() < 780.0 {
-            break;
-        }
-        record.scroll_to_me();
-        harness.step();
-    }
-    harness.run_steps(2);
+    into_view(&mut harness, "Record its commit here");
     harness.get_by_label("Record its commit here").click();
     settle(&mut harness, "the pointer staged", |_| {
         sandbox

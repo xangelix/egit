@@ -126,6 +126,13 @@ fn repositories(ui: &mut Ui, preferences: &mut Preferences) {
                 "Shown when a repository opens",
             );
         });
+        widgets::fact(ui, LABEL, "Output", |ui| {
+            widgets::checkbox(
+                ui,
+                &mut preferences.output,
+                "Opens while hooks run, and when a task fails",
+            );
+        });
     });
 }
 

@@ -32,6 +32,7 @@ mod history;
 mod jobs;
 mod lfs;
 mod merge;
+mod output;
 mod pictures;
 mod preferences;
 mod problem;
