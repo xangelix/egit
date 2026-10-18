@@ -264,20 +264,23 @@ fn body(ui: &mut Ui, shared: &Shared<'_>, stats: &Stats, counted: &Counted) {
     ui.add_space(GAP);
     pair(
         ui,
-        |ui| card(ui, |ui| punch_card(ui, stats, palette)),
-        |ui| card(ui, |ui| active_chart(ui, shared, stats)),
+        "when",
+        |ui| punch_card(ui, stats, palette),
+        |ui| active_chart(ui, shared, stats),
     );
     ui.add_space(GAP);
     pair(
         ui,
-        |ui| card(ui, |ui| authors(ui, stats, lines, palette)),
-        |ui| card(ui, |ui| languages(ui, stats, palette)),
+        "who",
+        |ui| authors(ui, stats, lines, palette),
+        |ui| languages(ui, stats, palette),
     );
     ui.add_space(GAP);
     pair(
         ui,
-        |ui| card(ui, |ui| lines_chart(ui, shared, counted)),
-        |ui| card(ui, |ui| sizes_chart(ui, shared, lines)),
+        "lines",
+        |ui| lines_chart(ui, shared, counted),
+        |ui| sizes_chart(ui, shared, lines),
     );
     ui.add_space(GAP);
     card(ui, |ui| largest(ui, stats));
@@ -285,27 +288,46 @@ fn body(ui: &mut Ui, shared: &Shared<'_>, stats: &Stats, counted: &Counted) {
 
 /// A card, as wide as there is room.
 fn card(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
-    widgets::card(ui, |ui| {
-        ui.set_width(ui.available_width());
-        add(ui);
-    });
+    sized_card(ui, 0.0, add);
 }
 
-/// Two side by side where there is room, else one above the other.
-fn pair(ui: &mut Ui, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui)) {
+/// A card, as wide as there is room and at least `least` tall; returns how tall its content
+/// is.
+fn sized_card(ui: &mut Ui, least: f32, add: impl FnOnce(&mut Ui)) -> f32 {
+    let mut natural = 0.0;
+    widgets::card(ui, |ui| {
+        ui.set_width(ui.available_width());
+        // Reserved from the top before anything is added (egui's measures from the cursor).
+        ui.set_min_height(least);
+        natural = ui.scope(add).response.rect.height();
+    });
+    natural
+}
+
+/// Two cards side by side where there is room, as tall as each other (the taller's height
+/// last frame, kept as `name`'s), else one above the other.
+fn pair(ui: &mut Ui, name: &str, left: impl FnOnce(&mut Ui), right: impl FnOnce(&mut Ui)) {
     if ui.available_width() < TWO_COLUMNS {
-        left(ui);
+        card(ui, left);
         ui.add_space(GAP);
-        right(ui);
+        card(ui, right);
         return;
     }
+    let key = ui.id().with(("stats-pair", name));
+    let tallest: f32 = ui.ctx().data(|data| data.get_temp(key)).unwrap_or(0.0);
+    let (mut first_height, mut second_height) = (0.0_f32, 0.0_f32);
     ui.spacing_mut().item_spacing.x = GAP;
     ui.columns(2, |columns| {
         if let [first, second] = columns {
-            left(first);
-            right(second);
+            first_height = sized_card(first, tallest, left);
+            second_height = sized_card(second, tallest, right);
         }
     });
+    let wanted = first_height.max(second_height);
+    if (wanted - tallest).abs() > 0.5 {
+        ui.ctx().data_mut(|data| data.insert_temp(key, wanted));
+        ui.ctx().request_repaint();
+    }
 }
 
 /// The figures at the top, each in a tile of its own.
@@ -541,6 +563,7 @@ fn chart(
         .allow_double_click_reset(false)
         .show_grid([false, true])
         .grid_color(palette.border)
+        .show_crosshair(false)
         .cursor_color(palette.border_strong)
         .y_axis_min_width(44.0)
         .include_y(0.0)
@@ -598,6 +621,51 @@ fn bar(at: f64, value: f64, color: Color32, width: f64) -> Bar {
         .stroke(egui::Stroke::new(1.0, color))
 }
 
+/// What a chart's pointer rests on: the whole argument nearest it (a month, a size), as the
+/// frame before saw it (its bar lighter), kept under `id`. Its words show as a tooltip at the
+/// pointer, never clipped by the chart (egui's own labels are drawn inside it).
+struct Hover {
+    id: egui::Id,
+    lit: Option<i32>,
+}
+
+impl Hover {
+    fn of(ui: &Ui, id: egui::Id) -> Self {
+        Self {
+            id,
+            lit: ui.ctx().data(|data| data.get_temp(id)),
+        }
+    }
+
+    /// `color`, lighter at the argument the pointer rests on.
+    fn color(&self, at: i32, color: Color32, palette: Palette) -> Color32 {
+        if self.lit == Some(at) {
+            color.lerp_to_gamma(palette.text, 0.35)
+        } else {
+            color
+        }
+    }
+
+    /// The argument the pointer rests on in the chart drawn (noted, to be lit next frame).
+    fn note<R>(&self, shown: &egui_plot::PlotResponse<R>) -> Option<i32> {
+        let now = shown
+            .response
+            .hover_pos()
+            .and_then(|pointer| whole(shown.transform.value_from_position(pointer).x.round()));
+        if now != self.lit {
+            let ctx = &shown.response.ctx;
+            ctx.data_mut(|data| match now {
+                Some(at) => {
+                    data.insert_temp(self.id, at);
+                }
+                None => data.remove::<i32>(self.id),
+            });
+            ctx.request_repaint();
+        }
+        now
+    }
+}
+
 /// Names a chart for those who can't see it.
 fn named(response: &egui::Response, name: &str) {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, name));
@@ -611,33 +679,41 @@ fn commits_chart(ui: &mut Ui, shared: &Shared<'_>, stats: &Stats) {
     let (Some(&(first, _)), Some(&(last, _))) = (stats.months.first(), stats.months.last()) else {
         return;
     };
+    let hover = Hover::of(ui, egui::Id::new(("stats-commits-hover", shared.id)));
     let mut months = stats.months.iter().peekable();
     let bars: Vec<Bar> = (first..=last)
         .map(|month| {
             let commits = months
                 .next_if(|(at, _)| *at == month)
                 .map_or(0, |&(_, commits)| commits);
-            bar(f64::from(month), f64::from(commits), palette.accent, 0.85)
+            let color = hover.color(month, palette.accent, palette);
+            bar(f64::from(month), f64::from(commits), color, 0.85)
         })
         .collect();
-    let bars = BarChart::new("Commits", bars)
-        .color(palette.accent)
-        .element_formatter(Box::new(|bar, _| {
-            let commits = whole(bar.value)
-                .and_then(|value| u64::try_from(value).ok())
-                .unwrap_or(0);
-            format!(
-                "{}: {} {}",
-                whole(bar.argument).map_or_else(String::new, month_text),
-                count(commits),
-                noun(commits, "commit", "commits")
-            )
-        }));
+    let bars = BarChart::new("Commits", bars).allow_hover(false);
     let shown = chart(("stats-commits", shared.id), 180.0, palette)
         .x_grid_spacer(|input| years(&input))
         .x_axis_formatter(|mark, _| year_label(mark))
         .show(ui, |plot| plot.bar_chart(bars));
     named(&shown.response, "Commits each month");
+    if let Some(month) = hover
+        .note(&shown)
+        .filter(|month| (first..=last).contains(month))
+    {
+        let commits = u64::from(find(&stats.months, month).unwrap_or(0));
+        shown.response.on_hover_text_at_pointer(format!(
+            "{}: {} {}",
+            month_text(month),
+            count(commits),
+            noun(commits, "commit", "commits")
+        ));
+    }
+}
+
+/// The figure `month` has among `months` (sorted), if any.
+fn find(months: &[(i32, u32)], month: i32) -> Option<u32> {
+    let at = months.binary_search_by_key(&month, |&(at, _)| at).ok()?;
+    months.get(at).map(|&(_, figure)| figure)
 }
 
 /// How many authors made a commit each month.
@@ -658,28 +734,46 @@ fn active_chart(ui: &mut Ui, shared: &Shared<'_>, stats: &Stats) {
             [f64::from(month), f64::from(authors)]
         })
         .collect();
+    let hover = Hover::of(ui, egui::Id::new(("stats-active-hover", shared.id)));
+    // The month the pointer rests on, marked on the line.
+    let marked = hover
+        .lit
+        .filter(|month| (first..=last).contains(month))
+        .map(|month| {
+            let authors = find(&stats.active, month).unwrap_or(0);
+            egui_plot::Points::new("Hovered", vec![[f64::from(month), f64::from(authors)]])
+                .radius(4.0)
+                .color(palette.ok)
+                .allow_hover(false)
+        });
     let line = Line::new("Authors", PlotPoints::from(points))
         .color(palette.ok)
         .width(2.0)
         .fill(0.0)
-        .fill_alpha(0.15);
+        .fill_alpha(0.15)
+        .allow_hover(false);
     let shown = chart(("stats-active", shared.id), 200.0, palette)
         .x_grid_spacer(|input| years(&input))
         .x_axis_formatter(|mark, _| year_label(mark))
-        .label_formatter(|hovered| match hovered {
-            egui_plot::HoverPosition::NearDataPoint { position, .. } => {
-                let authors = whole(position.y).and_then(|value| u64::try_from(value).ok())?;
-                Some(format!(
-                    "{}: {} {}",
-                    whole(position.x).map_or_else(String::new, month_text),
-                    count(authors),
-                    noun(authors, "author", "authors")
-                ))
+        .show(ui, |plot| {
+            plot.line(line);
+            if let Some(marked) = marked {
+                plot.points(marked);
             }
-            egui_plot::HoverPosition::Elsewhere { .. } => None,
-        })
-        .show(ui, |plot| plot.line(line));
+        });
     named(&shown.response, "Authors active each month");
+    if let Some(month) = hover
+        .note(&shown)
+        .filter(|month| (first..=last).contains(month))
+    {
+        let authors = u64::from(find(&stats.active, month).unwrap_or(0));
+        shown.response.on_hover_text_at_pointer(format!(
+            "{}: {} {}",
+            month_text(month),
+            count(authors),
+            noun(authors, "author", "authors")
+        ));
+    }
 }
 
 /// The year of contributions to the latest commit, a square a day (Monday at the top), darker
@@ -1191,37 +1285,30 @@ fn lines_chart(ui: &mut Ui, shared: &Shared<'_>, counted: &Counted) {
         ui.label(muted(ui, format!("in {which}")));
     });
     ui.add_space(4.0);
+    let hover = Hover::of(ui, egui::Id::new(("stats-lines-hover", shared.id)));
     let (added, removed): (Vec<Bar>, Vec<Bar>) = lines
         .months
         .iter()
         .map(|&(month, added, removed)| {
             let at = f64::from(month);
             (
-                bar(at, plotted(added), palette.ok, 0.85),
-                bar(at, -plotted(removed), palette.danger, 0.85),
+                bar(
+                    at,
+                    plotted(added),
+                    hover.color(month, palette.ok, palette),
+                    0.85,
+                ),
+                bar(
+                    at,
+                    -plotted(removed),
+                    hover.color(month, palette.danger, palette),
+                    0.85,
+                ),
             )
         })
         .unzip();
-    let label = |sign: &'static str, what: &'static str| {
-        let formatter: BarLabel = Box::new(move |bar: &Bar, _: &BarChart| {
-            format!(
-                "{sign}{} lines {what} in {}",
-                count(
-                    whole(bar.value.abs())
-                        .and_then(|value| u64::try_from(value).ok())
-                        .unwrap_or(0)
-                ),
-                whole(bar.argument).map_or_else(String::new, month_text)
-            )
-        });
-        formatter
-    };
-    let added = BarChart::new("Added", added)
-        .color(palette.ok)
-        .element_formatter(label("+", "added"));
-    let removed = BarChart::new("Removed", removed)
-        .color(palette.danger)
-        .element_formatter(label("−", "removed"));
+    let added = BarChart::new("Added", added).allow_hover(false);
+    let removed = BarChart::new("Removed", removed).allow_hover(false);
     let shown = chart(("stats-lines", shared.id), 200.0, palette)
         .x_grid_spacer(|input| years(&input))
         .x_axis_formatter(|mark, _| year_label(mark))
@@ -1230,10 +1317,22 @@ fn lines_chart(ui: &mut Ui, shared: &Shared<'_>, counted: &Counted) {
             plot.bar_chart(removed);
         });
     named(&shown.response, "Lines added and removed each month");
+    let hovered = hover.note(&shown).and_then(|month| {
+        let at = lines
+            .months
+            .binary_search_by_key(&month, |&(at, ..)| at)
+            .ok()?;
+        lines.months.get(at).copied()
+    });
+    if let Some((month, added, removed)) = hovered {
+        shown.response.on_hover_text_at_pointer(format!(
+            "{}: +{} and −{} lines",
+            month_text(month),
+            count(added),
+            count(removed)
+        ));
+    }
 }
-
-/// What a bar says when the pointer rests on it.
-type BarLabel = Box<dyn Fn(&Bar, &BarChart) -> String>;
 
 /// How many commits changed how many lines.
 fn sizes_chart(ui: &mut Ui, shared: &Shared<'_>, lines: Option<&LineStats>) {
@@ -1245,27 +1344,15 @@ fn sizes_chart(ui: &mut Ui, shared: &Shared<'_>, lines: Option<&LineStats>) {
     let Some(lines) = lines else {
         return;
     };
+    let hover = Hover::of(ui, egui::Id::new(("stats-sizes-hover", shared.id)));
     let bars: Vec<Bar> = (0_u8..)
         .zip(lines.sizes)
-        .map(|(at, commits)| bar(f64::from(at), plotted(commits), palette.accent, 0.7))
+        .map(|(at, commits)| {
+            let color = hover.color(i32::from(at), palette.accent, palette);
+            bar(f64::from(at), plotted(commits), color, 0.7)
+        })
         .collect();
-    let bars = BarChart::new("Commits", bars)
-        .color(palette.accent)
-        .element_formatter(Box::new(|bar, _| {
-            let commits = whole(bar.value)
-                .and_then(|value| u64::try_from(value).ok())
-                .unwrap_or(0);
-            let size = whole(bar.argument)
-                .and_then(|at| usize::try_from(at).ok())
-                .and_then(|at| SIZES.get(at))
-                .copied()
-                .unwrap_or_default();
-            format!(
-                "{} {} changed {size} lines",
-                count(commits),
-                noun(commits, "commit", "commits")
-            )
-        }));
+    let bars = BarChart::new("Commits", bars).allow_hover(false);
     let shown = chart(("stats-sizes", shared.id), 200.0, palette)
         .x_grid_spacer(|_| {
             (0_u8..6)
@@ -1283,4 +1370,15 @@ fn sizes_chart(ui: &mut Ui, shared: &Shared<'_>, lines: Option<&LineStats>) {
         })
         .show(ui, |plot| plot.bar_chart(bars));
     named(&shown.response, "Commits by lines changed");
+    let hovered = hover
+        .note(&shown)
+        .and_then(|at| usize::try_from(at).ok())
+        .and_then(|at| Some((*SIZES.get(at)?, *lines.sizes.get(at)?)));
+    if let Some((size, commits)) = hovered {
+        shown.response.on_hover_text_at_pointer(format!(
+            "{} {} changed {size} lines",
+            count(commits),
+            noun(commits, "commit", "commits")
+        ));
+    }
 }

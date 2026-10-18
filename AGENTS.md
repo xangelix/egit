@@ -1380,8 +1380,12 @@ writes paths), never `OsStrExt`.
     meanwhile; "Reading 1,200 of 5,000 commits…" at first), its lines after; tiles (commits and
     merges, authors, days with commits, first and latest commit, the longest streak, the busiest
     day, files at `HEAD`), as many to a row as fit; cards in pairs where there is room (860
-    points): commits each month and authors active each month (egui_plot: no zooming, the page
-    scrolls; solid bars; years along the bottom; a month's count on hover), the year of
+    points), each pair as tall as each other (the taller's height kept, both reserving it before
+    their content: egui's `set_min_height` measures from the cursor): commits each month and
+    authors active each month (egui_plot: no zooming, the page scrolls; solid bars; years along
+    the bottom; egui_plot's own hover off, as it draws its labels inside the chart, clipped:
+    `Hover` lights the bar (or marks the month) under the pointer and says its figures in a
+    tooltip at the pointer), the year of
     contributions to the latest commit (a calendar painted a square a day), when commits are
     made (a punch card, circles by weekday and hour), the authors with the most commits (their
     avatars, years, lines, a bar), languages at `HEAD` (a bar of shares and a legend), the lines

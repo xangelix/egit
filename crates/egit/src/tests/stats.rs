@@ -108,10 +108,27 @@ fn the_stats_page_draws_the_history_in_figures_and_charts() {
     wait_for_text(&mut harness, "in every commit");
     wait_for_label(&mut harness, "Rust");
     render(&mut harness, "stats");
-    // The whole page at once, in a window tall enough.
-    harness.set_size(egui::vec2(1_400.0, 2_200.0));
-    harness.run_steps(3);
+    // The whole page at once, in a window wide enough for cards in pairs (each pair as tall as
+    // each other) and tall enough.
+    harness.set_size(egui::vec2(1_900.0, 2_000.0));
+    harness.run_steps(4);
     render(&mut harness, "stats-whole");
+    // A bar's figures, in a tooltip at the pointer.
+    let chart = harness
+        .query_all_by_label("Commits each month")
+        .max_by(|a, b| a.rect().height().total_cmp(&b.rect().height()))
+        .unwrap()
+        .rect();
+    harness.hover_at(egui::pos2(chart.left() + 70.0, chart.center().y));
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_all_by_label_contains("2024: ")
+            .next()
+            .is_some(),
+        "the month's figures"
+    );
+    render(&mut harness, "stats-hover");
     harness.set_size(egui::vec2(1_180.0, 800.0));
     harness.run_steps(3);
 
