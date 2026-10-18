@@ -100,3 +100,83 @@ fn a_commits_menu_foresees_conflicts() {
         .stdout;
     assert!(status.is_empty(), "{}", String::from_utf8_lossy(&status));
 }
+
+#[test]
+fn a_revert_that_would_conflict_changes_nothing_unless_asked() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "g", "x\n", "Add g").unwrap();
+    sandbox.commit_file(&repo, "g", "z\n", "Change g").unwrap();
+    sandbox
+        .commit_file(&repo, "g", "w\n", "Change g again")
+        .unwrap();
+    let subject = |sandbox: &Sandbox| {
+        let out = sandbox.run(&repo, "log", &["-1", "--format=%s"]).unwrap();
+        String::from_utf8(out.stdout).unwrap().trim_end().to_owned()
+    };
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+
+    // Changed again since: refused, nothing changed, the files said.
+    harness
+        .get_by_role_and_label(Role::Button, "Change g")
+        .click_secondary();
+    wait_for_label(&mut harness, "Revert in main");
+    harness.get_by_label("Revert in main").click();
+    wait_for_label(&mut harness, "Revert and resolve the conflicts");
+    assert!(
+        harness
+            .query_all_by_label_contains("would conflict in g")
+            .next()
+            .is_some()
+    );
+    render(&mut harness, "revert-refused");
+    assert_eq!(subject(&sandbox), "Change g again");
+    let status = sandbox
+        .run(&repo, "status", &["--porcelain"])
+        .unwrap()
+        .stdout;
+    assert!(status.is_empty(), "{}", String::from_utf8_lossy(&status));
+
+    // Asked to anyway: git stops at the conflict, to resolve or abort.
+    harness
+        .get_by_label("Revert and resolve the conflicts")
+        .click();
+    wait_for_label(
+        &mut harness,
+        &format!("{}  A revert is in progress.", crate::theme::icon::WARNING),
+    );
+    harness.get_by_label("Abort…").click();
+    wait_for_label(&mut harness, "Abort a revert?");
+    harness.get_by_label("Abort").click();
+    wait_for_label(&mut harness, "Aborted: everything is as it was before.");
+    // The conflict's uncommitted row gone, so the rows aimed at below don't move.
+    for _ in 0..2_000 {
+        if harness
+            .query_all_by_label_contains("uncommitted file")
+            .next()
+            .is_none()
+        {
+            break;
+        }
+        harness.step();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    harness.run_steps(2);
+
+    // The latest commit reverts, with git's message.
+    harness
+        .get_by_role_and_label(Role::Button, "Change g again")
+        .click_secondary();
+    wait_for_label(&mut harness, "Revert in main");
+    harness.get_by_label("Revert in main").click();
+    settle(&mut harness, "the revert", |_| {
+        subject(&sandbox) == "Revert \"Change g again\""
+    });
+    assert_eq!(std::fs::read_to_string(repo.join("g")).unwrap(), "z\n");
+}

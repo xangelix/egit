@@ -329,6 +329,31 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
                 }
             });
         }
+        Some(Ok(Outcome::WouldConflict { commit, files })) => {
+            let problem = Problem::new(
+                format!(
+                    "{} can't be reverted cleanly",
+                    commit.abbreviated(ID_DIGITS)
+                ),
+                format!(
+                    "Undoing its change would conflict in {} (a later commit changed the same \
+                     lines). Nothing was changed.",
+                    super::dialogs::named_paths(&files)
+                ),
+            );
+            widgets::problem_box(ui, &problem, |ui| {
+                if widgets::secondary(ui, true, "Revert and resolve the conflicts").clicked() {
+                    pane.start(Task::Revert {
+                        commit,
+                        anyway: true,
+                    });
+                    dismiss = true;
+                }
+                if widgets::secondary(ui, true, "Dismiss").clicked() {
+                    dismiss = true;
+                }
+            });
+        }
         Some(Ok(Outcome::Pushed(pushed))) if !pushed.succeeded() => {
             refused(ui, view, pane, &pushed, &mut dismiss);
         }
@@ -524,7 +549,7 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
             format!("{} stopped at conflicts: {CONFLICTS}", task.doing())
         }
         (
-            Task::CherryPick(commit) | Task::Revert(commit),
+            Task::CherryPick(commit) | Task::Revert { commit, .. },
             Outcome::Integrated(Integrated::Empty),
         ) => {
             format!(
@@ -724,7 +749,7 @@ fn done_text(task: &Task) -> String {
         Task::Merge { shown, .. } => format!("Merged {shown}."),
         Task::Rebase { shown, .. } => format!("Rebased onto {shown}."),
         Task::CherryPick(commit) => format!("Picked {}.", commit.abbreviated(ID_DIGITS)),
-        Task::Revert(commit) => format!("Reverted {}.", commit.abbreviated(ID_DIGITS)),
+        Task::Revert { commit, .. } => format!("Reverted {}.", commit.abbreviated(ID_DIGITS)),
         Task::Reset(commit, _) => format!("Reset to {}.", commit.abbreviated(ID_DIGITS)),
         Task::CreateTag { name, at, .. } => {
             format!("Tagged {} as {}.", at.abbreviated(ID_DIGITS), short(name))

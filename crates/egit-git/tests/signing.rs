@@ -159,6 +159,45 @@ fn signs_with_an_ssh_key_file() {
     );
 }
 
+#[test]
+fn a_revert_is_signed_as_commits_are() {
+    if !available("ssh-keygen") {
+        return;
+    }
+    let sandbox = Sandbox::new().unwrap();
+    let key = sandbox.home().join("id_ed25519");
+    let public = ssh_key(&key);
+    let allowed = allowed_signers(&sandbox, &public);
+    let repo = staged(
+        &sandbox,
+        &[
+            ["gpg.format", "ssh"],
+            ["user.signingKey", key.to_str().unwrap()],
+            ["gpg.ssh.allowedSignersFile", allowed.to_str().unwrap()],
+            ["commit.gpgSign", "true"],
+        ],
+    );
+    sandbox
+        .run(&repo, "commit", &["--quiet", "-m", "Second"])
+        .unwrap();
+    let git = sandbox.git();
+    let repository = Repository::discover(git, &repo).unwrap();
+    let cancel = CancelToken::new();
+    let second = rev(git, &repo, "HEAD");
+    assert_eq!(
+        egit_git::revert(git, &repository, second, &cancel).unwrap(),
+        egit_git::Integrated::Done
+    );
+    let reverted = rev(git, &repo, "HEAD");
+    let checks = check_signatures(git, &repository, &[reverted], &cancel).unwrap();
+    assert_eq!(checks[0].verdict, Verdict::Good);
+    assert_eq!(
+        said(git, &repo, reverted, "%s").trim_end(),
+        "Revert \"Second\""
+    );
+    assert_eq!(std::fs::read_to_string(repo.join("file")).unwrap(), "one\n");
+}
+
 /// An ssh-agent of its own, stopped when dropped.
 struct Agent {
     child: Child,

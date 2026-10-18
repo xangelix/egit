@@ -19,18 +19,19 @@ use egit_forge::{
 };
 use egit_git::{
     ApplyAs, BisectMark, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget,
-    DeleteBranchError, FastForward, FetchOptions, ForwardFrom, Forwarded, Git, GitError,
+    DeleteBranchError, FastForward, FetchOptions, Foreseen, ForwardFrom, Forwarded, Git, GitError,
     Integrated, MAX_PLANNED, MAX_SIGNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled,
     PushOptions, Pushed, RangeError, RebaseError, RebaseRange, RemoveWorktreeError, Repository,
     ResetMode, SignError, Stash, StashError, Step, SwitchError, SwitchTo, WorktreeFrom,
     abort_operation, add_remote, add_worktree, apply_patch, bisect_mark, changes_patch,
     cherry_pick, continue_operation, count_between, create_branch, create_tag, delete_branch,
     delete_remote_branch, delete_tag, fast_forward_branch, fast_forward_current, fetch,
-    fetch_refspecs, fetch_remote, format_patch, format_patches, lock_worktree, merge, plan_signing,
-    prune_worktrees, pull, push, push_tag, rebase, rebase_interactive, rebase_keeping_merges,
-    rebase_range, remove_remote, remove_worktree, rename_branch, rename_remote, reset, revert,
-    reword_head, set_config, set_remote_url, set_upstream, sign_commits, skip_operation,
-    stash_apply, stash_drop, stash_push, switch, unlock_worktree, unset_config, update_submodules,
+    fetch_refspecs, fetch_remote, foresee_pick, format_patch, format_patches, lock_worktree, merge,
+    plan_signing, prune_worktrees, pull, push, push_tag, rebase, rebase_interactive,
+    rebase_keeping_merges, rebase_range, remove_remote, remove_worktree, rename_branch,
+    rename_remote, reset, resolve_commit, revert, reword_head, set_config, set_remote_url,
+    set_upstream, sign_commits, skip_operation, stash_apply, stash_drop, stash_push, switch,
+    unlock_worktree, unset_config, update_submodules,
 };
 use egui_async::Bind;
 use parking_lot::Mutex;
@@ -111,7 +112,12 @@ pub(crate) enum Task {
         keep_merges: bool,
     },
     CherryPick(ObjectId),
-    Revert(ObjectId),
+    /// Undo a commit's change with a new commit: refused, nothing changed, where it would
+    /// conflict, unless `anyway` (stopping at the conflicts to resolve).
+    Revert {
+        commit: ObjectId,
+        anyway: bool,
+    },
     /// Rebase the current branch interactively: onto `base` (`None`: from the root), its
     /// commits as `plan` says (oldest first); `keep_merges`: the range holds merges, kept in
     /// git's own order.
@@ -374,7 +380,7 @@ impl Task {
                 "post-rewrite",
                 "reference-transaction",
             ],
-            Self::CherryPick(_) | Self::Revert(_) => &[
+            Self::CherryPick(_) | Self::Revert { .. } => &[
                 "prepare-commit-msg",
                 "commit-msg",
                 "post-commit",
@@ -429,7 +435,7 @@ impl Task {
             Self::Ignore(_) => "Ignoring",
             Self::Export { how, .. } => how.doing(),
             Self::CherryPick(_) => "Cherry-picking",
-            Self::Revert(_) => "Reverting",
+            Self::Revert { .. } => "Reverting",
             Self::Reset(..) => "Resetting",
             Self::CreateTag { .. } => "Tagging",
             Self::ApplyStash { pop: false, .. } => "Applying the stash",
@@ -514,6 +520,11 @@ pub(crate) enum Outcome {
     /// Changes discarded: each file as it was and as it is now, kept for Undo (`None`: too
     /// many, or too large, to keep).
     Discarded(Option<Vec<egit_git::DiscardedFile>>),
+    /// A revert refused before anything changed: undoing `commit` would conflict in `files`.
+    WouldConflict {
+        commit: ObjectId,
+        files: Vec<BString>,
+    },
     /// A pattern added to an ignore file (or there already), and whether git still lists the
     /// path (a later `!` pattern bringing it back).
     Ignored {
@@ -539,7 +550,10 @@ impl Outcome {
                 matches!(integrated, Integrated::Conflicts | Integrated::Stopped)
             }
             Self::Forwarded(forwarded) => matches!(forwarded, Forwarded::NotFastForward),
-            Self::WouldOverwrite { .. } | Self::NotMerged | Self::WorktreeChanges => true,
+            Self::WouldOverwrite { .. }
+            | Self::NotMerged
+            | Self::WorktreeChanges
+            | Self::WouldConflict { .. } => true,
             _ => false,
         }
     }
@@ -844,7 +858,7 @@ fn run(
         | Task::Merge { .. }
         | Task::Rebase { .. }
         | Task::CherryPick(_)
-        | Task::Revert(_)
+        | Task::Revert { .. }
         | Task::Reset(..)
         | Task::FastForward { .. }
         | Task::ApplyPatch { .. }
@@ -965,6 +979,26 @@ fn forge(
         }
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),
+    }
+}
+
+/// The files reverting `commit` onto `HEAD` would leave in conflict (foreseen: nothing is
+/// touched), if it would; `None` when it goes through, or can't be worked out (a root commit,
+/// git failing: git's own revert then says).
+fn revert_conflicts(
+    git: &Git,
+    repository: &Repository,
+    commit: ObjectId,
+    cancel: &CancelToken,
+) -> Option<Vec<BString>> {
+    let head = resolve_commit(git, repository, "HEAD").ok().flatten()?;
+    match foresee_pick(git, repository, head, (commit, true), cancel) {
+        Ok(Some(Foreseen::Conflicts { files, .. })) => Some(files),
+        Ok(_) => None,
+        Err(error) => {
+            tracing::debug!(%error, "couldn't foresee the revert");
+            None
+        }
     }
 }
 
@@ -1144,9 +1178,17 @@ fn history(
         Task::CherryPick(commit) => cherry_pick(git, repository, *commit, cancel)
             .map(Outcome::Integrated)
             .or_else(failed("Cherry-picking failed")),
-        Task::Revert(commit) => revert(git, repository, *commit, cancel)
-            .map(Outcome::Integrated)
-            .or_else(failed("Reverting failed")),
+        Task::Revert { commit, anyway } => {
+            if !anyway && let Some(files) = revert_conflicts(git, repository, *commit, cancel) {
+                return Ok(Outcome::WouldConflict {
+                    commit: *commit,
+                    files,
+                });
+            }
+            revert(git, repository, *commit, cancel)
+                .map(Outcome::Integrated)
+                .or_else(failed("Reverting failed"))
+        }
         Task::Reset(commit, mode) => reset(git, repository, *commit, *mode, cancel)
             .map(|()| Outcome::Done)
             .or_else(failed("Resetting failed")),

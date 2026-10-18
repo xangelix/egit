@@ -876,9 +876,12 @@ pub(super) const TOPICS: &[Topic] = &[
         group: Group::Rewriting,
         title: "Reverting",
         on: &["Revert*"],
-        what: "Makes a new commit that undoes a commit's change. History keeps both: nothing is \
-               rewritten, so it's safe on pushed branches.",
-        git: "git revert --no-edit (a merge against its first parent: --mainline 1)",
+        what: "Makes a new commit that undoes a commit's change, with git's message (Revert \
+               \"…\"), signed when commits are (commit.gpgSign). History keeps both: nothing is \
+               rewritten, so it's safe on pushed branches. egit works it out first: where it \
+               would conflict, nothing is changed, and it says which files.",
+        git: "git merge-tree --write-tree --merge-base=<commit> HEAD <its parent> (worked out \
+              first); git revert --no-edit (a merge against its first parent: --mainline 1)",
         cases: &[
             (
                 "What does “⚠ 1 conflict” beside it mean?",
@@ -889,8 +892,8 @@ pub(super) const TOPICS: &[Topic] = &[
                 "Merging it again brings nothing back: git thinks it's merged. Revert the revert instead.",
             ),
             (
-                "Conflicts?",
-                "Later commits changed the same lines: resolve, stage, Continue.",
+                "Refused: it would conflict?",
+                "Later commits changed the same lines, so egit changed nothing. Revert and resolve the conflicts runs it anyway: git stops at them; resolve, stage, then Continue (or Abort).",
             ),
             (
                 "Regretted before pushing?",

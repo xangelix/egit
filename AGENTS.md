@@ -377,7 +377,8 @@ writes paths), never `OsStrExt`.
     behind. `tests/signing.rs` signs one commit of a history holding a hand-resolved merge
     (trees, author and date, the merge's resolution and second parent, the side branch, an
     uncommitted change all kept; signatures good), and refuses nothing asked for, a commit off
-    the branch, a branch that moved, a detached `HEAD`; a pushed commit is said to be.
+    the branch, a branch that moved, a detached `HEAD`; a pushed commit is said to be; and a
+    revert is signed as commits are (`commit.gpgSign`, git's message).
   - `remote.rs` — moving commits, each with `--progress` into a `Progress`, a `CancelToken`,
     and askpass prompts labelled by what is done: `clone` (from `/`; `CloneOptions`:
     submodules, partial `--filter=blob:none`, both with `--also-filter-submodules`),
@@ -1014,7 +1015,10 @@ writes paths), never `OsStrExt`.
     `SignCommits` signs commits picked together (`plan_signing`, then `sign_commits`, how many
     made in the `Progress`; `Outcome::Signed`: made, asked for, whether any was pushed),
     undone as any task moving `HEAD` is. `Discard` throws changes not staged away
-    (`discarding.rs`; `Outcome::Discarded`, the files kept for Undo, or none).
+    (`discarding.rs`; `Outcome::Discarded`, the files kept for Undo, or none). `Revert`
+    works the revert out first (`revert_conflicts`: `foresee_pick` from `HEAD`) and, where
+    it would conflict, changes nothing (`Outcome::WouldConflict`: the files, said in a problem
+    box with "Revert and resolve the conflicts", which runs it `anyway`, stopping at them).
   - `foresight.rs` — `Foresight`, conflicts foreseen for the menus: a `Bringing` (a merge,
     a rebase, a pick, a revert) from the commit `HEAD` is at, worked out in a detached job
     the first time an item asks (`look`: `Working`, `Seen`, `Unknown`), at most four at once,
@@ -1738,7 +1742,9 @@ writes paths), never `OsStrExt`.
     the Overview's Hooks card lists it.
     `src/tests/foresight.rs` opens a side branch's commit's menu (merging, cherry-picking, and
     rebasing onto it foreseen to conflict in g, said on hover), the commit before's (clean),
-    and the latest's (reverting it clean), nothing moved.
+    and the latest's (reverting it clean), nothing moved; and reverts a commit changed again
+    since (refused, nothing changed; then anyway, stopped at the conflict, aborted), and the
+    latest (git's message).
     `src/tests/stats.rs` opens the Stats page from the top bar on dated commits by two authors
     (one under two names, joined by the mailmap) and renders it, at its window's size and
     whole; closed and opened again, it shows at once.

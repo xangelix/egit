@@ -703,7 +703,10 @@ fn into_items(
         can,
         (Bringing::Revert(id), false),
     ) {
-        ask(Ask::Task(Task::Revert(id)));
+        ask(Ask::Task(Task::Revert {
+            commit: id,
+            anyway: false,
+        }));
     }
 }
 

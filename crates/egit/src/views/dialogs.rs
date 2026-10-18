@@ -987,7 +987,7 @@ fn pull_stashing(
 }
 
 /// Up to five paths by name, and how many more.
-fn named_paths(paths: &[BString]) -> String {
+pub(super) fn named_paths(paths: &[BString]) -> String {
     const NAMED: usize = 5;
     let mut named: Vec<String> = paths
         .iter()
