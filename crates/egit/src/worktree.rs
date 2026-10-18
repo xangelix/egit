@@ -96,6 +96,13 @@ impl WorkTree {
         self.due = self.due.max(Some(Due::Soon));
     }
 
+    /// Whether no read is due or under way (tests: a screen is checked once what the disk
+    /// holds has landed).
+    #[cfg(test)]
+    pub(crate) fn is_settled(&mut self) -> bool {
+        self.due.is_none() && !self.status.is_pending()
+    }
+
     /// Whether `folder` is watched for changes.
     #[cfg(test)]
     pub(crate) fn watches(&self, folder: &Path) -> bool {

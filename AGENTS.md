@@ -1403,7 +1403,9 @@ writes paths), never `OsStrExt`.
     (given back after), but a field that takes the focus back whenever nothing has it (a
     dialog's), and each found afresh before it is looked at (focusing a commit's row selects
     it, which changes the details beside). A screen is rendered once what it shows has landed
-    (a commit's details, their lines counted): the audit's checks take many frames. `src/tests/polish.rs` drives preferences (changed from the status bar, in effect
+    (a commit's details, their lines counted): the audit's checks take many frames. `render`
+    reads each work tree's status afresh first and waits for it, so the work in progress's row
+    can't come or go (moving every row) while a screen is checked. `src/tests/polish.rs` drives preferences (changed from the status bar, in effect
     for a repository opened after: dates as how long ago, a diff side by side, no background
     fetch; kept) and the palette (a command found by a few letters, one that can't run saying
     why, a branch switched to) and the shortcuts (⌘B, ⌘,, ⌘W, ⌘1). `src/tests/menus.rs` drives the menus' newer

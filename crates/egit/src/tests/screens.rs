@@ -74,6 +74,18 @@ pub(super) fn harness(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
 
 /// Checks the screen (`audit`) and renders it into `name.png` (where screens are rendered).
 pub(super) fn render(harness: &mut Harness<'_, EgitApp>, name: &str) {
+    // What the disk holds now, read and shown before the screen is checked: a status read
+    // landing meanwhile (the work in progress's row coming or going) would move the rows.
+    for repo in &mut harness.state_mut().state.repos {
+        repo.work_tree.refresh_now();
+    }
+    settle(harness, "the work tree read", |app| {
+        app.state
+            .repos
+            .iter_mut()
+            .all(|repo| repo.work_tree.is_settled())
+    });
+    harness.run_steps(2);
     // Every element's place, to measure a screen to the point (`<name>.rects`).
     if std::env::var_os("EGIT_GUI_RECTS").is_some() {
         super::audit::dump(harness, &screens().join(format!("{name}.rects")));
@@ -1188,6 +1200,11 @@ fn fetches_pulls_and_pushes_from_the_history() {
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &mine);
     settle(&mut harness, "the history", history_shown);
+    // Only the fetches asked for: one in the background would move the branch's counts while
+    // a screen is checked.
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
     let branch = |compared: &str| {
         format!(
             "{}  main {} origin/main{compared}",
@@ -1212,9 +1229,9 @@ fn fetches_pulls_and_pushes_from_the_history() {
     sandbox.commit_file(&mine, "mine", "m\n", "Mine").unwrap();
     click_when_enabled(&mut harness, &format!("{}  Push", icon::ARROW_UP));
     wait_for_label(&mut harness, "Force push…");
-    // The commit made shown (and perhaps the colleague's too, should the background fetch have
-    // run by now: a slow machine takes this test past its first 10 s).
+    // The commit made shown, and the branch ahead by it (the refused push moved nothing).
     wait_for_label(&mut harness, "Mine");
+    wait_for_label(&mut harness, &branch(&format!(" {}1", icon::ARROW_UP)));
     settle(&mut harness, "the commit made", history_shown);
     render(&mut harness, "sync-refused");
     harness.get_by_label("Pull").click();
@@ -1667,6 +1684,8 @@ fn commits_are_picked_reverted_tagged_reset_and_merged_from_the_graph() {
 
     // Back to the first commit, the changes discarded once confirmed.
     std::fs::write(repo.join("f"), "uncommitted\n").unwrap();
+    // Once the work in progress's row is in (it moves the rows below it down).
+    wait_for_label(&mut harness, &uncommitted(1));
     right_click(&mut harness, row("One"));
     // egui names a submenu's button with its arrow.
     let reset = "Reset main to this commit";
