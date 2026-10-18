@@ -369,10 +369,14 @@ fn save_row(ui: &mut Ui, view: &mut ProfileView, actions: &mut Vec<Action>) {
     let saving = view.saving.is_pending();
     ui.horizontal(|ui| {
         let can_save = !changes.is_empty() && invalid.is_none() && !saving;
-        if widgets::primary(ui, can_save, &format!("{}  Save", icon::FLOPPY_DISK)).clicked() {
+        let save = widgets::primary(ui, can_save, &format!("{}  Save", icon::FLOPPY_DISK));
+        crate::help::note_topic(ui, save.rect, "profile-save");
+        if save.clicked() {
             actions.push(Action::SaveProfile(changes.clone()));
         }
-        if widgets::secondary(ui, !changes.is_empty() && !saving, "Revert").clicked() {
+        let revert = widgets::secondary(ui, !changes.is_empty() && !saving, "Revert");
+        crate::help::note_topic(ui, revert.rect, "profile-save");
+        if revert.clicked() {
             view.form = view.saved.clone();
         }
         if saving {

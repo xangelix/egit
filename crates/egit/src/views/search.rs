@@ -201,7 +201,7 @@ pub(super) fn bar(
                 RichText::new(format!("{}  Search", icon::MAGNIFYING_GLASS)).color(palette.muted),
             );
             let before = search.kind;
-            egui::ComboBox::from_id_salt(("history-search-kind", shared.id))
+            let kind = egui::ComboBox::from_id_salt(("history-search-kind", shared.id))
                 .width(96.0)
                 .selected_text(search.kind.label())
                 .show_ui(ui, |ui| {
@@ -211,6 +211,7 @@ pub(super) fn bar(
                 })
                 .response
                 .labelled_by(label.id);
+            crate::help::note_topic(ui, kind.rect, "search");
             // From the right: closing, stepping, how many; the field fills what is left.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if widgets::icon_tool(ui, true, icon::X, "Close")

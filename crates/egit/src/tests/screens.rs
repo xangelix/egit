@@ -79,6 +79,7 @@ pub(super) fn render(harness: &mut Harness<'_, EgitApp>, name: &str) {
         super::audit::dump(harness, &screens().join(format!("{name}.rects")));
     }
     super::audit::assert_clean(harness, name);
+    super::help::assert_explained(harness, name);
     if !rendering() {
         return;
     }

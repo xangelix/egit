@@ -215,7 +215,9 @@ pub(crate) fn card(
                     ui,
                     format::progress("Cloning", &view.progress.report()),
                 ));
-                if widgets::secondary(ui, true, "Cancel").clicked() {
+                let cancel = widgets::secondary(ui, true, "Cancel");
+                crate::help::note_topic(ui, cancel.rect, "clone");
+                if cancel.clicked() {
                     actions.push(Action::CancelClone);
                 }
             });

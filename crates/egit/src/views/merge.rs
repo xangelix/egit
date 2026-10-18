@@ -742,7 +742,9 @@ fn editor(ui: &mut Ui, view: &mut MergeView, file: &ConflictFile) {
                 done = Some(false);
             }
             ui.horizontal(|ui| {
-                if widgets::primary(ui, true, "Apply").clicked() {
+                let apply = widgets::primary(ui, true, "Apply");
+                crate::help::note_topic(ui, apply.rect, "merge-edit");
+                if apply.clicked() {
                     done = Some(true);
                 }
                 if widgets::secondary(ui, true, "Cancel").clicked() {

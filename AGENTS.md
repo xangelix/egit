@@ -627,18 +627,26 @@ writes paths), never `OsStrExt`.
     written or as how long ago (`Dates`). `apply` puts them into egui (the zoom, and the context
     the views read them from: `Preferences::of`), and the tab width where every text measured
     from then on takes it (`text_options`).
-  - `help.rs` — Help: `TOPICS`, each a `Topic` (its `Group`, title, what it does at git's
-    level, the git egit runs for it, and `cases`: the questions people meet, cancelling a
-    rebase part-way, which side is "current" in a rebase, a pushed commit reworded, a
-    submodule that won't sit still, LFS pointers, and their answers). Alt held over a control
-    shows its topic beside it: the shared controls (`widgets`' buttons, tools, menus' items,
-    checkboxes, icon buttons) `note` their rect, layer, and words as they are drawn, only
-    while Alt is held; custom ones (a commit's row and the graph, badges, the work row,
-    sidebar rows and sections, banners, the branch label, facts) `note_topic`; at the
-    frame's end (`show`) the smallest noted rect under the pointer on the topmost layer
-    picks the topic (`for_label`: `EXACT` words, then `STARTS`), drawn in an overlay beside
+  - `help/` — Help: topics in six areas' files (`working.rs`, `history.rs`, `branches.rs`,
+    `remotes.rs`, `rewriting.rs`, `inside.rs`; `topics()` walks them all), each a `Topic` (its
+    `Group`, title, `on`: the words of the controls it explains, whole or with `*` standing
+    for any words ("Merge * into *"); what it does at git's level, the git egit runs for it,
+    and `cases`: the questions people meet, cancelling a rebase part-way, which side is
+    "current" in a rebase, a pushed commit reworded, a submodule that won't sit still, LFS
+    pointers, and their answers). Alt held over a control shows its topic beside it: the
+    shared controls (`widgets`' buttons, tools, links, checkboxes, radios, segments, facts'
+    labels, section titles, headings; menus' items, submenus, and headers) `note` their rect,
+    layer, and words as they are drawn, only while Alt is held; custom ones (a commit's row
+    and its columns, badges, the work row, sidebar rows and sections, banners, the branch
+    label, a heading naming a path: `heading_of`) `note_topic`, which wins over words at the
+    same place; at the frame's end (`show`) the smallest noted rect under the pointer on the
+    topmost layer picks the topic (`for_label`: the pattern naming most of the words, exact
+    words best; a commit's name, 7–64 hex digits, its own topic), drawn in an overlay beside
     it; tooltips wait while Alt is held (`begin_frame`). `HelpWindow` (F1, the status bar's
-    Help, the palette): every topic by group, found by what is typed (titles, texts, cases).
+    Help, the palette): every topic by group, found by what is typed (titles, words, texts,
+    cases; the list made again only when the query changes, drawn a row at a time). Its
+    tests: ids once, every pattern claimed by one topic, every `note_topic` in the sources
+    naming a topic that exists.
   - `commands.rs` — what the keyboard can ask: `Command` (the palette, help (F1), preferences, open,
     clone, home, profile, close the tab, a tab by number, a theme, a recent repository) and
     `RepoCommand` (fetch, pull, push, undo, redo, search, the sidebar shown or filtered, the
@@ -1415,7 +1423,9 @@ writes paths), never `OsStrExt`.
     series saved. `src/tests/people.rs` drives co-authors: picked from the recent authors and
     typed, committed as trailers, shown in the details, taken back into the form to amend.
     `src/tests/help.rs` holds Alt over Push and a commit's row (their topics shown, gone
-    when let go), and finds a topic with F1 (Escape closes it).
+    when let go), and finds a topic with F1 (Escape closes it); its `assert_explained` runs
+    on every rendered screen: each control's words drawn so far (kept in tests) must find a
+    topic (`EGIT_HELP_GAPS=<file>` lists those that don't instead of failing).
     `src/tests/columns.rs` drags the lines between the commit table's columns (each moving
     alone, holding still once let go, a double click putting them back);
     `src/tests/long_text.rs` edits a 200-line message in place and types one into the commit
@@ -1467,10 +1477,10 @@ writes paths), never `OsStrExt`.
   Every `Bind` is made retained (`Bind::new(true)`), never by `Default`: egui-async aborts a
   read under way in a `Bind` not polled the frame before, by a frame count it keeps for the
   whole process (several windows, as the tests run, make that happen at random).
-  Help: a new control built from `widgets` (or a menu's item) is explained by its words
-  (`help::for_label`: add them to `EXACT` or `STARTS`); a custom one calls
-  `help::note_topic`; a new feature gets a topic in `help::TOPICS`, at git's level, with the
-  cases that surprise.
+  Help: a new control built from `widgets` (or a menu's item) is explained by its words: claim
+  them in a topic's `on` (every rendered test screen fails on a control whose words find no
+  topic); a custom one calls `help::note_topic`; a new feature gets topics in its area's file
+  under `help/`, at git's level, with the cases that surprise.
 - **Performance:** CPU time and peak memory are features. Nothing proportional to a
   repository is loaded or drawn unless it is visible or being prepared off the interface thread;
   parsers work on borrowed bytes and reuse their buffers.

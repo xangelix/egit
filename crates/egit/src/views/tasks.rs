@@ -188,7 +188,9 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         // The progress moves on its own, without input.
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(100));
-        if widgets::secondary(ui, true, "Cancel").clicked() {
+        let cancel = widgets::secondary(ui, true, "Cancel");
+        crate::help::note_topic(ui, cancel.rect, "cancel-task");
+        if cancel.clicked() {
             pane.actions.push(Action::CancelTask(pane.id));
         }
         capped(ui, muted(ui, progress_text(pane.tasks)));
@@ -223,8 +225,9 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         pane.start(Task::Fetch);
     }
     if let Some(problem) = &pane.tasks.background_problem {
-        ui.label(RichText::new(icon::WARNING).color(palette.warn))
-            .on_hover_text(format!("Fetching in the background failed: {problem}"));
+        let warning = ui.label(RichText::new(icon::WARNING).color(palette.warn));
+        crate::help::note_topic(ui, warning.rect, "background-fetch");
+        warning.on_hover_text(format!("Fetching in the background failed: {problem}"));
     }
     ui.add_space(8.0);
     branch_label(ui, pane.head, palette);
@@ -734,6 +737,7 @@ fn refused(
         .as_ref()
         .is_some_and(|target| pane.branch().is_some_and(|branch| target.branch == branch));
     widgets::problem_box(ui, &problem, |ui| {
+        crate::help::note_topic(ui, ui.max_rect(), "push-refused");
         if behind && let Some(target) = &target {
             if widgets::secondary(ui, true, "Force push…").clicked() {
                 view.dialog = Some(Dialog::ForcePush(PushOptions {
@@ -808,7 +812,7 @@ pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent>
             .inner_margin(egui::Margin::symmetric(12, 2))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                crate::help::note_topic(ui, ui.max_rect(), "fetch");
+                crate::help::note_topic(ui, ui.max_rect(), "fetched-notice");
                 ui.horizontal(|ui| {
                     let headline = format!("{}  {commits} on {name}", icon::ARROW_DOWN);
                     fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
@@ -819,7 +823,9 @@ pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent>
                         if dismiss.clicked() {
                             pane.tasks.brought = None;
                         }
-                        if widgets::secondary(ui, true, "Show them").clicked() {
+                        let show = widgets::secondary(ui, true, "Show them");
+                        crate::help::note_topic(ui, show.rect, "fetched-notice");
+                        if show.clicked() {
                             event = Some(TaskEvent::Commit(to));
                         }
                         if widgets::secondary(ui, true, &format!("{}  Pull", icon::ARROW_DOWN))
@@ -883,7 +889,7 @@ fn operation_banner(
                 Operation::Bisect => "bisect",
                 Operation::CherryPick => "cherry-pick",
                 Operation::Revert => "revert",
-                Operation::ApplyMailbox => "patches",
+                Operation::ApplyMailbox => "am-in-progress",
             };
             crate::help::note_topic(ui, ui.max_rect(), topic);
             fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);

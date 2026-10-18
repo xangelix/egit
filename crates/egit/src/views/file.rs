@@ -652,7 +652,12 @@ fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut
     let mut request = None;
     widgets::bar(ui, |ui| {
         ui.horizontal(|ui| {
-            if widgets::secondary(ui, true, &format!("{verb} file")).clicked() {
+            let whole = widgets::secondary(ui, true, &format!("{verb} file"));
+            // A file in conflict: staging it is what resolves it.
+            if work.conflict {
+                crate::help::note_topic(ui, whole.rect, "conflict-stage-file");
+            }
+            if whole.clicked() {
                 request = Some(StageRequest::Files {
                     paths: work.paths(),
                     direction,
@@ -771,9 +776,10 @@ fn read_content(
 
 /// A placeholder in place of what can't be shown as text.
 pub(super) fn placeholder(ui: &mut Ui, text: String) {
-    Frame::new()
+    let shown = Frame::new()
         .inner_margin(Margin::same(16))
         .show(ui, |ui| ui.label(muted(ui, text)));
+    crate::help::note_topic(ui, shown.response.rect, "file-placeholder");
 }
 
 /// A submodule's change: from which commit to which, and the commits that brings (as far as it
@@ -784,6 +790,7 @@ fn show_submodule_move(
     file: &mut FileView,
     sides: (Option<ObjectId>, Option<ObjectId>),
 ) {
+    crate::help::note_topic(ui, ui.max_rect(), "submodule-change");
     let path = file.path().to_owned();
     if file.moved.is_idle()
         && let Some(git) = shared.git
@@ -839,7 +846,8 @@ fn show_submodule_move(
                     ui.add(
                         Label::new(muted(
                             ui,
-                            "Its commits can't be listed: it isn't set up here, or doesn't have                              them. Set it up (the Submodules menu) to see them.",
+                            "Its commits can't be listed: it isn't set up here, or doesn't have them. Set it \
+                             up (the Submodules menu) to see them.",
                         ))
                         .wrap(),
                     );
@@ -969,6 +977,7 @@ fn show_pictures(
         .textures
         .get_or_insert_with(|| Textures::of(ui.ctx(), &pictures, shared.palette));
     Frame::new().inner_margin(Margin::same(16)).show(ui, |ui| {
+        crate::help::note_topic(ui, ui.max_rect(), "image-diff");
         let sides = [
             ("Before", &pictures.before, textures.before.as_ref()),
             ("After", &pictures.after, textures.after.as_ref()),
@@ -1101,7 +1110,9 @@ fn lfs_placeholder(ui: &mut Ui, lfs: LfsChange) -> bool {
         .show(ui, |ui| {
             ui.label(muted(ui, text));
             ui.add_space(8.0);
-            ui.button("Show the pointer's changes").clicked()
+            let button = ui.button("Show the pointer's changes");
+            crate::help::note(ui, button.rect, "Show the pointer's changes");
+            button.clicked()
         })
         .inner
 }

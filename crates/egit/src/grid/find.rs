@@ -239,6 +239,7 @@ impl Find {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             let label = ui.label(RichText::new("Find").color(palette.muted));
+                            crate::help::note_topic(ui, label.rect, "find-in-file");
                             let field = ui
                                 .add(
                                     crate::widgets::line_field(&mut self.query)

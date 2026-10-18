@@ -50,28 +50,29 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .button(muted(ui, format!("{}  Help  F1", icon::QUESTION)).small())
+            let help = ui.button(muted(ui, format!("{}  Help  F1", icon::QUESTION)).small());
+            crate::help::note(ui, help.rect, "Help");
+            if help
                 .on_hover_text("What everything does, at git's level (or hold Alt over anything)")
                 .clicked()
             {
                 state.actions.push(Action::ShowHelp);
             }
-            if ui
-                .button(
-                    muted(
-                        ui,
-                        format!("{}  Commands  {}", icon::COMMAND, keys_text("⌘K")),
-                    )
-                    .small(),
+            let commands = ui.button(
+                muted(
+                    ui,
+                    format!("{}  Commands  {}", icon::COMMAND, keys_text("⌘K")),
                 )
-                .on_hover_text("Every command, by name")
-                .clicked()
-            {
+                .small(),
+            );
+            crate::help::note(ui, commands.rect, "Commands");
+            if commands.on_hover_text("Every command, by name").clicked() {
                 state.actions.push(Action::ShowPalette);
             }
-            if ui
-                .button(muted(ui, format!("{}  Preferences", icon::GEAR_SIX)).small())
+            let preferences =
+                ui.button(muted(ui, format!("{}  Preferences", icon::GEAR_SIX)).small());
+            crate::help::note(ui, preferences.rect, "Preferences");
+            if preferences
                 .on_hover_text(format!("How egit looks and behaves ({})", keys_text("⌘,")))
                 .clicked()
             {

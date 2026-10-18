@@ -215,7 +215,18 @@ fn split_remote<'n>(remotes: &[String], name: &'n BStr) -> Option<(&'n BStr, &'n
 /// A menu's item: its icon, in a column of its own, then its words (it is named by them); a
 /// click closes the menu. Disabled, it says why on hover.
 pub(crate) fn item(ui: &mut Ui, entry: (&str, &str), allowed: Result<(), &str>) -> bool {
-    menu_entry(ui, entry, allowed, false)
+    menu_entry(ui, entry, allowed, (false, None))
+}
+
+/// An [`item`] explained by the help topic `topic` rather than by its words, where a common
+/// word means something of its own ("Rename…" a remote).
+pub(crate) fn item_of(
+    ui: &mut Ui,
+    entry: (&str, &str),
+    allowed: Result<(), &str>,
+    topic: &'static str,
+) -> bool {
+    menu_entry(ui, entry, allowed, (false, Some(topic)))
 }
 
 /// A menu's item with a keyboard shortcut (written as a Mac writes it), shown at its right.
@@ -226,6 +237,7 @@ pub(crate) fn shortcut_item(ui: &mut Ui, (glyph, label): (&str, &str), keys: &'s
         .shortcut_text(crate::commands::keys_text(keys));
     let response = ui.add(button);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    crate::help::note(ui, response.rect, label);
     if response.clicked() {
         ui.close();
         true
@@ -236,15 +248,26 @@ pub(crate) fn shortcut_item(ui: &mut Ui, (glyph, label): (&str, &str), keys: &'s
 
 /// A menu's item for what loses work (deleting, dropping, a hard reset): in the danger colour.
 pub(crate) fn danger_item(ui: &mut Ui, entry: (&str, &str), allowed: Result<(), &str>) -> bool {
-    menu_entry(ui, entry, allowed, true)
+    menu_entry(ui, entry, allowed, (true, None))
 }
 
-/// Draws an item; returns whether it was clicked.
+/// A [`danger_item`] explained by the help topic `topic` rather than by its words.
+pub(crate) fn danger_item_of(
+    ui: &mut Ui,
+    entry: (&str, &str),
+    allowed: Result<(), &str>,
+    topic: &'static str,
+) -> bool {
+    menu_entry(ui, entry, allowed, (true, Some(topic)))
+}
+
+/// Draws an item (in the danger colour, explained by a help topic of its own); returns whether
+/// it was clicked.
 fn menu_entry(
     ui: &mut Ui,
     (glyph, label): (&str, &str),
     allowed: Result<(), &str>,
-    danger: bool,
+    (danger, topic): (bool, Option<&'static str>),
 ) -> bool {
     menu_rows(ui);
     let palette = Palette::of(ui.ctx());
@@ -264,6 +287,9 @@ fn menu_entry(
         egui::WidgetInfo::labeled(egui::WidgetType::Button, allowed.is_ok(), label)
     });
     crate::help::note(ui, response.rect, label);
+    if let Some(topic) = topic {
+        crate::help::note_topic(ui, response.rect, topic);
+    }
     let response = match allowed {
         Err(why) => response.on_disabled_hover_text(why),
         Ok(()) => response,
@@ -291,6 +317,7 @@ pub(crate) fn submenu(
         .right_text(SubMenuButton::RIGHT_ARROW);
     let (response, _) = SubMenuButton::from_button(button).ui(ui, add_contents);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    crate::help::note(ui, response.rect, label);
 }
 
 /// A group's header in a menu: its name in small capitals, muted, over its items, which it
@@ -301,7 +328,7 @@ pub(crate) fn menu_header(ui: &mut Ui, title: &str) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.add_space(ui.spacing().button_padding.x);
-        ui.add(
+        let response = ui.add(
             egui::Label::new(
                 RichText::new(title.to_uppercase())
                     .size(crate::theme::SMALL)
@@ -311,6 +338,7 @@ pub(crate) fn menu_header(ui: &mut Ui, title: &str) {
             )
             .selectable(false),
         );
+        crate::help::note(ui, response.rect, title);
     });
     ui.add_space(4.0);
 }
@@ -1544,6 +1572,7 @@ fn stash_row(
     // Named as it reads: a screen reader hears what the row shows.
     let name = format!("{} · {when}", stash.message);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &name));
+    crate::help::note_topic(ui, response.rect, "stash");
 }
 
 #[cfg(test)]

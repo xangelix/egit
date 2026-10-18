@@ -165,6 +165,14 @@ impl Prompts {
                     .selectable(true)
                     .wrap(),
             );
+            let topic = match kind {
+                PromptKind::Visible => "prompt-user",
+                PromptKind::Secret => "prompt-secret",
+                PromptKind::YesNo => "prompt-host-key",
+                PromptKind::Confirm => "prompt-confirm",
+                PromptKind::Notice => "prompt-notice",
+            };
+            crate::help::note_topic(ui, question.rect, topic);
             ui.add_space(8.0);
             match kind {
                 PromptKind::Visible | PromptKind::Secret => {

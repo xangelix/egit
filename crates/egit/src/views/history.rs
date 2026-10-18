@@ -1020,7 +1020,9 @@ fn submodules_banner(
                             if widgets::icon_tool(ui, true, icon::X, "Dismiss").clicked() {
                                 view.submodules_dismissed = Some(out);
                             }
-                            open_page = widgets::secondary(ui, true, "Show them").clicked();
+                            let show = widgets::secondary(ui, true, "Show them");
+                            crate::help::note_topic(ui, show.rect, "submodules-page");
+                            open_page = show.clicked();
                             if widgets::primary(ui, !shared.busy, "Mend everything")
                             .on_hover_text(
                                 "Sync their addresses, then set up every one and bring it to the \
@@ -2581,6 +2583,7 @@ impl TableDelegate for CommitRows<'_> {
             3 => "Date".to_owned(),
             _ => "Commit".to_owned(),
         };
+        crate::help::note_topic(ui, ui.max_rect(), column_topic(cell.col_range.start));
         // A hairline under the titles, across every column.
         let rect = ui.max_rect();
         ui.painter().hline(
@@ -2672,7 +2675,7 @@ impl TableDelegate for CommitRows<'_> {
         let Some(id) = self.history.id(cell.row_nr) else {
             return;
         };
-        crate::help::note_topic(ui, ui.max_rect(), "history");
+        crate::help::note_topic(ui, ui.max_rect(), column_topic(cell.col_nr));
         if cell.col_nr == 0 {
             self.graph_cell(ui, cell.row_nr, id);
             return;
@@ -2747,6 +2750,17 @@ impl TableDelegate for CommitRows<'_> {
 
     fn default_row_height(&self) -> f32 {
         ROW_HEIGHT
+    }
+}
+
+/// The help topic of the commit table's column `at`.
+pub(crate) const fn column_topic(at: usize) -> &'static str {
+    match at {
+        0 => "history",
+        1 => "message-column",
+        2 => "author-column",
+        3 => "date-column",
+        _ => "commit-column",
     }
 }
 
@@ -3147,7 +3161,7 @@ pub(super) fn dragging(
     badge.dnd_set_drag_payload(DraggedRef(reference.clone()));
     let topic = match reference.kind {
         RefKind::Branch => "branch",
-        RefKind::RemoteBranch => "remote",
+        RefKind::RemoteBranch => "remote-branch",
         RefKind::Tag => "tag",
         RefKind::Other => "history",
     };
@@ -3250,6 +3264,7 @@ fn pull_badges(
             break;
         }
         let response = paint_badge(ui, galley, &look, &label);
+        crate::help::note_topic(ui, response.rect, "pull-request-badge");
         drawn = drawn.saturating_add(1);
         let selected = (badge.repository, badge.number);
         let response = response.on_hover_ui(|ui| {
@@ -3701,7 +3716,7 @@ fn commit_info(
         ui.add_space(8.0);
     }
     ui.spacing_mut().item_spacing.y = 4.0;
-    widgets::fact(ui, DETAIL_LABEL, "Commit", |ui| {
+    widgets::fact_of(ui, DETAIL_LABEL, ("Commit", "commit-name"), |ui| {
         // Within the room the copy button leaves: the details never push the panel wider.
         let room =
             (ui.available_width() - crate::theme::CONTROL - ui.spacing().item_spacing.x).max(0.0);

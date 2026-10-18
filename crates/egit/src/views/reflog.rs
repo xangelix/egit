@@ -325,6 +325,7 @@ fn bar(
                             ask(Ask::Dialog(Dialog::HardReset { at: commit }));
                         }
                     });
+                crate::help::note(ui, response.rect, &name);
                 // Named in words: the caret only shows it opens a menu.
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, can.is_ok(), &name)

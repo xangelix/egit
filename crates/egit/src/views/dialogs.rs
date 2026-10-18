@@ -295,9 +295,24 @@ fn confirm_danger(
 
 /// The dialog's buttons: `yes` (when `ready`), starting `go`, and Cancel.
 fn buttons(ui: &mut Ui, yes: &str, ready: bool, go: impl FnOnce() -> Task) -> Option<Answer> {
+    buttons_of(ui, (yes, None), ready, go)
+}
+
+/// [`buttons`], the first explained by the help topic `topic` where its word alone would
+/// point elsewhere (a worktree's "Lock").
+fn buttons_of(
+    ui: &mut Ui,
+    (yes, topic): (&str, Option<&'static str>),
+    ready: bool,
+    go: impl FnOnce() -> Task,
+) -> Option<Answer> {
     let mut answer = None;
     widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, ready, yes).clicked() {
+        let run = widgets::primary(ui, ready, yes);
+        if let Some(topic) = topic {
+            crate::help::note_topic(ui, run.rect, topic);
+        }
+        if run.clicked() {
             answer = Some(Answer::Run(go()));
         }
         if widgets::secondary(ui, true, "Cancel").clicked() {
@@ -586,7 +601,9 @@ fn set_upstream(
         ui.add_space(4.0);
         ui.horizontal_wrapped(|ui| {
             for choice in offered {
-                if ui.add(crate::widgets::small(choice.as_str())).clicked() {
+                let offer = ui.add(crate::widgets::small(choice.as_str()));
+                crate::help::note_topic(ui, offer.rect, "upstream");
+                if offer.clicked() {
                     picked = Some(choice.clone());
                 }
             }
@@ -1000,5 +1017,5 @@ fn lock_worktree(
     if entered {
         return Some(Answer::Run(go()));
     }
-    buttons(ui, "Lock", true, go)
+    buttons_of(ui, ("Lock", Some("worktree-lock")), true, go)
 }

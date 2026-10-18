@@ -40,6 +40,17 @@ enum Kind {
 }
 
 impl Kind {
+    /// Its help topic.
+    const fn topic(self) -> &'static str {
+        match self {
+            Self::Pick => "rebase-pick",
+            Self::Reword => "rebase-reword",
+            Self::Squash => "rebase-squash",
+            Self::Fixup => "rebase-fixup",
+            Self::Drop => "drop",
+        }
+    }
+
     const ALL: [Self; 5] = [
         Self::Pick,
         Self::Reword,
@@ -504,7 +515,7 @@ fn row(
     move_buttons(ui, view, range, at);
     let keeping = range.merges() > 0;
     let mut kind = planned.kind;
-    egui::ComboBox::from_id_salt(("rebase-step", commit.id))
+    let step = egui::ComboBox::from_id_salt(("rebase-step", commit.id))
         .width(84.0)
         .selected_text(kind.name())
         .show_ui(ui, |ui| {
@@ -514,6 +525,7 @@ fn row(
                 }
             }
         });
+    crate::help::note_topic(ui, step.response.rect, kind.topic());
     if kind != planned.kind {
         view.selected = at;
         view.set_kind(range, kind);

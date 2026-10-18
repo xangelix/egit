@@ -1495,13 +1495,18 @@ fn remote_menu(
             push,
         }));
     }
-    if actions::item(ui, (icon::PENCIL_SIMPLE, "Rename…"), unconfigured) {
+    if actions::item_of(
+        ui,
+        (icon::PENCIL_SIMPLE, "Rename…"),
+        unconfigured,
+        "remote-rename",
+    ) {
         ask(Ask::Dialog(Dialog::RenameRemote {
             old: name.clone(),
             name: shown.clone().into_owned(),
         }));
     }
-    if actions::danger_item(ui, (icon::TRASH, "Remove…"), unconfigured) {
+    if actions::danger_item_of(ui, (icon::TRASH, "Remove…"), unconfigured, "remote-remove") {
         ask(Ask::Dialog(Dialog::RemoveRemote(name.clone())));
     }
     ui.separator();
@@ -1531,6 +1536,7 @@ fn remote_menu(
 fn eye(ui: &Ui, drawing: &Drawing<'_>, rect: Rect, id: Id, seen: bool) -> Response {
     let place = Rect::from_min_max(pos2(rect.right() - EYE, rect.top()), rect.max);
     let response = ui.interact(place, id, Sense::click());
+    crate::help::note_topic(ui, place, "hide-branch");
     let palette = drawing.palette;
     let hovered = response.hovered();
     if hovered {
@@ -1605,7 +1611,7 @@ fn ref_row(
     let (rect, response) = row_sensing(ui, (id, sense), &shown, selected, right);
     let topic = match reference.kind {
         RefKind::Branch => "branch",
-        RefKind::RemoteBranch => "remote",
+        RefKind::RemoteBranch => "remote-branch",
         RefKind::Tag => "tag",
         RefKind::Other => "history",
     };
@@ -1870,7 +1876,7 @@ fn worktree_menu(
     } else {
         other
     };
-    if actions::danger_item(ui, (icon::TRASH, "Remove…"), removing) {
+    if actions::danger_item_of(ui, (icon::TRASH, "Remove…"), removing, "worktree-remove") {
         event = Some(SidebarEvent::Ask(Ask::Dialog(Dialog::RemoveWorktree {
             path: worktree.path.clone(),
             changes: false,

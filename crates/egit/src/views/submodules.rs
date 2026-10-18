@@ -371,7 +371,7 @@ fn details_card(
         ));
     }
     widgets::card(ui, |ui| {
-        widgets::heading(ui, &path.to_str_lossy());
+        widgets::heading_of(ui, &path.to_str_lossy(), "submodules");
         meaning(ui, shared.palette, state.checkout);
         ui.add_space(8.0);
         facts(ui, shared, module, state);
@@ -595,7 +595,9 @@ fn actions(
             {
                 ask(task(SubmoduleTask::Deinit { path: path.clone(), force: false }));
             }
-            if widgets::danger(ui, idle, "Remove…").clicked() {
+            let remove = widgets::danger(ui, idle, "Remove…");
+            crate::help::note_topic(ui, remove.rect, "submodule-remove");
+            if remove.clicked() {
                 view.removing = true;
             }
             return;

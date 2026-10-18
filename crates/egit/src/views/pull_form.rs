@@ -215,6 +215,28 @@ enum Answer {
     Cancel,
 }
 
+/// The repositories it may go into (the branch's own and the one it was forked from), each
+/// picking its default branch as the base.
+fn targets(ui: &mut Ui, targets: &[(ForgeRepository, Option<String>)], form: &mut PullRequestForm) {
+    ui.label(muted(ui, "Into"));
+    for (index, (target, default)) in targets.iter().enumerate() {
+        if crate::widgets::radio_of(
+            ui,
+            form.target == index,
+            target.full_name(),
+            "pull-request-target",
+        )
+        .clicked()
+        {
+            form.target = index;
+            if let Some(default) = default {
+                form.base.clone_from(default);
+            }
+        }
+    }
+    ui.add_space(6.0);
+}
+
 /// The form; its answer, once given.
 fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<Answer> {
     let noun = request_noun(form.head.host().kind());
@@ -257,16 +279,7 @@ fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<
     let mut answer = None;
     if let Some(prepared) = &prepared {
         if prepared.targets.len() > 1 {
-            ui.label(muted(ui, "Into"));
-            for (index, (target, default)) in prepared.targets.iter().enumerate() {
-                if crate::widgets::radio(ui, form.target == index, target.full_name()).clicked() {
-                    form.target = index;
-                    if let Some(default) = default {
-                        form.base.clone_from(default);
-                    }
-                }
-            }
-            ui.add_space(6.0);
+            targets(ui, &prepared.targets, form);
         }
         field(ui, "Base branch", &mut form.base, false);
         field(ui, "Title", &mut form.title, true);

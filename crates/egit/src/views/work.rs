@@ -358,7 +358,7 @@ fn commit_form(
 /// The summary and the description; returns the description's field (⌘Enter there commits).
 fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
     let summary_label = ui.label(muted(ui, "Summary"));
-    crate::help::note_topic(ui, summary_label.rect, "commit");
+    crate::help::note_topic(ui, summary_label.rect, "commit-summary");
     ui.add(
         crate::widgets::line_field(&mut form.summary)
             .hint_text("What it does, in a line")
@@ -376,7 +376,7 @@ fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
         );
     }
     let description_label = ui.label(muted(ui, "Description"));
-    crate::help::note_topic(ui, description_label.rect, "commit");
+    crate::help::note_topic(ui, description_label.rect, "commit-description");
     crate::widgets::bounded_text_area(
         ui,
         crate::widgets::text_area(&mut form.description)
@@ -502,6 +502,7 @@ fn co_author_picker(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add a co-author")
     });
+    crate::help::note(ui, response.rect, "Add a co-author");
     response.on_hover_text(
         "Credit someone else who wrote this commit: a Co-authored-by line at the message's end",
     );
@@ -532,6 +533,7 @@ fn offers(
         let named = format!("{name} <{email}>");
         row.inner
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &named));
+        crate::help::note_topic(ui, row.inner.rect, "co-authors");
         if row.inner.clicked() {
             picked = Some(person.clone());
         }
@@ -634,7 +636,8 @@ fn outcome(ui: &mut Ui, committing: &mut Bind<Committed, Problem>) {
     match committing.read_as_ref() {
         Some(Ok(committed)) if !committed.output.is_empty() && !pending => {
             let output = committed.output.clone();
-            ui.add(Label::new(muted(ui, output).small()).wrap());
+            let said = ui.add(Label::new(muted(ui, output).small()).wrap());
+            crate::help::note_topic(ui, said.rect, "commit-hooks");
         }
         Some(Err(problem)) => {
             let problem = problem.clone();

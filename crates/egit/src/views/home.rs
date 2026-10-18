@@ -117,7 +117,9 @@ fn git_problem(ui: &mut Ui, state: &mut AppState) {
         return;
     };
     widgets::problem_box(ui, &problem, |ui| {
-        if widgets::primary(ui, true, "Try again").clicked() {
+        let again = widgets::primary(ui, true, "Try again");
+        crate::help::note_topic(ui, again.rect, "home-git");
+        if again.clicked() {
             state.actions.push(Action::DetectGit);
         }
         ui.label(muted(

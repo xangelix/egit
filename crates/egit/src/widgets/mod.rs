@@ -16,7 +16,7 @@ use egui::{
 };
 
 pub(crate) use avatar::{avatar, avatars};
-pub(crate) use toggles::{checkbox, radio, radio_value, segmented};
+pub(crate) use toggles::{checkbox, radio, radio_of, radio_value, segmented};
 
 use crate::format::display_path;
 use crate::problem::Problem;
@@ -58,7 +58,17 @@ pub(crate) fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R
 
 /// A card's or a section's title.
 pub(crate) fn heading(ui: &mut Ui, text: &str) -> Response {
-    ui.label(RichText::new(text).size(HEADING).semibold())
+    let response = ui.label(RichText::new(text).size(HEADING).semibold());
+    crate::help::note(ui, response.rect, text);
+    response
+}
+
+/// A heading naming something of the user's (a path, a name), explained by the help topic
+/// `topic` rather than by its words.
+pub(crate) fn heading_of(ui: &mut Ui, text: &str, topic: &'static str) -> Response {
+    let response = ui.label(RichText::new(text).size(HEADING).semibold());
+    crate::help::note_topic(ui, response.rect, topic);
+    response
 }
 
 /// A page's title.
@@ -152,11 +162,13 @@ pub(crate) fn section_title(
     name: &str,
 ) -> Response {
     let palette = Palette::of(ui.ctx());
+    let words = title;
     let (title, count) = section_galleys(ui.painter(), title, count, &palette);
     let width = section_width(&title, count.as_ref());
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, title.size().y.max(PILL)), Sense::hover());
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, name));
+    crate::help::note(ui, rect, words);
     let pill = palette.surface_alt;
     paint_section(
         ui.painter(),
@@ -311,6 +323,26 @@ pub(crate) fn fact<R>(
     .inner
 }
 
+/// A [`fact`] whose label is explained by the help topic `topic` rather than by its word
+/// (the details' "Commit" is a commit's name, not committing).
+pub(crate) fn fact_of<R>(
+    ui: &mut Ui,
+    width: f32,
+    (label, topic): (&str, &'static str),
+    add_value: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), CONTROL),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            let shown = fact_label(ui, width, label, egui::Align::Center);
+            crate::help::note_topic(ui, shown.rect, topic);
+            add_value(ui)
+        },
+    )
+    .inner
+}
+
 /// A fact whose value may take several lines: the label beside the value's first line, both
 /// as far below the row's top (and the last line as far above its bottom) as a one-line
 /// [`fact`]'s text, so facts keep one rhythm.
@@ -375,7 +407,9 @@ fn fact_label(ui: &mut Ui, width: f32, label: &str, align: egui::Align) -> Respo
         egui::Layout::left_to_right(align),
         |ui| {
             ui.set_min_width(width);
-            ui.add(egui::Label::new(text).truncate().selectable(false))
+            let response = ui.add(egui::Label::new(text).truncate().selectable(false));
+            crate::help::note(ui, response.rect, label);
+            response
         },
     )
     .inner
@@ -591,18 +625,23 @@ pub(crate) fn quiet<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// it, and a slim inset, which it hangs into, so its words line up with text beside or above
 /// it.
 pub(crate) fn link(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
-    ui.scope(|ui| {
-        ui.spacing_mut().button_padding = egui::vec2(LINK_INSET, 2.0);
-        ui.add_space(-LINK_INSET);
-        quiet(ui, |ui| {
-            ui.add(
-                Button::new(text)
-                    .frame_when_inactive(false)
-                    .min_size(egui::vec2(0.0, TARGET)),
-            )
+    let text = text.into();
+    let words = text.text().to_owned();
+    let response = ui
+        .scope(|ui| {
+            ui.spacing_mut().button_padding = egui::vec2(LINK_INSET, 2.0);
+            ui.add_space(-LINK_INSET);
+            quiet(ui, |ui| {
+                ui.add(
+                    Button::new(text)
+                        .frame_when_inactive(false)
+                        .min_size(egui::vec2(0.0, TARGET)),
+                )
+            })
         })
-    })
-    .inner
+        .inner;
+    crate::help::note(ui, response.rect, &words);
+    response
 }
 
 /// A link's inset from its hover's edge, which it hangs into.

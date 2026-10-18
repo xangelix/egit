@@ -248,30 +248,37 @@ fn transfers_card(ui: &mut Ui, shared: &Shared<'_>, lfs: &LfsState, ask: &mut im
         );
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
+            // Each explained by LFS's own topic: its words are git's everyday ones.
             let offers = [
                 (
                     "Pull",
                     "Download the current branch's files and check them out",
                     LfsTransfer::Pull,
+                    "lfs-pull",
                 ),
                 (
                     "Fetch",
                     "Download the current branch's files, leaving the work tree as it is",
                     LfsTransfer::Fetch { all: false },
+                    "lfs-fetch",
                 ),
                 (
                     "Fetch every file",
                     "Download the files every branch and commit holds: all history's",
                     LfsTransfer::Fetch { all: true },
+                    "lfs-fetch-all",
                 ),
                 (
                     "Check out",
                     "Replace pointers in the work tree with files already downloaded",
                     LfsTransfer::Checkout,
+                    "lfs-checkout",
                 ),
             ];
-            for (label, hover, transfer) in offers {
-                if widgets::secondary(ui, allowed.is_ok(), label)
+            for (label, hover, transfer, topic) in offers {
+                let offer = widgets::secondary(ui, allowed.is_ok(), label);
+                crate::help::note_topic(ui, offer.rect, topic);
+                if offer
                     .on_hover_text(hover)
                     .on_disabled_hover_text(allowed.err().unwrap_or_default())
                     .clicked()
@@ -280,7 +287,9 @@ fn transfers_card(ui: &mut Ui, shared: &Shared<'_>, lfs: &LfsState, ask: &mut im
                 }
             }
             for remote in &remotes {
-                if widgets::secondary(ui, allowed.is_ok(), &format!("Push to {remote}"))
+                let push = widgets::secondary(ui, allowed.is_ok(), &format!("Push to {remote}"));
+                crate::help::note_topic(ui, push.rect, "lfs-push");
+                if push
                     .on_hover_text(
                         "Upload the files every local branch holds to its LFS store (pushing \
                          commits does it for what they push)",
@@ -504,7 +513,11 @@ fn locks_card(ui: &mut Ui, shared: &Shared<'_>, view: &mut LfsView, ask: &mut im
                         ui.label(muted(ui, format!("{} · {}", lock.owner, lock.locked_at)));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             for (label, force) in [("Force unlock", true), ("Unlock", false)] {
-                                if widgets::secondary(ui, !shared.busy, label).clicked() {
+                                let unlock = widgets::secondary(ui, !shared.busy, label);
+                                if !force {
+                                    crate::help::note_topic(ui, unlock.rect, "lfs-unlock");
+                                }
+                                if unlock.clicked() {
                                     ask(LfsTask::Unlock {
                                         path: lock.path.clone(),
                                         force,

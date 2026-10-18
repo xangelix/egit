@@ -55,7 +55,9 @@ fn appearance(ui: &mut Ui, state: &mut AppState, preferences: &mut Preferences) 
             let mut zoom = preferences.zoom;
             let slider = ui.add(egui::Slider::new(&mut zoom, ZOOM).step_by(10.0).suffix("%"));
             preferences.zoom = zoom;
-            if widgets::secondary(ui, preferences.zoom != 100, "Reset").clicked() {
+            let reset = widgets::secondary(ui, preferences.zoom != 100, "Reset");
+            crate::help::note_topic(ui, reset.rect, "pref-text-size");
+            if reset.clicked() {
                 preferences.zoom = 100;
             }
             ui.label(muted(

@@ -475,6 +475,7 @@ pub(crate) fn status_mark(ui: &mut Ui, word: &str, palette: Palette) -> Response
         _ => ("·", palette.muted),
     };
     let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    crate::help::note_topic(ui, rect, "status-letters");
     ui.painter()
         .rect_filled(rect, crate::theme::RADIUS_INNER, color.gamma_multiply(0.16));
     ui.painter().text(

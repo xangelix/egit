@@ -40,7 +40,24 @@ pub(crate) fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<WidgetTe
 
 /// A radio button, `selected` or not, labelled `text`.
 pub(crate) fn radio(ui: &mut Ui, selected: bool, text: impl Into<WidgetText>) -> Response {
-    toggle(ui, selected, text.into(), Mark::Dot)
+    let text = text.into();
+    let words = text.text().to_owned();
+    let response = toggle(ui, selected, text, Mark::Dot);
+    crate::help::note(ui, response.rect, &words);
+    response
+}
+
+/// A radio button labelled with someone's words (a repository's name), explained by the help
+/// topic `topic` rather than by them.
+pub(crate) fn radio_of(
+    ui: &mut Ui,
+    selected: bool,
+    text: impl Into<WidgetText>,
+    topic: &'static str,
+) -> Response {
+    let response = toggle(ui, selected, text.into(), Mark::Dot);
+    crate::help::note_topic(ui, response.rect, topic);
+    response
 }
 
 /// A radio button picking `value` for `current`.
@@ -188,6 +205,7 @@ pub(crate) fn segmented<T: PartialEq + Copy>(
             vec2(width, CONTROL - 2.0 * edge),
         );
         left += width + SEGMENT_GAP;
+        crate::help::note(ui, place, text);
         let picked = *current == value;
         if segment(
             ui,

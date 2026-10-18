@@ -318,7 +318,9 @@ fn empty(
         Some(problem) => {
             let problem = Problem::new(format!("The {nouns} couldn't be read"), said(problem));
             widgets::problem_box(ui, &problem, |ui| {
-                if widgets::secondary(ui, true, "Try again").clicked() {
+                let again = widgets::secondary(ui, true, "Try again");
+                crate::help::note_topic(ui, again.rect, "pull-request-list");
+                if again.clicked() {
                     event = Some(PullRequestEvent::Refresh);
                 }
             });
@@ -435,6 +437,7 @@ fn row(
         )
     });
     crate::widgets::row_fill(ui, rect, 0.0, selected, response.hovered());
+    crate::help::note_topic(ui, rect, "pull-request-list");
     let mut row = ui.new_child(
         egui::UiBuilder::new()
             .max_rect(rect.shrink2(egui::vec2(8.0, 0.0)))
@@ -598,7 +601,9 @@ fn details(
                     Ok((task, hover)) => (Some(task.clone()), hover.clone()),
                     Err(why) => (None, why.clone()),
                 };
-                if widgets::secondary(ui, allowed.is_some(), "Check out")
+                let button = widgets::secondary(ui, allowed.is_some(), "Check out");
+                crate::help::note_topic(ui, button.rect, "pull-request-check-out");
+                if button
                     .on_hover_text(&hover)
                     .on_disabled_hover_text(&hover)
                     .clicked()
@@ -765,10 +770,11 @@ fn described(
                     .on_hover_text(meaning);
                 ui.add(egui::Label::new(check.name.as_str()).truncate());
                 if let Some(url) = &check.url
-                    && ui
-                        .add(crate::widgets::small(muted(ui, "Details")))
-                        .on_hover_text(url)
-                        .clicked()
+                    && {
+                        let details = ui.add(crate::widgets::small(muted(ui, "Details")));
+                        crate::help::note_topic(ui, details.rect, "pull-request-checks");
+                        details.on_hover_text(url).clicked()
+                    }
                 {
                     event = Some(PullRequestEvent::Open(url.clone()));
                 }
