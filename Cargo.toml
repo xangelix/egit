@@ -29,7 +29,7 @@ egui = "0.36.2"
 egui-async = "0.7.0"
 egui-phosphor = "0.14.0"
 # Ahead of crates.io: rows stay exact past f32 precision (Linux's 1.5M commits).
-egui-table-kit = { git = "https://github.com/xangelix/egui-table-kit", rev = "8497b2e27c2eba3a5548b59fa57d8ff4092dd7e8" }
+egui-table-kit = { git = "https://github.com/xangelix/egui-table-kit", rev = "b6e8761cd1f2476c2df57556be5c9bed252ce86a" }
 egui_kittest = "0.36.2"
 egui_tiles = "0.17.1"
 # Local reads only: no network, no TLS (never `ring`).
