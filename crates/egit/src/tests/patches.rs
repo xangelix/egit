@@ -87,7 +87,9 @@ fn opened(sandbox: &Sandbox, repo: &Path, folder: &Path) -> Harness<'static, Egi
 }
 
 fn patches_menu(harness: &mut Harness<'_, EgitApp>, item: &str) {
-    harness.get_by_label("Patches").click();
+    // By the control, not a point on screen: the top bar may settle its look the frame after
+    // a task ends.
+    harness.get_by_label("Patches").click_accesskit();
     wait_for_label(harness, item);
     harness.get_by_label(item).click();
 }

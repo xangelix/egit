@@ -112,6 +112,18 @@ fn a_fresh_clones_submodules_are_mended_followed_and_recorded() {
         .get_by_label("Update to its branch's latest")
         .click();
     wait_for_label(&mut harness, "Two");
+    // Its outcome under the page, then dismissed: the page's bottom is where it was.
+    wait_for_label(
+        &mut harness,
+        "Brought libs/lib to their branches' latest: record the new commits here (stage them) \
+         to keep them.",
+    );
+    harness
+        .query_all_by_label("Dismiss")
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+        .click();
+    harness.run_steps(2);
     render(&mut harness, "submodules-page");
     assert_eq!(
         std::fs::read_to_string(clone.join("libs/lib/lib")).unwrap(),
