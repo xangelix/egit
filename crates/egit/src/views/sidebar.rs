@@ -863,7 +863,7 @@ pub(super) fn show(
 /// The filter, and the button hiding the sidebar.
 fn header(ui: &mut Ui, view: &mut Sidebar) {
     // In the window's head band, level with the commit table's column titles.
-    crate::widgets::panel_head(ui, |ui| {
+    crate::widgets::panel_head(ui, crate::widgets::Head::Control, |ui| {
         let (_, place) = ui.allocate_space(vec2(TARGET, TARGET));
         let hide = crate::widgets::icon_button(
             ui,

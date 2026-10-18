@@ -2714,3 +2714,124 @@ fn a_merge_request_is_opened_from_a_branch_s_menu_on_gitlab() {
     menu_item(&mut harness, &fresh, "Show merge request !9");
     wait_for_label(&mut harness, "ada wants to merge fresh into main");
 }
+
+/// Double-clicks the label `label` in the details panel (the rightmost one so named: the
+/// commit table's row has the same name).
+fn double_click_in_details(harness: &mut Harness<'_, EgitApp>, label: &str) {
+    let at = harness
+        .query_all_by_role_and_label(Role::Label, label)
+        .map(|node| node.rect().center())
+        .max_by(|a, b| a.x.total_cmp(&b.x))
+        .unwrap();
+    harness.hover_at(at);
+    harness.step();
+    for pressed in [true, false, true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    harness.step();
+}
+
+#[test]
+fn a_commits_message_is_edited_in_place() {
+    const LONG: &str = "Make the parser answer the question it was asked, with a subject long \
+                        enough to wrap";
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "f", "1\n", "Start").unwrap();
+    sandbox
+        .commit_file(
+            &repo,
+            "f",
+            "2\n",
+            &format!("{LONG}\n\nIts description.\nA second line."),
+        )
+        .unwrap();
+    sandbox.commit_file(&repo, "g", "3\n", "Add more").unwrap();
+    // A change staged, which rewording the last commit leaves staged.
+    std::fs::write(repo.join("f"), "staged\n").unwrap();
+    sandbox.run(&repo, "add", &["f"]).unwrap();
+    let message = |sandbox: &Sandbox, at: &str| {
+        let out = sandbox
+            .run(&repo, "log", &["-1", "--format=%B", at])
+            .unwrap();
+        String::from_utf8(out.stdout).unwrap().trim_end().to_owned()
+    };
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+
+    // The last commit's, from the pencil: only its message changes.
+    harness
+        .get_by_role_and_label(Role::Button, "Add more")
+        .click();
+    settle(&mut harness, "the commit's details", |app| {
+        app.state.repos[0].history_view.details_shown()
+    });
+    click_when_enabled(&mut harness, "Edit the message");
+    wait_for_label(&mut harness, "Save message");
+    type_into(&mut harness, Role::TextInput, "Summary", " things");
+    type_into(
+        &mut harness,
+        Role::MultilineTextInput,
+        "Description",
+        "Why it matters.",
+    );
+    render(&mut harness, "message-edit");
+    let short = |sandbox: &Sandbox, at: &str| {
+        let out = sandbox.run(&repo, "rev-parse", &["--short=8", at]).unwrap();
+        String::from_utf8(out.stdout).unwrap().trim_end().to_owned()
+    };
+    let head = short(&sandbox, "HEAD");
+    harness.get_by_label("Save message").click();
+    wait_for_label(&mut harness, &format!("Reworded {head}."));
+    assert_eq!(
+        message(&sandbox, "HEAD"),
+        "Add more things\n\nWhy it matters."
+    );
+    // Still selected: the commit it became.
+    wait_for_label(&mut harness, "Add more things");
+    let staged = sandbox
+        .run(&repo, "diff", &["--cached", "--name-only"])
+        .unwrap()
+        .stdout;
+    assert_eq!(staged, b"f\n");
+
+    // An earlier commit's, by a double click on its subject: a rebase rewording it.
+    sandbox.run(&repo, "reset", &["--hard", "--quiet"]).unwrap();
+    wait_for_label(&mut harness, LONG);
+    harness.run_steps(4);
+    harness.get_by_role_and_label(Role::Button, LONG).click();
+    settle(&mut harness, "the commit's details", |app| {
+        app.state.repos[0].history_view.details_shown()
+    });
+    render(&mut harness, "history-long-message");
+    double_click_in_details(&mut harness, LONG);
+    wait_for_label(&mut harness, "Save message");
+    // The description, a line longer.
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Description")
+        .focus();
+    harness.run_steps(2);
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness
+        .get_by_role_and_label(Role::MultilineTextInput, "Description")
+        .type_text("Its description.\nA second line.\nA third line.");
+    harness.run_steps(2);
+    let earlier = short(&sandbox, "HEAD~1");
+    harness.get_by_label("Save message").click();
+    wait_for_label(&mut harness, &format!("Reworded {earlier}."));
+    assert_eq!(
+        message(&sandbox, "HEAD~1"),
+        format!("{LONG}\n\nIts description.\nA second line.\nA third line.")
+    );
+    assert_eq!(
+        message(&sandbox, "HEAD"),
+        "Add more things\n\nWhy it matters."
+    );
+}

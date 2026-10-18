@@ -975,6 +975,8 @@ pub(crate) struct CommitDetails {
     pub(crate) id: ObjectId,
     pub(crate) commit: Commit,
     pub(crate) changes: Vec<FileChange>,
+    /// Whether `HEAD`'s history holds it (as it stood when read): its message can be reworded.
+    pub(crate) in_head: bool,
 }
 
 /// A file as a file view shows it.
@@ -1146,12 +1148,15 @@ pub(crate) async fn read_details(
                 ));
             }
         };
+        // Read again after a task anyway; a check failing only hides rewording.
+        let in_head = repository.head_reaches(&git, id).unwrap_or(false);
         let changes = commit_changes(&git, &repository, id, commit.parents.first().copied())
             .map_err(|error| Problem::git("The commit's changes couldn't be listed", &error))?;
         Ok(Arc::new(CommitDetails {
             id,
             commit,
             changes,
+            in_head,
         }))
     })
     .await

@@ -536,6 +536,19 @@ fn forwarded_text(task: &Task, forwarded: Forwarded) -> String {
 }
 
 /// What a task that went through did.
+/// How a rewrite of the current branch ended, in words.
+fn rewritten_text(task: &Task) -> String {
+    match task {
+        Task::DropCommit(commit) => format!("Dropped {}.", commit.abbreviated(ID_DIGITS)),
+        Task::SquashIntoParent(commit) => format!(
+            "Squashed {} into its parent.",
+            commit.abbreviated(ID_DIGITS)
+        ),
+        Task::Reword { commit, .. } => format!("Reworded {}.", commit.abbreviated(ID_DIGITS)),
+        _ => "Rebased: the branch is rewritten.".to_owned(),
+    }
+}
+
 fn done_text(task: &Task) -> String {
     let short = |name: &BString| name.to_str_lossy().into_owned();
     match task {
@@ -593,12 +606,10 @@ fn done_text(task: &Task) -> String {
                 _ => format!("Checked out {named}."),
             }
         }
-        Task::InteractiveRebase { .. } => "Rebased: the branch is rewritten.".to_owned(),
-        Task::DropCommit(commit) => format!("Dropped {}.", commit.abbreviated(ID_DIGITS)),
-        Task::SquashIntoParent(commit) => format!(
-            "Squashed {} into its parent.",
-            commit.abbreviated(ID_DIGITS)
-        ),
+        Task::InteractiveRebase { .. }
+        | Task::DropCommit(_)
+        | Task::SquashIntoParent(_)
+        | Task::Reword { .. } => rewritten_text(task),
         Task::SetUpstream {
             branch,
             upstream: Some(upstream),

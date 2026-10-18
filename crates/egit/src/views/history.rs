@@ -193,6 +193,21 @@ pub(crate) struct HistoryView {
     queued: Vec<RepoCommand>,
     /// What the top bar measured last frame.
     bar: BarRoom,
+    /// The selected commit's message being edited in the details, to reword it.
+    message_edit: Option<MessageEdit>,
+    /// A rewrite of the selected commit was asked for: when it is gone from the next history
+    /// read, the selection stays on its row (where its rewritten self is).
+    keep_row: bool,
+}
+
+/// A commit's message being edited in the details: its summary and description as typed.
+#[derive(Debug)]
+struct MessageEdit {
+    commit: ObjectId,
+    summary: String,
+    description: String,
+    /// The summary's field takes the keyboard's focus at first.
+    focus: bool,
 }
 
 /// What can take the commit table's place, besides a changed file.
@@ -296,6 +311,8 @@ impl HistoryView {
             peek: None,
             queued: Vec::new(),
             bar: BarRoom::default(),
+            message_edit: None,
+            keep_row: false,
         }
     }
 
@@ -549,9 +566,14 @@ impl HistoryView {
             reflog.refresh();
         }
         if let Some(selected) = self.selected {
-            self.selected = history
-                .row_of(&selected.id, selected.row)
-                .map(|row| Selected { row, ..selected });
+            self.selected = match history.row_of(&selected.id, selected.row) {
+                Some(row) => Some(Selected { row, ..selected }),
+                // Reworded: the commit in its place is what it became.
+                None if std::mem::take(&mut self.keep_row) => history
+                    .id(selected.row)
+                    .map(|id| Selected { id, ..selected }),
+                None => None,
+            };
         }
         if let Some((row, id)) = self.top.take()
             && row > 0
@@ -2447,7 +2469,9 @@ fn work_details(
         widgets::working(ui, "Reading the work tree…");
         return;
     };
-    widgets::panel_head(ui, |ui| widgets::panel_title(ui, "Working tree"));
+    widgets::panel_head(ui, widgets::Head::Title, |ui| {
+        widgets::panel_title(ui, "Working tree")
+    });
     ui.add_space(4.0);
     let shown = egui::ScrollArea::vertical()
         .id_salt("work-details")
@@ -2466,47 +2490,30 @@ fn work_details(
 fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &mut HistoryView) {
     let peeked = view.peeked();
     let Some(id) = peeked.or_else(|| view.selected.map(|selected| selected.id)) else {
-        widgets::panel_head(ui, |ui| {
+        widgets::panel_head(ui, widgets::Head::Text, |ui| {
             ui.label(muted(ui, "Select a commit to see what it changed."));
         });
         return;
     };
-    if view.details_for != Some(id)
-        && let Some(git) = shared.git
-    {
-        view.details.request(read_details(
-            git.clone(),
-            Arc::clone(shared.repository),
-            history.objects.clone(),
-            id,
-        ));
-        view.details_for = Some(id);
-    }
     let pending = view.details.is_pending();
-    let shown = match view.details.read_as_ref() {
-        None => {
-            widgets::panel_head(ui, |ui| widgets::working(ui, "Reading the commit…"));
-            return;
-        }
-        Some(Err(problem)) => {
-            let problem = problem.clone();
-            widgets::panel_head(ui, |_| {});
-            widgets::problem_box(ui, &problem, |_| {});
-            return;
-        }
-        Some(Ok(details)) => Arc::clone(details),
+    let Some(shown) = read_shown(ui, shared, history, view, id) else {
+        return;
     };
-    // The subject, as the panel's title; while another commit's details are read, a spinner.
-    widgets::panel_head(ui, |ui| {
-        if pending {
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.spinner().on_hover_text("Reading the commit…");
-                widgets::panel_title(ui, shown.commit.subject().to_str_lossy());
-            });
-        } else {
-            widgets::panel_title(ui, shown.commit.subject().to_str_lossy());
-        }
-    });
+    // An edit of another commit's message is left behind with it.
+    if view
+        .message_edit
+        .as_ref()
+        .is_some_and(|edit| edit.commit != shown.id)
+    {
+        view.message_edit = None;
+    }
+    let rewordable = rewordable(shared, &shown);
+    if view.message_edit.is_some() {
+        message_editor(ui, shared, view, &shown, rewordable);
+    } else if message_head(ui, &shown, pending, rewordable) {
+        view.message_edit = Some(MessageEdit::of(&shown));
+    }
+    let editing = view.message_edit.is_some();
     let mut go_to = None;
     let height = ui.available_height();
     egui::ScrollArea::vertical()
@@ -2520,14 +2527,22 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
                 history.signatures.want(git, shared.repository, [shown.id]);
             }
             let check = history.signatures.get(&shown.id);
-            go_to = commit_info(
+            let (parent, description) = commit_info(
                 ui,
-                &shown,
+                (&shown, !editing),
                 history.shown.refs(),
                 check,
                 shared,
                 &mut view.asked,
             );
+            go_to = parent;
+            // A double click on the description edits the message too.
+            if let Some(rect) = description
+                && rewordable == Some(Ok(()))
+                && double_clicked(ui, rect)
+            {
+                view.message_edit = Some(MessageEdit::of(&shown));
+            }
         });
     ui.add_space(8.0);
     let counts = view.counting.of(shared, &shown);
@@ -2559,6 +2574,43 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
             view.tool = None;
         }
         view.select(&history.shown, row, Some(Align::Center));
+    }
+}
+
+/// The details of the commit `id`, asked for when they aren't yet; until they are read (or
+/// when they couldn't be), what is going on instead, and `None`.
+fn read_shown(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    view: &mut HistoryView,
+    id: ObjectId,
+) -> Option<Arc<CommitDetails>> {
+    if view.details_for != Some(id)
+        && let Some(git) = shared.git
+    {
+        view.details.request(read_details(
+            git.clone(),
+            Arc::clone(shared.repository),
+            history.objects.clone(),
+            id,
+        ));
+        view.details_for = Some(id);
+    }
+    match view.details.read_as_ref() {
+        None => {
+            widgets::panel_head(ui, widgets::Head::Text, |ui| {
+                widgets::working(ui, "Reading the commit…");
+            });
+            None
+        }
+        Some(Err(problem)) => {
+            let problem = problem.clone();
+            widgets::panel_head(ui, widgets::Head::Text, |_| {});
+            widgets::problem_box(ui, &problem, |_| {});
+            None
+        }
+        Some(Ok(details)) => Some(Arc::clone(details)),
     }
 }
 
@@ -2600,23 +2652,207 @@ fn files_heading(
     });
 }
 
-/// The commit's message, names, people, and refs (`all` holds them; their menus' answer goes
-/// to `asked`); returns a parent the user chose to go to.
-fn commit_info(
+impl MessageEdit {
+    /// An edit of `details`'s message, as it stands.
+    fn of(details: &CommitDetails) -> Self {
+        Self {
+            commit: details.id,
+            summary: details.commit.subject().to_str_lossy().into_owned(),
+            description: details
+                .commit
+                .body()
+                .trim_ascii()
+                .to_str_lossy()
+                .into_owned(),
+            focus: true,
+        }
+    }
+
+    /// The message it makes: the summary, then the description after a blank line.
+    fn message(&self) -> String {
+        let summary = self.summary.trim();
+        let description = self.description.trim();
+        if description.is_empty() {
+            summary.to_owned()
+        } else {
+            format!("{summary}\n\n{description}")
+        }
+    }
+}
+
+/// Whether the shown commit's message can be reworded here: `None` when it isn't on the
+/// branch checked out (nothing offered), else allowed or why not.
+fn rewordable(shared: &Shared<'_>, details: &CommitDetails) -> Option<Result<(), &'static str>> {
+    if !details.in_head {
+        return None;
+    }
+    Some(if shared.branch().is_none() {
+        Err("Switch to a branch first: rewording rewrites one")
+    } else if shared.busy {
+        Err("Wait for the running task")
+    } else if shared.operation.is_some() {
+        Err("Finish or abort what is in progress first")
+    } else {
+        Ok(())
+    })
+}
+
+/// Whether the pointer double-clicked in `rect` this frame; under the pointer, `rect` shows it
+/// can be: a faint fill and a text cursor.
+fn double_clicked(ui: &Ui, rect: Rect) -> bool {
+    let hovered = ui.rect_contains_pointer(rect);
+    if hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Text);
+        ui.painter().rect_filled(
+            rect,
+            crate::theme::RADIUS_BOX,
+            Palette::of(ui.ctx()).selected_hover,
+        );
+    }
+    hovered
+        && ui.input(|input| {
+            input
+                .pointer
+                .button_double_clicked(egui::PointerButton::Primary)
+        })
+}
+
+/// The panel's title, the commit's subject (a double click edits it, when it can be), with a
+/// button editing the message at its right, or a spinner while another commit is read.
+/// Returns whether editing was asked for.
+fn message_head(
     ui: &mut Ui,
     details: &CommitDetails,
+    pending: bool,
+    rewordable: Option<Result<(), &'static str>>,
+) -> bool {
+    let mut edit = false;
+    let title = widgets::panel_head(ui, widgets::Head::Title, |ui| {
+        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+            if pending {
+                ui.spinner().on_hover_text("Reading the commit…");
+            } else if let Some(allowed) = rewordable {
+                let button = widgets::icon_tool(
+                    ui,
+                    allowed.is_ok(),
+                    icon::PENCIL_SIMPLE,
+                    "Edit the message",
+                );
+                let button = match allowed {
+                    Ok(()) => button.on_hover_text("Edit the message (or double-click it)"),
+                    Err(why) => button.on_disabled_hover_text(why),
+                };
+                edit |= button.clicked();
+            }
+            ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
+                widgets::panel_title(ui, details.commit.subject().to_str_lossy())
+                    .rect
+                    .expand2(egui::vec2(6.0, 4.0))
+            })
+            .inner
+        })
+        .inner
+    });
+    if rewordable == Some(Ok(())) && double_clicked(ui, title) {
+        edit = true;
+    }
+    edit
+}
+
+/// The message being edited: its summary and description in fields, what rewording does, and
+/// Save message (⌘Enter) or Cancel (Escape).
+fn message_editor(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    view: &mut HistoryView,
+    details: &CommitDetails,
+    rewordable: Option<Result<(), &'static str>>,
+) {
+    let Some(edit) = view.message_edit.as_mut() else {
+        return;
+    };
+    widgets::panel_head(ui, widgets::Head::Title, |ui| {
+        widgets::panel_title(ui, "Edit the message")
+    });
+    let label = ui.label(muted(ui, "Summary"));
+    let summary = ui
+        .add(
+            widgets::line_field(&mut edit.summary)
+                .hint_text("What it does, in a line")
+                .desired_width(f32::INFINITY),
+        )
+        .labelled_by(label.id);
+    if std::mem::take(&mut edit.focus) {
+        summary.request_focus();
+    }
+    ui.add_space(4.0);
+    let label = ui.label(muted(ui, "Description"));
+    let description = ui
+        .add(widgets::text_area(&mut edit.description).desired_rows(5))
+        .labelled_by(label.id);
+    let branch = shared.branch().map_or_else(
+        || "the branch".to_owned(),
+        |name| name.to_str_lossy().into_owned(),
+    );
+    let what = if shared.head_commit() == Some(details.id) {
+        "Only its message changes; what is staged stays staged.".to_owned()
+    } else {
+        format!("Rewrites {branch} from this commit: it and the commits after it get new names.")
+    };
+    ui.add_space(4.0);
+    ui.add(Label::new(muted(ui, what).small()).wrap());
+    ui.add_space(8.0);
+    let focused = [&summary, &description]
+        .iter()
+        .any(|field| field.has_focus() || field.lost_focus());
+    let ready = rewordable == Some(Ok(())) && !edit.summary.trim().is_empty();
+    let (mut save, mut cancel) = (false, false);
+    // A row of its own, its buttons at its right.
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), crate::theme::CONTROL),
+        Layout::right_to_left(Align::Center),
+        |ui| {
+            save = widgets::primary(ui, ready, "Save message").clicked();
+            cancel = widgets::secondary(ui, true, "Cancel").clicked();
+        },
+    );
+    save |=
+        ready && focused && ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Enter));
+    cancel |= focused && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+    if save {
+        let message = edit.message();
+        view.asked = Some(Ask::Task(crate::tasks::Task::Reword {
+            commit: details.id,
+            message,
+        }));
+        view.message_edit = None;
+        view.keep_row = true;
+    } else if cancel {
+        view.message_edit = None;
+    }
+    ui.add_space(8.0);
+}
+
+/// The commit's description (unless `described` is false: it is being edited), names, people,
+/// and refs (`all` holds them; their menus' answer goes to `asked`); returns a parent the user
+/// chose to go to, and where the description is.
+fn commit_info(
+    ui: &mut Ui,
+    (details, described): (&CommitDetails, bool),
     all: &Refs,
     check: Option<&SignatureCheck>,
     shared: &Shared<'_>,
     asked: &mut Option<Ask>,
-) -> Option<ObjectId> {
+) -> (Option<ObjectId>, Option<Rect>) {
     let commit = &details.commit;
     let refs = all.at(&details.id);
     let mut go_to = None;
     // The description apart from the subject (the panel's title): a box of its own.
     let body = commit.body().trim_ascii();
-    if !body.is_empty() {
-        widgets::text_box(ui, |ui| ui.add(Label::new(body.to_str_lossy()).wrap()));
+    let mut description = None;
+    if described && !body.is_empty() {
+        let shown = widgets::text_box(ui, |ui| ui.add(Label::new(body.to_str_lossy()).wrap()));
+        description = Some(shown.rect.expand(12.0));
         ui.add_space(8.0);
     }
     ui.spacing_mut().item_spacing.y = 4.0;
@@ -2676,7 +2912,7 @@ fn commit_info(
             ui.horizontal_wrapped(|ui| badges(ui, (refs, None), &menus, shared.palette, asked));
         });
     }
-    go_to
+    (go_to, description)
 }
 
 /// What checking a commit's signature found: the verdict, who signed it, and with which key.

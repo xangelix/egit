@@ -34,7 +34,7 @@ const FIELD_INSET: i8 = 8;
 const PAGE_TITLE: f32 = 22.0;
 
 /// A panel's or a dialog's title.
-pub(crate) const PANEL_TITLE: f32 = 16.0;
+pub(crate) const PANEL_TITLE: f32 = 15.0;
 
 /// The width of a fact's label column: facts in different cards line up.
 pub(crate) const FACT_LABEL: f32 = 112.0;
@@ -66,19 +66,49 @@ pub(crate) fn page_title(ui: &mut Ui, text: &str) -> Response {
 
 /// The height of a panel's first row (the sidebar's filter, the commit table's column titles,
 /// the details' title): one band across the window, so the panels' first rows line up.
-pub(crate) const HEAD: f32 = 32.0;
+pub(crate) const HEAD: f32 = 40.0;
 
-/// A panel's first row: [`HEAD`] tall (taller only for what wraps), `add_contents` laid out
-/// from the left, centred on it.
-pub(crate) fn panel_head<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), HEAD),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_height(HEAD);
-            add_contents(ui)
-        },
-    )
+/// What a panel's first row holds, by its first line's height: a control (a field), a title, or
+/// text.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Head {
+    Control,
+    Title,
+    Text,
+}
+
+/// A panel's first row: [`HEAD`] tall, `add_contents` laid out from the left, its first line
+/// centred on the band; what wraps grows downwards, its first line staying where it is, as far
+/// below the panel's top as a single line's.
+pub(crate) fn panel_head<R>(
+    ui: &mut Ui,
+    holds: Head,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let line = match holds {
+        Head::Control => CONTROL,
+        Head::Title => ui.fonts_mut(|fonts| {
+            fonts.row_height(&egui::FontId::new(PANEL_TITLE, Weight::SemiBold.family()))
+        }),
+        Head::Text => ui.text_style_height(&egui::TextStyle::Body),
+    };
+    let inset = ((HEAD - line) / 2.0).max(0.0);
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.add_space(inset);
+        let inner = ui
+            .allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), line),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    ui.set_min_height(line);
+                    add_contents(ui)
+                },
+            )
+            .inner;
+        ui.add_space(inset);
+        inner
+    })
     .inner
 }
 

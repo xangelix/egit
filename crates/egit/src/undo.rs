@@ -564,6 +564,7 @@ const fn moves_head(task: &Task) -> bool {
             | Task::InteractiveRebase { .. }
             | Task::DropCommit(_)
             | Task::SquashIntoParent(_)
+            | Task::Reword { .. }
             | Task::FastForward { .. }
             | Task::ApplyPatch { .. }
             | Task::Pull(_)
@@ -772,6 +773,7 @@ fn moved_words(task: &Task) -> String {
         Task::InteractiveRebase { .. } => "the interactive rebase".to_owned(),
         Task::DropCommit(commit) => format!("dropping {}", short(commit)),
         Task::SquashIntoParent(commit) => format!("squashing {} into its parent", short(commit)),
+        Task::Reword { commit, .. } => format!("rewording {}", short(commit)),
         Task::FastForward { shown, .. } => format!("the fast-forward to {shown}"),
         Task::ApplyPatch { commits: 1, .. } => "applying the patch".to_owned(),
         Task::ApplyPatch { commits, .. } => format!("applying {commits} patches"),

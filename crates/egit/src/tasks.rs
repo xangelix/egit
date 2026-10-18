@@ -28,9 +28,9 @@ use egit_git::{
     fast_forward_branch, fast_forward_current, fetch, fetch_refspecs, fetch_remote, format_patch,
     format_patches, lock_worktree, merge, prune_worktrees, pull, push, push_tag, rebase,
     rebase_interactive, rebase_keeping_merges, rebase_range, remove_remote, remove_worktree,
-    rename_branch, rename_remote, reset, revert, set_config, set_remote_url, set_upstream,
-    skip_operation, stash_apply, stash_drop, stash_push, switch, unlock_worktree, unset_config,
-    update_submodules,
+    rename_branch, rename_remote, reset, revert, reword_head, set_config, set_remote_url,
+    set_upstream, skip_operation, stash_apply, stash_drop, stash_push, switch, unlock_worktree,
+    unset_config, update_submodules,
 };
 use egui_async::Bind;
 use parking_lot::Mutex;
@@ -116,6 +116,12 @@ pub(crate) enum Task {
     DropCommit(ObjectId),
     /// Squash a commit into its parent (their messages joined).
     SquashIntoParent(ObjectId),
+    /// Give a commit of the current branch a new message: `HEAD`'s by amending only its message
+    /// (what is staged stays staged), an earlier one's by a rebase rewording it.
+    Reword {
+        commit: ObjectId,
+        message: String,
+    },
     /// Reset the current branch to a commit.
     Reset(ObjectId, ResetMode),
     /// Tag a commit: annotated with a message, or lightweight.
@@ -326,6 +332,7 @@ impl Task {
             Self::DropCommit(_) => "Dropping the commit",
             Self::Bisect { .. } => "Bisecting",
             Self::SquashIntoParent(_) => "Squashing",
+            Self::Reword { .. } => "Rewording",
             Self::CherryPick(_) => "Cherry-picking",
             Self::Revert(_) => "Reverting",
             Self::Reset(..) => "Resetting",
@@ -631,9 +638,10 @@ fn run(
         | Task::ApplyPatch { .. }
         | Task::Skip(_)
         | Task::Bisect { .. } => history(git, repository, task, cancel),
-        Task::InteractiveRebase { .. } | Task::DropCommit(_) | Task::SquashIntoParent(_) => {
-            rewrite(git, repository, task, cancel)
-        }
+        Task::InteractiveRebase { .. }
+        | Task::DropCommit(_)
+        | Task::SquashIntoParent(_)
+        | Task::Reword { .. } => rewrite(git, repository, task, cancel),
         Task::Switch(_)
         | Task::StashAndSwitch(_)
         | Task::CreateBranch { .. }
@@ -925,6 +933,26 @@ fn rewrite(
             (
                 range.base,
                 planned(&range, |id| (id == *commit).then_some(Step::Squash)),
+                range.merges() > 0,
+            )
+        }
+        Task::Reword { commit, message } => {
+            // `HEAD`'s own: its message amended, nothing else (a rebase would refuse while
+            // files are changed).
+            let head = repository
+                .head_ref(git)
+                .map_err(|error| Problem::git("HEAD couldn't be read", &error))?;
+            if head.commit == Some(*commit) {
+                return reword_head(git, repository, message, cancel)
+                    .map(|_| Outcome::Done)
+                    .or_else(failed("The message couldn't be changed"));
+            }
+            let range = range(*commit)?;
+            (
+                range.base,
+                planned(&range, |id| {
+                    (id == *commit).then(|| Step::Reword(message.clone()))
+                }),
                 range.merges() > 0,
             )
         }
