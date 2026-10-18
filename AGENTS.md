@@ -35,6 +35,7 @@ it.
 | 21 | Ergonomics: one look for every control | done; awaiting the owner's review |
 | 22 | Readability: weights, surfaces, a tree, menus that scan | done; awaiting the owner's review |
 | 23 | Alignment: to the point, edges, corners, padding | done; awaiting the owner's review |
+| 24 | Follow-ups: scrolling, tabs, the details' head, rewording in place | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -166,7 +167,8 @@ writes paths), never `OsStrExt`.
     paths inside `.git`), `head` (`symbolic-ref`, then `for-each-ref` on that exact ref for the
     commit and `%(upstream:track)`, or `log -1` when detached), `head_ref` (`HeadRef`: just
     the branch's full name and the commit, by `symbolic-ref` and `rev-parse`, without the
-    upstream's ahead and behind), and `operations` (merge, rebase, am, cherry-pick, revert,
+    upstream's ahead and behind), `head_reaches` (whether `HEAD`'s history holds a commit:
+    `merge-base --is-ancestor`), and `operations` (merge, rebase, am, cherry-pick, revert,
     bisect from their state files in the git dir).
   - `config.rs` — `ConfigSnapshot::read(git, ConfigPlace::{User, Repository})`: one
     `git config --list --show-origin --show-scope --null`, kept as one buffer the entries point
@@ -264,7 +266,8 @@ writes paths), never `OsStrExt`.
     starting with `#` is kept), `NewCommit`'s amend, sign-off, and signing (`-S`,
     `--no-gpg-sign`, or the configuration's choice); a passphrase is asked through askpass,
     labelled "Signing the commit"; `Committed::output` is what git and its hooks printed (a
-    refusal's whole standard error is on the failure).
+    refusal's whole standard error is on the failure). `reword_head`: `HEAD`'s message alone
+    (`commit --amend --only --allow-empty`: what is staged stays staged, out of it).
   - `signatures.rs` — `check_signatures`: some commits' signatures checked as `git log
     --show-signature` checks them (`log --no-walk=unsorted --stdin -z
     --format=%H%x1f%G?%x1f%GS%x1f%GK`, `log.showSignature` off), each by its format's program;
@@ -765,7 +768,9 @@ writes paths), never `OsStrExt`.
     push a branch or a tag, delete a remote's branch, abort or continue an operation,
     remember `pull.rebase` then pull; switch, stash then switch, create, rename, or delete a
     branch, tag or delete a tag; merge, rebase onto, cherry-pick, revert, reset; rebase
-    interactively, drop a commit, squash one into its parent (their plans made in the job from
+    interactively, drop a commit, squash one into its parent, reword one (`Reword`: `HEAD`'s by
+    `reword_head`, which uncommitted changes don't stop, an earlier one's by a rebase) (their
+    plans made in the job from
     `rebase_range`; `range_problem` says why a range won't do); stash, apply or pop or drop a
     stash; `Action::Task`), run by `run` through five groups (remotes, history, rewriting,
     references, stashes), under the `WriteLock`, its `Progress` shown and
@@ -853,8 +858,8 @@ writes paths), never `OsStrExt`.
     capped at 300 points). The look is chosen from `BarRoom`: the left part's width drawn
     compact last frame (room kept for the uncommitted files' button and the spinner, so their
     coming never changes it) plus what the tools' words add (`widgets::tool_width`), against
-    the room the task bar leaves (its idle width while a task runs): never flipping back and
-    forth; the left part is clipped to its room. Then the
+    the room the task bar leaves (its idle width), and held while a task runs: never flipping
+    back and forth; the left part is clipped to its room. Then the
     commit table on egui-table-kit's layout `Table` (its `TableKit` keeps per-row state a
     graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
@@ -874,8 +879,14 @@ writes paths), never `OsStrExt`.
     of its own (`widgets::text_box`), then facts: names,
     parents (buttons: egui announces links as plain text), each person (the name, leading,
     the email beneath, muted) and their date as a fact of its own, the signature (its
-    verdict, signer, and key), refs;
-    and the changed files under a section title ("Changed files" with their count, the lines
+    verdict, signer, and key), refs. A commit of the branch checked out (`CommitDetails::in_head`,
+    read with them) has its message edited in place: a double click on its subject or
+    description (they show it under the pointer), or the pencil at the title's right (named
+    "Edit the message", saying why not while a task runs, an operation is in progress, or
+    `HEAD` is detached), turns them into a summary field and a description (`MessageEdit`),
+    what rewording does (`HEAD`'s: only its message; an earlier one's: a rebase giving it and
+    what follows new names), Save message (⌘Enter) or Cancel (Escape); saving runs `Reword`,
+    the selection staying on its row (`keep_row`); and the changed files under a section title ("Changed files" with their count, the lines
     gained and lost at its right; named "3 files changed") in a box (`widgets::list_box`,
     `ChangesTable`), with the lines each gained and lost once counted
     (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
@@ -1157,8 +1168,10 @@ writes paths), never `OsStrExt`.
     border, their corners rounded to follow its), `bar` (a view's bar: the chrome's tone, its
     controls 12 points from its sides and 6 from its top and bottom, a hairline under it,
     nothing spaced from it, so stacked bars make one strip and every view's back button is in
-    one place), `panel_head` and `HEAD` (a panel's first row, 32 points: the sidebar's filter,
-    the commit table's column titles, the details' title line up across the window), facts in
+    one place), `panel_head` and `HEAD` (a panel's first row, 40 points: the sidebar's filter,
+    the commit table's column titles, the details' title line up across the window; its first
+    line centred on the band, by what it holds (`Head`: a control, a title, text), and what
+    wraps grows downwards, keeping that line's room above it), facts in
     aligned columns (`fact`, `fact_top` (its first line as far down as a one-line fact's, so
     facts keep one rhythm),
     `form_row` naming its field; `FACT_LABEL` on pages), `line_field` one-line fields a
