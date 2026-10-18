@@ -1372,6 +1372,9 @@ fn side_panel(
             view.show_commit(&history.shown, commit);
         }
         Some(SidebarEvent::Open(path)) => actions.push(Action::Open(path)),
+        Some(SidebarEvent::Reveal(path)) => {
+            actions.push(Action::Reveal(path, crate::desktop::Reveal::Open));
+        }
         Some(SidebarEvent::Submodules) => view.show_submodules(),
         None => {}
     }
@@ -1724,6 +1727,10 @@ fn repository_menu(
         }
         if actions::item(ui, (icon::HARD_DRIVES, "Git LFS"), Ok(())) {
             page = Some(Page::Lfs);
+        }
+        if actions::item(ui, (icon::FOLDER_OPEN, "Open the folder"), Ok(())) {
+            let work_tree = shared.repository.work_tree().to_owned();
+            actions.push(Action::Reveal(work_tree, crate::desktop::Reveal::Open));
         }
         ui.separator();
         if actions::shortcut_item(ui, (icon::ARROWS_CLOCKWISE, "Read it again"), "⌘R") {
@@ -3634,6 +3641,13 @@ fn work_details(
         }
         Some(WorkEvent::Ignore(ignore)) => {
             actions.push(Action::Task(shared.id, crate::tasks::Task::Ignore(ignore)));
+        }
+        Some(WorkEvent::Reveal(path, how)) => {
+            let work_tree = shared.repository.work_tree();
+            actions.push(Action::Reveal(
+                crate::desktop::in_work_tree(work_tree, path.as_ref()),
+                how,
+            ));
         }
         None => {}
     }

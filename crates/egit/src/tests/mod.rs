@@ -20,6 +20,7 @@ mod people;
 mod picked;
 mod pictures;
 mod polish;
+mod reveal;
 mod scale;
 mod screens;
 mod scrolling;

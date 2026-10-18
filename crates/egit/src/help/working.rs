@@ -438,6 +438,37 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "reveal",
+        group: Group::Everyday,
+        title: "Opening files and folders",
+        on: &[
+            "Open file",
+            "Show in folder",
+            "Open the folder",
+            "Open its folder",
+        ],
+        what: "Hands a file of the work tree to the desktop: Open file opens it in the app your \
+               desktop opens it with (as a double click would), Show in folder opens your file \
+               manager with it picked out, and Open the folder opens a folder there. It is \
+               always the work tree's file as it is now, even from a commit's file view.",
+        git: "nothing: xdg-open (gio open), the file manager's ShowItems over D-Bus; open and \
+              open -R on macOS; Explorer (/select) on Windows",
+        cases: &[
+            (
+                "The file is gone from the work tree?",
+                "Its nearest folder still there opens instead.",
+            ),
+            (
+                "It opens in the wrong app?",
+                "That is the desktop's choice for the file's type: change its default app there.",
+            ),
+            (
+                "Show in folder only opened the folder?",
+                "Your file manager doesn't answer the freedesktop ShowItems call over D-Bus, so egit opens the folder instead.",
+            ),
+        ],
+    },
+    Topic {
         id: "discard-lines",
         group: Group::Everyday,
         title: "Discarding lines or a hunk",

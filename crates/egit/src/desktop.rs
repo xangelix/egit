@@ -1,11 +1,15 @@
 //! Handing things to the desktop: a web page to the user's browser, through the desktop's
 //! opener (`xdg-open`, else `gio open`; macOS's `open`; Windows' URL handler), off the interface
-//! thread; and the desktop's file dialogs: where a file is saved, a folder, the files to open.
+//! thread; a file of the work tree opened in its app, or shown in its folder (the file
+//! manager's `ShowItems` over D-Bus, `open -R`, `explorer /select`); and the desktop's file
+//! dialogs: where a file is saved, a folder, the files to open.
 
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
+use bstr::{BStr, ByteSlice as _};
 use egit_git::{Changes, ObjectId};
 use egui_async::Bind;
 
@@ -13,18 +17,29 @@ use crate::jobs;
 use crate::problem::Problem;
 use crate::repo::RepoId;
 
-/// Where web pages go: the user's browser, or (for tests) a list of them.
+/// Where web pages and files go: the user's browser and file manager, or (for tests) a list.
 #[derive(Debug, Default)]
 pub(crate) struct Opener {
     recorded: Option<Vec<String>>,
+    revealed: Option<Vec<(Reveal, PathBuf)>>,
+}
+
+/// What is done with a file or folder of the user's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reveal {
+    /// Opened in the app the desktop opens it with (a folder in the file manager).
+    Open,
+    /// Shown in its folder, picked out (its folder opened, where that can't be).
+    InFolder,
 }
 
 impl Opener {
-    /// An opener that only lists the pages, starting no browser.
+    /// An opener that only lists the pages and files, starting nothing.
     #[cfg(test)]
     pub(crate) const fn recording() -> Self {
         Self {
             recorded: Some(Vec::new()),
+            revealed: Some(Vec::new()),
         }
     }
 
@@ -32,6 +47,24 @@ impl Opener {
     #[cfg(test)]
     pub(crate) fn recorded(&self) -> &[String] {
         self.recorded.as_deref().unwrap_or_default()
+    }
+
+    /// The files listed, by a recording opener.
+    #[cfg(test)]
+    pub(crate) fn revealed(&self) -> &[(Reveal, PathBuf)] {
+        self.revealed.as_deref().unwrap_or_default()
+    }
+
+    /// Opens `path` (absolute) in its app, or shows it in its folder.
+    pub(crate) fn reveal(&mut self, path: PathBuf, how: Reveal) {
+        if !path.is_absolute() {
+            tracing::warn!(?path, "not opening a path that isn't absolute");
+            return;
+        }
+        match &mut self.revealed {
+            Some(revealed) => revealed.push((how, path)),
+            None => jobs::detached(move || reveal(&path, how)),
+        }
     }
 
     /// Opens `url` if it is a web page.
@@ -226,29 +259,180 @@ const OPENERS: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
 
 /// Opens `url` in the user's browser; a failure is logged (the desktop has no opener).
 fn open_web_page(url: &str) {
+    if !hand_over(OsStr::new(url)) {
+        tracing::warn!(
+            url,
+            "the page couldn't be opened: the desktop has no opener"
+        );
+    }
+}
+
+/// Hands `target` (a page, or an absolute path) to the first of [`OPENERS`] that takes it.
+fn hand_over(target: &OsStr) -> bool {
     for &(program, args) in OPENERS {
         let opened = Command::new(program)
             .args(args)
-            .arg(url)
+            .arg(target)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
         match opened {
-            Ok(status) if status.success() => return,
-            Ok(status) => tracing::warn!(program, %status, "the desktop didn't open a page"),
+            Ok(status) if status.success() => return true,
+            Ok(status) => tracing::warn!(program, %status, "the desktop didn't open it"),
             Err(error) => tracing::debug!(program, %error, "no desktop opener"),
         }
     }
-    tracing::warn!(
-        url,
-        "the page couldn't be opened: the desktop has no opener"
-    );
+    false
+}
+
+/// A path of the work tree (`/`-separated, as git writes it) on this system.
+pub(crate) fn in_work_tree(work_tree: &Path, path: &BStr) -> PathBuf {
+    path.split_str("/")
+        .filter(|part| !part.is_empty())
+        .fold(work_tree.to_owned(), |path, part| {
+            path.join(part.to_os_str_lossy())
+        })
+}
+
+/// Opens `path` in its app, or shows it in its folder; what is gone shows the nearest folder
+/// still there. A failure is logged.
+fn reveal(path: &Path, how: Reveal) {
+    let (path, how) = if path.exists() {
+        (path, how)
+    } else {
+        let Some(folder) = path.ancestors().find(|folder| folder.is_dir()) else {
+            return;
+        };
+        (folder, Reveal::Open)
+    };
+    let done = match how {
+        Reveal::Open => open_path(path),
+        Reveal::InFolder => show_in_folder(path),
+    };
+    if !done {
+        tracing::warn!(?path, ?how, "the desktop couldn't show it");
+    }
+}
+
+/// Opens `path` in its app: the desktop's opener (Explorer on Windows, which opens a file
+/// as a double click would).
+fn open_path(path: &Path) -> bool {
+    if cfg!(windows) {
+        // Explorer's exit status says nothing: started is all there is to know.
+        return Command::new("explorer").arg(path).spawn().is_ok();
+    }
+    hand_over(path.as_os_str())
+}
+
+/// Shows `path` picked out in its folder: Finder's `open -R`.
+#[cfg(target_os = "macos")]
+fn show_in_folder(path: &Path) -> bool {
+    Command::new("open")
+        .arg("-R")
+        .arg(path)
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Shows `path` picked out in its folder: `explorer /select,"<path>"` (Explorer reads that
+/// argument itself, so it is passed as it is).
+#[cfg(windows)]
+fn show_in_folder(path: &Path) -> bool {
+    use std::os::windows::process::CommandExt as _;
+    let mut select = std::ffi::OsString::from("/select,\"");
+    select.push(path);
+    select.push("\"");
+    Command::new("explorer").raw_arg(select).spawn().is_ok()
+}
+
+/// Shows `path` picked out in its folder: the file manager's `ShowItems` over D-Bus (through
+/// `gdbus`, else `dbus-send`), else its folder opened.
+#[cfg(not(any(target_os = "macos", windows)))]
+fn show_in_folder(path: &Path) -> bool {
+    let uri = file_uri(path);
+    let asked: [(&str, Vec<String>); 2] = [
+        (
+            "gdbus",
+            vec![
+                "call".into(),
+                "--session".into(),
+                "--dest".into(),
+                "org.freedesktop.FileManager1".into(),
+                "--object-path".into(),
+                "/org/freedesktop/FileManager1".into(),
+                "--method".into(),
+                "org.freedesktop.FileManager1.ShowItems".into(),
+                format!("['{uri}']"),
+                // The startup id: an empty string, as GVariant text.
+                "''".into(),
+            ],
+        ),
+        (
+            "dbus-send",
+            vec![
+                "--session".into(),
+                "--print-reply".into(),
+                "--dest=org.freedesktop.FileManager1".into(),
+                "/org/freedesktop/FileManager1".into(),
+                "org.freedesktop.FileManager1.ShowItems".into(),
+                format!("array:string:{uri}"),
+                "string:".into(),
+            ],
+        ),
+    ];
+    for (program, args) in asked {
+        let shown = Command::new(program)
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if shown.is_ok_and(|status| status.success()) {
+            return true;
+        }
+    }
+    path.parent()
+        .is_some_and(|folder| hand_over(folder.as_os_str()))
+}
+
+/// `path` as a `file://` address, every byte but the unreserved and `/` escaped (so no quote
+/// or comma reaches D-Bus's argument syntax).
+#[cfg(not(any(target_os = "macos", windows)))]
+fn file_uri(path: &Path) -> String {
+    use std::fmt::Write as _;
+    let mut uri = String::from("file://");
+    for byte in path.as_os_str().as_encoded_bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-._~".contains(byte) {
+            uri.push(char::from(*byte));
+        } else {
+            let _ = write!(uri, "%{byte:02X}");
+        }
+    }
+    uri
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(any(target_os = "macos", windows)))]
+    #[test]
+    fn paths_become_file_addresses_escaped() {
+        assert_eq!(
+            file_uri(Path::new("/home/ada/my repo/a'b,c/日.rs")),
+            "file:///home/ada/my%20repo/a%27b%2Cc/%E6%97%A5.rs"
+        );
+    }
+
+    #[test]
+    fn work_tree_paths_take_the_system_s_separators() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            in_work_tree(root, "src/core/a.c".into()),
+            root.join("src").join("core").join("a.c")
+        );
+    }
 
     #[test]
     fn only_web_pages_are_opened() {

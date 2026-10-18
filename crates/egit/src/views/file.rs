@@ -22,6 +22,7 @@ use super::dialogs::Dialog;
 use super::history::{ID_DIGITS, Shared};
 use super::merge::{self, MergeView};
 use crate::app::Action;
+use crate::desktop::Reveal;
 use crate::diff::{
     DiffDocument, LfsChange, SplitDiff, read_diff, read_uncommitted_diff, split_diff,
 };
@@ -503,7 +504,7 @@ pub(super) fn show(
         || file.merge.as_ref().is_some_and(MergeView::takes_escape);
     let mut open =
         selecting || !ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
-    file_bar(ui, shared, file, &mut open);
+    file_bar(ui, shared, file, &mut open, actions);
     work_bar(ui, shared, file, actions);
     if let Some(merging) = &mut file.merge {
         merge::show(ui, shared, merging, actions);
@@ -516,9 +517,16 @@ pub(super) fn show(
     open
 }
 
-/// The bar over a file view: back, how the file changed (and its path), and its blame and
-/// history at the right; under them what to show and how.
-fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bool) {
+/// The bar over a file view: back, how the file changed (and its path), and at the right the
+/// work tree's file opened or shown in its folder, its blame and history; under them what to
+/// show and how.
+fn file_bar(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    file: &mut FileView,
+    open: &mut bool,
+    actions: &mut Vec<Action>,
+) {
     let palette = shared.palette;
     widgets::bar(ui, |ui| {
         ui.horizontal(|ui| {
@@ -546,6 +554,31 @@ fn file_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, open: &mut bo
                     .clicked()
                 {
                     file.wanted = Some(file.blame_target(shared));
+                }
+                let reveals = [
+                    (
+                        icon::FOLDER_OPEN,
+                        "Show in folder",
+                        Reveal::InFolder,
+                        "Show the work tree's file in its folder",
+                    ),
+                    (
+                        icon::ARROW_SQUARE_OUT,
+                        "Open file",
+                        Reveal::Open,
+                        "Open the work tree's file in its app (as it is now, not as a commit \
+                         has it)",
+                    ),
+                ];
+                for (glyph, name, how, hover) in reveals {
+                    if widgets::icon_tool(ui, true, glyph, name)
+                        .on_hover_text(hover)
+                        .clicked()
+                    {
+                        let work_tree = shared.repository.work_tree();
+                        let path = crate::desktop::in_work_tree(work_tree, file.path());
+                        actions.push(Action::Reveal(path, how));
+                    }
                 }
                 // A conflict's view has no other choices: its wrapping goes here.
                 if file.merge.is_some() {

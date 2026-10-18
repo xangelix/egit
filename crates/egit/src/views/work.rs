@@ -23,6 +23,7 @@ use egui_table_kit::state::TableState;
 use egui_table_kit::table::TableKit;
 
 use super::file::WorkFile;
+use crate::desktop::Reveal;
 use crate::discarding::Discard;
 use crate::format::count;
 use crate::history::{Objects, read_message};
@@ -55,6 +56,9 @@ pub(super) enum WorkEvent {
     AskDiscard(Discard),
     /// Ignore a file git doesn't track (or its extension, or folder).
     Ignore(Ignore),
+    /// Open a file or folder of the work tree (its path from the top) in its app, or show it
+    /// in its folder.
+    Reveal(BString, Reveal),
 }
 
 /// What the commit form needs of the repository.
@@ -1009,6 +1013,19 @@ fn row_menu_items(
         && let Some(entry) = each().next()
     {
         event = Some(WorkEvent::Open(WorkFile::of(entry, side.which(entry))));
+    }
+    let reveals: &[(&str, &str, Reveal)] = if folder {
+        &[(icon::FOLDER_OPEN, "Open the folder", Reveal::Open)]
+    } else {
+        &[
+            (icon::ARROW_SQUARE_OUT, "Open file", Reveal::Open),
+            (icon::FOLDER_OPEN, "Show in folder", Reveal::InFolder),
+        ]
+    };
+    for (glyph, words, how) in reveals {
+        if item(ui, (glyph, words), Ok(())) {
+            event = Some(WorkEvent::Reveal(path.clone(), *how));
+        }
     }
     if item(ui, (icon::COPY, "Copy path"), Ok(())) {
         ui.ctx().copy_text(path.to_str_lossy().into_owned());

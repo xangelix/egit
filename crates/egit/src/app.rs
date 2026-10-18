@@ -173,6 +173,8 @@ pub(crate) enum Action {
     RefreshPullRequests(RepoId),
     /// Open a web page in the user's browser.
     OpenUrl(String),
+    /// Open a file or folder of the user's in its app, or show it in its folder.
+    Reveal(PathBuf, crate::desktop::Reveal),
     /// Show this much of a repository's history.
     Scope(RepoId, Scope),
     /// Ask the desktop's file dialog `question` (`title` on it; `name`, a file offered).
@@ -408,6 +410,7 @@ impl EgitApp {
                 }
             }
             Action::OpenUrl(url) => state.opener.open(url),
+            Action::Reveal(path, how) => state.opener.reveal(path, how),
             Action::Scope(id, scope) => state.with_repo(id, |git, repo| repo.set_scope(git, scope)),
             Action::AskFiles {
                 question,

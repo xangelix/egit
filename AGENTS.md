@@ -1086,6 +1086,13 @@ writes paths), never `OsStrExt`.
   - `desktop.rs` — `Opener`, and `is_web_page` (HTTPS, or HTTP to the loopback address;
     nothing that could pass for an option): `xdg-open`, else `gio open` (macOS's `open`;
     Windows' `rundll32 url.dll,FileProtocolHandler`, no shell reading the address), in a job.
+    `Opener::reveal` (`Action::Reveal`): an absolute path opened in its app (`Reveal::Open`:
+    the same openers; Explorer on Windows) or shown picked out in its folder (`InFolder`: the
+    file manager's `org.freedesktop.FileManager1.ShowItems` through `gdbus`, else
+    `dbus-send`, its `file://` address escaped byte by byte, else the folder opened; `open
+    -R`; `explorer /select,"…"` as a raw argument), in a job; what is gone opens its nearest
+    folder still there; recorded in tests (`revealed`). `in_work_tree`: a git path in the
+    system's separators.
     `FileDialogs`: the desktop's file dialogs (`rfd`, one at a time) for a `FileQuestion`:
     where a patch or the changes go (a file), where a series goes (a folder), where commits
     picked go (`SavePicked`: a file for one patch, a folder for one each), which patches to
@@ -1120,7 +1127,7 @@ writes paths), never `OsStrExt`.
     pull, fetch, check out, push to each remote, prune; its page), Submodules where it has
     some (how they stand; mend everything, update all to the commits recorded or their
     branches' latest, sync addresses; their page), and Repository: its Overview, Settings,
-    the submodules' and Git LFS's pages, and reading it again), their words beside their icons where the bar has room for all it shows
+    the submodules' and Git LFS's pages, opening its folder, and reading it again), their words beside their icons where the bar has room for all it shows
     (`Look::Full`), their icons alone elsewhere (`Look::Compact`, their words on hover), the
     commit count as a button, "Stats: 222 commits", opening the Stats page in the commit
     table's place (`Tool::Stats`; closed, it is kept, `stats_kept`, and shows again at once
@@ -1187,8 +1194,9 @@ writes paths), never `OsStrExt`.
     and lost once counted
     (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
     clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or
-    "History" goes back; its bar: back, how the file changed and its path, Blame and File
-    history at the right; then Diff or File, Unified or Side by side, as segmented choices):
+    "History" goes back; its bar: back, how the file changed and its path, at the right Open
+    file and Show in folder (the work tree's file, as it is now), Blame, and File history;
+    then Diff or File, Unified or Side by side, as segmented choices):
     its diff against the first parent (unified or side by side, with
     "Whole file" for all of its context), or the file as the commit left it (as it was, if
     deleted; read the first time it is asked for, `read_file`), or a placeholder for binary
@@ -1234,7 +1242,8 @@ writes paths), never `OsStrExt`.
     stage or unstage it or the folder, "Discard changes…" or "Discard the folder's changes…",
     for what git doesn't track an Ignore submenu (`ignore_menu`: this file, every file of its
     extension, its folder, or this folder; under a header each for .gitignore and
-    info/exclude; `RowMenu::untracked` worked out once as it opens), Show changes, Copy path;
+    info/exclude; `RowMenu::untracked` worked out once as it opens), Show changes, Open file
+    and Show in folder (a folder's: Open the folder; `WorkEvent::Reveal`), Copy path;
     "Discard all…"; each item's paths gathered only when chosen); then
     the commit form: summary
     (warned past 72 characters), description (⌘Enter commits from either, or from anywhere
@@ -1393,8 +1402,8 @@ writes paths), never `OsStrExt`.
     (folded at first); stashes (a click shows its commit in the details: `HistoryView::peek`,
     which the details show in place of the selection while the history doesn't have it; Apply,
     Pop, Drop); worktrees (here, locked, missing marked; a double click or "Open in a tab";
-    Lock, Unlock, Remove); submodules (when there are any: path and recorded commit, or "not
-    set up"; Update or Set up, Open in a tab). Each section's header is a band (its caret,
+    Lock, Unlock, Remove; Open its folder); submodules (when there are any: path and recorded
+    commit, or "not set up"; Update or Set up, Open in a tab, Open its folder). Each section's header is a band (its caret,
     icon, title in small capitals, and count in a pill: `widgets::section_galleys`,
     `paint_section`); a tree's levels step in by a whole icon (`INDENT`: a folder's or
     remote's children have their icons under its name), a guide running down from each
@@ -1716,7 +1725,8 @@ writes paths), never `OsStrExt`.
     and everything not staged from a row's menu.
     `src/tests/ignoring.rs` ignores a file from its row's menu in a `.gitignore` made for it
     (Undo removes it), then every `.log` file in `info/exclude`; a tracked file's menu offers
-    none.
+    none. `src/tests/reveal.rs` opens a file and shows it in its folder from its row's menu,
+    opens it from its view's bar, and the repository's folder from its menu (recorded).
     `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
     current one onto another (rebased), between the sidebar and the graph either way.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the

@@ -200,6 +200,8 @@ pub(super) enum SidebarEvent {
     Show(ObjectId),
     /// Open this folder's repository in a tab.
     Open(PathBuf),
+    /// Open this folder in the file manager.
+    Reveal(PathBuf),
     /// Show the submodules' page.
     Submodules,
 }
@@ -1848,6 +1850,14 @@ fn worktree_menu(
     if actions::item(ui, (icon::APP_WINDOW, "Open in a tab"), opening) {
         event = Some(SidebarEvent::Open(worktree.path.clone()));
     }
+    let missing = if worktree.prunable.is_some() {
+        Err("Its folder is missing")
+    } else {
+        Ok(())
+    };
+    if actions::item(ui, (icon::FOLDER_OPEN, "Open its folder"), missing) {
+        event = Some(SidebarEvent::Reveal(worktree.path.clone()));
+    }
     if actions::item(ui, (icon::COPY, "Copy its path"), Ok(())) {
         ui.ctx()
             .copy_text(worktree.path.to_string_lossy().into_owned());
@@ -1972,6 +1982,9 @@ fn submodule_row(
         };
         if actions::item(ui, (icon::APP_WINDOW, "Open in a tab"), opening) {
             event = Some(SidebarEvent::Open(folder.clone()));
+        }
+        if actions::item(ui, (icon::FOLDER_OPEN, "Open its folder"), Ok(())) {
+            event = Some(SidebarEvent::Reveal(folder.clone()));
         }
         if actions::item(ui, (icon::COPY, "Copy its path"), Ok(())) {
             ui.ctx().copy_text(path.clone().into_owned());
