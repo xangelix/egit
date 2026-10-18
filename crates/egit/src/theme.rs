@@ -27,8 +27,10 @@ pub(crate) struct Palette {
     pub(crate) dark: bool,
     /// Behind what is read: the commit table, a diff, a file.
     pub(crate) background: Color32,
-    /// The chrome around it (bars, the sidebar, the details), the tab bar, and pages.
+    /// The chrome around it (bars, the sidebar, the details), the selected tab, and pages.
     pub(crate) panel: Color32,
+    /// Deeper than the chrome: the tab bar, out of which the selected tab rises.
+    pub(crate) recess: Color32,
     /// Cards and dialogs.
     pub(crate) surface: Color32,
     /// A step off `surface`: inputs, stripes, code.
@@ -86,6 +88,7 @@ impl Palette {
         dark: true,
         background: Color32::from_rgb(0x12, 0x15, 0x19),
         panel: Color32::from_rgb(0x1C, 0x20, 0x26),
+        recess: Color32::from_rgb(0x0E, 0x11, 0x14),
         surface: Color32::from_rgb(0x24, 0x29, 0x30),
         surface_alt: Color32::from_rgb(0x2C, 0x32, 0x3A),
         border: Color32::from_rgb(0x36, 0x3D, 0x47),
@@ -130,6 +133,7 @@ impl Palette {
         dark: false,
         background: Color32::from_rgb(0xFF, 0xFF, 0xFF),
         panel: Color32::from_rgb(0xF3, 0xF5, 0xF8),
+        recess: Color32::from_rgb(0xE2, 0xE6, 0xEB),
         surface: Color32::from_rgb(0xFF, 0xFF, 0xFF),
         surface_alt: Color32::from_rgb(0xEB, 0xEE, 0xF2),
         border: Color32::from_rgb(0xD5, 0xDB, 0xE3),
@@ -432,6 +436,7 @@ mod tests {
             for background in [
                 palette.background,
                 palette.panel,
+                palette.recess,
                 palette.surface,
                 palette.surface_alt,
                 palette.field,

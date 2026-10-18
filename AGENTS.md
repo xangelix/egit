@@ -581,7 +581,8 @@ writes paths), never `OsStrExt`.
     Repo(id)}`; `show` focuses or adds a tab; `front` (the tab in front), `close_front`,
     `show_nth` (⌘W, ⌘1 … ⌘9); Home can't be closed; closing a repository's tab pushes `Closed`.
     Tabs underline under the pointer (`widgets::tab_hover`; egui_tiles' don't answer it), and
-    their close button is 24 points.
+    their close button is 24 points. The selected tab is the chrome's tone, joining what it
+    shows below; the bar and the other tabs are deeper (`Palette::recess`).
   - `preferences.rs` — `Preferences` (kept in the settings, every field defaulted so older
     settings read): the text's size (70–200%, egui's zoom, which ⌘+ ⌘− ⌘0 change too: followed
     back), the background fetch (`FetchEvery`: never, every minute, 5 (the default), 15, or 30
@@ -1131,7 +1132,8 @@ writes paths), never `OsStrExt`.
     Inter has), in three weights (`Weight`: regular, medium for buttons and names that lead
     their line, semibold for titles; `Weighted` gives `RichText` them); the monospace family
     stays egui's; palettes: `background` behind what is read (the commit table, the text
-    grid), `panel` for the chrome around it and pages, `surface` for cards, dialogs, and the
+    grid), `panel` for the chrome around it, the selected tab, and pages, `recess` deeper (the
+    tab bar), `surface` for cards, dialogs, and the
     sidebar's section bands; corner radii on one scale, each container a step rounder than
     what sits inside it so their corners follow (`RADIUS_INNER` 4: a row's highlight, a
     segment, a badge, a band; `RADIUS_CONTROL` 6: buttons, fields, the focus ring;

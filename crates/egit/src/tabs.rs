@@ -196,8 +196,9 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
         2.0
     }
 
+    /// Deeper than the chrome below: the selected tab rises out of it.
     fn tab_bar_color(&self, visuals: &egui::Visuals) -> Color32 {
-        palette(visuals).panel
+        palette(visuals).recess
     }
 
     fn tab_bg_color(
@@ -207,11 +208,13 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
         _tile_id: TileId,
         state: &egui_tiles::TabState,
     ) -> Color32 {
+        // The selected tab in the tone of what it shows (the history's chrome, a page), the
+        // others sunk into the bar.
         let palette = palette(visuals);
         if state.active {
-            palette.background
-        } else {
             palette.panel
+        } else {
+            palette.recess
         }
     }
 }
