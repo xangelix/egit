@@ -198,6 +198,39 @@ pub(crate) struct HistoryView {
     /// A rewrite of the selected commit was asked for: when it is gone from the next history
     /// read, the selection stays on its row (where its rewritten self is).
     keep_row: bool,
+    /// How many files the work in progress's row counts, by the status read they came from.
+    work_counts: WorkCounts,
+}
+
+/// The files with changes not yet committed, and how many of them are staged: counted once a
+/// status read (100,000 untracked files are counted in a millisecond, too long for a frame).
+#[derive(Debug, Default)]
+struct WorkCounts {
+    /// The status read counted (its address).
+    of: usize,
+    counts: Counted,
+}
+
+/// What [`WorkCounts`] counted.
+#[derive(Clone, Copy, Debug, Default)]
+struct Counted {
+    files: usize,
+    staged: usize,
+}
+
+impl WorkCounts {
+    /// Counts `status`, unless it is the read counted last.
+    fn of(&mut self, status: &egit_git::Status) {
+        let address = std::ptr::from_ref(status).addr();
+        if address == self.of {
+            return;
+        }
+        self.of = address;
+        self.counts = Counted {
+            files: status.len(),
+            staged: status.entries().filter(|entry| entry.is_staged()).count(),
+        };
+    }
 }
 
 /// A commit's message being edited in the details: its summary and description as typed.
@@ -313,6 +346,7 @@ impl HistoryView {
             bar: BarRoom::default(),
             message_edit: None,
             keep_row: false,
+            work_counts: WorkCounts::default(),
         }
     }
 
@@ -1308,10 +1342,7 @@ fn left_bar(
     } else {
         kept += SPINNER + spacing;
     }
-    if !work_tree_summary(ui, work_tree, view, shared.palette) {
-        let button = (icon::PENCIL_SIMPLE, "1 uncommitted file");
-        kept += widgets::tool_width(ui, button, Look::Full, false) + spacing;
-    }
+    work_tree_problem(ui, work_tree, shared.palette);
     pull_requests_button(ui, shared, view);
     kept
 }
@@ -1538,58 +1569,19 @@ fn pull_requests_button(ui: &mut Ui, shared: &Shared<'_>, view: &mut HistoryView
     }
 }
 
-/// How many files have changes not yet committed, if any (a button showing them beside the
-/// history); or why that isn't known. Returns whether it drew the button.
-fn work_tree_summary(
-    ui: &mut Ui,
-    work_tree: &mut WorkTree,
-    view: &mut HistoryView,
-    palette: Palette,
-) -> bool {
-    match work_tree.status() {
-        Some(Ok(status)) if !status.is_empty() => {
-            let files = status.len();
-            let text = if files == 1 {
-                "1 uncommitted file".to_owned()
-            } else {
-                format!(
-                    "{} uncommitted files",
-                    count(u64::try_from(files).unwrap_or(u64::MAX))
-                )
-            };
-            let label =
-                RichText::new(format!("{}  {text}", icon::PENCIL_SIMPLE)).color(palette.warn);
-            let button = crate::widgets::quiet(ui, |ui| {
-                ui.add(
-                    egui::Button::selectable(view.work_selected, label)
-                        .min_size(egui::vec2(0.0, crate::theme::CONTROL)),
-                )
-            });
-            // Named in words.
-            button.widget_info(|| {
-                WidgetInfo::selected(WidgetType::Button, true, view.work_selected, &text)
-            });
-            if button
-                .on_hover_text("Changes not yet committed: stage them, and commit")
-                .clicked()
-            {
-                view.select_work();
-            }
-            true
-        }
-        Some(Err(problem)) => {
-            let problem = problem.to_string();
-            ui.label(
-                RichText::new(format!(
-                    "{}  The work tree couldn't be read",
-                    icon::WARNING_CIRCLE
-                ))
-                .color(palette.danger),
-            )
-            .on_hover_text(problem);
-            false
-        }
-        _ => false,
+/// Why the work tree's changes aren't known, when they couldn't be read (the work in
+/// progress's row shows them when they are).
+fn work_tree_problem(ui: &mut Ui, work_tree: &mut WorkTree, palette: Palette) {
+    if let Some(Err(problem)) = work_tree.status() {
+        let problem = problem.to_string();
+        ui.label(
+            RichText::new(format!(
+                "{}  The work tree couldn't be read",
+                icon::WARNING_CIRCLE
+            ))
+            .color(palette.danger),
+        )
+        .on_hover_text(problem);
     }
 }
 
@@ -1632,11 +1624,22 @@ fn commit_table(
 
     let salt = ("history", shared.id);
     let columns = columns(ui, salt, history.shown.widest());
+    let all = columns.len();
+    // Under the titles, pinned as they are, the work in progress when there is some: the
+    // graph's column, then the rest as one.
+    let mut headers = vec![HeaderRow::new(HEADER_HEIGHT)];
+    if let Some(status) = shared.work_status.filter(|status| !status.is_empty()) {
+        view.work_counts.of(status);
+        headers.push(HeaderRow {
+            height: ROW_HEIGHT,
+            groups: vec![0..1, 1..all],
+        });
+    }
     let mut table = Table::new()
         .id_salt(salt)
         .num_rows(history.shown.rows())
         .columns(columns)
-        .headers([HeaderRow::new(HEADER_HEIGHT)]);
+        .headers(headers);
     if let Some((row, align)) = view.scroll_to.take() {
         table = table.scroll_to_row(row, align);
     }
@@ -1939,6 +1942,10 @@ impl TableDelegate for CommitRows<'_> {
     }
 
     fn header_cell_ui(&mut self, ui: &mut Ui, cell: &HeaderCellInfo) {
+        if cell.row_nr == 1 {
+            self.work_cell(ui, cell.col_range.start);
+            return;
+        }
         let title = match cell.col_range.start {
             0 => self.view.graph.title(self.view.lanes_shown),
             1 => "Message".to_owned(),
@@ -2106,6 +2113,96 @@ impl TableDelegate for CommitRows<'_> {
 }
 
 impl CommitRows<'_> {
+    /// The work in progress's row, pinned under the titles: in the graph's column a hollow node
+    /// on `HEAD`'s lane, a dashed line down towards it; in the rest, how many files are
+    /// uncommitted (and how many of them staged). A click shows them, as a commit's row shows
+    /// its details. Named as the top bar's button was ("3 uncommitted files").
+    fn work_cell(&mut self, ui: &mut Ui, column: usize) {
+        let palette = self.shared.palette;
+        let rect = ui.max_rect();
+        let selected = self.view.work_selected;
+        let hovered = ui.rect_contains_pointer(rect);
+        crate::widgets::row_fill(ui, rect, 0.0, selected, hovered);
+        ui.painter().hline(
+            rect.x_range(),
+            rect.bottom() - 0.5,
+            Stroke::new(1.0, palette.border),
+        );
+        if column == 0 {
+            self.work_node(ui, rect);
+            return;
+        }
+        let counts = self.view.work_counts.counts;
+        let files = if counts.files == 1 {
+            "1 uncommitted file".to_owned()
+        } else {
+            format!(
+                "{} uncommitted files",
+                count(u64::try_from(counts.files).unwrap_or(u64::MAX))
+            )
+        };
+        let response = ui.interact(rect, ui.id().with("work-in-progress"), Sense::click());
+        response.widget_info(|| {
+            WidgetInfo::selected(WidgetType::Button, true, selected, &files)
+        });
+        if response.clicked() {
+            self.view.select_work();
+        }
+        let detail = match (counts.staged, counts.files) {
+            (0, _) => "none staged yet".to_owned(),
+            (staged, files) if staged == files => "all staged".to_owned(),
+            (staged, _) => format!(
+                "{} staged",
+                count(u64::try_from(staged).unwrap_or(u64::MAX))
+            ),
+        };
+        ui.add_space(GRAPH_MARGIN);
+        ui.add(
+            Label::new(
+                RichText::new(format!("{}  {files}", icon::PENCIL_SIMPLE))
+                    .medium()
+                    .color(palette.warn),
+            )
+            .selectable(false),
+        );
+        ui.add(Label::new(muted(ui, format!("· {detail}"))).selectable(false));
+        response.on_hover_text("Changes not yet committed: stage them, and commit");
+    }
+
+    /// The work in progress's node: hollow and dashed-edged on `HEAD`'s lane (the first, when
+    /// `HEAD`'s row isn't on screen), a dashed line down towards `HEAD`.
+    fn work_node(&self, ui: &Ui, rect: Rect) {
+        let lane = self
+            .shared
+            .head_commit()
+            .and_then(|head| {
+                self.view
+                    .visible
+                    .clone()
+                    .find(|row| self.history.id(*row) == Some(head))
+                    .and_then(|row| self.view.graph.row(row))
+                    .map(|(graph, _)| graph.lane)
+            })
+            .unwrap_or(0);
+        let start = f32::from(self.view.graph.start);
+        let x = (f32::from(lane) - start + 0.5).mul_add(LANE_WIDTH, rect.left() + GRAPH_MARGIN);
+        let center = pos2(x, rect.center().y);
+        let color = self.shared.palette.muted;
+        let painter = ui.painter();
+        painter.add(egui::Shape::dashed_line(
+            &[pos2(x, center.y + NODE_RADIUS), pos2(x, rect.bottom())],
+            Stroke::new(LINE_WIDTH, color),
+            3.0,
+            3.0,
+        ));
+        painter.circle(
+            center,
+            NODE_RADIUS,
+            self.shared.palette.background,
+            Stroke::new(LINE_WIDTH, color),
+        );
+    }
+
     /// Paints a row's lanes and node.
     fn graph_cell(&mut self, ui: &Ui, row: u64, id: ObjectId) {
         let rect = ui.max_rect();

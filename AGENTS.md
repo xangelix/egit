@@ -851,17 +851,20 @@ writes paths), never `OsStrExt`.
     (Search, Reflog, Stash, Patches, and Repository: its Overview, Settings, and reading it
     again), their words beside their icons where the bar has room for all it shows
     (`Look::Full`), their icons alone elsewhere (`Look::Compact`, their words on hover), the
-    commit count (a spinner beside it while the history is read), how many files are
-    uncommitted (a button showing the working tree beside
-    the history in place of a commit's details, as it always is before the first commit),
-    the requests; at its right `views/tasks.rs`'s bar (drawn first, into the row; its words
-    capped at 300 points). The look is chosen from `BarRoom`: the left part's width drawn
-    compact last frame (room kept for the uncommitted files' button and the spinner, so their
-    coming never changes it) plus what the tools' words add (`widgets::tool_width`), against
+    commit count (a spinner beside it while the history is read), why the work tree couldn't
+    be read (when it couldn't), the requests; at its right `views/tasks.rs`'s bar (drawn first,
+    into the row; its words capped at 300 points). The look is chosen from `BarRoom`: the left
+    part's width drawn compact last frame (room kept for the spinner, so its coming never
+    changes it) plus what the tools' words add (`widgets::tool_width`), against
     the room the task bar leaves (its idle width), and held while a task runs: never flipping
     back and forth; the left part is clipped to its room. Then the
     commit table on egui-table-kit's layout `Table` (its `TableKit` keeps per-row state a
-    graph doesn't need): `CommitRows` is the `TableDelegate`; `prepare`
+    graph doesn't need): `CommitRows` is the `TableDelegate`; under the column titles, pinned
+    as a second header row while there are changes not yet committed, the work in progress
+    (`work_cell`: a hollow node on `HEAD`'s lane with a dashed line towards it, "3 uncommitted
+    files · 1 staged", counted once a status read (`WorkCounts`); a click shows the working
+    tree beside the history in place of a commit's details, as it always is before the first
+    commit); `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
     screen, then a screen below and above). Graph cells paint lines (cubic curves between
