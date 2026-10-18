@@ -13,4 +13,5 @@ mod screens;
 mod scrolling;
 mod search;
 mod sidebar;
+mod tree;
 mod undo;

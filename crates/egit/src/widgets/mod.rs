@@ -534,6 +534,27 @@ pub(crate) fn icon_tool(ui: &mut Ui, enabled: bool, glyph: &str, name: &str) -> 
     response
 }
 
+/// A list of files' header button choosing between a list and a tree of their folders (for
+/// every list: a preference); returns the preferences changed when clicked.
+pub(crate) fn tree_toggle(ui: &mut Ui) -> Option<crate::preferences::Preferences> {
+    let mut preferences = crate::preferences::Preferences::of(ui.ctx());
+    let (glyph, name) = if preferences.files.tree {
+        (crate::theme::icon::LIST_BULLETS, "Show the files as a list")
+    } else {
+        (
+            crate::theme::icon::TREE_VIEW,
+            "Show the files in a tree of their folders",
+        )
+    };
+    let clicked = icon_tool(ui, true, glyph, name)
+        .on_hover_text(name)
+        .clicked();
+    clicked.then(|| {
+        preferences.files.tree = !preferences.files.tree;
+        preferences
+    })
+}
+
 /// Draws `add`'s quiet buttons (no frame until the pointer is on them) the same size whether
 /// or not the pointer is on them. egui takes a button's edge out of its padding, yet leaves a
 /// frameless one's edge out of its size: where inactive buttons have edges, as here, a quiet

@@ -61,7 +61,9 @@ it.
   corpus` draws the text grid through the roadmap's worst cases (1M lines of code, plain and
   highlighted, a 10 MB line wrapped and not, CJK and emoji, resizing wrapped at line 900k),
   then the whole application on a commit moving 100,000 files (listed in 105 ms, counted in
-  430 ms), and prints frame times, laid out and tessellated (it fails past 8 ms at p99);
+  430 ms; as a tree of their folders, arranged 4.9 ms after asking (in a job, its longest frame
+  meanwhile 1.3 ms), the 100,000 folded away in a frame of 0.75 ms, scrolled at 0.49 ms p99),
+  and prints frame times, laid out and tessellated (it fails past 8 ms at p99);
   renders `corpus-*.png` where it can. Every case stays under 2 ms but the highlighted ones
   (3.7 ms jumping, up to 2.6 ms scrolling: colouring takes up to 3 ms a frame).
   `corpus_merge`: the merge editor on 100,000 lines of C with 1,000 conflicts: merged by git
@@ -596,7 +598,8 @@ writes paths), never `OsStrExt`.
     settings read): the text's size (70–200%, egui's zoom, which ⌘+ ⌘− ⌘0 change too: followed
     back), the background fetch (`FetchEvery`: never, every minute, 5 (the default), 15, or 30
     minutes), the sidebar shown when a repository opens, a file's first look (`FilePreferences`:
-    diffs side by side, lines wrapped, a tab's width of 2, 4, or 8 cells), and commit dates
+    diffs side by side, lines wrapped, a tab's width of 2, 4, or 8 cells, and lists of changed
+    files as a tree of their folders: `tree`, chosen too by each list's header), and commit dates
     written or as how long ago (`Dates`). `apply` puts them into egui (the zoom, and the context
     the views read them from: `Preferences::of`), and the tab width where every text measured
     from then on takes it (`text_options`).
@@ -902,9 +905,11 @@ writes paths), never `OsStrExt`.
     `HEAD` is detached), turns them into a summary field and a description (`MessageEdit`),
     what rewording does (`HEAD`'s: only its message; an earlier one's: a rebase giving it and
     what follows new names), Save message (⌘Enter) or Cancel (Escape); saving runs `Reword`,
-    the selection staying on its row (`keep_row`); and the changed files under a section title ("Changed files" with their count, the lines
-    gained and lost at its right; named "3 files changed") in a box (`widgets::list_box`,
-    `ChangesTable`), with the lines each gained and lost once counted
+    the selection staying on its row (`keep_row`); and the changed files under a section
+    title ("Changed files" with their count, the lines gained and lost at its right, and
+    `widgets::tree_toggle`, a list or a tree; named "3 files changed") in a box
+    (`widgets::list_box`, `ChangesTable`, its tree a `TreeTable`), with the lines each gained
+    and lost once counted
     (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
     clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or
     "History" goes back; its bar: back, how the file changed and its path, Blame and File
@@ -928,8 +933,10 @@ writes paths), never `OsStrExt`.
     what each side did and offers keeping a side or deleting the file. `Shared::operation`
     and `branch` label the sides.
     `views/work.rs` — `WorkPanel`: "Not staged" and "Staged", each a table-kit list (indices
-    into the status, made once per read) with a button for all and one per file (named
-    "Stage <path>"), a file clicked opened in the `FileView`; then the commit form: summary
+    into the status, made once per read: `ListFiles`, shared with the job arranging its tree)
+    with a button for all and one per file (named "Stage <path>"), or as a tree of their
+    folders (the first list's header choosing; each folder a button too, "Stage the folder
+    src", every file it holds), a file clicked opened in the `FileView`; then the commit form: summary
     (warned past 72 characters), description (⌘Enter commits), co-authors (chips with their
     avatars, each removable; "Co-author" opens a picker: a field typed into at once, the
     recent authors (`recent_authors` of the last 5,000 commits, read when it first opens; the
@@ -1147,6 +1154,18 @@ writes paths), never `OsStrExt`.
     dropped (checked every 250 ms while shown); answers are handed over off the interface
     thread (`jobs::detached`), then wiped, with the text field's own undo copy removed from
     egui's memory).
+  - `file_tree.rs` — `FileTree`: paths as a tree of their folders, made in one sort (by
+    folders, then names, a folder before a file where they part) and one pass keeping a stack
+    of open folders; nodes are ranges of the caller's paths (24 bytes each: depth, entry, the
+    name's span, a folder's end and count of files); a folder holding only a folder shows as
+    one with it (`src/core`); `visible` lists the rows shown, skipping what folded folders
+    hold (folds kept by path); `files_in` a folder's entries. `tree_table.rs` — `TreeTable`:
+    a `TreeSource`'s files (a commit's changes, a work list) drawn as that tree by table-kit
+    (`tables::tree_list`, one column), each row indented by its depth: a folder's caret, icon,
+    name (its path on hover) and count of files, a click folding it; a file's change letter
+    and name; at each row's right what its list adds (`TreeRow`: lines counted, a stage
+    button); made again only when the list is replaced, in a job past 5,000 files, the last
+    tree shown meanwhile, in a scroll area of its own.
   - `tables.rs` — egui-table-kit providers (`ConfigRows`, `RecentRows`, `ChangeRows`) with
     O(1) `cell_at`. Every table asks table-kit to center its text across a row
     (`with_cell_align(Align::Center)`: unasked, it lays text out as `ui.horizontal` does, from
@@ -1262,6 +1281,8 @@ writes paths), never `OsStrExt`.
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
     series saved. `src/tests/people.rs` drives co-authors: picked from the recent authors and
     typed, committed as trailers, shown in the details, taken back into the form to amend.
+    `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,
+    a folder staged whole, a commit's files alike, a list again.
     `src/tests/notices.rs` lets background fetches run: one bringing nothing says nothing, two
     bringing a commit each make one notice of both.
     `src/tests/search.rs` drives the search bar

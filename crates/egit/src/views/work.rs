@@ -25,11 +25,13 @@ use egui_table_kit::table::TableKit;
 use super::file::WorkFile;
 use crate::format::count;
 use crate::history::{Objects, read_message};
+use crate::preferences::Preferences;
 use crate::problem::Problem;
 use crate::repo::RepoId;
 use crate::staging::StageRequest;
 use crate::tables::elided_start;
 use crate::theme::{Palette, icon};
+use crate::tree_table::{TreeRow, TreeSource, TreeTable};
 use crate::widgets::{self, muted};
 
 /// What the user asked of the panel.
@@ -41,6 +43,8 @@ pub(super) enum WorkEvent {
     Stage(StageRequest),
     /// Commit what is staged.
     Commit(NewCommit),
+    /// Show lists of files so (a list, or a tree).
+    Preferences(Preferences),
 }
 
 /// What the commit form needs of the repository.
@@ -154,34 +158,78 @@ pub(super) struct WorkPanel {
     form: CommitForm,
 }
 
-/// One of the lists: its entries (indices into the status) and its table's state.
+/// One of the lists: its files, its table's state, and the same files as a tree.
 #[derive(Debug)]
 struct List {
-    entries: Vec<u32>,
+    files: Arc<ListFiles>,
     state: TableState,
+    tree: TreeTable<ListFiles>,
+}
+
+/// A list's files: entries of a status (indices into it), shared with the job arranging them
+/// in a tree.
+#[derive(Debug)]
+struct ListFiles {
+    status: Arc<Status>,
+    entries: Vec<u32>,
+    side: Side,
+}
+
+impl ListFiles {
+    fn entry(&self, row: usize) -> Option<StatusEntry<'_>> {
+        let index = usize::try_from(*self.entries.get(row)?).ok()?;
+        self.status.entry(index)
+    }
+}
+
+impl TreeSource for ListFiles {
+    fn files(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn path(&self, entry: usize) -> &[u8] {
+        self.entry(entry)
+            .map_or(&[][..], |entry| entry.path.as_bytes())
+    }
+
+    fn change(&self, entry: usize) -> &'static str {
+        self.entry(entry).map_or("Changed", |entry| {
+            change_name(entry, self.side.which(entry))
+        })
+    }
 }
 
 impl List {
-    fn new(id: String) -> Self {
+    fn new(id: String, side: Side) -> Self {
         Self {
-            entries: Vec::new(),
+            files: Arc::new(ListFiles {
+                status: Arc::default(),
+                entries: Vec::new(),
+                side,
+            }),
+            tree: TreeTable::new(format!("{id}-tree")),
             state: TableState::new(id, 0),
         }
     }
 
-    /// Takes `entries`, keeping the table's place (its scrolling is egui's, by its id).
-    fn set(&mut self, entries: Vec<u32>) {
+    /// Takes `entries` of `status`, keeping the table's place (its scrolling is egui's, by its
+    /// id).
+    fn set(&mut self, status: &Arc<Status>, entries: Vec<u32>) {
         self.state.active_rows = (0..entries.len()).collect();
         self.state.selected_rows.clear();
-        self.entries = entries;
+        self.files = Arc::new(ListFiles {
+            status: Arc::clone(status),
+            entries,
+            side: self.files.side,
+        });
     }
 }
 
 impl WorkPanel {
     pub(super) fn new(repo: RepoId) -> Self {
         Self {
-            unstaged: List::new(format!("work-unstaged-{repo}")),
-            staged: List::new(format!("work-staged-{repo}")),
+            unstaged: List::new(format!("work-unstaged-{repo}"), Side::Unstaged),
+            staged: List::new(format!("work-staged-{repo}"), Side::Staged),
             made_from: None,
             form: CommitForm::new(),
         }
@@ -210,8 +258,8 @@ impl WorkPanel {
                     staged.push(index);
                 }
             }
-            self.unstaged.set(unstaged);
-            self.staged.set(staged);
+            self.unstaged.set(status, unstaged);
+            self.staged.set(status, staged);
             self.made_from = Some(Arc::clone(status));
         }
         let mut event = None;
@@ -229,14 +277,14 @@ impl WorkPanel {
         ] {
             // Each table's scroll area is named by where it is drawn: apart, then.
             let found = ui
-                .push_id(side, |ui| list_ui(ui, status, list, side, busy, height))
+                .push_id(side, |ui| list_ui(ui, list, side, busy, height))
                 .inner;
             if found.is_some() {
                 event = found;
             }
             ui.add_space(12.0);
         }
-        let staged = self.staged.entries.len();
+        let staged = self.staged.files.entries.len();
         let mut commit = commit;
         if let Some(made) = commit_form(ui, &mut self.form, &mut commit, staged, busy) {
             event = Some(WorkEvent::Commit(made));
@@ -603,6 +651,14 @@ impl Side {
         }
     }
 
+    /// What its buttons do, in a word.
+    const fn verb(self) -> &'static str {
+        match self {
+            Self::Unstaged => "Stage",
+            Self::Staged => "Unstage",
+        }
+    }
+
     /// Which changes of `entry` the list shows.
     fn which(self, entry: StatusEntry<'_>) -> Uncommitted {
         match self {
@@ -645,27 +701,20 @@ fn paths(entry: StatusEntry<'_>, side: Side) -> Vec<BString> {
         .collect()
 }
 
-/// One list: its heading and its button for all, and its table.
-fn list_ui(
-    ui: &mut Ui,
-    status: &Status,
-    list: &mut List,
-    side: Side,
-    busy: bool,
-    height: f32,
-) -> Option<WorkEvent> {
+/// One list: its heading, its button for all (and, on the first, the choice of a list or a
+/// tree), and its files as either.
+fn list_ui(ui: &mut Ui, list: &mut List, side: Side, busy: bool, height: f32) -> Option<WorkEvent> {
     let mut event = None;
     let (title, all) = match side {
         Side::Unstaged => ("Not staged", "Stage all"),
         Side::Staged => ("Staged", "Unstage all"),
     };
-    let entries = list.entries.len();
+    let files = Arc::clone(&list.files);
+    let entries = files.entries.len();
     widgets::section_header(ui, (title, Some(entries), title), |ui| {
-        if widgets::secondary(ui, !busy && !list.entries.is_empty(), all).clicked() {
-            let paths = list
-                .entries
-                .iter()
-                .filter_map(|&index| status.entry(usize::try_from(index).ok()?))
+        if widgets::secondary(ui, !busy && entries > 0, all).clicked() {
+            let paths = (0..entries)
+                .filter_map(|row| files.entry(row))
                 .flat_map(|entry| paths(entry, side))
                 .collect();
             event = Some(WorkEvent::Stage(StageRequest::Files {
@@ -673,8 +722,13 @@ fn list_ui(
                 direction: side.direction(),
             }));
         }
+        if side == Side::Unstaged
+            && let Some(preferences) = widgets::tree_toggle(ui)
+        {
+            event = Some(WorkEvent::Preferences(preferences));
+        }
     });
-    if list.entries.is_empty() {
+    if entries == 0 {
         // A row of the list's own size, its words where a row's would start.
         widgets::list_box(ui, |ui| {
             ui.allocate_ui_with_layout(
@@ -694,9 +748,75 @@ fn list_ui(
         });
         return event;
     }
+    let asked = if Preferences::of(ui.ctx()).files.tree {
+        tree_ui(ui, list, &files, busy, height)
+    } else {
+        table_ui(ui, list, &files, busy, height)
+    };
+    asked.or(event)
+}
+
+/// A list's files as a tree of their folders, a button on each file and folder.
+fn tree_ui(
+    ui: &mut Ui,
+    list: &mut List,
+    files: &Arc<ListFiles>,
+    busy: bool,
+    height: f32,
+) -> Option<WorkEvent> {
+    let side = files.side;
+    let shown = widgets::list_box(ui, |ui| {
+        list.tree.show(ui, files, height, |ui, files, row, _| {
+            let paths: Vec<BString> = match row {
+                TreeRow::File(row) => {
+                    let entry = files.entry(row)?;
+                    let name = format!("{} {}", side.verb(), entry.path.to_str_lossy());
+                    if !stage_button(ui, (&name, side), entry.path.as_bytes(), busy) {
+                        return None;
+                    }
+                    paths(entry, side)
+                }
+                TreeRow::Folder(tree, node) => {
+                    let folder = tree.node(node)?;
+                    let path = files.path(usize::try_from(folder.entry).ok()?);
+                    let folder_path = folder.folder_path(path);
+                    let name = format!("{} the folder {}", side.verb(), folder_path.to_str_lossy());
+                    if !stage_button(ui, (&name, side), folder_path, busy) {
+                        return None;
+                    }
+                    tree.files_in(node)
+                        .filter_map(|row| files.entry(usize::try_from(row).ok()?))
+                        .flat_map(|entry| paths(entry, side))
+                        .collect()
+                }
+            };
+            Some(WorkEvent::Stage(StageRequest::Files {
+                paths,
+                direction: side.direction(),
+            }))
+        })
+    });
+    if let Some(row) = shown.opened
+        && let Some(entry) = files.entry(row)
+    {
+        return Some(WorkEvent::Open(WorkFile::of(entry, side.which(entry))));
+    }
+    shown.asked
+}
+
+/// A list's files as a table, a button on each.
+fn table_ui(
+    ui: &mut Ui,
+    list: &mut List,
+    files: &Arc<ListFiles>,
+    busy: bool,
+    height: f32,
+) -> Option<WorkEvent> {
+    let side = files.side;
+    let mut event = None;
     let provider = Entries {
-        status,
-        indices: &list.entries,
+        status: &files.status,
+        indices: &files.entries,
         side,
     };
     let palette = Palette::of(ui.ctx());
@@ -741,6 +861,22 @@ fn list_ui(
     button_event.or(event)
 }
 
+/// A row's button staging or unstaging what it names (`name`, in words), exactly a target's
+/// size at the row's right (a button egui sizes grows to a control's height, past the row);
+/// returns whether it was clicked.
+fn stage_button(ui: &mut Ui, (name, side): (&str, Side), key: &[u8], busy: bool) -> bool {
+    let glyph = match side {
+        Side::Unstaged => icon::PLUS,
+        Side::Staged => icon::MINUS,
+    };
+    let target = egui::vec2(crate::widgets::TARGET, crate::widgets::TARGET);
+    let (place, _) = ui.allocate_exact_size(target, egui::Sense::hover());
+    let id = ui.id().with(("stage-file", key));
+    let button =
+        crate::widgets::icon_button(ui, place, id, glyph, name, !busy).on_hover_text(side.verb());
+    button.clicked() && !busy
+}
+
 /// A file's cell: its button to stage or unstage it on the right, its path (elided from the
 /// start) in what is left; returns the cell and whether the button was clicked.
 fn file_cell(
@@ -751,25 +887,14 @@ fn file_cell(
     text_color: egui::Color32,
 ) -> (Response, bool) {
     let path = entry.path.to_str_lossy();
-    let (glyph, verb) = match side {
-        Side::Unstaged => (icon::PLUS, "Stage"),
-        Side::Staged => (icon::MINUS, "Unstage"),
-    };
     let mut clicked = false;
     // Across the cell's height, as table-kit centers its own cells' text.
     let room = ui.available_size();
     let response = ui
         .allocate_ui_with_layout(room, Layout::right_to_left(Align::Center), |ui| {
-            // Exactly a target's size: a button egui sizes grows to a control's height, past
-            // the row into the next. Named for what it does to which file: a screen reader
-            // hears more than "+".
-            let target = egui::vec2(crate::widgets::TARGET, crate::widgets::TARGET);
-            let (place, _) = ui.allocate_exact_size(target, egui::Sense::hover());
-            let name = format!("{verb} {path}");
-            let id = ui.id().with(("stage-file", entry.path));
-            let button =
-                crate::widgets::icon_button(ui, place, id, glyph, &name, !busy).on_hover_text(verb);
-            clicked = button.clicked() && !busy;
+            // Named for what it does to which file: a screen reader hears more than "+".
+            let name = format!("{} {path}", side.verb());
+            clicked = stage_button(ui, (&name, side), entry.path.as_bytes(), busy);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 let font = egui::TextStyle::Body.resolve(ui.style());
                 let shown = elided_start(ui, &path, &font, ui.available_width());

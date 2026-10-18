@@ -39,6 +39,8 @@ pub(super) enum Ask {
     },
     /// A web page, in the browser.
     Open(String),
+    /// The preferences changed (lists of files as a tree, say).
+    Preferences(crate::preferences::Preferences),
     /// The pull requests, one selected (its repository's place in the forge's, its number).
     PullRequest(Option<(usize, u32)>),
     /// This much of the history shown.

@@ -1,6 +1,7 @@
 //! What egit's tables show, as `egui-table-kit` providers: configuration entries, recent
-//! repositories, and the files a commit changed. Cells are produced on demand for the rows
-//! drawn, borrowing where the data is already text.
+//! repositories, and the files a commit changed (in a list, or a tree of their folders:
+//! `tree_table`). Cells are produced on demand for the rows drawn, borrowing where the data is
+//! already text.
 
 use std::borrow::Cow;
 use std::path::Path;
@@ -18,8 +19,10 @@ use egui_table_kit::table::TableKit;
 
 use crate::format::{ago, count, display_path};
 use crate::history::{ChangeCounts, CommitDetails};
+use crate::preferences::Preferences;
 use crate::settings::Recent;
 use crate::theme::Palette;
+use crate::tree_table::{TreeRow, TreeSource, TreeTable};
 use crate::widgets::scope_name;
 
 /// A table of a configuration snapshot: its state starts over when the snapshot is replaced
@@ -282,15 +285,37 @@ pub(crate) struct ChangesTable {
     id: String,
     shown: Option<ObjectId>,
     state: TableState,
+    /// The same files as a tree of their folders, when the preferences ask for one.
+    tree: TreeTable<CommitDetails>,
+}
+
+impl TreeSource for CommitDetails {
+    fn files(&self) -> usize {
+        self.changes.len()
+    }
+
+    fn path(&self, entry: usize) -> &[u8] {
+        self.changes
+            .get(entry)
+            .map_or(&[][..], |change| change.path.as_slice())
+    }
+
+    fn change(&self, entry: usize) -> &'static str {
+        self.changes
+            .get(entry)
+            .map_or("Changed", |change| change_name(&change.kind))
+    }
 }
 
 impl ChangesTable {
     pub(crate) fn new(id: String) -> Self {
         let state = TableState::new(id.as_str(), 0);
+        let tree = TreeTable::new(format!("{id}-tree"));
         Self {
             id,
             shown: None,
             state,
+            tree,
         }
     }
 
@@ -310,6 +335,18 @@ impl ChangesTable {
         let counts = counts
             .filter(|counts| counts.id == details.id)
             .map(|counts| counts.files.as_slice());
+        if Preferences::of(ui.ctx()).files.tree {
+            let palette = Palette::of(ui.ctx());
+            return self
+                .tree
+                .show(ui, details, height, |ui, _, row, _| {
+                    if let TreeRow::File(entry) = row {
+                        lines_ui(ui, lines_of(counts, entry), palette);
+                    }
+                    None::<()>
+                })
+                .opened;
+        }
         let provider = ChangeRows {
             changes: &details.changes,
         };
@@ -372,6 +409,26 @@ pub(crate) fn list<'a>(table: TableKit<'a>, ui: &Ui) -> TableKit<'a> {
         .with_selected_text_color(palette.text)
         .with_focus_outline(false)
         // Inside a rounded box: the rows' corners follow its.
+        .with_row_rounding(crate::theme::RADIUS_INNER)
+}
+
+/// A file list shown as a tree (`tree_table`): one column, the rest as `list`'s.
+pub(crate) fn tree_list<'a>(table: TableKit<'a>, ui: &Ui) -> TableKit<'a> {
+    let palette = Palette::of(ui.ctx());
+    let width = ui.available_width();
+    table
+        .with_columns(vec![
+            egui_table_kit::layout::Column::new(width.max(120.0))
+                .range(100.0..=f32::INFINITY)
+                .remainder(true)
+                .resizable(false),
+        ])
+        .with_header(false)
+        .with_row_height(ROW_HEIGHT)
+        .with_cell_align(Align::Center)
+        .with_selected_hover_color(palette.selected_hover)
+        .with_selected_text_color(palette.text)
+        .with_focus_outline(false)
         .with_row_rounding(crate::theme::RADIUS_INNER)
 }
 
@@ -456,22 +513,7 @@ fn file_cell(
     // Across the cell's height, as table-kit centers its own cells' text.
     let size = ui.available_size();
     ui.allocate_ui_with_layout(size, Layout::right_to_left(Align::Center), |ui| {
-        match lines {
-            Lines::Counted(lines) => {
-                ui.add(label(
-                    format!("−{}", count(u64::from(lines.removed))),
-                    palette.danger,
-                ));
-                ui.add(label(
-                    format!("+{}", count(u64::from(lines.added))),
-                    palette.ok,
-                ));
-            }
-            Lines::Binary => {
-                ui.add(label("binary".to_owned(), palette.muted));
-            }
-            Lines::Unknown => {}
-        }
+        lines_ui(ui, lines, palette);
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             let path = change.path.to_str_lossy();
             let font = egui::TextStyle::Body.resolve(ui.style());
@@ -487,6 +529,29 @@ fn file_cell(
         });
     })
     .response
+}
+
+/// A file's lines gained and lost (from the right: lost, then gained), "binary", or nothing
+/// while uncounted, in a right-to-left row.
+fn lines_ui(ui: &mut Ui, lines: Lines, palette: Palette) {
+    let label =
+        |text: String, color| Label::new(RichText::new(text).color(color)).selectable(false);
+    match lines {
+        Lines::Counted(lines) => {
+            ui.add(label(
+                format!("−{}", count(u64::from(lines.removed))),
+                palette.danger,
+            ));
+            ui.add(label(
+                format!("+{}", count(u64::from(lines.added))),
+                palette.ok,
+            ));
+        }
+        Lines::Binary => {
+            ui.add(label("binary".to_owned(), palette.muted));
+        }
+        Lines::Unknown => {}
+    }
 }
 
 /// How wide `text` is in `font`, glyph by glyph (no kerning).

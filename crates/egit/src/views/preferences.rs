@@ -1,7 +1,7 @@
 //! The Preferences tab: how egit looks (the theme, the text's size), how repositories are kept
 //! up to date (the background fetch) and laid out (the sidebar), how diffs and files show at
-//! first (side by side, lines wrapped, a tab's width), and commit dates; then the keyboard
-//! shortcuts. Each change is in effect at once, and kept.
+//! first (side by side, lines wrapped, a tab's width; changed files as a list or a tree), and
+//! commit dates; then the keyboard shortcuts. Each change is in effect at once, and kept.
 
 use egui::{ComboBox, Grid, RichText, Ui};
 
@@ -116,7 +116,10 @@ fn repositories(ui: &mut Ui, preferences: &mut Preferences) {
 fn files(ui: &mut Ui, preferences: &mut Preferences) {
     widgets::card(ui, |ui| {
         widgets::heading(ui, "Diffs and files");
-        ui.label(muted(ui, "How a file shows when it opens."));
+        ui.label(muted(
+            ui,
+            "How a file shows when it opens, and lists of them.",
+        ));
         ui.add_space(8.0);
         widgets::fact(ui, LABEL, "Diffs", |ui| {
             widgets::segmented(
@@ -127,6 +130,13 @@ fn files(ui: &mut Ui, preferences: &mut Preferences) {
         });
         widgets::fact(ui, LABEL, "Long lines", |ui| {
             widgets::checkbox(ui, &mut preferences.files.wrap, "Wrapped");
+        });
+        widgets::fact(ui, LABEL, "Changed files", |ui| {
+            widgets::segmented(
+                ui,
+                &mut preferences.files.tree,
+                &[(false, "A list"), (true, "A tree of folders")],
+            );
         });
         widgets::form_row(ui, LABEL, "Tab width", |ui| {
             ComboBox::from_id_salt("preferences-tab-width")

@@ -1,6 +1,7 @@
 //! How the user likes egit: the text's size, how often repositories are fetched from in the
 //! background, whether the sidebar shows, how diffs and files are shown at first (side by side,
-//! lines wrapped, a tab's width), and commit dates (as dates, or how long ago).
+//! lines wrapped, a tab's width), changed files (a list or a tree of their folders), and commit
+//! dates (as dates, or how long ago).
 //!
 //! Kept with the other settings (`Settings::preferences`, older settings reading as the
 //! defaults) and shared for the frame through the egui context (`Preferences::of`), so a view
@@ -87,6 +88,8 @@ pub(crate) struct FilePreferences {
     pub(crate) wrap: bool,
     /// Cells between tab stops.
     pub(crate) tab_width: u8,
+    /// Whether lists of changed files show as a tree of their folders.
+    pub(crate) tree: bool,
 }
 
 impl Default for FilePreferences {
@@ -95,6 +98,7 @@ impl Default for FilePreferences {
             split_diffs: false,
             wrap: false,
             tab_width: 8,
+            tree: false,
         }
     }
 }

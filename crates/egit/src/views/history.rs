@@ -1781,6 +1781,7 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
             view.tool = Some(Tool::Rebase(RebaseView::new(shared, from, reword)));
         }
         Ask::Open(url) => actions.push(Action::OpenUrl(url)),
+        Ask::Preferences(preferences) => actions.push(Action::SetPreferences(preferences)),
         Ask::Scope(scope) => actions.push(Action::Scope(shared.id, scope)),
         Ask::SavePatch { commit, name } => actions.push(Action::AskFiles {
             question: FileQuestion::SavePatch {
@@ -2612,6 +2613,9 @@ fn work_details(
         Some(WorkEvent::Open(work)) => view.open_work(shared, work),
         Some(WorkEvent::Stage(request)) => actions.push(Action::Stage(shared.id, request)),
         Some(WorkEvent::Commit(made)) => actions.push(Action::Commit(shared.id, made)),
+        Some(WorkEvent::Preferences(preferences)) => {
+            actions.push(Action::SetPreferences(preferences));
+        }
         None => {}
     }
 }
@@ -2676,7 +2680,13 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
         });
     ui.add_space(8.0);
     let counts = view.counting.of(shared, &shown);
-    files_heading(ui, shown.changes.len(), counts.as_ref(), shared.palette);
+    files_heading(
+        ui,
+        shown.changes.len(),
+        counts.as_ref(),
+        shared.palette,
+        &mut view.asked,
+    );
     ui.add_space(4.0);
     let counts = counts.and_then(Result::ok);
     let picked = widgets::list_box(ui, |ui| {
@@ -2751,6 +2761,7 @@ fn files_heading(
     files: usize,
     counts: Option<&Result<Arc<ChangeCounts>, Problem>>,
     palette: Palette,
+    asked: &mut Option<Ask>,
 ) {
     let name = if files == 1 {
         "1 file changed".to_owned()
@@ -2761,6 +2772,9 @@ fn files_heading(
         )
     };
     widgets::section_header(ui, ("Changed files", Some(files), &name), |ui| {
+        if let Some(preferences) = widgets::tree_toggle(ui) {
+            *asked = Some(Ask::Preferences(preferences));
+        }
         match counts {
             Some(Ok(counts)) => {
                 // From the right: what was lost, then what was gained before it.

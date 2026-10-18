@@ -474,13 +474,59 @@ fn corpus_mass_rename() {
     });
     let worst = report("scrolling the files", scrolling);
     snapshot(&mut harness, "mass-rename");
+    let worst_tree = mass_rename_tree(&mut harness);
     println!("  peak memory {:.0} MB", peak_memory_mb());
     if !cfg!(debug_assertions) {
         assert!(
-            worst < Duration::from_millis(8),
-            "the 99th percentile frame took {worst:?}"
+            worst.max(worst_tree) < Duration::from_millis(8),
+            "the 99th percentile frame took {:?}",
+            worst.max(worst_tree)
         );
     }
+}
+
+/// The mass rename's files as a tree: how soon it is arranged (in a job), its longest frame
+/// meanwhile, then scrolling it, and a folder folded; returns the 99th percentile frame.
+fn mass_rename_tree(harness: &mut Harness<'_, EgitApp>) -> Duration {
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
+    let started = Instant::now();
+    harness
+        .get_by_label("Show the files in a tree of their folders")
+        .click();
+    let mut longest = Duration::ZERO;
+    let folder = format!("src/new/, {} files", crate::format::count(100_000));
+    while harness.query_by_label(&folder).is_none() {
+        assert!(started.elapsed() < Duration::from_secs(30), "no tree");
+        let frame = Instant::now();
+        harness.step();
+        longest = longest.max(frame.elapsed());
+    }
+    println!(
+        "  arranged in a tree {:?} after asking (its longest frame {longest:?})",
+        started.elapsed()
+    );
+    // Folded and unfolded: every row worked out again, each in a frame.
+    for done in ["folded away", "unfolded"] {
+        harness.get_by_label(&folder).click();
+        let frame = Instant::now();
+        harness.step();
+        println!(
+            "  its 100,000 files {done} in a frame of {:?}",
+            frame.elapsed()
+        );
+    }
+    snapshot(harness, "mass-rename-tree");
+    harness.hover_at(egui::pos2(1250.0, 600.0));
+    let scrolling = measure_frames(harness, 600, |harness, _| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -3_000.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    });
+    report("scrolling the tree", scrolling)
 }
 
 /// Lines of the merge editor's file, and how often both sides changed one.
