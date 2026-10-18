@@ -4,6 +4,7 @@ mod audit;
 mod bisect;
 mod corpus;
 mod dragging;
+mod help;
 mod lfs;
 mod menus;
 mod notices;

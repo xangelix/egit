@@ -398,10 +398,12 @@ pub(crate) fn danger(ui: &mut Ui, enabled: bool, text: &str) -> Response {
 /// `on`; a plain one while disabled.
 fn filled(ui: &mut Ui, enabled: bool, text: &str, fill: Color32, on: Color32) -> Response {
     if !enabled {
-        return ui.add_enabled(
+        let response = ui.add_enabled(
             false,
             Button::new(text).wrap_mode(egui::TextWrapMode::Extend),
         );
+        crate::help::note(ui, response.rect, text);
+        return response;
     }
     // Whether the pointer was on it last frame: a button's fill is chosen before it is drawn.
     let hovered = ui
@@ -413,20 +415,24 @@ fn filled(ui: &mut Ui, enabled: bool, text: &str, fill: Color32, on: Color32) ->
     } else {
         fill
     };
-    ui.add(
+    let response = ui.add(
         Button::new(RichText::new(text).color(on).semibold())
             .fill(fill)
             .stroke(Stroke::NONE)
             .wrap_mode(egui::TextWrapMode::Extend),
-    )
+    );
+    crate::help::note(ui, response.rect, text);
+    response
 }
 
 /// Any other button. Its words never wrap: a row too narrow wraps whole buttons instead.
 pub(crate) fn secondary(ui: &mut Ui, enabled: bool, text: &str) -> Response {
-    ui.add_enabled(
+    let response = ui.add_enabled(
         enabled,
         Button::new(text).wrap_mode(egui::TextWrapMode::Extend),
-    )
+    );
+    crate::help::note(ui, response.rect, text);
+    response
 }
 
 /// How a toolbar's button shows: its icon and words, or (where room is short) its icon alone,
@@ -460,6 +466,7 @@ pub(crate) fn tool(ui: &mut Ui, icon: &str, text: &str, selected: bool, look: Lo
     response.widget_info(|| {
         egui::WidgetInfo::selected(egui::WidgetType::Button, response.enabled(), selected, text)
     });
+    crate::help::note(ui, response.rect, text);
     if look == Look::Compact {
         response.on_hover_text(text)
     } else {
@@ -511,6 +518,7 @@ pub(crate) fn tool_menu<R>(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), text)
     });
+    crate::help::note(ui, response.rect, text);
     let response = if look == Look::Compact {
         response.on_hover_text(text)
     } else {
@@ -531,6 +539,7 @@ pub(crate) fn icon_tool(ui: &mut Ui, enabled: bool, glyph: &str, name: &str) -> 
         )
     });
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+    crate::help::note(ui, response.rect, name);
     response
 }
 
@@ -629,6 +638,7 @@ pub(crate) fn icon_button(
     };
     let response = ui.interact(rect, id, sense);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+    crate::help::note(ui, rect, name);
     let visuals = ui.style().interact(&response);
     if enabled && (response.hovered() || response.is_pointer_button_down_on()) {
         ui.painter()

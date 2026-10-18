@@ -7,7 +7,8 @@ use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
 
 use super::screens::{
-    harness, history_shown, open_path, profile_loaded, render, settle, type_into, wait_for_label,
+    harness, history_of, history_shown, open_path, profile_loaded, render, settle, type_into,
+    wait_for_label,
 };
 use crate::theme::icon;
 
@@ -71,6 +72,8 @@ fn lfs_is_set_up_tracked_and_listed() {
     std::fs::write(repo.join("data.bin"), [0_u8, 1, 2, 3, 255].repeat(1000)).unwrap();
     sandbox.run(&repo, "add", &["data.bin"]).unwrap();
     sandbox.run(&repo, "commit", &["-m", "Data"]).unwrap();
+    // Its history read again first: rendered meanwhile, the commit count would change.
+    settle(&mut harness, "the commit shown", history_of(2));
     harness.get_by_label("LFS").click();
     wait_for_label(&mut harness, "Patterns, files, and locks…");
     harness.get_by_label("Patterns, files, and locks…").click();

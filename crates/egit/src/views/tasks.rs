@@ -256,7 +256,9 @@ fn branch_label(ui: &mut Ui, head: Option<&Head>, palette: Palette) {
         None => return,
     };
     fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &text);
-    capped(ui, RichText::new(text.clone()).color(palette.muted)).on_hover_text(text);
+    let shown = capped(ui, RichText::new(text.clone()).color(palette.muted));
+    crate::help::note_topic(ui, shown.rect, "upstream");
+    shown.on_hover_text(text);
 }
 
 /// How a branch compares with its upstream: ` ↑1 ↓2`, nothing when even, ` (gone)`.
@@ -806,6 +808,7 @@ pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent>
             .inner_margin(egui::Margin::symmetric(12, 2))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                crate::help::note_topic(ui, ui.max_rect(), "fetch");
                 ui.horizontal(|ui| {
                     let headline = format!("{}  {commits} on {name}", icon::ARROW_DOWN);
                     fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
@@ -874,6 +877,15 @@ fn operation_banner(
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            let topic = match operation {
+                Operation::Rebase => "rebase",
+                Operation::Merge => "merge",
+                Operation::Bisect => "bisect",
+                Operation::CherryPick => "cherry-pick",
+                Operation::Revert => "revert",
+                Operation::ApplyMailbox => "patches",
+            };
+            crate::help::note_topic(ui, ui.max_rect(), topic);
             fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
             ui.add(egui::Label::new(RichText::new(headline).color(palette.warn).semibold()).wrap());
             if operation == Operation::Bisect {

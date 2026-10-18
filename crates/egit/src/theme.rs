@@ -222,6 +222,8 @@ pub(crate) const BODY: f32 = 13.0;
 pub(crate) const CODE: f32 = 12.5;
 /// A page's or a dialog's title.
 pub(crate) const TITLE: f32 = 18.0;
+/// How long the pointer rests on a control before its tooltip shows, in seconds.
+pub(crate) const TOOLTIP_DELAY: f32 = 0.4;
 /// A card's or a section's heading.
 pub(crate) const HEADING: f32 = 14.0;
 /// Corner radii, from the inside out: each container a step rounder than what sits inside
@@ -436,7 +438,7 @@ fn shape(style: &mut egui::Style, palette: &Palette, dark: bool) {
     style.spacing.icon_spacing = 8.0;
     style.spacing.combo_height = 320.0;
     style.spacing.menu_margin = egui::Margin::same(6);
-    style.interaction.tooltip_delay = 0.4;
+    style.interaction.tooltip_delay = TOOLTIP_DELAY;
 }
 
 #[cfg(test)]

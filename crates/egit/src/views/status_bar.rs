@@ -51,6 +51,13 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
+                .button(muted(ui, format!("{}  Help  F1", icon::QUESTION)).small())
+                .on_hover_text("What everything does, at git's level (or hold Alt over anything)")
+                .clicked()
+            {
+                state.actions.push(Action::ShowHelp);
+            }
+            if ui
                 .button(
                     muted(
                         ui,

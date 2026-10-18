@@ -262,6 +262,7 @@ fn list_card(
                     let name = state.path.to_str_lossy();
                     let id = Id::new(("submodule-row", shared.id, state.path.as_slice()));
                     let response = ui.interact(rect, id, Sense::click());
+                    crate::help::note_topic(ui, rect, "submodules");
                     // Named with its state: the sidebar has a row of the same path.
                     let (glyph, color, word) = look(state.checkout, palette);
                     let named = format!("{name}, {word}");

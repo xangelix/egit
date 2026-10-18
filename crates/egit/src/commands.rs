@@ -41,6 +41,8 @@ pub(crate) enum RepoCommand {
 pub(crate) enum Command {
     /// The command palette.
     Palette,
+    /// Help: every topic.
+    Help,
     Preferences,
     OpenRepository,
     CloneRepository,
@@ -85,6 +87,7 @@ impl Command {
                 Self::Home,
                 Self::Profile,
                 Self::Preferences,
+                Self::Help,
                 Self::Theme(ThemeChoice::System),
                 Self::Theme(ThemeChoice::Light),
                 Self::Theme(ThemeChoice::Dark),
@@ -98,6 +101,7 @@ impl Command {
     pub(crate) fn label(&self, nouns: &str) -> String {
         match self {
             Self::Palette => "Show every command".to_owned(),
+            Self::Help => "Help: what everything does".to_owned(),
             Self::Preferences => "Preferences".to_owned(),
             Self::OpenRepository => "Open a repository…".to_owned(),
             Self::CloneRepository => "Clone a repository".to_owned(),
@@ -135,6 +139,7 @@ impl Command {
     pub(crate) const fn keys(&self) -> Option<&'static str> {
         Some(match self {
             Self::Palette => "⌘K",
+            Self::Help => "F1",
             Self::Preferences => "⌘,",
             Self::OpenRepository => "⌘O",
             Self::CloseTab => "⌘W",
@@ -156,8 +161,9 @@ impl Command {
 
 /// The shortcuts the application itself takes (the views take theirs: ⌘F, ⌘Z, …), the more
 /// specific first (⌘K alone would match ⇧⌘K too).
-fn global() -> [(Modifiers, Key, Command); 7] {
+fn global() -> [(Modifiers, Key, Command); 8] {
     [
+        (Modifiers::NONE, Key::F1, Command::Help),
         // ⇧⌘P, as other editors have it.
         (
             Modifiers::COMMAND | Modifiers::SHIFT,
@@ -231,8 +237,13 @@ pub(crate) fn keys_text(mac: &'static str) -> Cow<'static, str> {
 pub(crate) const SWITCH_TO: &str = "Switch to ";
 
 /// Every shortcut, and what it does, as the Preferences tab lists them.
-const SHORTCUTS: [(&str, &str); 18] = [
+const SHORTCUTS: [(&str, &str); 20] = [
     ("⌘K, ⇧⌘P", "Show every command"),
+    ("F1", "Help: every topic"),
+    (
+        "Alt (held)",
+        "What the control under the pointer does, at git's level",
+    ),
     ("⌘,", "Preferences"),
     ("⌘O", "Open a repository"),
     ("⌘W", "Close the tab"),

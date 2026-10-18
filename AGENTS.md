@@ -626,7 +626,19 @@ writes paths), never `OsStrExt`.
     written or as how long ago (`Dates`). `apply` puts them into egui (the zoom, and the context
     the views read them from: `Preferences::of`), and the tab width where every text measured
     from then on takes it (`text_options`).
-  - `commands.rs` — what the keyboard can ask: `Command` (the palette, preferences, open,
+  - `help.rs` — Help: `TOPICS`, each a `Topic` (its `Group`, title, what it does at git's
+    level, the git egit runs for it, and `cases`: the questions people meet, cancelling a
+    rebase part-way, which side is "current" in a rebase, a pushed commit reworded, a
+    submodule that won't sit still, LFS pointers, and their answers). Alt held over a control
+    shows its topic beside it: the shared controls (`widgets`' buttons, tools, menus' items,
+    checkboxes, icon buttons) `note` their rect, layer, and words as they are drawn, only
+    while Alt is held; custom ones (a commit's row and the graph, badges, the work row,
+    sidebar rows and sections, banners, the branch label, facts) `note_topic`; at the
+    frame's end (`show`) the smallest noted rect under the pointer on the topmost layer
+    picks the topic (`for_label`: `EXACT` words, then `STARTS`), drawn in an overlay beside
+    it; tooltips wait while Alt is held (`begin_frame`). `HelpWindow` (F1, the status bar's
+    Help, the palette): every topic by group, found by what is typed (titles, texts, cases).
+  - `commands.rs` — what the keyboard can ask: `Command` (the palette, help (F1), preferences, open,
     clone, home, profile, close the tab, a tab by number, a theme, a recent repository) and
     `RepoCommand` (fetch, pull, push, undo, redo, search, the sidebar shown or filtered, the
     reflog, the work tree, the requests, stash, patches, a branch made or switched to, read
@@ -1386,6 +1398,8 @@ writes paths), never `OsStrExt`.
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
     series saved. `src/tests/people.rs` drives co-authors: picked from the recent authors and
     typed, committed as trailers, shown in the details, taken back into the form to amend.
+    `src/tests/help.rs` holds Alt over Push and a commit's row (their topics shown, gone
+    when let go), and finds a topic with F1 (Escape closes it).
     `src/tests/submodules.rs` meets a fresh clone's submodule not set up (the banner mends
     it), updates it to its branch's latest from its page (the commit it brings shown), records
     it, shows its change in the work tree; and adds one from the page.
@@ -1429,7 +1443,10 @@ writes paths), never `OsStrExt`.
   (a salt alone doesn't change that), and a click pressed on one id and released on another
   is lost. Colours come from `theme::Palette::of(ctx)`, icons from `theme::icon`, shared pieces
   from `widgets`. Text inside an `egui::Grid` is sized explicitly (`add_sized`): a grid sizes
-  cells to their content. Names and paths come from people: assume them long, in any script.
+  cells to their content. Names and paths come from people: assume them long, in any script. Help: a
+  new control built from `widgets` (or a menu's item) is explained by its words
+  (`help::for_label`: add them to `EXACT` or `STARTS`); a custom one calls `help::note_topic`;
+  a new feature gets a topic in `help::TOPICS`, at git's level, with the cases that surprise.
 - **Performance:** CPU time and peak memory are features. Nothing proportional to a
   repository is loaded or drawn unless it is visible or being prepared off the interface thread;
   parsers work on borrowed bytes and reuse their buffers.

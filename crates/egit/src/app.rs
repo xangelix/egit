@@ -77,6 +77,8 @@ pub(crate) struct AppState {
     pub(crate) files: FileDialogs,
     /// The command palette (⌘K).
     pub(crate) palette: PaletteView,
+    /// The help window, while open.
+    pub(crate) help: crate::help::HelpWindow,
 }
 
 /// A repository being opened.
@@ -143,6 +145,8 @@ pub(crate) enum Action {
     ShowPreferences,
     /// Open the command palette.
     ShowPalette,
+    /// Help, every topic.
+    ShowHelp,
     /// Take a repository's last action back (`true`: do the last one taken back again).
     Undo(RepoId, bool),
     /// A repository's tab was closed.
@@ -263,6 +267,7 @@ impl EgitApp {
             opener: Opener::default(),
             files: FileDialogs::default(),
             palette: PaletteView::default(),
+            help: crate::help::HelpWindow::default(),
             fonts: Fallbacks::default(),
         };
         match git {
@@ -291,6 +296,7 @@ impl EgitApp {
                 }
             }
             Command::Preferences => tabs::show(&mut self.tabs, Pane::Preferences),
+            Command::Help => state.help.toggle(),
             Command::OpenRepository => state.actions.push(Action::PickFolder),
             Command::CloneRepository | Command::Home => tabs::show(&mut self.tabs, Pane::Home),
             Command::Profile => tabs::show(&mut self.tabs, Pane::Profile),
@@ -399,6 +405,7 @@ impl EgitApp {
             Action::SetPreferences(preferences) => state.prefer(ctx, preferences),
             Action::ShowPreferences => tabs::show(&mut self.tabs, Pane::Preferences),
             Action::ShowPalette => self.run(Command::Palette),
+            Action::ShowHelp => self.run(Command::Help),
             Action::SignIn(id, host) => {
                 if let Some(repo) = state.repos.iter_mut().find(|repo| repo.id == id) {
                     repo.forge.sign_in(&host);
@@ -739,6 +746,7 @@ impl AppState {
 
 impl eframe::App for EgitApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        crate::help::begin_frame(ui.ctx());
         self.state.poll(ui.ctx());
         // ⌘+ and ⌘− change the text's size: kept as preferred.
         let zoom = Preferences::zoom_of(ui.ctx());
@@ -765,9 +773,11 @@ impl eframe::App for EgitApp {
             self.run(command);
         }
         self.state.prompts.show(ui.ctx());
+        crate::help::window(ui.ctx(), &mut self.state.help);
         self.apply_actions(ui.ctx());
         pointing_hand(ui.ctx());
         crate::widgets::focus_ring(ui.ctx());
+        crate::help::show(ui.ctx());
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

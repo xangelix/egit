@@ -26,6 +26,7 @@ mod fonts;
 mod forge;
 mod format;
 mod grid;
+mod help;
 mod history;
 mod jobs;
 mod lfs;

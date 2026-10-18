@@ -27,7 +27,10 @@ enum Mark {
 
 /// A checkbox for `checked`, labelled `text`; a click anywhere on its row toggles it.
 pub(crate) fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<WidgetText>) -> Response {
-    let mut response = toggle(ui, *checked, text.into(), Mark::Check);
+    let text = text.into();
+    let words = text.text().to_owned();
+    let mut response = toggle(ui, *checked, text, Mark::Check);
+    crate::help::note(ui, response.rect, &words);
     if response.clicked() {
         *checked = !*checked;
         response.mark_changed();

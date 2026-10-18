@@ -358,6 +358,7 @@ fn commit_form(
 /// The summary and the description; returns the description's field (⌘Enter there commits).
 fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
     let summary_label = ui.label(muted(ui, "Summary"));
+    crate::help::note_topic(ui, summary_label.rect, "commit");
     ui.add(
         crate::widgets::line_field(&mut form.summary)
             .hint_text("What it does, in a line")
@@ -375,6 +376,7 @@ fn message_fields(ui: &mut Ui, form: &mut CommitForm) -> Response {
         );
     }
     let description_label = ui.label(muted(ui, "Description"));
+    crate::help::note_topic(ui, description_label.rect, "commit");
     ui.add(
         crate::widgets::text_area(&mut form.description)
             .hint_text("Why, and anything else worth knowing")

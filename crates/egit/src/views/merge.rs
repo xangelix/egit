@@ -460,6 +460,7 @@ fn sides(ui: &mut Ui, shared: &Shared<'_>, view: &mut MergeView, file: &Arc<Conf
                 ),
             ];
             for (at, (column, document, (title, label, choice))) in sides.into_iter().enumerate() {
+                crate::help::note_topic(column, column.max_rect(), "merge-editor");
                 if side_header(column, (title, label), view.editing.is_none()) {
                     picked = Some(choice);
                 }

@@ -263,6 +263,7 @@ fn menu_entry(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, allowed.is_ok(), label)
     });
+    crate::help::note(ui, response.rect, label);
     let response = match allowed {
         Err(why) => response.on_disabled_hover_text(why),
         Ok(()) => response,

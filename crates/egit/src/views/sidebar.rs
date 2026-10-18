@@ -1174,6 +1174,16 @@ fn section_row(
     let id = Id::new(("sidebar-section", drawing.shared.id, section));
     let named = format!("{title}: {count}");
     let (rect, response) = row_area(ui, id, &named, false, right);
+    let topic = match section {
+        Section::Branches => "branch",
+        Section::Remotes => "remote",
+        Section::Requests => "pull-requests",
+        Section::Tags => "tag",
+        Section::Stashes => "stash",
+        Section::Worktrees => "worktree",
+        Section::Submodules => "submodules",
+    };
+    crate::help::note_topic(ui, rect, topic);
     let folded = view.folded.contains(&key);
     paint_section(ui, drawing, rect, (section, &title, count), folded);
     if response.clicked() {
@@ -1593,6 +1603,13 @@ fn ref_row(
     // Dragged onto another ref (here, or a badge in the graph) to merge or rebase.
     let sense = Sense::click_and_drag();
     let (rect, response) = row_sensing(ui, (id, sense), &shown, selected, right);
+    let topic = match reference.kind {
+        RefKind::Branch => "branch",
+        RefKind::RemoteBranch => "remote",
+        RefKind::Tag => "tag",
+        RefKind::Other => "history",
+    };
+    crate::help::note_topic(ui, rect, topic);
     let current = drawing.current.as_ref() == Some(&reference.name);
     let seen = !is_branch || current || visible(drawing.shared, reference);
     let mut event = None;
@@ -1681,6 +1698,7 @@ fn stash_row(
         selected,
         0.0,
     );
+    crate::help::note_topic(ui, rect, "stash");
     let palette = drawing.palette;
     paint_row(
         ui,
@@ -1744,6 +1762,7 @@ fn worktree_row(
     let id = Id::new(("sidebar-worktree", drawing.shared.id, &worktree.path));
     let named = format!("{checked_out} · {folder}");
     let (rect, response) = row_area(ui, id, &named, selected, 0.0);
+    crate::help::note_topic(ui, rect, "worktree");
     let palette = drawing.palette;
     let glyph = if worktree.main {
         icon::HOUSE
@@ -1878,6 +1897,7 @@ fn submodule_row(
         submodule.path.as_slice(),
     ));
     let (rect, response) = row_area(ui, id, &path, selected, 0.0);
+    crate::help::note_topic(ui, rect, "submodules");
     let palette = drawing.palette;
     let recorded = submodule.recorded.abbreviated(ID_DIGITS).to_string();
     let standing = drawing
@@ -1971,6 +1991,7 @@ fn request_row(
         request.number,
     ));
     let (rect, response) = row_area(ui, id, &request.label, selected, 0.0);
+    crate::help::note_topic(ui, rect, "pull-requests");
     let palette = drawing.palette;
     let (glyph, color, meaning) = check_look(request.checks, palette);
     paint_row(

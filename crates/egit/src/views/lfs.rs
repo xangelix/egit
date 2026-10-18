@@ -36,6 +36,8 @@ pub(super) struct LfsView {
     /// The tab's read the page's was made after: when another lands (after a task, or the refs
     /// moved), the page reads again.
     state_for: Option<usize>,
+    /// Whether the tab's moved on since the page's read began.
+    stale: bool,
     files: Bind<Arc<[LfsFile]>, Problem>,
     /// The page's read the files were read for.
     files_for: usize,
@@ -84,10 +86,17 @@ pub(super) fn show(
         });
     });
     let tab = lfs.map(|lfs| Arc::as_ptr(lfs).addr());
-    if (view.state_for != tab || view.state.is_idle())
+    // A read under way finishes before the next starts (else reads replaced faster than they
+    // finish would never land); one more follows when the tab's moved on meanwhile.
+    if view.state_for != tab {
+        view.state_for = tab;
+        view.stale = true;
+    }
+    if (view.stale || view.state.is_idle())
+        && !view.state.is_pending()
         && let Some(git) = shared.git
     {
-        view.state_for = tab;
+        view.stale = false;
         view.state
             .request(read_all(git.clone(), Arc::clone(shared.repository)));
     }

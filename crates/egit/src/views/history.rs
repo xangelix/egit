@@ -1009,6 +1009,7 @@ fn submodules_banner(
                 .inner_margin(Margin::symmetric(12, 6))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    crate::help::note_topic(ui, ui.max_rect(), "submodule-mend");
                     ui.horizontal(|ui| {
                         let headline = format!("{}  Submodules: {}", icon::PACKAGE, out.words());
                         ui.add(
@@ -1054,6 +1055,7 @@ fn lfs_banner(ui: &mut Ui, shared: &Shared<'_>, pane: &mut TaskPane<'_>) -> bool
             .inner_margin(Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
+                crate::help::note_topic(ui, ui.max_rect(), "lfs");
                 let (headline, how) = match trouble {
                     crate::lfs::LfsTrouble::NotInstalled => (
                         "This repository keeps large files in Git LFS, but git-lfs isn't installed.",
@@ -2471,6 +2473,7 @@ impl TableDelegate for CommitRows<'_> {
         let Some(id) = self.history.id(cell.row_nr) else {
             return;
         };
+        crate::help::note_topic(ui, ui.max_rect(), "history");
         if cell.col_nr == 0 {
             self.graph_cell(ui, cell.row_nr, id);
             return;
@@ -2577,6 +2580,7 @@ impl CommitRows<'_> {
     fn work_cell(&mut self, ui: &mut Ui, column: usize) {
         let palette = self.shared.palette;
         let rect = ui.max_rect();
+        crate::help::note_topic(ui, rect, "work");
         let selected = self.view.work_selected;
         let hovered = ui.rect_contains_pointer(rect);
         crate::widgets::row_fill(ui, rect, 0.0, selected, hovered);
@@ -2936,6 +2940,13 @@ pub(super) fn dragging(
     asked: &mut Option<Ask>,
 ) {
     badge.dnd_set_drag_payload(DraggedRef(reference.clone()));
+    let topic = match reference.kind {
+        RefKind::Branch => "branch",
+        RefKind::RemoteBranch => "remote",
+        RefKind::Tag => "tag",
+        RefKind::Other => "history",
+    };
+    crate::help::note_topic(ui, badge.rect, topic);
     if badge.dragged()
         && let Some(pointer) = ui.ctx().pointer_interact_pos()
     {
@@ -3522,6 +3533,7 @@ fn commit_info(
     }
     if commit.signed {
         widgets::fact_top(ui, DETAIL_LABEL, "Signature", |ui| {
+            crate::help::note_topic(ui, ui.max_rect(), "signing");
             signature(ui, check, shared.palette);
         });
     }
@@ -3587,6 +3599,7 @@ fn co_authors(ui: &mut Ui, commit: &egit_git::Commit) {
     };
     let edge = Palette::of(ui.ctx()).panel;
     widgets::fact_top(ui, DETAIL_LABEL, label, |ui| {
+        crate::help::note_topic(ui, ui.max_rect(), "co-authors");
         ui.spacing_mut().item_spacing.y = 4.0;
         // A line each, the email on hover: there may be many.
         for person in &people {
