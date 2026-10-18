@@ -3,6 +3,7 @@
 mod audit;
 mod bisect;
 mod corpus;
+mod dragging;
 mod menus;
 mod notices;
 mod patches;

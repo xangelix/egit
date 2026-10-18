@@ -884,8 +884,11 @@ writes paths), never `OsStrExt`.
     screen, then a screen below and above). Graph cells paint lines (cubic curves between
     lanes) and nodes (hollow for merges, ringed for `HEAD`); rows are buttons named by their
     subject; a bisection's refs as badges in its terms (bad, good, skipped; `bisect_badge`);
-    ref badges (each its menu, a branch's double-click switching to it; in the details
-    too; painted 18 points tall, so badges in rows next to each other never touch; one that
+    ref badges (each its menu, a branch's double-click switching to it; dragged onto another
+    ref's badge or sidebar row (`dragging`: the ref carried as egui's drag payload, its words
+    following the pointer, the badge held over ringed in the accent), a menu of what that
+    can do opens where it lands (`Dropped`, `drop_menu`; Escape or a click elsewhere closes
+    it); in the details too; painted 18 points tall, so badges in rows next to each other never touch; one that
     doesn't fit in its cell is counted, "+2", rather than cut at the column's edge; in the
     details they wrap); a signed commit's seal by its verdict (good, doubtful, bad, or
     unchecked, its meaning on hover); a focusable area takes ↑ ↓ PgUp PgDn Home End. The message column
@@ -1009,7 +1012,12 @@ writes paths), never `OsStrExt`.
     upstream; a worktree from it; rename or delete a branch, delete a remote's on its remote,
     or both at once; copy its name, or a link to it on its forge; pin it to the left or unpin
     it, show only it, it too, or hide it (`Scope`, `Action::Scope`), or every branch again;
-    push or delete a tag), a branch badge double-clicked (switch), and the stash menu beside
+    push or delete a tag), a branch badge double-clicked (switch), a ref dropped onto another
+    (`drop_items`, in a menu where it lands: onto the current branch, merging the dragged one
+    in, rebasing onto it, or fast-forwarding to it; the current branch onto another, rebasing
+    onto that (keeping merges or not), merging it in, fast-forwarding; else fast-forwarding
+    the branch dropped on, or switching to it, a merge into it said to wait for that), and
+    the stash menu beside
     the commit count
     ("Stash the changes…", then a row per stash, its message and age, latest first, in a
     list that scrolls past ten (only the rows in view drawn), its submenu holding its whole
@@ -1068,7 +1076,8 @@ writes paths), never `OsStrExt`.
     named "Show <name> in the graph", a checkbox) hides it from the graph or shows it
     (`Scope::hidden`; the branch checked out has none: it always shows, marked with a check,
     its name leading); a ref's row selects its commit (or peeks at it), a branch's
-    double click switches, its menu is its badge's. The refs are sorted (by kind, then their
+    double click switches, its menu is its badge's, and it drags and takes drops as a badge
+    does. The refs are sorted (by kind, then their
     `/`-parts naturally: `v2.9` before `v2.10`, either case alike) in a job, once a read of the
     refs or when the remotes change; the rows are made again only when what they show changed
     (the sorted refs, a list read again, the forge's requests, the filter, a fold; from owned
@@ -1293,6 +1302,8 @@ writes paths), never `OsStrExt`.
     Abort), the staged changes copied, saved, pasted back and applied, a commit copied, a
     series saved. `src/tests/people.rs` drives co-authors: picked from the recent authors and
     typed, committed as trailers, shown in the details, taken back into the form to amend.
+    `src/tests/dragging.rs` drags branches: onto the current one (dismissed, then merged), the
+    current one onto another (rebased), between the sidebar and the graph either way.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,

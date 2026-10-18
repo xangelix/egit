@@ -39,6 +39,12 @@ pub(super) enum Ask {
     },
     /// A web page, in the browser.
     Open(String),
+    /// A ref dragged onto another, at a point: what it can do is asked there.
+    Dropped {
+        dragged: Reference,
+        onto: Reference,
+        at: egui::Pos2,
+    },
     /// The preferences changed (lists of files as a tree, say).
     Preferences(crate::preferences::Preferences),
     /// The pull requests, one selected (its repository's place in the forge's, its number).
@@ -708,6 +714,155 @@ fn pull_request_items(
         }
         Some(_) | None => {}
     }
+}
+
+/// What a ref dragged onto another can do, git merging into and rebasing the branch checked
+/// out: dropped on the current branch, merging the dragged one into it, rebasing it onto that,
+/// or fast-forwarding it; the current branch dropped on another, rebasing it onto that (or
+/// keeping merges), merging that in, or fast-forwarding; else fast-forwarding the branch
+/// dropped on, or switching to it first.
+pub(super) fn drop_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    (dragged, onto): (&Reference, &Reference),
+    ask: &mut impl FnMut(Ask),
+) {
+    let from = dragged.short_name().to_str_lossy().into_owned();
+    let to = onto.short_name().to_str_lossy().into_owned();
+    menu_header(ui, &format!("{from} onto {to}"));
+    for (glyph, label, task, allowed) in drop_offers(menus, (dragged, onto), (&from, &to)) {
+        let allowed = allowed.as_ref().copied().map_err(String::as_str);
+        if item(ui, (glyph, &label), allowed)
+            && let Some(task) = task
+        {
+            ask(Ask::Task(task));
+        }
+    }
+}
+
+/// An item a drop offers: its icon, its words, its task (none: only said), and whether it can
+/// be done now (why not).
+type Offer = (&'static str, String, Option<Task>, Result<(), String>);
+
+/// What [`drop_items`] offers for `dragged` dropped onto `onto` (named `from` and `to`).
+fn drop_offers(
+    menus: &Menus<'_>,
+    (dragged, onto): (&Reference, &Reference),
+    (from, to): (&str, &str),
+) -> Vec<Offer> {
+    let current = |reference: &Reference| {
+        reference.kind == RefKind::Branch && menus.branch == Some(reference.short_name())
+    };
+    let allowed = menus.can_change().map_err(str::to_owned);
+    let merge = |what: &Reference, shown: &str| {
+        Some(Task::Merge {
+            what: what.name.clone(),
+            shown: shown.to_owned(),
+        })
+    };
+    let rebase = |onto: &Reference, shown: &str, keep_merges| {
+        Some(Task::Rebase {
+            onto: onto.name.clone(),
+            shown: shown.to_owned(),
+            keep_merges,
+        })
+    };
+    let forward = |to: &Reference, shown: &str| {
+        Some(Task::FastForward {
+            to: to.name.clone(),
+            shown: shown.to_owned(),
+        })
+    };
+    if current(onto) {
+        return vec![
+            (
+                icon::GIT_MERGE,
+                format!("Merge {from} into {to}"),
+                merge(dragged, from),
+                allowed.clone(),
+            ),
+            (
+                icon::STACK,
+                format!("Rebase {to} onto {from}"),
+                rebase(dragged, from, false),
+                allowed.clone(),
+            ),
+            (
+                icon::FAST_FORWARD,
+                format!("Fast-forward {to} to {from}"),
+                forward(dragged, from),
+                allowed,
+            ),
+        ];
+    }
+    if current(dragged) {
+        return vec![
+            (
+                icon::STACK,
+                format!("Rebase {from} onto {to}"),
+                rebase(onto, to, false),
+                allowed.clone(),
+            ),
+            (
+                icon::STACK,
+                format!("Rebase {from} onto {to}, keeping merges"),
+                rebase(onto, to, true),
+                allowed.clone(),
+            ),
+            (
+                icon::GIT_MERGE,
+                format!("Merge {to} into {from}"),
+                merge(onto, to),
+                allowed.clone(),
+            ),
+            (
+                icon::FAST_FORWARD,
+                format!("Fast-forward {from} to {to}"),
+                forward(onto, to),
+                allowed,
+            ),
+        ];
+    }
+    elsewhere_offers(menus, (dragged, onto), (from, to))
+}
+
+/// What a ref dropped onto a branch not checked out offers: fast-forwarding that branch, and
+/// switching to it (merging into it waits for that).
+fn elsewhere_offers(
+    menus: &Menus<'_>,
+    (dragged, onto): (&Reference, &Reference),
+    (from, to): (&str, &str),
+) -> Vec<Offer> {
+    let mut offers = Vec::with_capacity(3);
+    if onto.kind == RefKind::Branch {
+        offers.push((
+            icon::FAST_FORWARD,
+            format!("Fast-forward {to} to {from}"),
+            Some(Task::FastForwardBranch {
+                branch: onto.short_name().to_owned(),
+                from: ForwardSource::Here(dragged.name.clone()),
+                shown: from.to_owned(),
+            }),
+            menus.idle().map_err(str::to_owned),
+        ));
+    }
+    offers.push((
+        icon::GIT_MERGE,
+        format!("Merge {from} into {to}"),
+        None,
+        Err(format!(
+            "git merges into the branch checked out: switch to {to} first"
+        )),
+    ));
+    if let Some(switch) = menus.switch_to(onto) {
+        offers.push((
+            icon::ARROW_BEND_UP_RIGHT,
+            format!("Switch to {to}"),
+            Some(Task::Switch(switch)),
+            menus.can_change().map_err(str::to_owned),
+        ));
+    }
+    offers
 }
 
 /// Bringing a branch into the current one: merging it, rebasing onto it (keeping merges or

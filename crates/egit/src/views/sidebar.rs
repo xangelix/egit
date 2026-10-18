@@ -986,12 +986,23 @@ fn header(ui: &mut Ui, view: &mut Sidebar) {
 /// A row's place: its whole width, its clickable part (all but `right` pixels kept for a
 /// button), named and marked as selected or hovered.
 fn row_area(ui: &mut Ui, id: Id, name: &str, selected: bool, right: f32) -> (Rect, Response) {
+    row_sensing(ui, (id, Sense::click()), name, selected, right)
+}
+
+/// A row's place, as [`row_area`], sensing as `sense` says (a ref's is dragged too).
+fn row_sensing(
+    ui: &mut Ui,
+    (id, sense): (Id, Sense),
+    name: &str,
+    selected: bool,
+    right: f32,
+) -> (Rect, Response) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
     let body = Rect::from_min_max(
         rect.min,
         pos2((rect.right() - right).max(rect.left()), rect.bottom()),
     );
-    let response = ui.interact(body, id, Sense::click());
+    let response = ui.interact(body, id, sense);
     response
         .widget_info(|| WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, name));
     crate::widgets::row_fill(
@@ -1565,7 +1576,9 @@ fn ref_row(
     let id = Id::new(("sidebar-ref", drawing.shared.id, reference.name.as_slice()));
     let is_branch = matches!(reference.kind, RefKind::Branch | RefKind::RemoteBranch);
     let right = if is_branch { EYE } else { 0.0 };
-    let (rect, response) = row_area(ui, id, &shown, selected, right);
+    // Dragged onto another ref (here, or a badge in the graph) to merge or rebase.
+    let sense = Sense::click_and_drag();
+    let (rect, response) = row_sensing(ui, (id, sense), &shown, selected, right);
     let current = drawing.current.as_ref() == Some(&reference.name);
     let seen = !is_branch || current || visible(drawing.shared, reference);
     let mut event = None;
@@ -1629,6 +1642,8 @@ fn ref_row(
         event = Some(SidebarEvent::Show(reference.target));
     }
     let mut asked = None;
+    let dragged = format!("{glyph} {shown}");
+    super::history::dragging(ui, &response, reference, &dragged, &mut asked);
     response.context_menu(|ui| actions::ref_menu(ui, &drawing.menus, reference, &mut asked));
     asked.map(SidebarEvent::Ask).or(event)
 }

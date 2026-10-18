@@ -200,7 +200,20 @@ pub(crate) struct HistoryView {
     keep_row: bool,
     /// How many files the work in progress's row counts, by the status read they came from.
     work_counts: WorkCounts,
+    /// A ref dropped onto another, while what it can do is asked.
+    dropped: Option<Dropped>,
 }
+
+/// A ref dropped onto another, where.
+#[derive(Debug)]
+struct Dropped {
+    dragged: Reference,
+    onto: Reference,
+    at: Pos2,
+}
+
+/// What a ref badge being dragged carries.
+struct DraggedRef(Reference);
 
 /// The files with changes not yet committed, and how many of them are staged: counted once a
 /// status read (100,000 untracked files are counted in a millisecond, too long for a frame).
@@ -347,6 +360,7 @@ impl HistoryView {
             message_edit: None,
             keep_row: false,
             work_counts: WorkCounts::default(),
+            dropped: None,
         }
     }
 
@@ -804,6 +818,44 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         lists: &lists,
     };
     panels(ui, &shared, history, view, sides, actions, no_commits);
+    drop_menu(ui.ctx(), &shared, history, view);
+}
+
+/// What a ref dropped onto another can do, in a menu where it was dropped (`actions::drop_items`)
+/// until one is picked, the pointer clicks elsewhere, or Escape.
+fn drop_menu(
+    ctx: &egui::Context,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    view: &mut HistoryView,
+) {
+    let Some(dropped) = &view.dropped else {
+        return;
+    };
+    let menus = shared.menus(history.shown.refs());
+    let mut asked = None;
+    let area = egui::Area::new(Id::new(("drop-menu", shared.id)))
+        .order(egui::Order::Foreground)
+        .fixed_pos(dropped.at)
+        .constrain(true)
+        .show(ctx, |ui| {
+            egui::containers::menu::menu_style(ui.style_mut());
+            Frame::menu(ui.style()).show(ui, |ui| {
+                ui.set_min_width(260.0);
+                actions::drop_items(ui, &menus, (&dropped.dragged, &dropped.onto), &mut |ask| {
+                    asked = Some(ask);
+                });
+            });
+        });
+    let elsewhere =
+        ctx.input(|input| input.pointer.any_click()) && !area.response.contains_pointer();
+    let escape = ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Escape));
+    if asked.is_some() || elsewhere || escape {
+        view.dropped = None;
+    }
+    if asked.is_some() {
+        view.asked = asked;
+    }
 }
 
 /// What the panels beside the commit table show: the working tree's side, and the sidebar's
@@ -1781,6 +1833,7 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
             view.tool = Some(Tool::Rebase(RebaseView::new(shared, from, reword)));
         }
         Ask::Open(url) => actions.push(Action::OpenUrl(url)),
+        Ask::Dropped { dragged, onto, at } => view.dropped = Some(Dropped { dragged, onto, at }),
         Ask::Preferences(preferences) => actions.push(Action::SetPreferences(preferences)),
         Ask::Scope(scope) => actions.push(Action::Scope(shared.id, scope)),
         Ask::SavePatch { commit, name } => actions.push(Action::AskFiles {
@@ -2420,6 +2473,7 @@ fn badges(
         }
         let badge = paint_badge(ui, galley, &look, &label);
         drawn = drawn.saturating_add(1);
+        dragging(ui, &badge, reference, &label, asked);
         if badge.double_clicked() {
             if let Some(switch) = actions::ref_double_clicked(menus, reference) {
                 *asked = Some(switch);
@@ -2483,7 +2537,8 @@ fn paint_badge(
     label: &str,
 ) -> egui::Response {
     let size = egui::vec2(2.0f32.mul_add(BADGE_PAD, galley.size().x), BADGE_HEIGHT);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    // Clicked to select its commit, dragged onto another ref to merge or rebase.
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, label));
     if ui.is_rect_visible(rect) {
         let painter = ui.painter();
@@ -2500,6 +2555,57 @@ fn paint_badge(
         painter.galley(at, galley, look.text);
     }
     response
+}
+
+/// A ref's badge (or sidebar row) dragged and dropped: it carries its ref while dragged (its
+/// words follow the pointer), and another ref dropped on it is ringed while held over it, then
+/// asks what to do.
+pub(super) fn dragging(
+    ui: &Ui,
+    badge: &egui::Response,
+    reference: &Reference,
+    label: &str,
+    asked: &mut Option<Ask>,
+) {
+    badge.dnd_set_drag_payload(DraggedRef(reference.clone()));
+    if badge.dragged()
+        && let Some(pointer) = ui.ctx().pointer_interact_pos()
+    {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+        egui::Area::new(Id::new("dragged-ref"))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(pos2(pointer.x + 14.0, pointer.y + 10.0))
+            .interactable(false)
+            .show(ui.ctx(), |ui| {
+                Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.label(RichText::new(label).medium());
+                    ui.label(muted(ui, "Drop it on a branch to merge or rebase"));
+                });
+            });
+    }
+    let other = |dragged: &DraggedRef| dragged.0.name != reference.name;
+    if badge
+        .dnd_hover_payload::<DraggedRef>()
+        .is_some_and(|dragged| other(&dragged))
+    {
+        let accent = Palette::of(ui.ctx()).accent;
+        ui.painter().rect_stroke(
+            badge.rect.expand(2.0),
+            crate::theme::RADIUS_INNER,
+            Stroke::new(2.0, accent),
+            egui::StrokeKind::Outside,
+        );
+    }
+    if let Some(dragged) = badge.dnd_release_payload::<DraggedRef>()
+        && other(&dragged)
+        && let Some(at) = ui.ctx().pointer_interact_pos()
+    {
+        *asked = Some(Ask::Dropped {
+            dragged: dragged.0.clone(),
+            onto: reference.clone(),
+            at,
+        });
+    }
 }
 
 /// How many badges didn't fit, or were more than are shown: "+3".
