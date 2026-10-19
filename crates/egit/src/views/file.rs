@@ -32,7 +32,7 @@ use crate::grid::TextGrid;
 use crate::history::{
     CommitDetails, FileContent, LfsPointer, Objects, read_file, read_work_tree_file,
 };
-use crate::markdown::{Documents, Preview, is_markdown, read_documents};
+use crate::markdown::{Documents, Preview, Previews, is_markdown, read_documents};
 use crate::pictures::{Picture, PictureSource, Pictures, is_image, read_pictures};
 use crate::problem::Problem;
 use crate::staging::{LinesRequest, StageRequest};
@@ -162,7 +162,7 @@ pub(super) struct FileView {
     /// A Markdown file's sides, read the first time they are previewed, and each preview's
     /// state (before, after).
     documents: Bind<Arc<Documents>, Problem>,
-    previews: (Preview, Preview),
+    previews: Previews,
     /// A submodule's move and the commits it brings, read the first time it is shown.
     moved: Bind<Arc<crate::submodules::Moved>, Problem>,
     /// What its bar asked to see of the file instead: its blame, or its history.
@@ -245,7 +245,7 @@ impl FileView {
             pictures: Bind::new(true),
             textures: None,
             documents: Bind::new(true),
-            previews: (Preview::default(), Preview::default()),
+            previews: Previews::default(),
             moved: Bind::new(true),
             wanted: None,
             asked: None,
@@ -490,6 +490,12 @@ impl FileView {
         self.sides
             .ok_ref()
             .map(|sides| crate::grid::GridSource::measure(&sides.side(false)).lines())
+    }
+
+    /// Whether its Markdown previews have measured every block and scrolled where asked.
+    #[cfg(test)]
+    pub(super) fn previews_settled(&mut self) -> bool {
+        self.documents.is_ok() && self.previews.settled()
     }
 }
 
@@ -1179,7 +1185,14 @@ fn show_preview(
         }
         Some(Ok(documents)) => Arc::clone(documents),
     };
-    let (before, after) = &mut file.previews;
+    file.previews.follow(&documents);
+    let compared = documents.before.as_ref().is_some_and(Result::is_ok)
+        && documents.after.as_ref().is_some_and(Result::is_ok);
+    if compared {
+        changes_bar(ui, &mut file.previews, &documents);
+    }
+    let current = file.previews.change();
+    let Previews { before, after, .. } = &mut file.previews;
     let sides: Vec<_> = [
         ("Before", &documents.before, before),
         ("After", &documents.after, after),
@@ -1194,7 +1207,7 @@ fn show_preview(
             for (column, (title, side, preview)) in columns.iter_mut().zip(sides) {
                 let pages = document_side(
                     column,
-                    (title, side),
+                    (title, side, current),
                     preview,
                     (path.as_ref(), shared.palette),
                 );
@@ -1204,11 +1217,66 @@ fn show_preview(
     });
 }
 
+/// Where the change in view is among a compared document's, and stepping through them (Alt+↑
+/// and Alt+↓ too); or that nothing changed in how it reads.
+fn changes_bar(ui: &mut Ui, previews: &mut Previews, documents: &Documents) {
+    let count = documents.changes.len();
+    let (next, previous) = ui.input_mut(|input| {
+        (
+            input.consume_key(Modifiers::ALT, Key::ArrowDown),
+            input.consume_key(Modifiers::ALT, Key::ArrowUp),
+        )
+    });
+    let at = previews.change().unwrap_or(0);
+    let mut go = None;
+    widgets::bar(ui, |ui| {
+        ui.horizontal(|ui| {
+            if count == 0 {
+                ui.label(muted(
+                    ui,
+                    "Nothing changed in how it reads: only how it is written",
+                ));
+                return;
+            }
+            if widgets::icon_tool(ui, at > 0, icon::ARROW_UP, "Previous change")
+                .on_hover_text(format!("The change before (Alt+{})", icon::ARROW_UP))
+                .clicked()
+                || (previous && at > 0)
+            {
+                go = Some(at.saturating_sub(1));
+            }
+            let last = at.saturating_add(1) >= count;
+            if widgets::icon_tool(ui, !last, icon::ARROW_DOWN, "Next change")
+                .on_hover_text(format!("The change after (Alt+{})", icon::ARROW_DOWN))
+                .clicked()
+                || (next && !last)
+            {
+                go = Some(at.saturating_add(1));
+            }
+            let plural = if count == 1 { "" } else { "s" };
+            ui.label(
+                RichText::new(format!(
+                    "Change {} of {count}",
+                    at.saturating_add(1).min(count)
+                ))
+                .semibold(),
+            )
+            .on_hover_text(format!(
+                "{count} place{plural} where it reads differently: removed on the left, added \
+                 on the right"
+            ));
+        });
+    });
+    if let Some(index) = go {
+        previews.go(documents, index);
+    }
+}
+
 /// One side of a Markdown file's change: its title and size, then the document as it reads, or
 /// why it couldn't be read; returns the pages its links asked for.
 fn document_side(
     ui: &mut Ui,
-    (title, side): (&str, &crate::markdown::Side),
+    (title, side, current): (&str, &crate::markdown::Side, Option<usize>),
     preview: &mut Preview,
     (path, palette): (&BStr, Palette),
 ) -> Vec<String> {
@@ -1232,7 +1300,7 @@ fn document_side(
         .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
         .inner_margin(Margin::same(16))
         .show(ui, |ui| {
-            pages = crate::markdown::show(ui, preview, document, (title, path));
+            pages = crate::markdown::show(ui, preview, document, (current, (title, path)));
         });
     pages
 }

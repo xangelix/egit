@@ -514,6 +514,13 @@ impl HistoryView {
         self.file.as_mut()?.split_lines()
     }
 
+    /// Whether the open file's Markdown previews have settled: every block measured, and
+    /// scrolled where asked.
+    #[cfg(test)]
+    pub(crate) fn previews_settled(&mut self) -> bool {
+        self.file.as_mut().is_some_and(FileView::previews_settled)
+    }
+
     /// The selected commit's row.
     #[cfg(test)]
     pub(crate) fn selected_row(&self) -> Option<u64> {

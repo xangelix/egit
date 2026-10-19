@@ -12,13 +12,18 @@
 //! which opens web pages only; one to a heading (`#install`) scrolls to it, as GitHub names
 //! headings. Nothing is fetched from the web: an image there is a link to it (a picture in a
 //! document can tell its author who read it).
+//!
+//! Before and after are compared block by block ([`egit_text::kept`]): the blocks that changed
+//! are tinted (removed, added; the change in view stronger), a line marks where the other side
+//! has blocks this one hasn't, and each side scrolls to a change as it is stepped to, the first
+//! as the documents land.
 
 use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{Git, Repository};
-use egui::{Rect, ScrollArea, TextStyle, Ui, UiBuilder, pos2, vec2};
+use egui::{Color32, Rect, ScrollArea, TextStyle, Ui, UiBuilder, pos2, vec2};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
@@ -26,7 +31,7 @@ use crate::history::Objects;
 use crate::jobs;
 use crate::pictures::{PictureSource, read_side};
 use crate::problem::Problem;
-use crate::theme::icon;
+use crate::theme::{Palette, icon};
 
 /// The largest document previewed, in bytes.
 pub(crate) const LARGEST: u64 = 1 << 20;
@@ -38,6 +43,13 @@ const HEADING: f32 = 24.0;
 
 /// How long a frame may spend measuring blocks out of view, so the scroll bar settles.
 const MEASURING: Duration = Duration::from_millis(2);
+
+/// The room left of a compared document's blocks, where a changed one's bar goes.
+const GUTTER: f32 = 10.0;
+/// A changed block's bar's width.
+const BAR: f32 = 3.0;
+/// How far a changed block's tint reaches above and below its text.
+const TINT: f32 = 3.0;
 
 /// Whether `path` names a Markdown file (by its extension, in any case).
 pub(crate) fn is_markdown(path: &[u8]) -> bool {
@@ -52,7 +64,8 @@ pub(crate) fn is_markdown(path: &[u8]) -> bool {
 }
 
 /// A document, ready to draw: its text (made ready: [`prepared`]), its blocks, the link
-/// reference definitions they may use, its headings' anchors, and its size as read.
+/// reference definitions they may use, its headings' anchors, and its size as read; compared
+/// with the other side of its change, which side it is and where that has blocks it hasn't.
 #[derive(Debug)]
 pub(crate) struct Document {
     text: String,
@@ -61,17 +74,31 @@ pub(crate) struct Document {
     /// Each heading's anchor (as GitHub names it) and its block.
     anchors: Vec<(String, usize)>,
     pub(crate) bytes: u64,
+    sided: Sided,
+    /// Where the other side has blocks this one hasn't: the block they would come before (or
+    /// the count of blocks, at the end), and their change; in order.
+    gaps: Vec<(usize, usize)>,
 }
 
-/// A block of a document: its place in the text, its lines (for a guess at its height), and
-/// the room before it. An ordered list's item is written again with its number, as it is drawn
-/// alone.
+/// Which side of a change a document is, for the colours its changes take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sided {
+    /// Not compared: a document added, or deleted.
+    Alone,
+    Before,
+    After,
+}
+
+/// A block of a document: its place in the text, its lines (for a guess at its height), the
+/// room before it, and the change it is part of, if it changed. An ordered list's item is
+/// written again with its number, as it is drawn alone.
 #[derive(Debug)]
 struct Block {
     range: Range<usize>,
     numbered: Option<String>,
     lines: u32,
     room: Room,
+    change: Option<usize>,
 }
 
 /// The room before a block, as `egui_commonmark` leaves it between elements drawn together.
@@ -110,7 +137,17 @@ impl Document {
             references,
             anchors,
             bytes,
+            sided: Sided::Alone,
+            gaps: Vec::new(),
         }
+    }
+
+    /// Block `block`'s own text, as it reads (an ordered list's item with its number).
+    fn source<'a>(&'a self, block: &'a Block) -> &'a str {
+        block
+            .numbered
+            .as_deref()
+            .unwrap_or_else(|| self.text.get(block.range.clone()).unwrap_or_default())
     }
 
     /// Block `index`'s text, as it is drawn.
@@ -148,11 +185,76 @@ impl Document {
 /// couldn't be read.
 pub(crate) type Side = Option<Result<Document, String>>;
 
-/// Both sides of a document's change.
+/// Both sides of a document's change, and how they differ.
 #[derive(Debug)]
 pub(crate) struct Documents {
     pub(crate) before: Side,
     pub(crate) after: Side,
+    /// The blocks that changed, in order; none unless both sides were read.
+    pub(crate) changes: Vec<Change>,
+}
+
+/// Blocks that changed together: those removed (of the side before) and added (of the side
+/// after); either may be none, where the other side alone has blocks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Change {
+    pub(crate) before: Range<usize>,
+    pub(crate) after: Range<usize>,
+}
+
+/// Compares two documents block by block: marks each block that changed with its change,
+/// notes where the other side has blocks one hasn't, and returns the changes.
+fn compare(before: &mut Document, after: &mut Document) -> Vec<Change> {
+    let (old_kept, new_kept) = {
+        let old: Vec<&str> = before
+            .blocks
+            .iter()
+            .map(|block| before.source(block))
+            .collect();
+        let new: Vec<&str> = after
+            .blocks
+            .iter()
+            .map(|block| after.source(block))
+            .collect();
+        egit_text::kept(&old, &new)
+    };
+    let mut changes = Vec::new();
+    let (mut old, mut new) = (0, 0);
+    while old < old_kept.len() || new < new_kept.len() {
+        let unkept = |kept: &[bool], at: usize| kept.get(at).is_some_and(|kept| !kept);
+        if !unkept(&old_kept, old) && !unkept(&new_kept, new) {
+            // Both kept: the same block.
+            old = old.saturating_add(1);
+            new = new.saturating_add(1);
+            continue;
+        }
+        let run = |kept: &[bool], from: usize| {
+            from..kept
+                .iter()
+                .skip(from)
+                .position(|kept| *kept)
+                .map_or(kept.len(), |kept| from.saturating_add(kept))
+        };
+        let change = Change {
+            before: run(&old_kept, old),
+            after: run(&new_kept, new),
+        };
+        (old, new) = (change.before.end, change.after.end);
+        changes.push(change);
+    }
+    before.sided = Sided::Before;
+    after.sided = Sided::After;
+    for (index, change) in changes.iter().enumerate() {
+        for (document, range) in [(&mut *before, &change.before), (&mut *after, &change.after)] {
+            if range.is_empty() {
+                document.gaps.push((range.start, index));
+            }
+            for block in document.blocks.get_mut(range.clone()).unwrap_or_default() {
+                block.change = Some(index);
+            }
+        }
+    }
+    changes
 }
 
 /// Reads both sides, and splits each into its blocks.
@@ -172,9 +274,15 @@ pub(crate) async fn read_documents(
                 ))
             })
         };
+        let (mut before, mut after) = (read(before), read(after));
+        let changes = match (&mut before, &mut after) {
+            (Some(Ok(before)), Some(Ok(after))) => compare(before, after),
+            _ => Vec::new(),
+        };
         Ok(Arc::new(Documents {
-            before: read(before),
-            after: read(after),
+            before,
+            after,
+            changes,
         }))
     })
     .await
@@ -340,6 +448,7 @@ fn block(text: &str, range: Range<usize>, numbered: Option<String>, room: Room) 
         numbered,
         lines: u32::try_from(lines).unwrap_or(u32::MAX),
         room,
+        change: None,
     }
 }
 
@@ -404,13 +513,16 @@ fn options() -> Options {
 }
 
 /// A document's preview's state: `egui_commonmark`'s, each block's height (guessed until drawn)
-/// at the width they were measured at, and where to scroll next frame.
+/// at the width they were measured at, a line of its body's height, where to scroll next frame,
+/// and the block to scroll to once heights are known.
 #[derive(Default)]
 pub(crate) struct Preview {
     cache: CommonMarkCache,
     heights: Vec<(f32, bool)>,
     width: f32,
+    line: f32,
     scroll_to: Option<f32>,
+    target: Option<usize>,
 }
 
 impl std::fmt::Debug for Preview {
@@ -419,14 +531,72 @@ impl std::fmt::Debug for Preview {
     }
 }
 
-/// Draws `document` as it reads, in a scroll area of its own (`id`), only the blocks in view;
-/// returns the pages its links asked for, for egit's opener (egui's own output loses them).
+/// Both sides' previews, and the change in view.
+#[derive(Debug, Default)]
+pub(crate) struct Previews {
+    pub(crate) before: Preview,
+    pub(crate) after: Preview,
+    /// The change in view: the first once the documents land, then as stepped to.
+    change: Option<usize>,
+}
+
+impl Previews {
+    /// The change in view, while there are any.
+    pub(crate) const fn change(&self) -> Option<usize> {
+        self.change
+    }
+
+    /// Shows change `index`: each side scrolled to it.
+    pub(crate) fn go(&mut self, documents: &Documents, index: usize) {
+        let Some(change) = documents.changes.get(index) else {
+            return;
+        };
+        self.change = Some(index);
+        self.before.target = Some(change.before.start);
+        self.after.target = Some(change.after.start);
+    }
+
+    /// Whether both sides have measured every block and scrolled where asked.
+    #[cfg(test)]
+    pub(crate) fn settled(&self) -> bool {
+        [&self.before, &self.after].into_iter().all(|preview| {
+            preview.target.is_none()
+                && preview.scroll_to.is_none()
+                && preview.heights.iter().all(|(_, measured)| *measured)
+        })
+    }
+
+    /// Goes to the first change as documents land; read again, the change in view stays (or
+    /// the last, if there are fewer now) and nothing scrolls.
+    pub(crate) fn follow(&mut self, documents: &Documents) {
+        match self.change {
+            None => self.go(documents, 0),
+            Some(index) if index >= documents.changes.len() => {
+                self.change = documents.changes.len().checked_sub(1);
+            }
+            Some(_) => {}
+        }
+    }
+}
+
+/// Draws `document` as it reads, in a scroll area of its own (`id`), only the blocks in view,
+/// change `current` marked strongest; returns the pages its links asked for, for egit's opener
+/// (egui's own output loses them).
 pub(crate) fn show(
     ui: &mut Ui,
     preview: &mut Preview,
     document: &Document,
-    id: impl egui::AsIdSalt,
+    (current, id): (Option<usize>, impl egui::AsIdSalt),
 ) -> Vec<String> {
+    // A change stepped to: its first block a line below the top, once there are heights.
+    if let Some(block) = preview.target {
+        if preview.heights.len() == document.blocks.len() {
+            preview.target = None;
+            preview.scroll_to = Some((top_of(preview, block) - preview.line).max(0.0));
+        } else {
+            ui.ctx().request_repaint();
+        }
+    }
     let commands = ui.ctx().output(|output| output.commands.len());
     let mut area = ScrollArea::vertical()
         .id_salt(id)
@@ -442,10 +612,10 @@ pub(crate) fn show(
                 font.size = size;
             }
         }
-        blocks(ui, preview, document, viewport)
+        blocks(ui, preview, document, (viewport, current))
     });
     // Blocks above the view that turned out taller or shorter than guessed: the view stays.
-    if shown.inner != 0.0 {
+    if shown.inner != 0.0 && preview.scroll_to.is_none() {
         preview.scroll_to = Some((shown.state.offset.y + shown.inner).max(0.0));
         ui.ctx().request_repaint();
     }
@@ -478,13 +648,28 @@ pub(crate) fn show(
         .collect()
 }
 
-/// Draws the blocks `viewport` shows (and measures some beyond it); returns how much those
-/// above its top grew, to keep the view where it is.
-fn blocks(ui: &mut Ui, preview: &mut Preview, document: &Document, viewport: Rect) -> f32 {
-    let width = ui.available_width();
+/// Draws the blocks `viewport` shows (and measures some beyond it), change `current` marked
+/// strongest; returns how much those above its top grew, to keep the view where it is.
+fn blocks(
+    ui: &mut Ui,
+    preview: &mut Preview,
+    document: &Document,
+    (viewport, current): (Rect, Option<usize>),
+) -> f32 {
+    let gutter = if document.sided == Sided::Alone {
+        0.0
+    } else {
+        GUTTER
+    };
+    let width = ui.available_width() - gutter;
     let line = ui.text_style_height(&TextStyle::Body) * 1.4;
+    preview.line = line;
+    let mut grew = 0.0;
     if preview.heights.len() != document.blocks.len() || (preview.width - width).abs() > 0.5 {
-        // Guessed again at a new width: a line of a block's source, a line drawn.
+        // At a new width the block at the view's top stays there, as far into it as it was.
+        let anchor = (preview.heights.len() == document.blocks.len())
+            .then(|| block_at(preview, viewport.min.y));
+        // Guessed again: a line of a block's source, a line drawn.
         preview.heights = document
             .blocks
             .iter()
@@ -494,24 +679,37 @@ fn blocks(ui: &mut Ui, preview: &mut Preview, document: &Document, viewport: Rec
             })
             .collect();
         preview.width = width;
+        if let Some((index, within)) = anchor {
+            let height = preview
+                .heights
+                .get(index)
+                .map_or(0.0, |(height, _)| *height);
+            grew = top_of(preview, index) + within.min(height) - viewport.min.y;
+        }
     }
     let total: f32 = preview.heights.iter().map(|(height, _)| height).sum();
     let place = Place {
         origin: ui.min_rect().min,
+        gutter,
         width,
         line,
+        current,
+        palette: Palette::of(ui.ctx()),
     };
     ui.set_height(total);
-    let mut grew = 0.0;
     let mut top = 0.0;
     let mut index = 0;
+    // Blocks wholly above the view.
+    let mut above = 0;
     while let Some(&(height, _)) = preview.heights.get(index) {
         if top > viewport.max.y {
             break;
         }
         let drawn = if top + height >= viewport.min.y {
+            gap(ui, document, place, (index, top));
             draw_block(ui, preview, document, (index, top), (place, false))
         } else {
+            above = index.saturating_add(1);
             height
         };
         if top < viewport.min.y {
@@ -520,20 +718,39 @@ fn blocks(ui: &mut Ui, preview: &mut Preview, document: &Document, viewport: Rec
         top += drawn;
         index = index.saturating_add(1);
     }
-    measure_ahead(ui, preview, document, (place, index));
-    grew
+    if index == document.blocks.len() {
+        gap(ui, document, place, (index, top));
+    }
+    grew + measure_ahead(ui, preview, document, (place, index, above))
 }
 
-/// Where a document's blocks go: its top left, its width, and a line of its body's height.
+/// The block at `y` from the document's top, and how far into it `y` is.
+fn block_at(preview: &Preview, y: f32) -> (usize, f32) {
+    let mut top = 0.0;
+    for (index, (height, _)) in preview.heights.iter().enumerate() {
+        if top + height > y {
+            return (index, y - top);
+        }
+        top += height;
+    }
+    (preview.heights.len(), y - top)
+}
+
+/// Where a document's blocks go and how: its top left, the room left of them (a compared
+/// document's), their width, a line of its body's height, the change marked strongest, and
+/// the colours.
 #[derive(Clone, Copy)]
 struct Place {
     origin: egui::Pos2,
+    gutter: f32,
     width: f32,
     line: f32,
+    current: Option<usize>,
+    palette: Palette,
 }
 
-/// Draws block `index` at `top` (or, `sizing`, lays it out unseen) below its room; notes and
-/// returns its height, its room with it.
+/// Draws block `index` at `top` (or, `sizing`, lays it out unseen) below its room, tinted when
+/// it changed; notes and returns its height, its room with it.
 fn draw_block(
     ui: &mut Ui,
     preview: &mut Preview,
@@ -546,9 +763,16 @@ fn draw_block(
     };
     let room = document.room(index) * place.line;
     let rect = Rect::from_min_size(
-        pos2(place.origin.x, place.origin.y + top + room),
+        pos2(place.origin.x + place.gutter, place.origin.y + top + room),
         vec2(place.width, f32::INFINITY),
     );
+    let change = document
+        .blocks
+        .get(index)
+        .and_then(|block| block.change)
+        .filter(|_| !sizing);
+    // Behind the text, painted once its height is known.
+    let tint = change.map(|_| ui.painter().add(egui::Shape::Noop));
     let mut builder = UiBuilder::new().max_rect(rect).id_salt((sizing, index));
     if sizing {
         builder = builder.sizing_pass().invisible();
@@ -558,23 +782,107 @@ fn draw_block(
             viewer().show(ui, &mut preview.cache, &text);
         })
         .response
-        .rect
-        .height()
-        + room;
-    if let Some(measured) = preview.heights.get_mut(index) {
-        *measured = (drawn, true);
+        .rect;
+    if let (Some(change), Some(tint)) = (change, tint) {
+        let of = |index: Option<usize>| {
+            index
+                .and_then(|index| document.blocks.get(index))
+                .and_then(|block| block.change)
+        };
+        // One band with the blocks of its change next to it (the room between them tinted
+        // too, once); a little past its text where the change begins or ends.
+        let from = if of(index.checked_sub(1)) == Some(change) {
+            top
+        } else {
+            top + (room - TINT).max(0.0)
+        };
+        let to = if of(index.checked_add(1)) == Some(change) {
+            0.0
+        } else {
+            TINT
+        };
+        let band = Rect::from_min_max(
+            pos2(place.origin.x, place.origin.y + from),
+            pos2(
+                place.origin.x + place.gutter + place.width,
+                drawn.bottom() + to,
+            ),
+        );
+        let tints = tints(document.sided, place.palette);
+        let fill = if place.current == Some(change) {
+            tints.strong
+        } else {
+            tints.soft
+        };
+        ui.painter()
+            .set(tint, egui::Shape::rect_filled(band, 0.0, fill));
+        ui.painter().rect_filled(
+            Rect::from_min_size(band.min, vec2(BAR, band.height())),
+            0.0,
+            tints.bar,
+        );
     }
-    drawn
+    let height = drawn.height() + room;
+    if let Some(measured) = preview.heights.get_mut(index) {
+        *measured = (height, true);
+    }
+    height
+}
+
+/// A changed block's colours: behind it, behind the change in view, and its bar.
+struct Tints {
+    soft: Color32,
+    strong: Color32,
+    bar: Color32,
+}
+
+/// The colours a side's changed blocks take: removed before, added after.
+const fn tints(sided: Sided, palette: Palette) -> Tints {
+    match sided {
+        Sided::Before => Tints {
+            soft: palette.removed,
+            strong: palette.removed_word,
+            bar: palette.danger,
+        },
+        Sided::After | Sided::Alone => Tints {
+            soft: palette.added,
+            strong: palette.added_word,
+            bar: palette.ok,
+        },
+    }
+}
+
+/// Marks where the other side has blocks this one hasn't, before block `index` (at `top`): a
+/// line in the room above it, in the colour of what that side did (stronger for the change in
+/// view).
+fn gap(ui: &Ui, document: &Document, place: Place, (index, top): (usize, f32)) {
+    let Ok(found) = document.gaps.binary_search_by_key(&index, |(at, _)| *at) else {
+        return;
+    };
+    let change = document.gaps.get(found).map(|(_, change)| *change);
+    let other = match document.sided {
+        Sided::Before => Sided::After,
+        Sided::After | Sided::Alone => Sided::Before,
+    };
+    let room = document.room(index) * place.line;
+    let thickness = if place.current == change { 3.0 } else { 2.0 };
+    let y = place.origin.y + top + (room / 2.0).max(thickness);
+    ui.painter().hline(
+        place.origin.x..=place.origin.x + place.gutter + place.width,
+        y,
+        egui::Stroke::new(thickness, tints(other, place.palette).bar),
+    );
 }
 
 /// Measures blocks not yet drawn from `from` on, as long as [`MEASURING`] allows, laid out
-/// unseen where they belong: the scroll bar settles as the guesses are replaced.
+/// unseen where they belong: the scroll bar settles as the guesses are replaced. Returns how
+/// much the first `above` (wholly above the view) grew, to keep the view where it is.
 fn measure_ahead(
     ui: &mut Ui,
     preview: &mut Preview,
     document: &Document,
-    (place, from): (Place, usize),
-) {
+    (place, from, above): (Place, usize, usize),
+) -> f32 {
     let started = Instant::now();
     let unmeasured: Vec<usize> = (from..preview.heights.len())
         .chain(0..from)
@@ -586,14 +894,23 @@ fn measure_ahead(
         })
         .take(64)
         .collect();
+    let mut grew = 0.0;
     for index in unmeasured {
         if started.elapsed() > MEASURING {
             ui.ctx().request_repaint();
             break;
         }
+        let guessed = preview
+            .heights
+            .get(index)
+            .map_or(0.0, |(height, _)| *height);
         let top = top_of(preview, index);
-        draw_block(ui, preview, document, (index, top), (place, true));
+        let measured = draw_block(ui, preview, document, (index, top), (place, true));
+        if index < above {
+            grew += measured - guessed;
+        }
     }
+    grew
 }
 
 /// How a block is drawn (an image's words are its link's: no hover needed).
@@ -686,5 +1003,37 @@ mod tests {
             [("title".to_owned(), 0), ("title-1".to_owned(), 7)]
         );
         assert_eq!(document.blocks(), 8);
+    }
+
+    #[test]
+    fn documents_are_compared_block_by_block() {
+        let mut before = Document::new("# T\n\nA\n\nB\n\nC\n\n- x\n- y\n", 0);
+        let mut after = Document::new("# T\n\nA\n\nB, again\n\nC\n\n- x\n- y\n\nD\n", 0);
+        let changes = compare(&mut before, &mut after);
+        assert_eq!(
+            changes,
+            [
+                Change {
+                    before: 2..3,
+                    after: 2..3
+                },
+                Change {
+                    before: 6..6,
+                    after: 6..7
+                },
+            ]
+        );
+        let marks = |document: &Document| -> Vec<Option<usize>> {
+            document.blocks.iter().map(|block| block.change).collect()
+        };
+        assert_eq!(marks(&before), [None, None, Some(0), None, None, None]);
+        assert_eq!(
+            marks(&after),
+            [None, None, Some(0), None, None, None, Some(1)]
+        );
+        // The paragraph added at the end leaves a gap at the end of the side before.
+        assert_eq!(before.gaps, [(6, 1)]);
+        assert_eq!(after.gaps, []);
+        assert_eq!((before.sided, after.sided), (Sided::Before, Sided::After));
     }
 }

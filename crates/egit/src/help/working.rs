@@ -732,13 +732,24 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "markdown-preview",
         group: Group::Changes,
         title: "Markdown previewed",
-        on: &["Preview"],
+        on: &["Preview", "Previous change", "Next change", "Change * of *"],
         what: "A Markdown file (.md) as it reads, rendered: headings, lists, tables, code, \
-               links. A change shows before and after side by side; a new file, or a deleted \
-               one, the side it has. For the work tree, as the diff's sides are: what is \
-               staged against HEAD, or the file against the index.",
+               links. A change shows before and after side by side, the blocks that changed \
+               tinted (removed on the left, added on the right; a line where the other side \
+               has blocks this one hasn't), opening at the first; Previous change and Next \
+               change (Alt+↑, Alt+↓) step through them. A new file, or a deleted one, shows \
+               the side it has. For the work tree, as the diff's sides are: what is staged \
+               against HEAD, or the file against the index.",
         git: "git cat-file (each side's blob), or the file on disk",
         cases: &[
+            (
+                "Both sides look the same?",
+                "Look for the tint: the change may be far down, and each side opens at the first. “Nothing changed in how it reads” means only blank lines or spaces ending lines did, or a reference link's definition.",
+            ),
+            (
+                "A whole paragraph is marked for one word?",
+                "Blocks are compared whole (a paragraph, a list's item, a table): the Diff shows the words.",
+            ),
             (
                 "An image shows as a link?",
                 "egit fetches nothing to draw a document (a picture on the web can tell its author who looked): the link opens it in your browser.",

@@ -84,9 +84,9 @@ it.
   scrolled at 0.7–1.1 ms p99, the tags unfolded in a frame of 1.2 ms, each letter typed in the
   filter 0.6 ms at most (the rows made in a job, landing 3–5 ms after the last letter); then the command palette over its 50,001 branches: opened in a frame
   of 2.8 ms, each letter typed 4.1 ms at most; peak 179 MB. `corpus_markdown`: a Markdown
-  document of 1,020 KiB changed, previewed before and after: read and first drawn in 14 ms,
-  wheel-scrolled at 4.9 ms p99 (drawn whole, as `egui_commonmark` draws a document, 780 ms a
-  frame and 943 MB), peak 214 MB.
+  document of 1,020 KiB changed (each of its 2,600 headings), previewed before and after: read,
+  compared, and first drawn in 13 ms, wheel-scrolled at 5.0 ms p99 (drawn whole, as
+  `egui_commonmark` draws a document, 780 ms a frame and 943 MB), peak 214 MB.
 - Scale: `EGIT_SCALE_REPO=<a large repository> cargo test -p egit --release --lib -- --ignored
   --nocapture scale` opens it headless and prints time to first rows, to the whole history,
   frame times jumping and wheel-scrolling through it, and peak memory, then how much of what
@@ -729,6 +729,14 @@ writes paths), never `OsStrExt`.
   - `words.rs` — `changed_words`: two lines' changed bytes, by the longest common sequence of
     tokens (words, whitespace runs, single punctuation); none past 500 tokens a line, or for
     lines sharing under 40% of their words.
+  - `sequences.rs` — `kept`: which elements of two versions of a list they share (any `Eq +
+    Hash`): the common start and end set aside, then those found once on each side anchor the
+    rest, as git's patience diff does (the longest run of them in order on both, by patience
+    sorting), and each stretch between anchors is aligned by Myers' O(ND) algorithm (its own
+    common start and end aside); past `MOST_EDITS` (1,000) edits a stretch counts as changed.
+    Tests: what is kept reads the same on both sides, Myers' pairs are a longest common
+    subsequence's (500 random cases, against the slow way), and 2,000 sections with every
+    heading renamed mark the headings alone.
   - `find.rs` — `find_all`: a query's matches as byte offsets (`memmem`, or ASCII case folded
     by a two-byte scan), in 4 MiB windows overlapping by the query's length, asking whether
     to stop between them; `matches_case` is smart case; `Needle`, a query made ready for
@@ -1238,8 +1246,10 @@ writes paths), never `OsStrExt`.
     clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or
     "History" goes back; its bar: back, how the file changed and its path, at the right Open
     file and Show in folder (the work tree's file, as it is now), Blame, and File history;
-    then Diff or File (or for Markdown Preview: before and after rendered side by side, or the
-    side there is; `markdown.rs`), Unified or Side by side, as segmented choices):
+    then Diff or File (or for Markdown Preview: before and after rendered side by side, the
+    blocks that changed marked, under a bar stepping through them ("Change 2 of 5", Previous
+    change and Next change, Alt+↑ Alt+↓; or "Nothing changed in how it reads"), or the side
+    there is; `markdown.rs`), Unified or Side by side, as segmented choices):
     its diff against the first parent (unified or side by side, with
     "Whole file" for all of its context), or the file as the commit left it (as it was, if
     deleted; read the first time it is asked for, `read_file`), or a placeholder for binary
@@ -1621,7 +1631,16 @@ writes paths), never `OsStrExt`.
     show_viewport`), a block's height guessed from its lines until drawn or measured ahead
     (unseen, 2 ms a frame), the view kept where it is as heights above it change; links' pages
     taken from egui's output for egit's opener (web pages only), a heading's link scrolling to
-    it.
+    it. Both sides read, `compare` matches their blocks by their own text (`egit_text::kept`)
+    into `Change`s (removed, added: ranges of blocks, either may be empty), each changed
+    block marked with its change and each side's `gaps` noted (where the other side has
+    blocks it hasn't). A compared document's blocks are drawn 10 points in, a changed one's
+    band behind it (the diff's removed or added colour; the change in view the words'
+    stronger one; joined with the next of its change) with a bar at its left, a gap a line in
+    the room above. `Previews` (both sides', and the change in view): `follow` goes to the
+    first change as documents land, `go` scrolls each side to a change's first block (a line
+    below the top) once its heights are there (`target`); a block measured above the view, or
+    a new width (the block at the top kept, as far in), keeps the view where it was.
   - `pictures.rs` — an image's sides read (blobs through the shared `Objects`, or the work
     tree's file, 64 MiB at most: `read_side`, its limit given) and decoded by `image` (PNG, JPEG, GIF, WebP, BMP, ICO;
     20,000 pixels a side and 512 MiB of decoding at most), then scaled down to 2,048 pixels a
@@ -1802,7 +1821,9 @@ writes paths), never `OsStrExt`.
     current one onto another (rebased), between the sidebar and the graph either way.
     `src/tests/markdown.rs` previews a README a commit changed (before and after: its headings,
     code, a table, an image made a link, tasks' boxes), a link going to the opener and a
-    heading's link opening nothing; a document added and one deleted, each its one side.
+    heading's link opening nothing; a document added and one deleted, each its one side; a
+    changelog of 80 sections changed halfway down and further on, opened at the first change
+    (in view on both sides, the top out of it), stepped to the next, and back by Alt+↑.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,
