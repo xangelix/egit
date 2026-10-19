@@ -1,7 +1,9 @@
-//! ssh connections shared while egit runs, against an sshd of the test's own (on the loopback
-//! address, as this user, a key with a passphrase): cloning, fetching, and pushing ask for the
-//! passphrase once; without sharing, or where the repository names its own ssh command, every
-//! command asks; dropped, the shared connection closes.
+//! A key's passphrase held and ssh connections shared while egit runs, against an sshd of the
+//! test's own (on the loopback address, as this user, a key with a passphrase): cloning,
+//! fetching, and pushing ask for the passphrase once; once the shared connection is gone (a
+//! server dropping it idle, or refusing a second session on it) the key egit's own agent holds
+//! still serves, a background fetch too, as it does a repository's own ssh command; without
+//! either, every command asks; dropped, the shared connection closes and the agent ends.
 //!
 //! Linux only (sshd runs as any user there); skipped where sshd isn't installed, unless
 //! `EGIT_REQUIRE_SSHD` is set (CI sets it).
@@ -26,8 +28,8 @@ use std::time::{Duration, Instant};
 
 use egit_git::testing::{Sandbox, set_mode};
 use egit_git::{
-    CancelToken, CloneOptions, FetchOptions, Git, Progress, PushFlag, PushOptions, Repository,
-    SshSharing, clone, fetch, push,
+    CancelToken, CloneOptions, FetchOptions, Git, Holding, Progress, PushFlag, PushOptions,
+    Repository, SshSharing, clone, fetch, push,
 };
 
 /// An sshd of the test's own, stopped when dropped.
@@ -145,7 +147,7 @@ fn serve(sandbox: &Sandbox, sshd: &Path) -> (Server, Vec<(OsString, OsString)>, 
     std::fs::write(
         dir.join("ssh_config"),
         format!(
-            "Host *\n  IdentityFile {id}\n  IdentitiesOnly yes\n  IdentityAgent none\n  \
+            "Host *\n  IdentityFile {id}\n  IdentitiesOnly yes\n  \
              UserKnownHostsFile {known}\n  GlobalKnownHostsFile /dev/null\n  \
              StrictHostKeyChecking yes\n  PreferredAuthentications publickey\n  LogLevel ERROR\n",
             id = path("id"),
@@ -173,6 +175,8 @@ fn serve(sandbox: &Sandbox, sshd: &Path) -> (Server, Vec<(OsString, OsString)>, 
         ("PATH".into(), search),
         ("SSH_ASKPASS".into(), dir.join("askpass").into()),
         ("SSH_ASKPASS_REQUIRE".into(), "force".into()),
+        // Never the agent of whoever runs the tests: none, or egit's own.
+        ("SSH_AUTH_SOCK".into(), OsString::new()),
     ];
     (server, env, asked)
 }
@@ -199,14 +203,92 @@ fn fetched(git: &Git, repository: &Repository) {
     .unwrap();
 }
 
-/// The shared master's process, as it says.
-fn master(sharing: &SshSharing) -> u32 {
-    let socket = std::fs::read_dir(sharing.dir())
+/// A bare repository the server serves, and its address.
+fn remote(sandbox: &Sandbox, server: &Server) -> String {
+    let seed = sandbox.init("seed").unwrap();
+    sandbox.commit_file(&seed, "f", "1\n", "Start").unwrap();
+    let bare = sandbox.path("remote.git");
+    sandbox
+        .run(
+            &seed,
+            "clone",
+            &["--quiet", "--bare", ".", bare.to_str().unwrap()],
+        )
+        .unwrap();
+    let user = run(Path::new("id"), &["-un"]);
+    format!(
+        "ssh://{}@127.0.0.1:{}{}",
+        user.trim(),
+        server.port,
+        bare.display()
+    )
+}
+
+/// Pushes `main`, a fast-forward.
+fn pushed(git: &Git, repository: &Repository) {
+    let pushed = push(
+        git,
+        repository,
+        &PushOptions {
+            remote: "origin".into(),
+            branch: "main".into(),
+            remote_branch: "main".into(),
+            set_upstream: false,
+            force: false,
+        },
+        &Progress::new(),
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        pushed
+            .refs
+            .iter()
+            .map(|pushed| pushed.flag)
+            .collect::<Vec<_>>(),
+        [PushFlag::FastForward]
+    );
+}
+
+/// Closes the shared master, as a server dropping an idle connection does.
+fn close_master(sharing: &SshSharing) {
+    let pid = master(sharing);
+    let socket = master_socket(sharing);
+    run(
+        &on_path("ssh"),
+        &[
+            "-F",
+            "/dev/null",
+            "-S",
+            socket.to_str().unwrap(),
+            "-O",
+            "exit",
+            "egit",
+        ],
+    );
+    let until = Instant::now() + Duration::from_secs(5);
+    while alive(pid) {
+        assert!(Instant::now() < until, "the master is still running");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The shared master's socket.
+fn master_socket(sharing: &SshSharing) -> PathBuf {
+    std::fs::read_dir(sharing.dir())
         .unwrap()
         .flatten()
         .map(|entry| entry.path())
-        .find(|path| path.file_name().is_some_and(|name| name != "ssh"))
-        .expect("a master's socket");
+        .find(|path| {
+            path.file_name()
+                .is_some_and(|name| name != "ssh" && name != "agent")
+        })
+        .expect("a master's socket")
+}
+
+/// The shared master's process, as it says.
+fn master(sharing: &SshSharing) -> u32 {
+    let socket = master_socket(sharing);
     let out = Command::new("ssh")
         .args(["-F", "/dev/null", "-S"])
         .arg(&socket)
@@ -237,25 +319,10 @@ fn a_passphrase_is_asked_once_while_connections_are_shared() {
     };
     let sandbox = Sandbox::new().unwrap();
     let (server, env, asked_file) = serve(&sandbox, &sshd);
-    let seed = sandbox.init("seed").unwrap();
-    sandbox.commit_file(&seed, "f", "1\n", "Start").unwrap();
-    let bare = sandbox.path("remote.git");
-    sandbox
-        .run(
-            &seed,
-            "clone",
-            &["--quiet", "--bare", ".", bare.to_str().unwrap()],
-        )
-        .unwrap();
-    let user = run(Path::new("id"), &["-un"]);
-    let url = format!(
-        "ssh://{}@127.0.0.1:{}{}",
-        user.trim(),
-        server.port,
-        bare.display()
-    );
+    let url = remote(&sandbox, &server);
 
-    let sharing = SshSharing::start_in(&sandbox.path("run")).unwrap();
+    let sharing = SshSharing::start_in(&sandbox.path("run"), Holding::Own).unwrap();
+    assert_eq!(sharing.holding(), Holding::Own);
     let shared = sandbox
         .git_with(env.iter().cloned().chain(sharing.environment()))
         .unwrap();
@@ -274,37 +341,36 @@ fn a_passphrase_is_asked_once_while_connections_are_shared() {
     fetched(&shared, &repository);
     fetched(&shared, &repository);
     sandbox.commit_file(&work, "f", "2\n", "More").unwrap();
-    let pushed = push(
+    pushed(&shared, &repository);
+    // Cloned, fetched twice, pushed: asked once.
+    assert_eq!(asked(&asked_file), 1);
+
+    // The shared connection gone (a server dropping it idle, or refusing a second session on
+    // it): the key egit's agent holds serves the next connection, a background fetch's too,
+    // which can't ask.
+    close_master(&sharing);
+    fetched(&shared, &repository);
+    close_master(&sharing);
+    fetch(
         &shared,
         &repository,
-        &PushOptions {
-            remote: "origin".into(),
-            branch: "main".into(),
-            remote_branch: "main".into(),
-            set_upstream: false,
-            force: false,
+        FetchOptions {
+            background: true,
+            ..FetchOptions::default()
         },
         &Progress::new(),
         &CancelToken::new(),
     )
     .unwrap();
-    assert_eq!(
-        pushed
-            .refs
-            .iter()
-            .map(|pushed| pushed.flag)
-            .collect::<Vec<_>>(),
-        [PushFlag::FastForward]
-    );
-    // Cloned, fetched twice, pushed: asked once.
     assert_eq!(asked(&asked_file), 1);
 
-    // Without sharing, each command asks.
+    // Without sharing or an agent, each command asks.
     let unshared = sandbox.git_with(env.iter().cloned()).unwrap();
     fetched(&unshared, &repository);
     fetched(&unshared, &repository);
     assert_eq!(asked(&asked_file), 3);
-    // Nor where the repository names its own ssh command: it outranks the wrapper.
+    // Where the repository names its own ssh command (it outranks the wrapper), the key held
+    // serves it too.
     sandbox
         .run(
             &work,
@@ -316,12 +382,23 @@ fn a_passphrase_is_asked_once_while_connections_are_shared() {
         )
         .unwrap();
     fetched(&shared, &repository);
-    assert_eq!(asked(&asked_file), 4);
+    assert_eq!(asked(&asked_file), 3);
+    sandbox
+        .run(&work, "config", &["--unset", "core.sshCommand"])
+        .unwrap();
+    fetched(&shared, &repository);
 
-    // Dropped, the shared connection closes.
+    // Dropped, the shared connection closes, and egit's agent forgets the key and ends.
     let pid = master(&sharing);
     assert!(alive(pid));
     let dir = sharing.dir().to_owned();
+    let agent = dir.join("agent");
+    let held = Command::new(on_path("ssh-add"))
+        .arg("-l")
+        .env("SSH_AUTH_SOCK", &agent)
+        .output()
+        .unwrap();
+    assert!(held.status.success(), "{held:?}");
     drop(sharing);
     assert!(!dir.exists());
     let until = Instant::now() + Duration::from_secs(5);

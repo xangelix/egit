@@ -115,7 +115,11 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "Remotes that need a password every time?",
-                "Background fetches can't answer: they fail quietly. A credential helper or an ssh agent lets them through, and so does an ssh key you unlocked for a fetch of your own: its connection stays shared.",
+                "Background fetches can't answer: they fail quietly. A credential helper or an ssh agent lets them through, and so does an ssh key you unlocked for a fetch of your own: egit holds it while it runs.",
+            ),
+            (
+                "\"Could not read from remote repository\" in the background?",
+                "Most often an ssh key's passphrase nobody has typed since egit started: Fetch once, answer it, and egit holds the key from then on (unless core.sshCommand or GIT_SSH_COMMAND names an ssh of your own, which egit leaves alone).",
             ),
             (
                 "Metered or slow connection?",
@@ -751,7 +755,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "ssh keys?",
-                "ssh doesn't use credential helpers. egit shares one connection to each host while it runs, so a key's passphrase is asked once; an ssh agent (ssh-add) keeps it unlocked beyond that.",
+                "ssh doesn't use credential helpers. Once a key's passphrase is typed, egit adds the key to an agent (yours, or one of its own while it runs), so it isn't asked again.",
             ),
         ],
     },
@@ -1218,14 +1222,17 @@ pub(super) const TOPICS: &[Topic] = &[
     Topic {
         id: "ssh-sharing",
         group: Group::Remotes,
-        title: "Sharing ssh connections",
+        title: "Holding ssh keys, and sharing connections",
         on: &[],
         what: "Each fetch, pull, and push over ssh would connect and prove who you are again, \
-               asking a key's passphrase each time unless an agent holds it. egit has git's \
-               ssh share one connection to each host instead: the first command makes it (and \
-               asks once), later ones go through it without asking. It closes when egit quits, \
-               after an hour unused, or within a minute of the network going away.",
-        git: "GIT_SSH=<egit's wrapper>: ssh -o ControlMaster=auto -o ControlPersist=1h -o ServerAliveInterval=15 -o ControlPath=<a private folder>/%C",
+               asking a key's passphrase each time unless an agent holds it. egit's ssh adds a \
+               key to an agent once you type its passphrase, as ssh-add would: your agent \
+               (SSH_AUTH_SOCK) where one answers, else one of egit's own, for git alone, which \
+               forgets the key and ends when egit does. Later commands, background fetches \
+               too, are let in by it without asking. And one connection to each host is shared \
+               while it is used (faster, and a password is asked once): it closes when egit \
+               quits, after an hour unused, or within a minute of the network going away.",
+        git: "GIT_SSH=<egit's wrapper>: ssh -o AddKeysToAgent=yes -o ControlMaster=auto -o ControlPersist=1h -o ServerAliveInterval=15 -o ControlPath=<a private folder>/%C (SSH_AUTH_SOCK=<egit's agent> where you have none)",
         cases: &[
             (
                 "Turn it off?",
@@ -1233,7 +1240,11 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "A fetch failed after the computer slept?",
-                "The shared connection may have gone with the network. It closes itself within a minute; the next command connects afresh (asking once more).",
+                "The shared connection may have gone with the network. It closes itself within a minute; the next command connects afresh, with the key held (a password is asked once more).",
+            ),
+            (
+                "My own agent got my key?",
+                "Yes, where egit found yours running: as ssh-add would have added it. ssh-add -d forgets it there; egit's own agent, used where you have none, forgets it when egit quits.",
             ),
             (
                 "Windows?",

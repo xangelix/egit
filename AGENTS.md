@@ -175,7 +175,8 @@ writes paths), never `OsStrExt`.
   - `host.rs` — `Host` (`Local`, `Ssh(SshHost)`: a destination as ssh takes it, more of ssh's
     options (before egit's own: ssh keeps the first value of each), and the folder its
     connection is shared through, an `SshSharing`'s: `ControlMaster=auto`, `ControlPersist=1h`).
-    A command there is a session (`ssh -T -e none`) whose remote line is fixed, `exec /bin/sh
+    A command there is a session (`ssh -T -e none`, its key held and connection shared as
+    git's ssh: `AddKeysToAgent`, `ControlMaster`) whose remote line is fixed, `exec /bin/sh
     -c 'eval "$(printf %s <base64> | base64 -d)"'`, so any login shell passes it on; the script
     (`script`, every word in single quotes for sh) says `egit-pid <pid>` on stderr, goes into
     its directory (exit 126 when it can't: "isn't a directory", as here), marks the start of
@@ -307,21 +308,29 @@ writes paths), never `OsStrExt`.
     labels a command's prompts; `non_interactive` makes them fail at once (and
     `GCM_INTERACTIVE=never`). `tests/askpass.rs` runs without libtest so its executable can be
     the helper git starts.
-  - `ssh.rs` — `SshSharing`: ssh's connections shared while egit runs, so a key's passphrase
-    is asked once (Unix: OpenSSH for Windows can't). A directory of its own
+  - `ssh.rs` — `SshSharing`: a key's passphrase held and ssh's connections shared while egit
+    runs, so it is asked once (Unix: OpenSSH for Windows can't). A directory of its own
     (`egit-<uid>/ssh/<pid>-<nonce>`, 0700, under `$XDG_RUNTIME_DIR`, `/tmp`, or the temporary
     directory: the first where a socket's path, `%C` and ssh's 17-character suffix, fits
     `sun_path`) holds a wrapper, `ssh`, given to git as `GIT_SSH`: `exec ssh -o
-    ControlMaster=auto -o ControlPersist=1h -o ServerAliveInterval=15 -o
-    ControlPath=<dir>/%C "$@"`. git runs it only where neither `GIT_SSH_COMMAND` nor
-    `core.sshCommand` names an ssh (and none is started when egit's environment sets
-    `GIT_SSH_COMMAND` or `GIT_SSH`); its basename keeps git's OpenSSH variant. Dropped (the
-    app's `on_exit`), each master is closed (`ssh -F /dev/null -S <socket> -O exit`) and the
-    directory removed; those of egit processes gone are swept the same way. `tests/ssh.rs`
-    (Linux; skipped without sshd unless `EGIT_REQUIRE_SSHD`, which CI sets) runs an sshd of
-    its own and a key with a passphrase: a clone, two fetches, and a push ask once; without
-    sharing each fetch asks, and so where the repository sets `core.sshCommand`; dropped, the
-    master exits.
+    AddKeysToAgent=yes -o ControlMaster=auto -o ControlPersist=1h -o ServerAliveInterval=15 -o
+    ControlPath=<dir>/%C "$@"`. A key whose passphrase is typed goes to an agent (`Holding`): the
+    one egit's environment names (`SSH_AUTH_SOCK`) where it answers, as `ssh-add` would; else
+    one of egit's own (`ssh-agent -a <dir>/agent cat`, its `SSH_AUTH_SOCK` given to git: `cat`
+    reads egit's pipe, so the agent ends however egit does; dropped, `ssh-add -D` first), so a
+    connection the server drops or won't share (a second session refused) is made again
+    without asking, a background fetch's too; without `ssh-agent`, connections are only
+    shared. git runs the wrapper only where neither `GIT_SSH_COMMAND` nor `core.sshCommand`
+    names an ssh (and none is started when egit's environment sets `GIT_SSH_COMMAND` or
+    `GIT_SSH`); its basename keeps git's OpenSSH variant. Dropped (the app's `on_exit`), each
+    master is closed (`ssh -F /dev/null -S <socket> -O exit`) and the directory removed;
+    those of egit processes gone are swept the same way. `tests/ssh.rs` (Linux; skipped
+    without sshd unless `EGIT_REQUIRE_SSHD`, which CI sets) runs an sshd of its own and a key
+    with a passphrase (never the tester's agent: `SSH_AUTH_SOCK` emptied): a clone, two
+    fetches, and a push ask once; the master closed (a server dropping it), a fetch and a
+    background fetch ask nothing (egit's agent holds the key), nor a repository's own
+    `core.sshCommand`; without sharing each fetch asks; dropped, the master exits and the
+    agent goes.
   - `batch.rs` — `GitProcess` from `GitCommand::spawn`: a git kept running for a batch
     protocol (stdin requests, stdout answers); dropping it closes stdin, SIGTERMs its group,
     reaps it.

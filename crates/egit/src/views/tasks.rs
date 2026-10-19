@@ -251,7 +251,11 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     if let Some(problem) = &pane.tasks.background_problem {
         let warning = ui.label(RichText::new(icon::WARNING).color(palette.warn));
         crate::help::note_topic(ui, warning.rect, "background-fetch");
-        warning.on_hover_text(format!("Fetching in the background failed: {problem}"));
+        // Its title says it failed in the background; what git said follows.
+        warning.on_hover_text(format!(
+            "{problem}\n\nA fetch in the background asks nothing: Fetch once to answer what \
+             it needs (a key's passphrase is then held while egit runs)."
+        ));
     }
     ui.add_space(8.0);
     branch_label(ui, pane.head, palette);

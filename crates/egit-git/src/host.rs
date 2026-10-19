@@ -86,7 +86,10 @@ impl SshHost {
             path.push("/%C");
             let mut option = std::ffi::OsString::from("ControlPath=");
             option.push(path);
+            // As git's ssh: a key's passphrase held (in the agent egit's sharing names), one
+            // connection shared.
             command
+                .args(["-o", "AddKeysToAgent=yes"])
                 .args(["-o", "ControlMaster=auto", "-o"])
                 .arg(option)
                 .arg("-o")
