@@ -2,8 +2,6 @@
 //! up and mends them; their menu and page; one updated to its branch's latest, the commits that
 //! brings, recorded here and shown in its change; and one added.
 
-use crate::app::EgitApp;
-use egui_kittest::Harness;
 use std::path::{Path, PathBuf};
 
 use egit_git::testing::Sandbox;
@@ -11,8 +9,8 @@ use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
 
 use super::screens::{
-    harness, history_shown, open_path, profile_loaded, render, settle, type_into, uncommitted,
-    wait_for_label,
+    harness, history_shown, into_view, open_path, profile_loaded, render, settle, type_into,
+    uncommitted, wait_for_label,
 };
 use crate::theme::icon;
 
@@ -59,20 +57,6 @@ fn opened(sandbox: &Sandbox, repo: &Path) -> egui_kittest::Harness<'static, crat
         .tasks
         .hold_background_fetch();
     harness
-}
-
-/// Scrolls the page until `label` is in the window, clear of the output's bar at the bottom
-/// (a button below the page's fold is clicked where it was last drawn).
-fn into_view(harness: &mut Harness<'_, EgitApp>, label: &str) {
-    for _ in 0..20 {
-        let node = harness.get_by_label(label);
-        if node.rect().bottom() < 720.0 {
-            break;
-        }
-        node.scroll_to_me();
-        harness.step();
-    }
-    harness.run_steps(2);
 }
 
 #[test]

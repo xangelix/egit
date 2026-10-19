@@ -282,3 +282,67 @@ fn the_agents_run_on_the_computer_the_repository_is_on() {
         &format!("Key none, folder {}", there.display()),
     );
 }
+
+#[test]
+fn a_repository_is_cloned_onto_another_computer() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let sandbox = Sandbox::new().unwrap();
+    super::screens::shared_remote(&sandbox);
+    let bare = sandbox.path("origin.git");
+    let Some(mut harness) = reaching(&sandbox) else {
+        return;
+    };
+    settle(&mut harness, "the profile", profile_loaded);
+    let clone_button = format!("{}  Clone", crate::theme::icon::DOWNLOAD_SIMPLE);
+    harness.get_by_label("Another computer").click();
+    harness.run_steps(2);
+    type_into(&mut harness, Role::TextInput, "Computer", "127.0.0.1");
+    let into = harness.get_by_role_and_label(Role::TextInput, "Into");
+    into.focus();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.run_steps(1);
+    type_into(&mut harness, Role::TextInput, "Into", "~/clones");
+
+    // First from a remote that answers only after a long pause (git's `ext::` transport runs
+    // a command as the remote): cancelled, git there removes what it had made.
+    sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "protocol.ext.allow", "always"],
+        )
+        .unwrap();
+    let slow = format!(
+        "ext::sh -c sleep% 60;% exec% {}% upload-pack% {}",
+        sandbox.git().program().display(),
+        bare.display()
+    );
+    type_into(&mut harness, Role::TextInput, "Address", &slow);
+    click_when_enabled(&mut harness, &clone_button);
+    wait_for_label(&mut harness, "Cancel");
+    harness.get_by_label("Cancel").click();
+    wait_for_label(&mut harness, "Cancelled: git removed what it had made.");
+    assert!(!sandbox.home().join("clones/origin").exists());
+
+    let address = harness.get_by_role_and_label(Role::TextInput, "Address");
+    address.focus();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    harness.run_steps(1);
+    let url = format!("file://{}", bare.display());
+    type_into(&mut harness, Role::TextInput, "Address", &url);
+    // Into the folder typed, read there (`~` the home folder there).
+    wait_for_label(&mut harness, "Into ~/clones/origin on 127.0.0.1");
+    render(&mut harness, "remote-clone");
+    click_when_enabled(&mut harness, &clone_button);
+    settle(&mut harness, "the clone opened there", |app| {
+        app.state.repos.first().is_some_and(|repo| {
+            repo.git.host().ssh().is_some()
+                && repo.repository.work_tree() == sandbox.home().join("clones/origin")
+        })
+    });
+    settle(&mut harness, "its history", history_of(1));
+    assert!(sandbox.home().join("clones/origin/.git").is_dir());
+    assert_eq!(harness.state().state.repos[0].title, "origin · 127.0.0.1");
+}

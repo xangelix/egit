@@ -57,16 +57,21 @@ impl Default for RecentTable {
 }
 
 impl HomeView {
-    /// The Home tab, its clones going into `clone_folder` (or the home folder).
-    pub(crate) fn new(clone_folder: Option<PathBuf>, home: Option<&Path>) -> Self {
+    /// The Home tab, its clones going into `clone_folder` (or the home folder); `host`, the
+    /// other computer a repository was last opened on, offered for the next.
+    pub(crate) fn new(
+        clone_folder: Option<PathBuf>,
+        home: Option<&Path>,
+        host: Option<&str>,
+    ) -> Self {
         Self {
             path: String::new(),
-            there_host: String::new(),
+            there_host: host.unwrap_or_default().to_owned(),
             there_path: String::new(),
             problem: None,
             picking: Bind::new(true),
             trusting: Bind::new(true),
-            clone: CloneView::new(clone_folder, home),
+            clone: CloneView::new(clone_folder, home, host),
             recent: RecentTable::default(),
         }
     }
@@ -397,6 +402,19 @@ fn profile_card(ui: &mut Ui, state: &mut AppState) {
     });
 }
 
+/// A folder typed for another computer, as a shell there reads it: `~` its `home` folder,
+/// and a path that doesn't start at the root inside it (where ssh starts).
+pub(crate) fn folder_there(typed: &Path, home: &Path) -> PathBuf {
+    let expanded = typed
+        .to_str()
+        .map_or_else(|| typed.to_owned(), |text| expand_home(text, Some(home)));
+    if expanded.has_root() {
+        expanded
+    } else {
+        home.join(expanded)
+    }
+}
+
 /// A typed path with a leading `~` meaning the home folder.
 pub(crate) fn expand_home(typed: &str, home: Option<&Path>) -> PathBuf {
     match (typed.strip_prefix('~'), home) {
@@ -423,5 +441,16 @@ mod tests {
         assert_eq!(expand_home("~other/x", home), PathBuf::from("~other/x"));
         assert_eq!(expand_home("/srv/x", home), PathBuf::from("/srv/x"));
         assert_eq!(expand_home("~/x", None), PathBuf::from("~/x"));
+    }
+
+    #[test]
+    fn a_folder_typed_for_another_computer_reads_as_a_shell_there_reads_it() {
+        let there = |typed: &str| folder_there(Path::new(typed), Path::new("/home/me"));
+        assert_eq!(there("~"), PathBuf::from("/home/me"));
+        assert_eq!(there("~/src/egit"), PathBuf::from("/home/me/src/egit"));
+        assert_eq!(there("src/egit"), PathBuf::from("/home/me/src/egit"));
+        assert_eq!(there("/srv/egit"), PathBuf::from("/srv/egit"));
+        // Someone else's home isn't looked up: a folder of that name in this one.
+        assert_eq!(there("~ada/x"), PathBuf::from("/home/me/~ada/x"));
     }
 }

@@ -901,8 +901,10 @@ writes paths), never `OsStrExt`.
     repository opens at a `Location` (`settings.rs`: a path here, or a host as ssh reaches it
     and a path there; `Action::Open`, `OpenBeside` for a worktree's or submodule's on the
     computer its tab's is on): there, a `Git` on `Host::Ssh` is reached first in the job (as
-    git here is run, `options_there`, through `AppState::ssh`'s shared folder; a failure says
-    ssh's words, `reach_detail`), then discovery; `Action::Opened` carries the git with the
+    git here is run, `options_there`, through `AppState::ssh`'s shared folder; `reach`, a
+    failure saying ssh's words, `reach_detail`), then the folder typed read as a shell there
+    reads it (`views::home::folder_there`: `~` and a relative path the home folder there's),
+    then discovery; `Action::Opened` carries the git with the
     repository, kept as `RepoTab::git` (every repository action runs with its tab's git:
     `with_repo`), and trusting (`safe.directory`) runs there too. The tabs open at the last
     close (`Settings::open`, `OpenTab`: a path, or a host and a path) come back. Profile edits are `ConfigChange`s
@@ -1719,12 +1721,16 @@ writes paths), never `OsStrExt`.
     `file_log`'s commits as they are found, newest first (`show_rows`; a rename's row says
     "from <old path>"), ↑ ↓; the selected one's diff of the file below (`read_diff`, a pure
     rename said so), "Show the commit", and "Blame it here".
-    `views/clone.rs` — Home's clone card (`CloneView`): the address, the folder it goes into
-    (typed, `~` the home folder and a relative path inside it, or picked: `PickCloneFolder`;
-    `Settings::clone_folder`, the last clone's, at first), the folder's name (`name_from_url`,
-    as git names it, until edited), submodules, partial; `Action::Clone` runs `clone` as a
-    job (one at a time; `format::progress` and Cancel while it runs, `CancelClone`), then
-    opens the repository; cancelled, it says git removed what it had made.
+    `views/clone.rs` — Home's clone card (`CloneView`): the address, the computer it goes onto
+    ("Onto": this one, or another, as ssh reaches it, offered as the last a repository was
+    opened on; not on Windows), the folder it goes into (here typed, `~` the home folder and a
+    relative path inside it, or picked: `PickCloneFolder`; `Settings::clone_folder`, the last
+    clone's, at first; there typed, read there once it is reached: `home::folder_there`), the
+    folder's name (`name_from_url`, as git names it, until edited), submodules, partial;
+    `Action::Clone` runs `clone` as a job (one at a time; there, with git there reached first,
+    `app::reach`; `format::progress` and Cancel while it runs, `CancelClone`), then opens the
+    repository where it was made (a `Location`); cancelled, it says git removed what it had
+    made.
     `views/pulls.rs` — `PullRequestView`, the pull (or merge) requests in the commit table's
     place, named their forge's way (a `Tool`, from the top bar's "N pull requests" or "N merge
     requests" button, or a badge): a bar (repositories,
@@ -2017,7 +2023,9 @@ writes paths), never `OsStrExt`.
     rendered screen's elements (role, rectangle, name) to `<screen>.rects` beside it, to
     measure a screen to the point. `wait_for_label` lets what it found lay out two
     more frames (a window's first frame only sizes it: clicks there are lost); a wait that
-    times out saves `timed-out-<test>.png`; `menu_item` right-clicks and picks, and
+    times out saves `timed-out-<test>.png`; `click_when_enabled` waits for a button and scrolls it into the window first
+    (`into_view`: below a page's fold a click lands where it was last drawn); `menu_item`
+    right-clicks and picks, and
     `double_click` puts both clicks in one frame (the harness's frames are a quarter second
     apart). After an action, wait for the history's rows to settle before aiming a click at
     one: a re-read moves them. Then, the pointer resting on each control it can reach: it
@@ -2112,7 +2120,9 @@ writes paths), never `OsStrExt`.
     stand-in bridge through the session): Claude Code's own account taking the API key the
     login there exports, a subscription's account (a folder under the home folder here) running
     from the same folder under the home folder there, that key left out; skipped without sshd
-    unless `EGIT_REQUIRE_SSHD`.
+    unless `EGIT_REQUIRE_SSHD`. And clones onto it from Home (into `~/clones` there): a clone
+    from a remote that hasn't answered cancelled (nothing left there), then one opened in a tab
+    there.
     `src/tests/agents.rs` drives the Agents panel against `egit-agents`' stand-in SDK (skipped
     without Node unless `EGIT_REQUIRE_NODE`): shown from the top bar, a prompt sent with Enter
     and its answer streamed, a command allowed for the conversation (its line opened), a

@@ -158,8 +158,23 @@ pub(super) fn wait_for_label(harness: &mut Harness<'_, EgitApp>, label: &str) {
     gave_up(harness, &format!("timed out waiting for {label:?}"));
 }
 
+/// Scrolls the page until `label` is in the window, clear of the output's bar at the bottom
+/// (a button below the page's fold is clicked where it was last drawn).
+pub(super) fn into_view(harness: &mut Harness<'_, EgitApp>, label: &str) {
+    for _ in 0..20 {
+        let node = harness.get_by_label(label);
+        if node.rect().bottom() < 720.0 {
+            break;
+        }
+        node.scroll_to_me();
+        harness.step();
+    }
+    harness.run_steps(2);
+}
+
 /// Steps until the button labelled `label` can be pressed (a job holding it back is done),
-/// then presses it.
+/// then presses it, scrolled into the window first (below a page's fold, a click lands where it
+/// was last drawn).
 pub(super) fn click_when_enabled(harness: &mut Harness<'_, EgitApp>, label: &str) {
     for _ in 0..2_000 {
         harness.step();
@@ -167,6 +182,7 @@ pub(super) fn click_when_enabled(harness: &mut Harness<'_, EgitApp>, label: &str
             .query_by_label(label)
             .is_some_and(|button| !button.accesskit_node().is_disabled())
         {
+            into_view(harness, label);
             harness.get_by_label(label).click();
             return;
         }

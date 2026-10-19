@@ -660,6 +660,28 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "clone-there",
+        group: Group::Remotes,
+        title: "Cloning onto another computer",
+        on: &["Onto", "This computer", "Another computer", "Computer"],
+        what: "Clones onto another computer you reach over SSH (a dev box, a container running \
+               sshd), as Home's \"Open there\" opens one: git there clones it, through the one \
+               connection egit shares, and it opens in a tab once done. Into is a folder there, \
+               typed: ~ is the home folder there, and a relative path is inside it.",
+        git: "ssh <computer> /bin/sh, then git clone --progress -- <address> <folder> there",
+        cases: &[
+            (
+                "Which address?",
+                "One the other computer reaches: its network, its ssh keys and agent (an agent forwarded from here, ForwardAgent), its credential helpers. A path is a folder there.",
+            ),
+            (
+                "Asked for a password there?",
+                "egit can't answer git's own prompts there yet: forward your SSH agent to it, or set up a credential helper there.",
+            ),
+            ("Cancel?", "git there stops and removes what it had made."),
+        ],
+    },
+    Topic {
         id: "clone-submodules",
         group: Group::Remotes,
         title: "Cloning with submodules",

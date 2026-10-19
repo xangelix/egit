@@ -4,7 +4,7 @@
 //! after the frame's views are drawn. Background results arrive through `Bind`s polled at the
 //! start of each frame ([`AppState::poll`]), which turns finished jobs into actions too.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -306,6 +306,11 @@ impl EgitApp {
             home: HomeView::new(
                 settings.clone_folder.as_ref().map(StoredPath::to_path),
                 home_dir.as_deref(),
+                // The recent repositories are the most recent first.
+                settings
+                    .recent
+                    .iter()
+                    .find_map(|recent| recent.host.as_deref()),
             ),
             profile: ProfileView::default(),
             prompts,
@@ -536,10 +541,15 @@ impl AppState {
         }
     }
 
-    /// Starts cloning as `request` says (once git is found).
+    /// Starts cloning as `request` says (once git is found): here, or onto the other computer
+    /// it names.
     fn start_clone(&mut self, request: CloneRequest) {
         if let Some(git) = self.git() {
-            self.home.clone.start(&git, request);
+            let there = request
+                .host
+                .clone()
+                .map(|destination| self.options_there(destination));
+            self.home.clone.start(&git, there, request);
         }
     }
 
@@ -708,10 +718,13 @@ impl AppState {
             Some(Err(problem)) => clone.problem = Some(problem),
         }
         match clone.cloning.take() {
-            Some(Ok(Some(destination))) => {
+            Some(Ok(Some(made))) => {
                 clone.done();
-                self.settings.clone_folder = destination.parent().map(StoredPath::from);
-                self.actions.push(Action::Open(Location::here(destination)));
+                // Here, the next clone goes into the same folder (there, it stays typed).
+                if made.host.is_none() {
+                    self.settings.clone_folder = made.path.parent().map(StoredPath::from);
+                }
+                self.actions.push(Action::Open(made));
             }
             Some(Ok(None)) => clone.cancelled = true,
             Some(Err(problem)) => clone.problem = Some(problem),
@@ -809,21 +822,13 @@ impl AppState {
                 None => (git, None),
                 Some(options) => {
                     let destination = options.host.ssh().map(|ssh| ssh.destination.clone());
-                    let reached = Git::new(options).map_err(|error| {
-                        OpenProblem::from_problem(Problem::new(
-                            format!(
-                                "{} couldn't be reached",
-                                destination.as_deref().unwrap_or("The other computer")
-                            ),
-                            reach_detail(&error),
-                        ))
-                    })?;
+                    let reached = reach(options).map_err(OpenProblem::from_problem)?;
                     (reached, destination)
                 }
             };
             // A folder typed for another computer reads as a shell there reads it.
             let path = match git.home_there() {
-                Some(home) => folder_there(&path, home),
+                Some(home) => crate::views::home::folder_there(&path, home),
                 None => path,
             };
             Repository::discover(&git, &path)
@@ -1062,18 +1067,19 @@ fn sooner(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     }
 }
 
-/// A folder typed for another computer, as a shell there reads it: `~` its `home` folder,
-/// and a path that doesn't start at the root inside it (where ssh starts).
-fn folder_there(typed: &Path, home: &Path) -> PathBuf {
-    let expanded = typed.to_str().map_or_else(
-        || typed.to_owned(),
-        |text| crate::views::home::expand_home(text, Some(home)),
-    );
-    if expanded.has_root() {
-        expanded
-    } else {
-        home.join(expanded)
-    }
+/// Git on another computer, reached as `options` say (logging in, its version checked, its
+/// home folder read). Blocks: in a job.
+pub(crate) fn reach(options: GitOptions) -> Result<Git, Problem> {
+    let destination = options.host.ssh().map(|ssh| ssh.destination.clone());
+    Git::new(options).map_err(|error| {
+        Problem::new(
+            format!(
+                "{} couldn't be reached",
+                destination.as_deref().unwrap_or("The other computer")
+            ),
+            reach_detail(&error),
+        )
+    })
 }
 
 /// What ssh (or git there) said when another computer couldn't be reached.
@@ -1092,21 +1098,5 @@ fn reach_detail(error: &egit_git::GitError) -> String {
             "git there didn't say its version: is it installed (2.43 or newer)?".to_owned()
         }
         other => other.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_folder_typed_for_another_computer_reads_as_a_shell_there_reads_it() {
-        let there = |typed: &str| folder_there(Path::new(typed), Path::new("/home/me"));
-        assert_eq!(there("~"), PathBuf::from("/home/me"));
-        assert_eq!(there("~/src/egit"), PathBuf::from("/home/me/src/egit"));
-        assert_eq!(there("src/egit"), PathBuf::from("/home/me/src/egit"));
-        assert_eq!(there("/srv/egit"), PathBuf::from("/srv/egit"));
-        // Someone else's home isn't looked up: a folder of that name in this one.
-        assert_eq!(there("~ada/x"), PathBuf::from("/home/me/~ada/x"));
     }
 }
