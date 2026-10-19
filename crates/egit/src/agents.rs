@@ -32,8 +32,9 @@ pub(crate) struct AgentsSetup {
     pub(crate) install: Option<Install>,
     /// Node and npm, and whether the SDK is installed, once looked for.
     pub(crate) found: Bind<Found, Problem>,
-    /// Installing the SDK.
+    /// Installing the SDK, and why the last try failed.
     pub(crate) installing: Bind<(), Problem>,
+    pub(crate) install_problem: Option<Problem>,
     cancel: CancelToken,
     /// Who is signed in to Claude Code's own folder.
     pub(crate) signed_in: Bind<AuthStatus, Problem>,
@@ -57,6 +58,7 @@ impl AgentsSetup {
             install: cache.map(Install::at),
             found: Bind::new(true),
             installing: Bind::new(true),
+            install_problem: None,
             cancel: CancelToken::new(),
             signed_in: Bind::new(true),
             #[cfg(test)]
@@ -70,8 +72,12 @@ impl AgentsSetup {
         self.found.poll();
         self.installing.poll();
         self.signed_in.poll();
-        if self.installing.just_completed() && self.installing.is_ok() {
-            self.look_again();
+        // Taken as it lands (not `just_completed`, whose frame every window in a process
+        // shares): installed, Node and the SDK are looked for again; failed, said.
+        match self.installing.take() {
+            Some(Ok(())) => self.look_again(),
+            Some(Err(problem)) => self.install_problem = Some(problem),
+            None => {}
         }
         if self.is_ready() && self.signed_in.is_idle() {
             self.ask_who();
@@ -104,6 +110,7 @@ impl AgentsSetup {
             return;
         };
         let node = found.node.clone();
+        self.install_problem = None;
         self.cancel = CancelToken::new();
         let cancel = self.cancel.clone();
         self.installing.request(jobs::blocking(move || {
@@ -464,38 +471,33 @@ impl Conversation {
 
     /// Takes in what its jobs and bridge said.
     fn poll(&mut self) {
-        self.history.poll();
-        self.starting.poll();
-        if self.history.just_completed() {
-            match self.history.read_as_ref() {
-                Some(Ok(messages)) => {
-                    let messages = Arc::clone(messages);
-                    self.transcript.history(&messages);
-                    self.view.follow();
-                }
-                Some(Err(problem)) => {
-                    let said = format!("{}: {}", problem.title, problem.detail);
-                    self.transcript.notice(Level::Error, said);
-                }
-                None => {}
+        // Each job's result taken as it lands (not `just_completed`, whose frame every window
+        // in a process shares, so another's frame can pass between landing and asking).
+        match self.history.take() {
+            Some(Ok(messages)) => {
+                self.transcript.history(&messages);
+                self.view.follow();
             }
+            Some(Err(problem)) => {
+                let said = format!("{}: {}", problem.title, problem.detail);
+                self.transcript.notice(Level::Error, said);
+            }
+            None => {}
         }
-        if self.starting.just_completed() {
-            match self.starting.take() {
-                Some(Ok(started)) => {
-                    self.bridge = Some(started.bridge);
-                    self.events = Some(started.events);
-                }
-                Some(Err(problem)) => {
-                    self.queued.clear();
-                    self.transcript.notice(
-                        Level::Error,
-                        format!("{}: {}", problem.title, problem.detail),
-                    );
-                    self.transcript.ended();
-                }
-                None => {}
+        match self.starting.take() {
+            Some(Ok(started)) => {
+                self.bridge = Some(started.bridge);
+                self.events = Some(started.events);
             }
+            Some(Err(problem)) => {
+                self.queued.clear();
+                self.transcript.notice(
+                    Level::Error,
+                    format!("{}: {}", problem.title, problem.detail),
+                );
+                self.transcript.ended();
+            }
+            None => {}
         }
         let events: Vec<Event> = self
             .events

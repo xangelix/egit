@@ -259,7 +259,7 @@ fn install(ui: &mut Ui, setup: &mut AgentsSetup) {
             .request_repaint_after(std::time::Duration::from_millis(500));
         return;
     }
-    if let Some(problem) = setup.installing.err_ref().cloned() {
+    if let Some(problem) = setup.install_problem.clone() {
         widgets::problem_box(ui, &problem, |_| {});
         ui.add_space(8.0);
     }
