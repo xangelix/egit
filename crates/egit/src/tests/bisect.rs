@@ -188,6 +188,19 @@ fn a_branch_is_rebased_keeping_its_merges() {
     });
 
     // Rewritten in the editor: rows don't move, nothing melds, the merge can't be dropped.
+    // (The watcher may read the history once more: its row is aimed at once it is alone.)
+    for _ in 0..2_000 {
+        harness.step();
+        if harness
+            .query_all_by_role_and_label(Role::Button, "Two")
+            .count()
+            == 1
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    harness.run_steps(2);
     harness
         .get_by_role_and_label(Role::Button, "Two")
         .click_secondary();
