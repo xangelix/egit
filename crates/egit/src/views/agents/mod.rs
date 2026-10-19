@@ -157,6 +157,8 @@ impl ConversationView {
 pub(crate) struct Around<'a> {
     pub(crate) repo: RepoId,
     pub(crate) work_tree: &'a Path,
+    /// The other computer the repository is on (as ssh reaches it), if it is.
+    pub(crate) elsewhere: Option<&'a str>,
     pub(crate) git: Option<&'a egit_git::Git>,
     pub(crate) accounts: &'a [AgentAccount],
 }
@@ -171,6 +173,27 @@ pub(crate) fn panel(
     let work_tree = around.work_tree;
     setup.look();
     head(ui, setup, agents, work_tree);
+    if let Some(host) = around.elsewhere {
+        // Claude Code runs where the repository is: not here.
+        Frame::new()
+            .inner_margin(Margin::same(INSET))
+            .show(ui, |ui| {
+                widgets::card(ui, |ui| {
+                    widgets::heading(ui, "Agents on another computer");
+                    ui.add(
+                        egui::Label::new(muted(
+                            ui,
+                            format!(
+                                "This repository is on {host}: agents run there, beside it, which \
+                             egit can't do yet. Run Claude Code in a terminal there meanwhile."
+                            ),
+                        ))
+                        .wrap(),
+                    );
+                });
+            });
+        return;
+    }
     if !setup.is_ready() {
         Frame::new()
             .inner_margin(Margin::same(INSET))

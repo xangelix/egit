@@ -67,3 +67,4 @@ notify = { workspace = true, features = ["macos_fsevent"] }
 egit-forge = { workspace = true, features = ["testing"] }
 egit-git = { workspace = true, features = ["testing"] }
 egui_kittest = { workspace = true, features = ["eframe", "snapshot", "wgpu"] }
+ron.workspace = true

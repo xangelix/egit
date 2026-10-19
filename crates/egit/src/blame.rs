@@ -188,7 +188,7 @@ pub(crate) async fn read_blamed_file(
     path: BString,
 ) -> Result<Arc<FileContent>, Problem> {
     let Some(at) = at else {
-        return read_work_tree_file(repository, path).await;
+        return read_work_tree_file(git, repository, path).await;
     };
     let (finding, found_path) = (Arc::clone(&repository), path.clone());
     let finder = git.clone();

@@ -82,7 +82,7 @@ pub(crate) fn read_lfs(
     repository: &Repository,
     reading: Reading,
 ) -> Result<LfsState, Problem> {
-    if reading == Reading::WhereUsed && attributes_patterns(repository).is_empty() {
+    if reading == Reading::WhereUsed && attributes_patterns(git, repository).is_empty() {
         return Ok(LfsState::default());
     }
     let failed = |error| Problem::git("Git LFS couldn't be read", &error);
@@ -92,7 +92,7 @@ pub(crate) fn read_lfs(
     let patterns = if version.is_some() {
         lfs_patterns(git, repository, &CancelToken::new()).map_err(failed)?
     } else {
-        attributes_patterns(repository)
+        attributes_patterns(git, repository)
     };
     Ok(LfsState {
         version,
@@ -103,8 +103,11 @@ pub(crate) fn read_lfs(
 
 /// The patterns the top `.gitattributes` gives LFS's filter (`*.psd filter=lfs …`): whether
 /// LFS is used at all, and what it tracks where git-lfs isn't installed to say.
-fn attributes_patterns(repository: &Repository) -> Vec<LfsPattern> {
-    let Ok(text) = std::fs::read(repository.work_tree().join(".gitattributes")) else {
+fn attributes_patterns(git: &Git, repository: &Repository) -> Vec<LfsPattern> {
+    let Ok(text) = git
+        .files()
+        .read(&repository.work_tree().join(".gitattributes"))
+    else {
         return Vec::new();
     };
     text.lines()

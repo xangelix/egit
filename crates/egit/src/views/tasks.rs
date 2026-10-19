@@ -454,7 +454,7 @@ fn follow_up(ui: &Ui, view: &mut TasksView, pane: &mut TaskPane<'_>, outcome: &O
                 path, open: true, ..
             }),
             Outcome::Done,
-        ) => pane.actions.push(Action::Open(path.clone())),
+        ) => pane.actions.push(Action::OpenBeside(pane.id, path.clone())),
         (
             _,
             Outcome::Copied(text)

@@ -51,7 +51,7 @@ use super::screens::{rendering, screens};
 use crate::app::{Action, EgitApp};
 use crate::fonts::{self, Fallbacks};
 use crate::grid::{Plain, TextGrid};
-use crate::settings::Settings;
+use crate::settings::{Location, Settings};
 use crate::views::prompts::Prompts;
 
 /// The grid, what it shows, and the system fonts for what egui's lack.
@@ -421,7 +421,11 @@ fn corpus_mass_rename() {
         )
     });
     harness.run_steps(2);
-    harness.state_mut().state.actions.push(Action::Open(repo));
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(Action::Open(Location::here(repo)));
     step_until(&mut harness, Duration::from_secs(30), |app| {
         app.state
             .repos
@@ -709,7 +713,11 @@ fn corpus_rebase() {
         )
     });
     harness.run_steps(2);
-    harness.state_mut().state.actions.push(Action::Open(repo));
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(Action::Open(Location::here(repo)));
     step_until(&mut harness, Duration::from_secs(30), |app| {
         app.state.repos.first().is_some_and(|repo| {
             !repo.history.is_loading()
@@ -848,7 +856,11 @@ fn newest_file(sandbox: &Sandbox, repo: std::path::PathBuf) -> Harness<'static, 
         )
     });
     harness.run_steps(2);
-    harness.state_mut().state.actions.push(Action::Open(repo));
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(Action::Open(Location::here(repo)));
     step_until(&mut harness, Duration::from_secs(30), |app| {
         app.state.repos.first().is_some_and(|repo| {
             !repo.history.is_loading()
@@ -1082,7 +1094,8 @@ fn requests_on(kind: ForgeKind) {
     });
     harness.run_steps(2);
     let started = Instant::now();
-    harness.state_mut().state.actions.push(Action::Open(repo));
+    let actions = &mut harness.state_mut().state.actions;
+    actions.push(Action::Open(Location::here(repo)));
     let read = |harness: &mut Harness<'_, EgitApp>| {
         harness
             .state()
@@ -1318,7 +1331,11 @@ fn corpus_sidebar() {
     harness.run_steps(2);
     reset_peak_memory();
     let started = Instant::now();
-    harness.state_mut().state.actions.push(Action::Open(repo));
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(Action::Open(Location::here(repo)));
     // `main` too.
     let branches = format!("Branches: {}", SIDEBAR_BRANCHES + 1);
     let mut longest = Duration::ZERO;
@@ -1444,7 +1461,11 @@ fn corpus_markdown() {
         )
     });
     harness.run_steps(2);
-    harness.state_mut().state.actions.push(Action::Open(repo));
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(Action::Open(Location::here(repo)));
     step_until(&mut harness, Duration::from_secs(30), |app| {
         app.state
             .repos

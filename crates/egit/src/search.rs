@@ -30,7 +30,7 @@ use egit_gix::{GixError, GixRepository};
 use egit_text::{Needle, matches_case};
 use parking_lot::Mutex;
 
-use crate::history::{Names, gix_allowed};
+use crate::history::{Names, gix_allowed_for};
 use crate::jobs;
 use crate::problem::Problem;
 
@@ -451,7 +451,7 @@ impl Job {
         let fold_case = !matches_case(&self.query);
         match self.kind {
             SearchKind::Message | SearchKind::Author => {
-                if let Some(gix) = gix_allowed()
+                if let Some(gix) = gix_allowed_for(&self.git)
                     .then(|| GixRepository::open(self.repository.work_tree()))
                     .flatten()
                 {

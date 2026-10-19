@@ -110,9 +110,21 @@ impl Pending {
 
 /// Watches some directories and accumulates what changed in them.
 pub(crate) struct Watcher {
-    _inner: RecommendedWatcher,
+    inner: Inner,
     pending: Arc<Mutex<Pending>>,
 }
+
+/// What follows the changes: a watch here, or a loop looking there.
+enum Inner {
+    /// Kept for its watches.
+    Here {
+        _watcher: RecommendedWatcher,
+    },
+    There(egit_git::Looking),
+}
+
+/// How often a repository on another computer is looked at.
+const LOOKING_THERE: Duration = Duration::from_secs(2);
 
 impl Watcher {
     /// Watches `watches`, sorting each changed path with `classify`; `wake` is called (on the
@@ -155,9 +167,43 @@ impl Watcher {
             inner.watch(path, *mode)?;
         }
         Ok(Self {
-            _inner: inner,
+            inner: Inner::Here { _watcher: inner },
             pending,
         })
+    }
+
+    /// Follows a repository on another computer (`git`'s): a session there looking every
+    /// [`LOOKING_THERE`] at what a watch here would see.
+    pub(crate) fn elsewhere(
+        git: &egit_git::Git,
+        repository: &Repository,
+        wake: impl Fn(Duration) + Send + 'static,
+    ) -> notify::Result<Self> {
+        let pending = Arc::new(Mutex::new(Pending::default()));
+        let shared = Arc::clone(&pending);
+        let looking = egit_git::look_there(git, repository, LOOKING_THERE, move |looked| {
+            let changes = match looked {
+                egit_git::Looked::Refs => Changes::REFS,
+                egit_git::Looked::State => Changes::STATE,
+                egit_git::Looked::Config => Changes::CONFIG,
+                egit_git::Looked::Index => Changes::INDEX,
+            };
+            shared.lock().note(changes, Instant::now());
+            wake(SETTLE);
+        })
+        .map_err(notify::Error::io)?;
+        Ok(Self {
+            inner: Inner::There(looking),
+            pending,
+        })
+    }
+
+    /// Whether it stopped following (a session there that ended: the connection was lost).
+    pub(crate) fn has_ended(&self) -> bool {
+        match &self.inner {
+            Inner::Here { .. } => false,
+            Inner::There(looking) => looking.has_ended(),
+        }
     }
 
     /// Watches a repository's git directories: `HEAD`, refs, configuration, the index, and
@@ -426,6 +472,15 @@ impl Watching {
         } = &self.state
         else {
             return match &self.state {
+                // There, its session ended: tried again, as a watch that failed.
+                State::Active(watcher) if watcher.has_ended() => {
+                    self.state = State::Failed {
+                        reason: "the connection to the other computer was lost".to_owned(),
+                        retry_at: now.checked_add(FIRST_RETRY).unwrap_or(now),
+                        backoff: FIRST_RETRY,
+                    };
+                    Taken::Wait(FIRST_RETRY)
+                }
                 State::Active(watcher) => watcher.take(now),
                 State::Failed { .. } => Taken::Nothing,
             };
@@ -589,7 +644,10 @@ mod tests {
     fn hands_changes_over_once_settled() {
         let pending = Arc::new(Mutex::new(Pending::default()));
         let watcher = Watcher {
-            _inner: notify::recommended_watcher(|_: notify::Result<notify::Event>| {}).unwrap(),
+            inner: Inner::Here {
+                _watcher: notify::recommended_watcher(|_: notify::Result<notify::Event>| {})
+                    .unwrap(),
+            },
             pending: Arc::clone(&pending),
         };
         let start = Instant::now();
@@ -609,7 +667,9 @@ mod tests {
 
     fn quiet_watcher() -> notify::Result<Watcher> {
         Ok(Watcher {
-            _inner: notify::recommended_watcher(|_: notify::Result<notify::Event>| {})?,
+            inner: Inner::Here {
+                _watcher: notify::recommended_watcher(|_: notify::Result<notify::Event>| {})?,
+            },
             pending: Arc::new(Mutex::new(Pending::default())),
         })
     }

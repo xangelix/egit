@@ -60,13 +60,16 @@ pub(crate) struct WorkTree {
     problem: Arc<Mutex<Option<String>>>,
     head_folders: Arc<Mutex<HeadFolders>>,
     repository: Arc<Repository>,
+    /// Whether it is on this computer, where its folders can be watched (on another, its status
+    /// is read every [`UNWATCHED_READS`]).
+    here: bool,
     waker: egui::Context,
 }
 
 impl WorkTree {
-    /// The working tree of `repository`, read at the next [`Self::poll`]; `ctx` is woken when
-    /// it changes.
-    pub(crate) fn new(repository: Arc<Repository>, ctx: &egui::Context) -> Self {
+    /// The working tree of `repository` (`here`: on this computer), read at the next
+    /// [`Self::poll`]; `ctx` is woken when it changes.
+    pub(crate) fn new(repository: Arc<Repository>, here: bool, ctx: &egui::Context) -> Self {
         let mut work_tree = Self {
             status: Bind::new(true),
             due: Some(Due::Now),
@@ -75,6 +78,7 @@ impl WorkTree {
             problem: Arc::new(Mutex::new(None)),
             head_folders: Arc::new(Mutex::new(None)),
             repository,
+            here,
             waker: ctx.clone(),
         };
         work_tree.start_watching();
@@ -201,8 +205,12 @@ impl WorkTree {
         }));
     }
 
-    /// Makes the work tree's watcher (it watches nothing until the next read).
+    /// Makes the work tree's watcher (it watches nothing until the next read); none on another
+    /// computer.
     fn start_watching(&mut self) {
+        if !self.here {
+            return;
+        }
         let waker = self.waker.clone();
         match TreeWatcher::new(
             self.repository.work_tree().to_owned(),

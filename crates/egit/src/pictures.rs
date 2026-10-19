@@ -121,14 +121,21 @@ pub(crate) fn read_side(
             Ok(bytes)
         }
         PictureSource::WorkTree(path) => {
+            // Where git runs: on another computer, there.
             let file = repository.work_tree().join(path.to_path_lossy());
-            let size = std::fs::metadata(&file)
+            let files = git.files();
+            let found = files
+                .look(&[&file])
                 .map_err(|error| error.to_string())?
-                .len();
-            if size > largest {
-                return Err(too_large(size));
+                .pop();
+            match found {
+                Some(egit_git::Entry::File { size, .. }) if size > largest => {
+                    return Err(too_large(size));
+                }
+                Some(egit_git::Entry::File { .. }) => {}
+                _ => return Err(format!("{} isn't a file.", file.display())),
             }
-            std::fs::read(&file).map_err(|error| error.to_string())
+            files.read(&file).map_err(|error| error.to_string())
         }
     }
 }

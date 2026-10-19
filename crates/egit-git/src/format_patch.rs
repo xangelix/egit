@@ -141,20 +141,53 @@ pub fn format_patches(
             format!("more than {MAX_PLANNED} commits"),
         ));
     }
-    let written = git
+    let command = git
         .read("format-patch")
-        .args(["--default-prefix", "-o"])
-        .arg(folder)
+        .arg("--default-prefix")
         .args(&range)
         .current_dir(repository.work_tree())
-        .cancel_token(cancel)
-        .output()?;
-    Ok(written
-        .stdout
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| PathBuf::from(line.to_os_str_lossy().into_owned()))
-        .collect())
+        .cancel_token(cancel);
+    written_into(git, command, folder)
+}
+
+/// Runs `command`, a `format-patch`, writing its patches into `folder` on this computer: with
+/// git here, `-o` it; with git on another, into a folder there, each then read back and written
+/// here by git's own name. Returns the files written.
+fn written_into(git: &Git, command: GitCommand, folder: &Path) -> Result<Vec<PathBuf>, GitError> {
+    let listed = |written: &[u8]| -> Vec<PathBuf> {
+        written
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|line| PathBuf::from(line.to_os_str_lossy().into_owned()))
+            .collect()
+    };
+    if git.host().is_local() {
+        let written = command.arg("-o").arg(folder).output()?;
+        return Ok(listed(&written.stdout));
+    }
+    let io = |source| GitError::Io {
+        subcommand: "format-patch",
+        source,
+    };
+    let files = git.files();
+    let there = files.temp_dir("egit-patches-").map_err(io)?;
+    let written = command.arg("-o").arg(there.path()).output()?;
+    let made = listed(&written.stdout);
+    let read = files
+        .read_all(&made.iter().map(PathBuf::as_path).collect::<Vec<_>>())
+        .map_err(io)?;
+    std::fs::create_dir_all(folder).map_err(io)?;
+    made.iter()
+        .zip(read)
+        .map(|(path, bytes)| {
+            let name = path.file_name().unwrap_or(path.as_os_str());
+            let here = folder.join(name);
+            let bytes = bytes
+                .ok_or_else(|| GitError::unexpected("format-patch", "a patch it said it wrote"))?;
+            std::fs::write(&here, bytes).map_err(io)?;
+            Ok(here)
+        })
+        .collect()
 }
 
 /// `commits` as patches, one each, in one text: a mailbox `git am` takes.
@@ -197,16 +230,7 @@ pub fn format_series_into(
     folder: &Path,
     cancel: &CancelToken,
 ) -> Result<Vec<PathBuf>, GitError> {
-    let written = series(git, repository, commits, cancel)
-        .arg("-o")
-        .arg(folder)
-        .output()?;
-    Ok(written
-        .stdout
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| PathBuf::from(line.to_os_str_lossy().into_owned()))
-        .collect())
+    written_into(git, series(git, repository, commits, cancel), folder)
 }
 
 /// `format-patch` of exactly `commits`, given on standard input: git lists them the other way

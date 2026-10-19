@@ -6,7 +6,6 @@
 //! application's (`Action`s).
 
 use std::borrow::Cow;
-use std::path::PathBuf;
 
 use bstr::BString;
 use egui::{Key, KeyboardShortcut, Modifiers};
@@ -56,8 +55,8 @@ pub(crate) enum Command {
     /// The `n`th tab (from 1).
     Tab(usize),
     Theme(ThemeChoice),
-    /// Open a repository opened before.
-    OpenRecent(PathBuf),
+    /// Open a repository opened before (here, or on another computer).
+    OpenRecent(crate::settings::Location),
     /// Something about the repository in front.
     Repo(RepoCommand),
 }
@@ -118,7 +117,10 @@ impl Command {
             Self::Theme(ThemeChoice::System) => "Theme: as the desktop's".to_owned(),
             Self::Theme(ThemeChoice::Light) => "Theme: light".to_owned(),
             Self::Theme(ThemeChoice::Dark) => "Theme: dark".to_owned(),
-            Self::OpenRecent(path) => format!("Open {}", path.display()),
+            Self::OpenRecent(location) => location.host.as_ref().map_or_else(
+                || format!("Open {}", location.path.display()),
+                |host| format!("Open {} on {host}", location.path.display()),
+            ),
             Self::Repo(command) => match command {
                 RepoCommand::Fetch => "Fetch".to_owned(),
                 RepoCommand::Pull => "Pull".to_owned(),

@@ -625,6 +625,8 @@ const fn rank(kind: RefKind) -> u8 {
 pub(crate) struct Objects {
     git: Arc<Mutex<Option<ObjectReader>>>,
     gix: Arc<Mutex<Gix>>,
+    /// The repository is on another computer: gitoxide (which reads files here) never reads.
+    there: bool,
 }
 
 /// Whether gitoxide reads a repository's objects.
@@ -644,11 +646,24 @@ pub(crate) fn gix_allowed() -> bool {
     *ALLOWED.get_or_init(|| std::env::var_os("EGIT_GIX").is_none_or(|value| value != "0"))
 }
 
+/// Whether gitoxide may read what `git` reads: only on this computer (it reads files here).
+pub(crate) fn gix_allowed_for(git: &Git) -> bool {
+    gix_allowed() && git.host().is_local()
+}
+
 impl Objects {
+    /// What reads the objects of a repository `git` reads (on another computer, git alone).
+    pub(crate) fn of(git: &Git) -> Self {
+        Self {
+            there: !git.host().is_local(),
+            ..Self::default()
+        }
+    }
+
     /// Opens the repository for gitoxide again (inside a job): what it reads, or `None` when
     /// git reads everything.
     pub(crate) fn reopen(&self, work_tree: &Path) -> Option<GixRepository> {
-        let opened = gix_allowed()
+        let opened = (gix_allowed() && !self.there)
             .then(|| GixRepository::open(work_tree))
             .flatten();
         *self.gix.lock() = opened.clone().map_or(Gix::Unavailable, Gix::Open);
@@ -1104,14 +1119,16 @@ pub(crate) async fn read_file(
     .await
 }
 
-/// Reads the work tree's file at `path` (from its top) and makes it ready to show.
+/// Reads the work tree's file at `path` (from its top) and makes it ready to show (where `git`
+/// runs: on another computer, there).
 pub(crate) async fn read_work_tree_file(
+    git: Git,
     repository: Arc<Repository>,
     path: BString,
 ) -> Result<Arc<FileContent>, Problem> {
     jobs::blocking(move || {
         let file = repository.work_tree().join(path.to_path_lossy());
-        let bytes = std::fs::read(&file).map_err(|error| {
+        let bytes = git.files().read(&file).map_err(|error| {
             Problem::new(
                 "The file couldn't be read",
                 format!("{}: {error}", file.display()),
@@ -1302,7 +1319,7 @@ pub(crate) struct HistoryState {
 impl HistoryState {
     /// Starts reading `repository`'s history.
     pub(crate) fn new(git: &Git, repository: &Arc<Repository>, ctx: &egui::Context) -> Self {
-        let objects = Objects::default();
+        let objects = Objects::of(git);
         let scope = Scope::default();
         Self {
             shown: History::load(git, repository, &objects, &scope, ctx),

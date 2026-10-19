@@ -23,7 +23,7 @@ use egit_git::{
 use egit_gix::{GixError, GixRepository};
 use parking_lot::Mutex;
 
-use crate::history::{Names, gix_allowed};
+use crate::history::{Names, gix_allowed_for};
 use crate::jobs;
 use crate::problem::Problem;
 
@@ -152,7 +152,7 @@ pub(crate) async fn read_stats(
 ) -> Result<Arc<Stats>, Problem> {
     jobs::blocking(move || {
         const TITLE: &str = "The statistics couldn't be read";
-        let through_gix = gix_allowed()
+        let through_gix = gix_allowed_for(&git)
             .then(|| GixRepository::open(repository.work_tree()))
             .flatten()
             .and_then(|gix| match tally_gix(&gix, &names, &read, &cancel) {

@@ -49,6 +49,8 @@ memchr = "2.8.3"
 notify = { version = "8.2.0", default-features = false }
 parking_lot = "0.12.5"
 rfd = { version = "0.17.2", default-features = false }
+# The settings as eframe stores them, in tests.
+ron = "0.12.2"
 # The operating system's randomness, wherever egit runs (an askpass token).
 getrandom = "0.4.3"
 # `getpeereid` where rustix doesn't wrap the peer's credentials (macOS and the BSDs).

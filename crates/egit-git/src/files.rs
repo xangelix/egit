@@ -634,7 +634,7 @@ fn permissions(
 }
 
 /// `bits` executable (by whoever may read it) or not.
-#[cfg_attr(not(unix), expect(dead_code, reason = "files have no such bits there"))]
+#[cfg(any(unix, test))]
 const fn with_executable(bits: u32, executable: bool) -> u32 {
     if executable {
         bits | ((bits & 0o444) >> 2)

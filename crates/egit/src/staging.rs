@@ -145,7 +145,10 @@ fn stage_lines(
         picked.get(index).copied().unwrap_or(false)
     })
     .map_err(|_| stale())?;
-    let mode = entry.map_or_else(|| work_tree_mode(repository, &path), |entry| entry.mode);
+    let mode = entry.map_or_else(
+        || work_tree_mode(git, repository, &path),
+        |entry| entry.mode,
+    );
     match write_index_content(git, repository, path.as_ref(), entry, mode, content, cancel) {
         Ok(_) => Ok(()),
         Err(LinesError::Stale) => Err(stale()),
@@ -212,22 +215,22 @@ fn resolve(
 }
 
 /// The mode a file not yet tracked gets: executable or not, as the work tree has it.
-fn work_tree_mode(repository: &Repository, path: &[u8]) -> u32 {
-    if executable(&repository.work_tree().join(path.to_os_str_lossy())) {
+fn work_tree_mode(git: &Git, repository: &Repository, path: &[u8]) -> u32 {
+    let file = repository.work_tree().join(path.to_os_str_lossy());
+    let found = git
+        .files()
+        .look(&[&file])
+        .ok()
+        .and_then(|mut found| found.pop());
+    if matches!(
+        found,
+        Some(egit_git::Entry::File {
+            executable: true,
+            ..
+        })
+    ) {
         0o100_755
     } else {
         0o100_644
     }
-}
-
-#[cfg(unix)]
-fn executable(file: &std::path::Path) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    std::fs::metadata(file).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
-}
-
-/// Windows keeps no executable bit: git there adds a new file as not executable.
-#[cfg(not(unix))]
-const fn executable(_file: &std::path::Path) -> bool {
-    false
 }

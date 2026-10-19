@@ -667,8 +667,9 @@ fn file_tools(
         ),
     ];
     for (glyph, name, how, hover) in reveals {
-        if widgets::icon_tool(ui, true, glyph, name)
+        if widgets::icon_tool(ui, shared.here(), glyph, name)
             .on_hover_text(hover)
+            .on_disabled_hover_text(super::work::ELSEWHERE)
             .clicked()
         {
             let work_tree = shared.repository.work_tree();
@@ -966,8 +967,11 @@ fn read_content(
                 return Err("It is deleted in the work tree.");
             }
             if idle {
-                file.content
-                    .request(read_work_tree_file(repository, work.path.clone()));
+                file.content.request(read_work_tree_file(
+                    git.clone(),
+                    repository,
+                    work.path.clone(),
+                ));
             }
             return Ok(Some("As the work tree has it."));
         }

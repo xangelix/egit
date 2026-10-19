@@ -57,12 +57,14 @@ impl fmt::Display for Problem {
 pub(crate) struct OpenProblem {
     /// What went wrong.
     pub(crate) problem: Problem,
-    /// The path to add to `safe.directory` when git refused a repository another user owns.
-    pub(crate) trust: Option<std::path::PathBuf>,
+    /// Where to add to `safe.directory` when git refused a repository another user owns (on
+    /// the computer it is on).
+    pub(crate) trust: Option<crate::settings::Location>,
 }
 
 impl OpenProblem {
-    pub(crate) fn from_discovery(error: &DiscoverError) -> Self {
+    /// Why discovering a repository (on `host`, if another computer) failed.
+    pub(crate) fn from_discovery(error: &DiscoverError, host: Option<&str>) -> Self {
         let title = "The repository couldn't be opened";
         let (detail, trust) = match error {
             DiscoverError::NotARepository { path } => (
@@ -98,7 +100,10 @@ impl OpenProblem {
         };
         Self {
             problem: Problem::new(title, detail),
-            trust,
+            trust: trust.map(|path| crate::settings::Location {
+                host: host.map(str::to_owned),
+                path,
+            }),
         }
     }
 

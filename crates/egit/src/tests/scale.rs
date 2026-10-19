@@ -34,7 +34,7 @@ use super::screens::{rendering, screens};
 use crate::app::{Action, EgitApp};
 use crate::history::{Names, Scope};
 use crate::search::{self, Asked, SearchKind};
-use crate::settings::Settings;
+use crate::settings::{Location, Settings};
 use crate::views::prompts::Prompts;
 
 /// Steps until `done` holds, or panics after `limit`.
@@ -112,7 +112,7 @@ fn a_large_history_opens_at_once_and_scrolls_within_a_frame() {
         .state_mut()
         .state
         .actions
-        .push(Action::Open(repo.clone()));
+        .push(Action::Open(Location::here(repo.clone())));
     harness.step();
     step_until(&mut harness, Duration::from_secs(60), |app| {
         app.state

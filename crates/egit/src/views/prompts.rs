@@ -71,6 +71,11 @@ impl Prompts {
         self.ssh = None;
     }
 
+    /// The folder ssh's connections are shared through, while they are.
+    pub(crate) fn ssh_folder(&self) -> Option<std::path::PathBuf> {
+        self.ssh.as_ref().map(|ssh| ssh.dir().to_owned())
+    }
+
     /// As [`Self::start`], for `executable`, under `base` when given.
     pub(crate) fn start_with(
         ctx: &egui::Context,

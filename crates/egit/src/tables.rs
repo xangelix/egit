@@ -209,9 +209,19 @@ fn recent_cell(
             || path.display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         ),
-        1 => path
-            .parent()
-            .map_or_else(String::new, |parent| display_path(parent, home)),
+        // On another computer: which, then where there.
+        1 => recent.host.as_ref().map_or_else(
+            || {
+                path.parent()
+                    .map_or_else(String::new, |parent| display_path(parent, home))
+            },
+            |host| {
+                path.parent().map_or_else(
+                    || host.clone(),
+                    |parent| format!("{host}: {}", parent.display()),
+                )
+            },
+        ),
         2 => ago(recent.opened, now),
         _ => return None,
     };

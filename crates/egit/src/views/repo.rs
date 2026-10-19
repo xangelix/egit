@@ -49,6 +49,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
     let around = super::agents::Around {
         repo: id,
         work_tree: repo.repository.work_tree(),
+        elsewhere: repo.git.host().ssh().map(|ssh| ssh.destination.as_str()),
         git,
         accounts: &settings.agent_accounts,
     };
@@ -56,7 +57,8 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
     super::output::show(ui, &mut repo.output, id);
     let mut behavior = Panels {
         id,
-        git,
+        // The repository's own: on another computer, the git there.
+        git: Some(&repo.git),
         title: &repo.title,
         repository: &repo.repository,
         status: &mut repo.status,

@@ -54,6 +54,8 @@ pub(crate) enum RepoPanel {
 pub(crate) struct RepoTab {
     pub(crate) id: RepoId,
     pub(crate) repository: Arc<Repository>,
+    /// The git its commands run with: this computer's, or one on the computer it is on.
+    pub(crate) git: Git,
     /// The tab's title: the work tree's folder name.
     pub(crate) title: String,
     pub(crate) status: Bind<Status, Problem>,
@@ -124,17 +126,23 @@ impl RepoTab {
     /// A tab for `repository`, starting to read its state and to watch it (waking `ctx` when
     /// it changes).
     pub(crate) fn new(id: RepoId, repository: Repository, git: &Git, ctx: &egui::Context) -> Self {
-        let title = repository.work_tree().file_name().map_or_else(
+        let name = repository.work_tree().file_name().map_or_else(
             || repository.work_tree().display().to_string(),
             |name| name.to_string_lossy().into_owned(),
         );
-        let watching = Watching::new(Instant::now(), || watch(&repository, ctx));
+        // On another computer, which one.
+        let title = match git.host().ssh() {
+            Some(ssh) => format!("{name} · {}", ssh.destination),
+            None => name,
+        };
+        let watching = Watching::new(Instant::now(), || watch(git, &repository, ctx));
         let repository = Arc::new(repository);
         let mut tab = Self {
             id,
+            git: git.clone(),
             history: HistoryState::new(git, &repository, ctx),
             history_view: HistoryView::new(id),
-            work_tree: WorkTree::new(Arc::clone(&repository), ctx),
+            work_tree: WorkTree::new(Arc::clone(&repository), git.host().is_local(), ctx),
             repository,
             title,
             status: Bind::new(true),
@@ -266,9 +274,10 @@ impl RepoTab {
 
     /// Reads again what changed outside egit, once the changes have settled; returns how long
     /// to wait before asking again while they haven't.
-    pub(crate) fn follow_changes(&mut self, git: &Git, now: Instant) -> Option<Duration> {
+    pub(crate) fn follow_changes(&mut self, now: Instant) -> Option<Duration> {
+        let git = &self.git.clone();
         let (repository, waker) = (&self.repository, &self.waker);
-        let taken = self.watching.take(now, || watch(repository, waker));
+        let taken = self.watching.take(now, || watch(git, repository, waker));
         let wait = match taken {
             Taken::Nothing => None,
             Taken::Wait(delay) => Some(delay),
@@ -647,7 +656,12 @@ impl RepoTab {
 }
 
 /// Watches `repository`, waking `ctx` when it changes.
-fn watch(repository: &Repository, ctx: &egui::Context) -> notify::Result<Watcher> {
+fn watch(git: &Git, repository: &Repository, ctx: &egui::Context) -> notify::Result<Watcher> {
     let waker = ctx.clone();
-    Watcher::repository(repository, move |delay| waker.request_repaint_after(delay))
+    let wake = move |delay| waker.request_repaint_after(delay);
+    match git.host() {
+        egit_git::Host::Local => Watcher::repository(repository, wake),
+        // There, a session of its own looking every few seconds.
+        egit_git::Host::Ssh(_) => Watcher::elsewhere(git, repository, wake),
+    }
 }

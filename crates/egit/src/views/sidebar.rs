@@ -1850,7 +1850,9 @@ fn worktree_menu(
     if actions::item(ui, (icon::APP_WINDOW, "Open in a tab"), opening) {
         event = Some(SidebarEvent::Open(worktree.path.clone()));
     }
-    let missing = if worktree.prunable.is_some() {
+    let missing = if !drawing.shared.here() {
+        Err(super::work::ELSEWHERE)
+    } else if worktree.prunable.is_some() {
         Err("Its folder is missing")
     } else {
         Ok(())
@@ -1983,7 +1985,12 @@ fn submodule_row(
         if actions::item(ui, (icon::APP_WINDOW, "Open in a tab"), opening) {
             event = Some(SidebarEvent::Open(folder.clone()));
         }
-        if actions::item(ui, (icon::FOLDER_OPEN, "Open its folder"), Ok(())) {
+        let revealing = if drawing.shared.here() {
+            Ok(())
+        } else {
+            Err(super::work::ELSEWHERE)
+        };
+        if actions::item(ui, (icon::FOLDER_OPEN, "Open its folder"), revealing) {
             event = Some(SidebarEvent::Reveal(folder.clone()));
         }
         if actions::item(ui, (icon::COPY, "Copy its path"), Ok(())) {

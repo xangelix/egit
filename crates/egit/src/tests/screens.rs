@@ -2409,8 +2409,8 @@ fn the_tabs_open_at_the_last_close_come_back() {
     let repo = sandbox.init("kept").unwrap();
     let settings = Settings {
         open: vec![
-            sandbox.path("deleted since").as_path().into(),
-            repo.as_path().into(),
+            crate::settings::OpenTab::Here(sandbox.path("deleted since").as_path().into()),
+            crate::settings::OpenTab::Here(repo.as_path().into()),
         ],
         ..Settings::default()
     };

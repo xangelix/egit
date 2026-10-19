@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-use crate::{Completed, Git, GitOptions, Host};
+use crate::{Completed, Git, GitOptions, Host, SshHost};
 
 /// The global configuration every sandbox starts with.
 const GLOBAL_CONFIG: &str = "\
@@ -84,6 +84,16 @@ pub const fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The tests' own sshd, on the loopback address (started the first time; Linux, where sshd
+/// runs as any user): how to reach this computer as if it were another.
+///
+/// # Errors
+///
+/// When sshd isn't installed, or can't be started.
+pub fn ssh_host() -> Result<SshHost, SandboxError> {
+    ssh::host()
+}
+
 /// Whether sandboxes run git as on another computer (`EGIT_TEST_SSH`): a test of what only
 /// this computer does (its askpass, git's own ssh) skips then.
 #[must_use]
@@ -138,6 +148,19 @@ impl Sandbox {
         };
         Ok(Git::new(GitOptions {
             host,
+            ..Self::options_from(env)
+        })?)
+    }
+
+    /// How the sandbox's git is run, here: its program, variables, and those it doesn't get.
+    #[must_use]
+    pub fn options(&self) -> GitOptions {
+        Self::options_from(self.env.clone())
+    }
+
+    fn options_from(env: Vec<(OsString, OsString)>) -> GitOptions {
+        GitOptions {
+            host: Host::Local,
             program: std::env::var_os("EGIT_TEST_GIT").map(PathBuf::from),
             // The ssh command's, unless a test names its own.
             unset: IDENTITY_VARIABLES
@@ -150,7 +173,7 @@ impl Sandbox {
                 .map(OsString::from)
                 .collect(),
             env,
-        })?)
+        }
     }
 
     /// The sandbox's git with more environment variables, such as git's own test switches

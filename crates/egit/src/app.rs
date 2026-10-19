@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_git::{
-    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, NewCommit, Repository,
-    add_config_value, set_config, trust_directory, unset_config, unset_config_value,
+    ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, Host, NewCommit, Repository,
+    SshHost, add_config_value, set_config, trust_directory, unset_config, unset_config_value,
 };
 use egui::{CentralPanel, Frame, Panel, Ui};
 use egui_async::Bind;
@@ -25,7 +25,7 @@ use crate::jobs::{self, WriteLock};
 use crate::preferences::Preferences;
 use crate::problem::{OpenProblem, Problem};
 use crate::repo::{RepoId, RepoPanel, RepoTab};
-use crate::settings::{Settings, StoredPath};
+use crate::settings::{Location, OpenTab, Settings, StoredPath};
 use crate::staging::StageRequest;
 use crate::tabs::{self, Pane};
 use crate::tasks::Task;
@@ -48,7 +48,9 @@ pub(crate) struct EgitApp {
 pub(crate) struct AppState {
     /// The git binary, once found and checked.
     pub(crate) git: Bind<Git, Problem>,
-    git_options: GitOptions,
+    pub(crate) git_options: GitOptions,
+    /// How egit's ssh reaches other computers.
+    pub(crate) ssh: SshSettings,
     /// The user's configuration, outside any repository.
     pub(crate) user_config: Bind<Arc<ConfigSnapshot>, Problem>,
     /// Commands that write the user's configuration take it.
@@ -65,7 +67,7 @@ pub(crate) struct AppState {
     /// Watches the files the user's configuration comes from (and which they are).
     user_watcher: Option<(Vec<PathBuf>, Watching)>,
     /// Paths to open once git is ready.
-    waiting: Vec<PathBuf>,
+    waiting: Vec<Location>,
     pub(crate) actions: Vec<Action>,
     next_repo: RepoId,
     /// System fonts for characters egui's fonts lack.
@@ -84,9 +86,18 @@ pub(crate) struct AppState {
     pub(crate) agents: crate::agents::AgentsSetup,
 }
 
-/// A repository being opened.
+/// A repository being opened: found, with the git it is read with (on another computer, git
+/// there, reached first).
 struct Opening {
-    job: Bind<Repository, OpenProblem>,
+    job: Bind<(Repository, Git), OpenProblem>,
+}
+
+/// How egit's ssh reaches other computers: the folder connections are shared through (an
+/// `SshSharing`'s), and ssh options of its own (none but in tests: a key and known hosts).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SshSettings {
+    pub(crate) control: Option<PathBuf>,
+    pub(crate) options: Vec<String>,
 }
 
 /// A change to the user's global configuration.
@@ -127,14 +138,17 @@ pub(crate) enum Action {
     Clone(CloneRequest),
     /// Stop the clone running.
     CancelClone,
-    /// Open the repository around a path.
-    Open(PathBuf),
-    /// A repository was found: show it.
-    Opened(Box<Repository>),
-    /// Add a path to `safe.directory`, then open it.
-    Trust(PathBuf),
-    /// Remove a path from the recent repositories.
-    Forget(PathBuf),
+    /// Open the repository around a path, here or on another computer.
+    Open(Location),
+    /// Open the repository around a path on the computer repository tab `id`'s is on (one of
+    /// its worktrees, a submodule).
+    OpenBeside(RepoId, PathBuf),
+    /// A repository was found (with the git it is read with): show it.
+    Opened(Box<(Repository, Git)>),
+    /// Add a path to `safe.directory` (on its computer), then open it.
+    Trust(Location),
+    /// Remove a repository from the recent ones.
+    Forget(Location),
     /// Show the profile tab.
     ShowProfile,
     /// Write changes to the user's configuration.
@@ -268,17 +282,22 @@ impl EgitApp {
 
         // Repositories open when egit last closed come back (not those since removed), then
         // those asked for now.
-        let mut waiting: Vec<PathBuf> = settings
+        let mut waiting: Vec<Location> = settings
             .open
             .iter()
-            .map(StoredPath::to_path)
-            .filter(|path| path.is_dir())
+            .map(OpenTab::location)
+            // Here, those still there; there, found out when reached.
+            .filter(|location| location.host.is_some() || location.path.is_dir())
             .collect();
-        waiting.extend(paths);
+        waiting.extend(paths.into_iter().map(Location::here));
         let home_dir_for_agents = home_dir.clone();
         let mut state = AppState {
             git: Bind::new(true),
             git_options,
+            ssh: SshSettings {
+                control: prompts.ssh_folder(),
+                options: Vec::new(),
+            },
             user_config: Bind::new(true),
             user_writes: WriteLock::default(),
             repos: Vec::new(),
@@ -342,7 +361,7 @@ impl EgitApp {
             }
             Command::Tab(n) => tabs::show_nth(&mut self.tabs, n),
             Command::Theme(choice) => state.actions.push(Action::SetTheme(choice)),
-            Command::OpenRecent(path) => state.actions.push(Action::Open(path)),
+            Command::OpenRecent(location) => state.actions.push(Action::Open(location)),
             Command::Repo(command) => {
                 let Some(Pane::Repo(id)) = tabs::front(&self.tabs) else {
                     return;
@@ -378,10 +397,19 @@ impl EgitApp {
             Action::PickCloneFolder => state.home.clone.pick_folder(),
             Action::Clone(request) => state.start_clone(request),
             Action::CancelClone => state.home.clone.cancel(),
-            Action::Open(path) => state.open(path),
-            Action::Opened(repository) => self.show_repository(ctx, *repository),
-            Action::Trust(path) => state.trust(path),
-            Action::Forget(path) => state.settings.forget(&path),
+            Action::Open(location) => state.open(location),
+            Action::OpenBeside(id, path) => {
+                let host = state
+                    .repo_mut(id)
+                    .and_then(|repo| repo.git.host().ssh().map(|ssh| ssh.destination.clone()));
+                state.open(Location { host, path });
+            }
+            Action::Opened(opened) => {
+                let (repository, git) = *opened;
+                self.show_repository(ctx, repository, &git);
+            }
+            Action::Trust(location) => state.trust(location),
+            Action::Forget(location) => state.settings.forget(&location),
             Action::ShowProfile => tabs::show(&mut self.tabs, Pane::Profile),
             Action::SaveProfile(changes) => state.save_profile(changes),
             Action::ShowPanel(id, panel) => state.show_panel(id, panel),
@@ -456,25 +484,25 @@ impl EgitApp {
         }
     }
 
-    /// Shows a repository found by discovery: its tab, which is new unless it is open already.
-    fn show_repository(&mut self, ctx: &egui::Context, repository: Repository) {
+    /// Shows a repository found by discovery, read with `git` (here, or on the computer it is
+    /// on): its tab, which is new unless it is open already.
+    fn show_repository(&mut self, ctx: &egui::Context, repository: Repository, git: &Git) {
         let state = &mut self.state;
         state.home.problem = None;
-        state.settings.remember(repository.work_tree(), now());
-        if let Some(open) = state
-            .repos
-            .iter()
-            .find(|repo| repo.repository.work_tree() == repository.work_tree())
-        {
+        let location = Location {
+            host: git.host().ssh().map(|ssh| ssh.destination.clone()),
+            path: repository.work_tree().to_owned(),
+        };
+        state.settings.remember(&location, now());
+        if let Some(open) = state.repos.iter().find(|repo| {
+            repo.repository.work_tree() == repository.work_tree() && repo.git.host() == git.host()
+        }) {
             tabs::show(&mut self.tabs, Pane::Repo(open.id));
             return;
         }
-        let Some(git) = state.git() else {
-            return;
-        };
         let id = state.next_repo;
         state.next_repo = state.next_repo.wrapping_add(1);
-        let mut tab = RepoTab::new(id, repository, &git, ctx);
+        let mut tab = RepoTab::new(id, repository, git, ctx);
         tab.prefer(state.settings.preferences, Instant::now());
         state.repos.push(tab);
         tabs::show(&mut self.tabs, Pane::Repo(id));
@@ -487,11 +515,11 @@ impl AppState {
         self.repos.iter_mut().find(|repo| repo.id == id)
     }
 
-    /// Does `act` with git and the repository tab `id`, when both are there.
+    /// Does `act` with the repository tab `id`, if open, and its git (this computer's, or the
+    /// one on the computer it is on).
     fn with_repo(&mut self, id: RepoId, act: impl FnOnce(&Git, &mut RepoTab)) {
-        if let Some(git) = self.git()
-            && let Some(repo) = self.repo_mut(id)
-        {
+        if let Some(repo) = self.repo_mut(id) {
+            let git = repo.git.clone();
             act(&git, repo);
         }
     }
@@ -551,6 +579,7 @@ impl AppState {
             // Back from a terminal, a hook may have been added.
             if regained {
                 for repo in &mut self.repos {
+                    let git = repo.git.clone();
                     repo.refresh_hooks(&git);
                 }
             }
@@ -572,14 +601,14 @@ impl AppState {
         });
         for result in finished {
             match result {
-                Ok(repository) => self.actions.push(Action::Opened(Box::new(repository))),
+                Ok(opened) => self.actions.push(Action::Opened(Box::new(opened))),
                 Err(problem) => self.home.problem = Some(problem),
             }
         }
 
         if let Some(picked) = self.home.picking.take() {
             match picked {
-                Ok(Some(path)) => self.actions.push(Action::Open(path)),
+                Ok(Some(path)) => self.actions.push(Action::Open(Location::here(path))),
                 Ok(None) => {}
                 Err(problem) => self.home.problem = Some(OpenProblem::from_problem(problem)),
             }
@@ -590,7 +619,7 @@ impl AppState {
         }
         if let Some(trusted) = self.home.trusting.take() {
             match trusted {
-                Ok(path) => self.actions.push(Action::Open(path)),
+                Ok(location) => self.actions.push(Action::Open(location)),
                 Err(problem) => self.home.problem = Some(OpenProblem::from_problem(problem)),
             }
         }
@@ -601,6 +630,7 @@ impl AppState {
                     if let Some(git) = self.git() {
                         self.refresh_user_config(&git);
                         for repo in &mut self.repos {
+                            let git = repo.git.clone();
                             repo.refresh_config(&git);
                         }
                     }
@@ -673,7 +703,7 @@ impl AppState {
             Some(Ok(Some(destination))) => {
                 clone.done();
                 self.settings.clone_folder = destination.parent().map(StoredPath::from);
-                self.actions.push(Action::Open(destination));
+                self.actions.push(Action::Open(Location::here(destination)));
             }
             Some(Ok(None)) => clone.cancelled = true,
             Some(Err(problem)) => clone.problem = Some(problem),
@@ -687,8 +717,9 @@ impl AppState {
         let now = Instant::now();
         let mut wait = None;
         for repo in &mut self.repos {
-            wait = sooner(wait, repo.follow_changes(git, now));
-            repo.follow_submodules(git);
+            wait = sooner(wait, repo.follow_changes(now));
+            let git = repo.git.clone();
+            repo.follow_submodules(&git);
         }
 
         if let Some(snapshot) = self.user_config.ok_ref() {
@@ -715,8 +746,14 @@ impl AppState {
             Taken::Wait(delay) => wait = sooner(wait, Some(delay)),
             Taken::Changed(_) => {
                 self.refresh_user_config(git);
-                for repo in &mut self.repos {
-                    repo.refresh_config(git);
+                // A repository here reads this computer's configuration too.
+                for repo in self
+                    .repos
+                    .iter_mut()
+                    .filter(|repo| repo.git.host().is_local())
+                {
+                    let git = repo.git.clone();
+                    repo.refresh_config(&git);
                 }
             }
         }
@@ -749,30 +786,71 @@ impl AppState {
         }));
     }
 
-    fn open(&mut self, path: PathBuf) {
+    fn open(&mut self, location: Location) {
         self.home.problem = None;
         let Some(git) = self.git() else {
-            self.waiting.push(path);
+            self.waiting.push(location);
             return;
         };
+        let Location { host, path } = location;
+        let there = host.map(|destination| self.options_there(destination));
         let mut job = Bind::new(true);
         job.request(jobs::blocking(move || {
-            Repository::discover(&git, &path).map_err(|error| OpenProblem::from_discovery(&error))
+            // There, git is reached first (logging in, its version checked).
+            let (git, host) = match there {
+                None => (git, None),
+                Some(options) => {
+                    let destination = options.host.ssh().map(|ssh| ssh.destination.clone());
+                    let reached = Git::new(options).map_err(|error| {
+                        OpenProblem::from_problem(Problem::new(
+                            format!(
+                                "{} couldn't be reached",
+                                destination.as_deref().unwrap_or("The other computer")
+                            ),
+                            reach_detail(&error),
+                        ))
+                    })?;
+                    (reached, destination)
+                }
+            };
+            Repository::discover(&git, &path)
+                .map(|repository| (repository, git))
+                .map_err(|error| OpenProblem::from_discovery(&error, host.as_deref()))
         }));
         self.opening.push(Opening { job });
     }
 
-    fn trust(&mut self, path: PathBuf) {
+    /// How git on another computer (`destination`, as ssh reaches it) is run: as git here is,
+    /// through egit's shared connections.
+    fn options_there(&self, destination: String) -> GitOptions {
+        let mut options = self.git_options.clone();
+        options.program = None;
+        options.host = Host::Ssh(SshHost {
+            destination,
+            options: self.ssh.options.clone(),
+            control: self.ssh.control.clone(),
+        });
+        options
+    }
+
+    /// Adds `location` to `safe.directory` (on the computer it is on), then opens it.
+    fn trust(&mut self, location: Location) {
         let Some(git) = self.git() else {
             return;
         };
         self.home.problem = None;
         let writes = self.user_writes.clone();
+        let there = location.host.clone().map(|host| self.options_there(host));
         self.home.trusting.request(jobs::blocking(move || {
             let _queued = writes.hold();
-            trust_directory(&git, &path)
-                .map(|()| path)
-                .map_err(|error| Problem::git("The folder couldn't be trusted", &error))
+            let failed = |error| Problem::git("The folder couldn't be trusted", &error);
+            let git = match there {
+                None => git,
+                Some(options) => Git::new(options).map_err(failed)?,
+            };
+            trust_directory(&git, &location.path)
+                .map(|()| location)
+                .map_err(failed)
         }));
     }
 
@@ -844,7 +922,12 @@ impl eframe::App for EgitApp {
             .state
             .repos
             .iter()
-            .map(|repo| repo.repository.work_tree().into())
+            .map(|repo| {
+                OpenTab::from(&Location {
+                    host: repo.git.host().ssh().map(|ssh| ssh.destination.clone()),
+                    path: repo.repository.work_tree().to_owned(),
+                })
+            })
             .collect();
         self.state.settings.save(storage);
     }
@@ -913,17 +996,22 @@ fn offers(state: &mut AppState, front: Option<Pane>) -> Offers {
                 .push(offer(command, Ok(()), "pull requests"));
         }
     }
-    let open: Vec<PathBuf> = state
+    let open: Vec<Location> = state
         .repos
         .iter()
-        .map(|repo| repo.repository.work_tree().to_path_buf())
+        .map(|repo| Location {
+            host: repo.git.host().ssh().map(|ssh| ssh.destination.clone()),
+            path: repo.repository.work_tree().to_path_buf(),
+        })
         .collect();
     for recent in &state.settings.recent {
-        let path = recent.path.to_path();
-        if !open.contains(&path) {
-            offers
-                .commands
-                .push(offer(Command::OpenRecent(path), Ok(()), "pull requests"));
+        let location = recent.location();
+        if !open.contains(&location) {
+            offers.commands.push(offer(
+                Command::OpenRecent(location),
+                Ok(()),
+                "pull requests",
+            ));
         }
     }
     offers
@@ -958,5 +1046,24 @@ fn sooner(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
+    }
+}
+
+/// What ssh (or git there) said when another computer couldn't be reached.
+fn reach_detail(error: &egit_git::GitError) -> String {
+    match error {
+        egit_git::GitError::Failed(failure) => {
+            let said = failure.stderr.message();
+            if said.is_empty() {
+                "ssh couldn't log in, or git isn't installed there (2.43 or newer is needed)."
+                    .to_owned()
+            } else {
+                said
+            }
+        }
+        egit_git::GitError::UnknownVersion { .. } => {
+            "git there didn't say its version: is it installed (2.43 or newer)?".to_owned()
+        }
+        other => other.to_string(),
     }
 }

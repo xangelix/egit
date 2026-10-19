@@ -38,6 +38,7 @@ mod ignore;
 mod integrate;
 mod lfs;
 mod lines;
+mod looking;
 mod object_id;
 mod objects;
 mod output;
@@ -131,6 +132,7 @@ pub use lfs::{
     lfs_locks, lfs_patterns, lfs_prune, lfs_set_up, lfs_track, lfs_transfer, lfs_untrack,
     lfs_version,
 };
+pub use looking::{Looked, Looking, look_there};
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};

@@ -132,13 +132,15 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
             Pane::Profile => format!("{}  Profile", icon::USER_CIRCLE).into(),
             Pane::Preferences => format!("{}  Preferences", icon::GEAR_SIX).into(),
             Pane::Repo(id) => {
-                let title = self
-                    .state
-                    .repos
-                    .iter()
-                    .find(|repo| repo.id == *id)
-                    .map_or("Repository", |repo| repo.title.as_str());
-                format!("{}  {title}", icon::GIT_BRANCH).into()
+                let repo = self.state.repos.iter().find(|repo| repo.id == *id);
+                let title = repo.map_or("Repository", |repo| repo.title.as_str());
+                // On another computer: a globe, beside its name.
+                let glyph = if repo.is_some_and(|repo| repo.git.host().ssh().is_some()) {
+                    icon::GLOBE
+                } else {
+                    icon::GIT_BRANCH
+                };
+                format!("{glyph}  {title}").into()
             }
         }
     }

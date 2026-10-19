@@ -300,7 +300,7 @@ impl WorkPanel {
         status: &Arc<Status>,
         staging: &mut Bind<(), Problem>,
         commit: CommitSide<'_>,
-        task: bool,
+        (task, here): (bool, bool),
     ) -> Option<WorkEvent> {
         if !self
             .made_from
@@ -335,7 +335,9 @@ impl WorkPanel {
         ] {
             // Each table's scroll area is named by where it is drawn: apart, then.
             let found = ui
-                .push_id(side, |ui| list_ui(ui, list, side, (busy, task), height))
+                .push_id(side, |ui| {
+                    list_ui(ui, list, side, (busy, task, here), height)
+                })
                 .inner;
             if found.is_some() {
                 event = found;
@@ -857,7 +859,7 @@ fn list_ui(
     ui: &mut Ui,
     list: &mut List,
     side: Side,
-    (busy, task): (bool, bool),
+    (busy, task, here): (bool, bool, bool),
     height: f32,
 ) -> Option<WorkEvent> {
     let mut event = None;
@@ -909,13 +911,16 @@ fn list_ui(
     } else {
         table_ui(ui, list, &files, busy, height)
     };
-    let chosen = row_menu(ui, list, side, (busy, task));
+    let chosen = row_menu(ui, list, side, (busy, task, here));
     chosen.or(asked).or(event)
 }
 
+/// Why a file on another computer isn't opened in an app, or shown in a folder.
+pub(super) const ELSEWHERE: &str = "It is on another computer: its apps and folders aren't here";
+
 /// A row's menu, while one is open: moving the file (or a folder's files) across, discarding
 /// it, looking at it, copying its path; and discarding every change not staged.
-fn row_menu(ui: &Ui, list: &mut List, side: Side, busy: (bool, bool)) -> Option<WorkEvent> {
+fn row_menu(ui: &Ui, list: &mut List, side: Side, busy: (bool, bool, bool)) -> Option<WorkEvent> {
     let id = ui.id().with("row-menu");
     let menu = list.menu.as_ref()?;
     let open = std::mem::take(&mut list.open_menu);
@@ -946,7 +951,7 @@ fn row_menu_items(
     ui: &mut Ui,
     menu: &RowMenu,
     side: Side,
-    (busy, task): (bool, bool),
+    (busy, task, here): (bool, bool, bool),
 ) -> Option<WorkEvent> {
     use super::actions::{danger_item, item};
     let files = &menu.files;
@@ -1022,8 +1027,10 @@ fn row_menu_items(
             (icon::FOLDER_OPEN, "Show in folder", Reveal::InFolder),
         ]
     };
+    // Its apps and file manager are this computer's.
+    let revealing = if here { Ok(()) } else { Err(ELSEWHERE) };
     for (glyph, words, how) in reveals {
-        if item(ui, (glyph, words), Ok(())) {
+        if item(ui, (glyph, words), revealing) {
             event = Some(WorkEvent::Reveal(path.clone(), *how));
         }
     }

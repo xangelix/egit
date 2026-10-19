@@ -1461,7 +1461,7 @@ fn side_panel(
             view.tool = None;
             view.show_commit(&history.shown, commit);
         }
-        Some(SidebarEvent::Open(path)) => actions.push(Action::Open(path)),
+        Some(SidebarEvent::Open(path)) => actions.push(Action::OpenBeside(shared.id, path)),
         Some(SidebarEvent::Reveal(path)) => {
             actions.push(Action::Reveal(path, crate::desktop::Reveal::Open));
         }
@@ -1512,6 +1512,11 @@ pub(super) struct Shared<'a> {
 }
 
 impl Shared<'_> {
+    /// Whether the repository is on this computer (its files open in its apps).
+    pub(super) fn here(&self) -> bool {
+        self.git.is_none_or(|git| git.host().is_local())
+    }
+
     /// What the menus need to know.
     pub(super) fn menus<'b>(&'b self, refs: &'b Refs) -> Menus<'b> {
         Menus {
@@ -1835,7 +1840,12 @@ fn repository_menu(
         if actions::item(ui, (icon::HARD_DRIVES, "Git LFS"), Ok(())) {
             page = Some(Page::Lfs);
         }
-        if actions::item(ui, (icon::FOLDER_OPEN, "Open the folder"), Ok(())) {
+        let revealing = if shared.here() {
+            Ok(())
+        } else {
+            Err(super::work::ELSEWHERE)
+        };
+        if actions::item(ui, (icon::FOLDER_OPEN, "Open the folder"), revealing) {
             let work_tree = shared.repository.work_tree().to_owned();
             actions.push(Action::Reveal(work_tree, crate::desktop::Reveal::Open));
         }
@@ -2573,7 +2583,7 @@ fn submodules_event(
     match event {
         SubmodulesEvent::Close => return Some(BlameEvent::Close),
         SubmodulesEvent::Task(task) => actions.push(Action::Task(shared.id, task)),
-        SubmodulesEvent::Open(folder) => actions.push(Action::Open(folder)),
+        SubmodulesEvent::Open(folder) => actions.push(Action::OpenBeside(shared.id, folder)),
         SubmodulesEvent::Record(path) => actions.push(Action::Stage(
             shared.id,
             crate::staging::StageRequest::Files {
@@ -3742,7 +3752,8 @@ fn work_details(
         .id_salt("work-details")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            view.work.show(ui, status, staging, commit, shared.busy)
+            view.work
+                .show(ui, status, staging, commit, (shared.busy, shared.here()))
         })
         .inner;
     match shown {

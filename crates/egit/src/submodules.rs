@@ -40,7 +40,10 @@ pub(crate) async fn read_states(
     repository: Arc<Repository>,
 ) -> Result<Arc<Standing>, Problem> {
     jobs::blocking(move || {
-        if !repository.work_tree().join(".gitmodules").is_file() {
+        if !git
+            .files()
+            .is_file(&repository.work_tree().join(".gitmodules"))
+        {
             return Ok(Arc::default());
         }
         let failed = |error| Problem::git("Where the submodules stand couldn't be read", &error);

@@ -23,6 +23,7 @@ mod people;
 mod picked;
 mod pictures;
 mod polish;
+mod remote;
 mod reveal;
 mod scale;
 mod screens;

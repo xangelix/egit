@@ -14,7 +14,7 @@ use super::clone::{self, CloneView};
 use crate::app::{Action, AppState};
 use crate::format::now;
 use crate::problem::{OpenProblem, Problem};
-use crate::settings::StoredPath;
+use crate::settings::{Location, StoredPath};
 use crate::tables::RecentRows;
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
@@ -27,12 +27,15 @@ const ROW_HEIGHT: f32 = 24.0;
 pub(crate) struct HomeView {
     /// The path typed into the open field.
     pub(crate) path: String,
+    /// Another computer to open a repository on (as ssh reaches it), and the folder there.
+    pub(crate) there_host: String,
+    pub(crate) there_path: String,
     /// Why the last repository couldn't be opened.
     pub(crate) problem: Option<OpenProblem>,
     /// The folder dialog, while it is open.
     pub(crate) picking: Bind<Option<PathBuf>, Problem>,
     /// Trusting a folder another user owns, before opening it.
-    pub(crate) trusting: Bind<PathBuf, Problem>,
+    pub(crate) trusting: Bind<crate::settings::Location, Problem>,
     /// Cloning a repository.
     pub(crate) clone: CloneView,
     recent: RecentTable,
@@ -58,6 +61,8 @@ impl HomeView {
     pub(crate) fn new(clone_folder: Option<PathBuf>, home: Option<&Path>) -> Self {
         Self {
             path: String::new(),
+            there_host: String::new(),
+            there_path: String::new(),
             problem: None,
             picking: Bind::new(true),
             trusting: Bind::new(true),
@@ -162,9 +167,11 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
             let clicked = widgets::secondary(ui, ready && !typed.is_empty(), "Open").clicked();
             if (clicked || submitted) && ready && !typed.is_empty() {
                 let path = expand_home(typed, state.home_dir.as_deref());
-                state.actions.push(Action::Open(path));
+                state.actions.push(Action::Open(Location::here(path)));
             }
         });
+        ui.add_space(6.0);
+        open_there(ui, state, ready);
         if state.home.picking.is_pending() {
             widgets::working(ui, "Waiting for the folder dialog…");
         }
@@ -174,20 +181,59 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
         if let Some(problem) = state.home.problem.clone() {
             ui.add_space(8.0);
             widgets::problem_box(ui, &problem.problem, |ui| {
-                if let Some(path) = &problem.trust
+                if let Some(location) = &problem.trust
                     && widgets::primary(ui, ready, "Trust this folder")
                         .on_hover_text(format!(
                             "Adds {} to git's safe.directory setting",
-                            path.display()
+                            location.path.display()
                         ))
                         .clicked()
                 {
-                    state.actions.push(Action::Trust(path.clone()));
+                    state.actions.push(Action::Trust(location.clone()));
                 }
                 if widgets::secondary(ui, true, "Dismiss").clicked() {
                     state.home.problem = None;
                 }
             });
+        }
+    });
+}
+
+/// Opening a repository on another computer, on one row: which (as ssh reaches it), the
+/// folder there, and Open there.
+fn open_there(ui: &mut Ui, state: &mut AppState, ready: bool) {
+    let mut submitted = false;
+    let home = &mut state.home;
+    ui.horizontal(|ui| {
+        let label = ui.label(muted(ui, "On another computer"));
+        crate::help::note(ui, label.rect, "On another computer");
+        let room = (ui.available_width() - 260.0).max(240.0);
+        ui.add(
+            widgets::line_field(&mut home.there_host)
+                .hint_text("host, user@host, or an ssh alias")
+                .desired_width(room * 0.45),
+        )
+        .labelled_by(label.id);
+        let folder = ui.label(muted(ui, "folder"));
+        crate::help::note(ui, folder.rect, "folder");
+        let field = ui
+            .add(
+                widgets::line_field(&mut home.there_path)
+                    .hint_text("/home/you/project")
+                    .desired_width(room * 0.55),
+            )
+            .labelled_by(folder.id);
+        submitted = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+        let (host, path) = (home.there_host.trim(), home.there_path.trim());
+        let complete = ready && !host.is_empty() && !path.is_empty();
+        let clicked = widgets::secondary(ui, complete, &format!("{}  Open there", icon::GLOBE))
+            .on_hover_text("egit runs git there over one shared SSH connection")
+            .clicked();
+        if (clicked || submitted) && complete {
+            state.actions.push(Action::Open(Location {
+                host: Some(host.to_owned()),
+                path: PathBuf::from(path),
+            }));
         }
     });
 }
@@ -243,16 +289,16 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
             if event.kind == RowEventKind::Activated
                 && let Some(recent) = state.settings.recent.get(event.row_index)
             {
-                state.actions.push(Action::Open(recent.path.to_path()));
+                state.actions.push(Action::Open(recent.location()));
             }
         }
-        let selected: Option<PathBuf> = table
+        let selected: Option<Location> = table
             .state
             .selected_rows
             .min()
             .and_then(|index| usize::try_from(index).ok())
             .and_then(|index| state.settings.recent.get(index))
-            .map(|recent| recent.path.to_path());
+            .map(crate::settings::Recent::location);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             let ready = state.git.is_ok();
@@ -262,9 +308,9 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
                 &format!("{}  Open", icon::FOLDER_OPEN),
             )
             .clicked()
-                && let Some(path) = &selected
+                && let Some(location) = &selected
             {
-                state.actions.push(Action::Open(path.clone()));
+                state.actions.push(Action::Open(location.clone()));
             }
             if widgets::secondary(
                 ui,
@@ -272,9 +318,9 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
                 &format!("{}  Remove from list", icon::X),
             )
             .clicked()
-                && let Some(path) = selected
+                && let Some(location) = selected
             {
-                state.actions.push(Action::Forget(path));
+                state.actions.push(Action::Forget(location));
             }
             ui.label(muted(ui, "Double-click a repository to open it.").small());
         });

@@ -1299,6 +1299,39 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "home-there",
+        group: Group::Egit,
+        title: "A repository on another computer",
+        on: &["Open there", "On another computer", "folder"],
+        what: "Opens a repository on another computer you reach over SSH (a dev box, a \
+               container running sshd): egit runs every git command there and reads what it \
+               reads there; this computer only draws. One connection is shared while egit runs \
+               (OpenSSH's ControlMaster), so logging in (a passphrase, a password, a host's key \
+               to accept) is asked once, through egit's prompts. The computer is named as ssh \
+               takes it: a host, user@host, or an alias from your ~/.ssh/config (its port, user, \
+               key, and jump host apply). Changes made there outside egit are looked for every \
+               two seconds; the work tree's status is read every five.",
+        git: "ssh <computer> /bin/sh, then git there",
+        cases: &[
+            (
+                "What does the other computer need?",
+                "Linux with a POSIX sh, base64, and git 2.43 or newer; for the agents, Node.js 18 or newer and npm.",
+            ),
+            (
+                "git there asks for a password?",
+                "egit can't answer git's own prompts there yet: forward your SSH agent to it (ForwardAgent in ~/.ssh/config), or set up a credential helper there.",
+            ),
+            (
+                "Opening a file in its app, or its folder?",
+                "Not from here: they are on the other computer. Its diffs, files, and pictures show here.",
+            ),
+            (
+                "Slow?",
+                "Each command is a round trip: on a far network, reading many small things takes a while. A jump host (ProxyJump) close to it helps.",
+            ),
+        ],
+    },
+    Topic {
         id: "home-trust",
         group: Group::Egit,
         title: "Trusting a folder",

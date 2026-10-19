@@ -856,8 +856,15 @@ writes paths), never `OsStrExt`.
   - `app.rs` — `EgitApp { tabs, state }`. Views never change `AppState` directly: they push
     `Action`s, applied after the frame (`apply_actions`); `AppState::poll` (each frame's
     start) turns finished jobs into state or actions. Git is detected by a job
-    (`Bind<Git, Problem>`); paths asked for before it is ready wait in `waiting`. The tabs
-    open at the last close (`Settings::open`) come back. Profile edits are `ConfigChange`s
+    (`Bind<Git, Problem>`); repositories asked for before it is ready wait in `waiting`. A
+    repository opens at a `Location` (`settings.rs`: a path here, or a host as ssh reaches it
+    and a path there; `Action::Open`, `OpenBeside` for a worktree's or submodule's on the
+    computer its tab's is on): there, a `Git` on `Host::Ssh` is reached first in the job (as
+    git here is run, `options_there`, through `AppState::ssh`'s shared folder; a failure says
+    ssh's words, `reach_detail`), then discovery; `Action::Opened` carries the git with the
+    repository, kept as `RepoTab::git` (every repository action runs with its tab's git:
+    `with_repo`), and trusting (`safe.directory`) runs there too. The tabs open at the last
+    close (`Settings::open`, `OpenTab`: a path, or a host and a path) come back. Profile edits are `ConfigChange`s
     (set or unset a key, add or remove one of its values) written under the user's
     `WriteLock`, then the user's and every repository's settings are read again. Web pages go
     through `AppState::opener` (`desktop.rs`'s `Opener`: the browser, or for tests a list,
@@ -866,7 +873,8 @@ writes paths), never `OsStrExt`.
     beyond), `blocking` (a closure on the blocking pool as a future for a `Bind`), and
     `WriteLock` (taken inside jobs, never on the interface thread).
   - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Preferences,
-    Repo(id)}`; `show` focuses or adds a tab; `front` (the tab in front), `close_front`,
+    Repo(id)}` (a repository's on another computer titled with it, "repo · devbox", under a
+    globe); `show` focuses or adds a tab; `front` (the tab in front), `close_front`,
     `show_nth` (⌘W, ⌘1 … ⌘9); Home can't be closed; closing a repository's tab pushes `Closed`.
     Tabs underline under the pointer (`widgets::tab_hover`; egui_tiles' don't answer it), and
     their close button is 24 points. The selected tab is the chrome's tone, joining what it
@@ -939,7 +947,9 @@ writes paths), never `OsStrExt`.
     `Objects`: gitoxide's reader where `egit-gix` opens the repository (opened again at each
     walk), else one shared `cat-file` per repository (restarted after a failure), which also
     reads what gix didn't: a partial clone's objects it hasn't (git fetches them), and all
-    once gix failed; `EGIT_GIX=0` leaves every read to git. The walk takes its refs and tips
+    once gix failed; `EGIT_GIX=0` leaves every read to git, and so does a repository on
+    another computer (`Objects::of`, `gix_allowed_for`: gix reads files here; the Stats page
+    and the search alike). The walk takes its refs and tips
     from gix too, and has git walk from them (`walk_history_from`). `Names`: the rows'
     commits' names, a chunk (`Arc<[u8]>`) at a time, shared with jobs as the history goes on.
     `Scope`: only some refs' history (soloed), or every one's but some (`hidden`, sorted:
@@ -1003,14 +1013,18 @@ writes paths), never `OsStrExt`.
     overflowed (a rescan); meanwhile the status bar says outside changes aren't followed.
     `TreeWatcher`: a work tree's folders, each on its own (`Changes::WORK_TREE`); its owner sets
     which (`watch`, from a job: a system call each), and it notes folders created (for the owner
-    to consider) and removed (their watches went with them).
+    to consider) and removed (their watches went with them). For a repository on another computer, `Watcher::elsewhere`: a
+    session there looking every 2 s (`egit_git::look_there`), its words (refs, state, config,
+    index) noted as changes are; the session ending (the connection lost) is a watch failing,
+    tried again with its backoff.
   - `worktree.rs` — `WorkTree`: a repository's `Status`, read at once after egit's own writes
     and when the window regains focus, soon after the repository's watcher (index, `HEAD`,
     operations) or the work tree's; one read at a time, at most one a second while files keep
     changing, every 5 s while the work tree can't be watched. The read's job also sets the
     folders watched: the top, `HEAD`'s (`tree_folders`, cached by commit), those of the
     status's entries, and folders created since (with up to 1,024 inside) that `ignored_paths`
-    doesn't name, so `mkdir -p` then a new file is seen, and `node_modules` costs no watch.
+    doesn't name, so `mkdir -p` then a new file is seen, and `node_modules` costs no watch. On another computer (`here` false) no folder is watched: its status
+    is read every 5 s.
   - `grid.rs` — the text grid: a `GridSource` (a measured `egit_text::Text`, colours, line
     backgrounds, a gutter) drawn as a terminal draws it. Each visible row is one galley of
     sections of one colour and advance, letter-spaced so every glyph takes exactly its cells
@@ -1754,8 +1768,9 @@ writes paths), never `OsStrExt`.
     nobody signed in, Claude Code's own login command for that folder, copied, and "Look
     again". Help: `help/agents.rs`.
   - `views/` — `home` (who commits and the profile's button first, then open by dialog or
-    typed path, the problem and its remedy, recent repositories in egui-table-kit, and
-    cloning), `profile` (identity and signing editable;
+    typed path, or on another computer over SSH (its computer and the folder there, "Open
+    there"), the problem and its remedy, recent repositories in egui-table-kit (another
+    computer's said before their folder), and cloning), `profile` (identity and signing editable;
     credentials, the GitHub Enterprise and self-managed GitLab hosts (added and removed as
     `egit.githubHost` and `egit.gitlabHost`), pull and push, and every setting, each with its
     origin), `repo` (the history, or a page: the overview (with a Hooks card: where git looks for them
@@ -1915,7 +1930,9 @@ writes paths), never `OsStrExt`.
     pointer, as a browser's `:focus-visible`, never around a field (its edge shows it) or an
     area as large as the commit table (its selection shows it)), `format.rs` (`~` paths, "5 minutes ago",
     dates (in the viewer's time zone: `local_zone`, `local_date_time`, `zone_name`), a long
-    command's progress), `settings.rs` (theme, recent repositories, open tabs,
+    command's progress), `settings.rs` (theme, recent repositories (each a path and, on another
+    computer, its host), open tabs (`OpenTab`: a path here, or a host and a path; earlier
+    settings' paths read as here),
     the clone folder; non-UTF-8 paths kept as
     bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
   - `tests/askpass_helper.rs` — the real `egit` executable (`CARGO_BIN_EXE_egit`) started by
@@ -2020,6 +2037,10 @@ writes paths), never `OsStrExt`.
     heading's link opening nothing; a document added and one deleted, each its one side; a
     changelog of 80 sections changed halfway down and further on, opened at the first change
     (in view on both sides, the top out of it), stepped to the next, and back by Alt+↑.
+    `src/tests/remote.rs` opens a repository on "another computer" (this one, through the
+    tests' sshd: `testing::ssh_host`, the sandbox's `options`, `AppState::ssh`) from Home's
+    form, reads its history and work tree there, stages and commits there, and follows a
+    commit made there behind its back (skipped without sshd unless `EGIT_REQUIRE_SSHD`).
     `src/tests/agents.rs` drives the Agents panel against `egit-agents`' stand-in SDK (skipped
     without Node unless `EGIT_REQUIRE_NODE`): shown from the top bar, a prompt sent with Enter
     and its answer streamed, a command allowed for the conversation (its line opened), a
