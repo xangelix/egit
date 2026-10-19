@@ -25,6 +25,7 @@ egit-git = { path = "crates/egit-git" }
 egit-graph = { path = "crates/egit-graph" }
 egit-text = { path = "crates/egit-text" }
 
+base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
 bstr = { version = "1.13.1", default-features = false, features = ["std"] }
 eframe = { version = "0.36.2", default-features = false }
 egui = "0.36.2"

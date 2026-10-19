@@ -360,6 +360,23 @@ pub(crate) fn item_of(
     menu_entry(ui, entry, allowed, (false, Some(topic)), None)
 }
 
+/// A menu's item whose words want more said: `about` on hover (in the danger colour when
+/// `danger`: what it allows can lose work).
+pub(crate) fn described_item(
+    ui: &mut Ui,
+    entry: (&str, &str),
+    allowed: Result<(), &str>,
+    (danger, about): (bool, &str),
+) -> bool {
+    menu_entry(
+        ui,
+        entry,
+        allowed,
+        (danger, None),
+        Some((RichText::new(""), about.to_owned())),
+    )
+}
+
 /// A menu's item with a keyboard shortcut (written as a Mac writes it), shown at its right.
 pub(crate) fn shortcut_item(ui: &mut Ui, (glyph, label): (&str, &str), keys: &'static str) -> bool {
     menu_rows(ui);

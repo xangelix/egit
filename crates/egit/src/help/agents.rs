@@ -93,6 +93,7 @@ pub(super) const TOPICS: &[Topic] = &[
             "An API key",
             "API key",
             "Claude Code's own",
+            "Runs as",
         ],
         what: "A conversation runs as Claude Code's own login here, or as another account chosen \
                under its prompt before it starts. An account is a Claude Code configuration \
@@ -143,36 +144,90 @@ pub(super) const TOPICS: &[Topic] = &[
         group: Group::Agents,
         title: "Asking Claude",
         on: &["Ask Claude", "Send", "Stop"],
-        what: "What you write goes to Claude Code as a prompt (Enter sends it; Shift+Enter starts \
-               a new line); slash commands work as in a terminal. While it works, another \
-               prompt waits its turn; Stop interrupts the turn under way, keeping what was done.",
+        what: "What you write goes to Claude Code as a prompt: Enter sends it, Shift+Enter starts \
+               a new line. While it works, a line under the conversation says for how long, and \
+               another prompt sent meanwhile waits its turn; Stop interrupts the turn under \
+               way, keeping what was done. Each turn ends with how long it took, the tokens it \
+               read and wrote, and what Claude Code estimates it cost.",
+        git: "",
+        cases: &[
+            (
+                "It stopped halfway through an edit?",
+                "Stop takes effect between steps: an edit made stays made. The work tree shows it, to keep or discard.",
+            ),
+            (
+                "Files?",
+                "Name them by their path in the prompt: Claude reads them itself, as it does in a terminal.",
+            ),
+        ],
+    },
+    Topic {
+        id: "agents-attachments",
+        group: Group::Agents,
+        title: "Attaching images",
+        on: &["Attach images…"],
+        what: "Screenshots and other images go to Claude with the prompt: picked with the \
+               paperclip, or dropped on the window while the agents show (patches dropped still \
+               go to the history). PNG, JPEG, GIF, and WebP; each shows as a chip over the \
+               prompt until it is sent, its × taking it off. One too large for the API (5 MB \
+               encoded, or 8,000 pixels a side) is scaled down to 1,568 pixels a side first, \
+               which is all Claude looks at anyway.",
         git: "",
         cases: &[(
-            "It stopped halfway through an edit?",
-            "Stop takes effect between steps: an edit made stays made. The work tree shows it, to keep or discard.",
+            "Pasting an image?",
+            "The clipboard's images can't be read here yet: save it, then drop the file or pick it.",
+        )],
+    },
+    Topic {
+        id: "agents-commands",
+        group: Group::Agents,
+        title: "Slash commands",
+        on: &[],
+        what: "Typing / offers Claude Code's commands as you type their name (its own, your \
+               user's and the project's commands, and skills'): ↑ ↓ pick one, Tab or Enter \
+               completes it, Escape puts the list away. A command runs as in a terminal when \
+               sent, with what you write after it.",
+        git: "",
+        cases: &[(
+            "One is missing?",
+            "Claude Code lists what it found when the conversation started: a command added since shows in a new conversation.",
         )],
     },
     Topic {
         id: "agents-permissions",
         group: Group::Agents,
         title: "Allowing tools",
-        on: &["Allow once", "Allow for this conversation", "Refuse"],
+        on: &[
+            "Allow once",
+            "Allow for this conversation",
+            "Refuse…",
+            "Refuse",
+            "Back",
+        ],
         what: "Before running a command, editing a file, or using another tool its rules don't \
-               allow already, Claude Code asks. Allow once lets this one run; Allow for this \
+               allow already, Claude Code asks, over the prompt: what it would run, the edit as \
+               a diff, the file it would write. Allow once lets this one run; Allow for this \
                conversation adds Claude Code's own rule for it (this command, these edits) for \
-               the rest of the conversation; Refuse tells Claude why not, and it goes on \
-               without.",
+               the rest of the conversation; Refuse… asks why, which Claude reads before going \
+               on without it. Its line in the conversation says it waits for you.",
         git: "",
-        cases: &[(
-            "Allowed for good, everywhere?",
-            "Add rules to your Claude Code settings (permissions in ~/.claude/settings.json, or the project's): egit reads them as the terminal does.",
-        )],
+        cases: &[
+            (
+                "Allowed for good, everywhere?",
+                "Add rules to your Claude Code settings (permissions in ~/.claude/settings.json, or the project's): egit reads them as the terminal does.",
+            ),
+            (
+                "Several waiting?",
+                "One shows at a time, the oldest first, saying how many more wait after it.",
+            ),
+        ],
     },
     Topic {
         id: "agents-modes",
         group: Group::Agents,
         title: "Permission modes",
         on: &[
+            "Permission mode",
             "Ask first",
             "Accept edits",
             "Plan",
@@ -193,7 +248,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "agents-models",
         group: Group::Agents,
         title: "Models",
-        on: &["Default model"],
+        on: &["Default model", "Model"],
         what: "The model Claude Code uses, from those your account offers; changed from the \
                menu, it applies from the next turn.",
         git: "",
@@ -206,12 +261,16 @@ pub(super) const TOPICS: &[Topic] = &[
         on: &[
             "Answer",
             "Don't answer",
-            "Approve the plan",
+            "Approve and accept edits",
+            "Approve",
+            "Keep planning…",
             "Keep planning",
         ],
-        what: "Claude may ask you to choose (one choice, or several, or an answer in your own \
-               words), and in Plan mode shows its plan before changing anything: approve it to \
-               let it start, or say what to change to keep planning.",
+        what: "Claude may ask you to choose (one choice, or several; each described), or to \
+               answer in your own words. In Plan mode it shows its plan before changing \
+               anything: Approve and accept edits lets it start, editing files without asking \
+               (Accept edits); Approve lets it start asking before each edit (Ask first); Keep \
+               planning… asks what should change, and it plans again.",
         git: "",
         cases: &[],
     },
@@ -220,11 +279,23 @@ pub(super) const TOPICS: &[Topic] = &[
         group: Group::Agents,
         title: "What Claude did",
         on: &[],
-        what: "Each tool Claude used is a line: a file read, a search, a command run, an edit. \
-               Opened, it shows what it was given (the command, the edit as the lines it \
-               replaced and those it put there, the plan's steps) and what it gave back; a \
-               subagent's work shows inside its line.",
+        what: "Each tool Claude used is a line: what it did (read, edited, ran, searched), to \
+               what (a path from the work tree, a command), and how it stands: running, \
+               waiting for you, or failed (its first words under it). Opened, it shows what it \
+               was given and gave back: a command and its output, an edit as a diff, a file \
+               written, a plan's steps; a subagent's work shows inside its line, its report \
+               last. A file it read or changed opens from the arrow at its line's right: its \
+               changes beside the history, or, unchanged, the file in its app.",
         git: "",
-        cases: &[],
+        cases: &[
+            (
+                "Copying a command's output?",
+                "Each box has Copy at its top right: it takes all of it, beyond the 200 lines shown.",
+            ),
+            (
+                "Its thinking?",
+                "Shown as a line of its first words; opened, all of it.",
+            ),
+        ],
     },
 ];

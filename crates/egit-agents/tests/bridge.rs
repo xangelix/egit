@@ -20,9 +20,9 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-use egit_agents::protocol::{Answer, Event, Mode, PermissionRequest, Request};
+use egit_agents::protocol::{Answer, Event, Image, Mode, PermissionRequest, Request};
 use egit_agents::sessions::{list_sessions, session_history};
-use egit_agents::{Bridge, ItemKind, Launch, ToolResult, Transcript};
+use egit_agents::{Bridge, ItemKind, Launch, Prompt, ToolResult, Transcript};
 
 /// How to run the bridge against the stand-in, where Node is installed.
 fn launch() -> Option<Launch> {
@@ -88,10 +88,11 @@ impl Conversation {
 
     /// Sends a prompt.
     fn say(&mut self, text: &str) {
-        self.transcript.prompt(text);
+        self.transcript.prompt(Prompt::of(text));
         self.bridge
             .send(&Request::Send {
                 text: text.to_owned(),
+                images: Vec::new(),
             })
             .unwrap();
     }
@@ -264,6 +265,45 @@ fn a_conversation_streams_asks_and_is_interrupted() {
 }
 
 #[test]
+fn what_it_offers_is_said_once_started_and_images_go_with_a_prompt() {
+    let Some(launch) = launch() else {
+        return;
+    };
+    let mut conversation = Conversation::start(&launch, Mode::Default);
+    // Unasked, before any prompt.
+    let info = loop {
+        if let Event::Info(info) = conversation.next() {
+            break info;
+        }
+    };
+    let commands: Vec<&str> = info
+        .commands
+        .iter()
+        .map(|command| command.name.as_str())
+        .collect();
+    assert_eq!(commands, ["review", "compact", "init"]);
+    conversation.transcript.prompt(Prompt {
+        text: "images".to_owned(),
+        attachments: vec!["a.png".to_owned(), "b.jpg".to_owned()],
+    });
+    conversation
+        .bridge
+        .send(&Request::Send {
+            text: "images".to_owned(),
+            images: vec![
+                Image::of("image/png", b"png"),
+                Image::of("image/jpeg", b"jpeg"),
+            ],
+        })
+        .unwrap();
+    conversation.until_turn_ends();
+    assert_eq!(
+        conversation.last_text(),
+        Some("Got 2 images: image/png, image/jpeg")
+    );
+}
+
+#[test]
 fn sessions_are_listed_and_read() {
     let Some(launch) = launch() else {
         return;
@@ -288,7 +328,7 @@ fn sessions_are_listed_and_read() {
     assert_eq!(
         kinds,
         [
-            ItemKind::Prompt("Before".to_owned()),
+            ItemKind::Prompt(Prompt::of("Before")),
             ItemKind::Text("Earlier, in newer".to_owned())
         ]
     );

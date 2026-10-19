@@ -54,7 +54,7 @@ pub struct Item {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ItemKind {
     /// What the user asked.
-    Prompt(String),
+    Prompt(Prompt),
     /// What Claude wrote (Markdown).
     Text(String),
     /// What Claude thought.
@@ -65,6 +65,26 @@ pub enum ItemKind {
     Turn(TurnEnd),
     /// Something to know: a compaction, a retry, a limit, a refusal, a failure.
     Notice(Notice),
+}
+
+/// What the user asked, and what went with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Prompt {
+    /// What they wrote.
+    pub text: String,
+    /// What they attached (images), by name.
+    pub attachments: Vec<String>,
+}
+
+impl Prompt {
+    /// Words alone.
+    #[must_use]
+    pub fn of(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            attachments: Vec::new(),
+        }
+    }
 }
 
 /// A tool call and, once it ran, its result.
@@ -170,9 +190,9 @@ impl Transcript {
     }
 
     /// A prompt the user sent: a turn begins.
-    pub fn prompt(&mut self, text: &str) {
+    pub fn prompt(&mut self, prompt: Prompt) {
         self.live = None;
-        self.push(ItemKind::Prompt(text.to_owned()), None);
+        self.push(ItemKind::Prompt(prompt), None);
         self.busy = true;
     }
 
@@ -280,17 +300,10 @@ impl Transcript {
                 Some("user") => {
                     if let Some(prompt) = content.as_str() {
                         if !is_internal(prompt) {
-                            self.push(ItemKind::Prompt(prompt.to_owned()), parent);
+                            self.push(ItemKind::Prompt(Prompt::of(prompt)), parent);
                         }
                     } else {
-                        for block in blocks(content) {
-                            if text(block, "type") == Some("text")
-                                && let Some(prompt) = text(block, "text")
-                                && !is_internal(prompt)
-                            {
-                                self.push(ItemKind::Prompt(prompt.to_owned()), parent.clone());
-                            }
-                        }
+                        self.past_prompt(content, parent);
                         self.results(content);
                     }
                 }
@@ -298,6 +311,28 @@ impl Transcript {
             }
         }
         self.busy = false;
+    }
+
+    /// A past prompt given as blocks: its text, and its images as attachments.
+    fn past_prompt(&mut self, content: &Value, parent: Option<String>) {
+        let mut prompt = Prompt::default();
+        for block in blocks(content) {
+            match text(block, "type") {
+                Some("text") => {
+                    if let Some(said) = text(block, "text").filter(|said| !is_internal(said)) {
+                        if !prompt.text.is_empty() {
+                            prompt.text.push('\n');
+                        }
+                        prompt.text.push_str(said);
+                    }
+                }
+                Some("image") => prompt.attachments.push("an image".to_owned()),
+                _ => {}
+            }
+        }
+        if !prompt.text.is_empty() || !prompt.attachments.is_empty() {
+            self.push(ItemKind::Prompt(prompt), parent);
+        }
     }
 
     /// A raw stream event (`includePartialMessages`): text and thinking as they come.
@@ -605,7 +640,7 @@ mod tests {
             (transcript.session(), transcript.mode()),
             (Some("s1"), Some(Mode::AcceptEdits))
         );
-        transcript.prompt("List the files");
+        transcript.prompt(Prompt::of("List the files"));
         assert!(transcript.busy());
         let stream = |event: Value| json!({"type": "stream_event", "event": event, "parent_tool_use_id": null});
         transcript.message(&stream(
@@ -642,7 +677,7 @@ mod tests {
 
         let items = kinds(&transcript);
         assert_eq!(items.len(), 4);
-        assert_eq!(items[0], ItemKind::Prompt("List the files".to_owned()));
+        assert_eq!(items[0], ItemKind::Prompt(Prompt::of("List the files")));
         assert_eq!(items[1], ItemKind::Text("Looking now.".to_owned()));
         let ItemKind::Tool(call) = &items[2] else {
             panic!("{items:?}");
@@ -672,7 +707,7 @@ mod tests {
     #[test]
     fn failures_and_limits_are_noticed() {
         let mut transcript = Transcript::default();
-        transcript.prompt("Go");
+        transcript.prompt(Prompt::of("Go"));
         transcript.message(&json!({"type": "rate_limit_event",
             "rate_limit_info": {"status": "allowed"}}));
         transcript.message(&json!({"type": "rate_limit_event",
@@ -717,7 +752,7 @@ mod tests {
         ]);
         let items = transcript.items();
         assert_eq!(items.len(), 4);
-        assert_eq!(items[0].kind, ItemKind::Prompt("Fix the build".to_owned()));
+        assert_eq!(items[0].kind, ItemKind::Prompt(Prompt::of("Fix the build")));
         assert_eq!(items[1].kind, ItemKind::Thinking("Hmm.".to_owned()));
         let ItemKind::Tool(call) = &items[2].kind else {
             panic!("{items:?}");

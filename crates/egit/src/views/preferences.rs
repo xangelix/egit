@@ -59,27 +59,37 @@ fn agents(ui: &mut Ui, state: &mut AppState) {
         );
         ui.add_space(8.0);
         let mut forgotten = None;
-        for (index, account) in state.settings.agent_accounts.iter().enumerate() {
-            let what = match &account.kind {
-                crate::agents::AccountKind::Folder(folder) => format!(
-                    "Claude Code folder {}",
-                    crate::format::display_path(&folder.to_path(), state.home_dir.as_deref())
-                ),
-                crate::agents::AccountKind::ApiKey => "API key".to_owned(),
-            };
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(account.name.as_str()).strong());
-                ui.label(muted(ui, what));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if widgets::secondary(ui, true, "Forget the account")
-                        .on_hover_text("A folder stays where it is; an API key is erased from git's credential helper")
-                        .clicked()
-                    {
-                        forgotten = Some(index);
-                    }
+        let home = state.home_dir.clone();
+        widgets::list_box(ui, |ui| {
+            let own = std::path::Path::new("~/.claude");
+            account_row(
+                ui,
+                &mut state.agents,
+                ("Claude Code's own", SignsIn::Folder(None, own)),
+                None,
+            );
+            for (index, account) in state.settings.agent_accounts.iter().enumerate() {
+                let folder = match &account.kind {
+                    crate::agents::AccountKind::Folder(folder) => Some(folder.to_path()),
+                    crate::agents::AccountKind::ApiKey => None,
+                };
+                let shown = folder
+                    .as_deref()
+                    .map(|folder| crate::format::display_path(folder, home.as_deref()))
+                    .unwrap_or_default();
+                let signs_in = folder.as_deref().map_or(SignsIn::ApiKey, |folder| {
+                    SignsIn::Folder(Some(folder), std::path::Path::new(&shown))
                 });
-            });
-        }
+                if account_row(
+                    ui,
+                    &mut state.agents,
+                    (&account.name, signs_in),
+                    Some(index),
+                ) {
+                    forgotten = Some(index);
+                }
+            }
+        });
         if let Some(index) = forgotten {
             let account = state.settings.agent_accounts.remove(index);
             if account.kind == crate::agents::AccountKind::ApiKey
@@ -95,6 +105,84 @@ fn agents(ui: &mut Ui, state: &mut AppState) {
         ui.add_space(8.0);
         add_account(ui, state);
     });
+}
+
+/// How an account signs in: with a Claude Code folder (`None`: Claude Code's own), shown as
+/// written; or with an API key.
+#[derive(Clone, Copy)]
+enum SignsIn<'a> {
+    Folder(Option<&'a std::path::Path>, &'a std::path::Path),
+    ApiKey,
+}
+
+/// An account's row: its icon and name, what it signs in with and who is signed in there, and
+/// for one added (`index`), Forget the account; returns whether that was clicked.
+fn account_row(
+    ui: &mut Ui,
+    setup: &mut crate::agents::AgentsSetup,
+    (name, signs_in): (&str, SignsIn<'_>),
+    index: Option<usize>,
+) -> bool {
+    let palette = crate::theme::Palette::of(ui.ctx());
+    let mut forget = false;
+    ui.push_id(("agent-account", index), |ui| {
+        egui::Frame::new()
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let glyph = match signs_in {
+                        SignsIn::Folder(..) => crate::theme::icon::FOLDER_SIMPLE,
+                        SignsIn::ApiKey => crate::theme::icon::KEY,
+                    };
+                    ui.label(RichText::new(glyph).color(palette.muted));
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 2.0;
+                        ui.label(RichText::new(name).strong());
+                        let (said, color) = signed_in(setup, signs_in, &palette);
+                        let said = RichText::new(said).size(crate::theme::SMALL).color(color);
+                        ui.add(Label::new(said).wrap());
+                    });
+                    if index.is_some() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            forget = widgets::secondary(ui, true, "Forget the account")
+                                .on_hover_text(
+                                    "A folder stays where it is; an API key is erased from \
+                                     git's credential helper",
+                                )
+                                .clicked();
+                        });
+                    }
+                });
+            });
+    });
+    forget
+}
+
+/// What an account signs in with, and who is signed in there (in the warning colour when
+/// nobody is).
+fn signed_in(
+    setup: &mut crate::agents::AgentsSetup,
+    signs_in: SignsIn<'_>,
+    palette: &crate::theme::Palette,
+) -> (String, egui::Color32) {
+    let SignsIn::Folder(folder, shown) = signs_in else {
+        let said = "An API key, kept by git's credential helper".to_owned();
+        return (said, palette.muted);
+    };
+    let at = shown.display();
+    match setup.who(folder) {
+        Some(Ok(status)) if status.logged_in => {
+            let who = status.email.as_deref().unwrap_or(&status.auth_method);
+            (format!("{at} · signed in as {who}"), palette.muted)
+        }
+        Some(Ok(_)) => (
+            format!("{at} · nobody signed in: sign in with Claude Code, from the agents' panel"),
+            palette.warn,
+        ),
+        Some(Err(problem)) => (format!("{at} · {}", problem.title), palette.muted),
+        None => (at.to_string(), palette.muted),
+    }
 }
 
 /// The form adding an account.

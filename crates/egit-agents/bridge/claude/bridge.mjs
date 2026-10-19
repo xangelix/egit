@@ -5,10 +5,11 @@
 // Run with no arguments it holds one conversation:
 //
 //   in   {"op":"start","cwd":…,"resume":…,"model":…,"mode":…}  once, first
-//        {"op":"send","text":…}                               a prompt
+//        {"op":"send","text":…,"images":[{"mediaType":…,"data":…}]}  a prompt (images base64)
 //        {"op":"answer","request":…,"allow":…,"always":…,"input":…,"message":…,"interrupt":…}
 //        {"op":"interrupt"} {"op":"mode","mode":…} {"op":"model","model":…} {"op":"info"}
 //   out  {"event":"ready"} {"event":"message","message":<an SDK message, as the SDK gives it>}
+//        {"event":"info",…} once started, unasked: who is signed in, the models, the commands
 //        {"event":"permission","request":…,"tool":…,"input":…,"suggestions":…,…}
 //        {"event":"withdrawn","request":…} {"event":"info",…} {"event":"failed","op":…,"message":…}
 //        {"event":"ended","error":…}
@@ -145,15 +146,24 @@ async function converse() {
           },
         });
         ended = pump(query);
+        // What the window offers (the models, the slash commands) and who it runs as, as soon
+        // as Claude Code has started, before anything is sent.
+        info(query).catch((failure) => emit({ event: 'failed', op: 'info', message: said(failure) }));
         break;
       }
-      case 'send':
+      case 'send': {
+        const images = (request.images ?? []).map((image) => ({
+          type: 'image',
+          source: { type: 'base64', media_type: image.mediaType, data: image.data },
+        }));
+        const content = images.length > 0 ? [...images, { type: 'text', text: request.text }] : request.text;
         prompts.push({
           type: 'user',
-          message: { role: 'user', content: request.text },
+          message: { role: 'user', content },
           parent_tool_use_id: null,
         });
         break;
+      }
       case 'answer': {
         const waiting = pending.get(request.request);
         if (!waiting) break;
@@ -183,19 +193,22 @@ async function converse() {
       case 'model':
         await started().setModel(request.model ?? undefined);
         break;
-      case 'info': {
-        const running = started();
-        const [account, models, commands] = await Promise.all([
-          running.accountInfo(),
-          running.supportedModels(),
-          running.supportedCommands(),
-        ]);
-        emit({ event: 'info', account, models, commands });
+      case 'info':
+        await info(started());
         break;
-      }
       default:
         throw new Error(`unknown op ${request.op}`);
     }
+  }
+
+  /** Tells egit who is signed in, and the models and commands there are. */
+  async function info(running) {
+    const [account, models, commands] = await Promise.all([
+      running.accountInfo(),
+      running.supportedModels(),
+      running.supportedCommands(),
+    ]);
+    emit({ event: 'info', account, models, commands });
   }
 
   function started() {

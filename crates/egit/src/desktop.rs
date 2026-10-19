@@ -91,6 +91,8 @@ pub(crate) enum FileQuestion {
     SaveChanges { repo: RepoId, changes: Changes },
     /// Which patches to apply to a repository (files).
     ApplyPatches { repo: RepoId },
+    /// Which images to attach to an agent's prompt in a repository's tab (files).
+    AttachImages { repo: RepoId },
     /// Where commits picked together go: their changes as one patch (`one`: a file), or one
     /// patch each (a folder).
     SavePicked {
@@ -151,6 +153,7 @@ impl FileDialogs {
                     vec![folder.clone()]
                 }
                 FileQuestion::ApplyPatches { .. } => patches_in(folder),
+                FileQuestion::AttachImages { .. } => images_in(folder),
             };
             self.answered = Some((question, answer));
             return;
@@ -163,6 +166,7 @@ impl FileDialogs {
                 Asked::Folder
             }
             FileQuestion::ApplyPatches { .. } => Asked::Patches,
+            FileQuestion::AttachImages { .. } => Asked::Images,
         };
         self.question = Some(question);
         self.asking.request(async move {
@@ -178,6 +182,11 @@ impl FileDialogs {
                 Asked::Patches => dialog
                     .add_filter("Patches", &["patch", "diff", "mbox", "eml"])
                     .add_filter("Any file", &["*"])
+                    .pick_files()
+                    .await
+                    .unwrap_or_default(),
+                Asked::Images => dialog
+                    .add_filter("Images", &["png", "jpg", "jpeg", "gif", "webp"])
                     .pick_files()
                     .await
                     .unwrap_or_default(),
@@ -198,12 +207,13 @@ impl FileDialogs {
     }
 }
 
-/// What a dialog asks for: a file to save, a folder, or patches to open.
+/// What a dialog asks for: a file to save, a folder, or patches or images to open.
 #[derive(Clone, Copy, Debug)]
 enum Asked {
     File,
     Folder,
     Patches,
+    Images,
 }
 
 /// The patches a test's folder holds, by name.
@@ -227,6 +237,28 @@ fn patches_in(folder: &std::path::Path) -> Vec<PathBuf> {
 /// The patches a folder holds: only tests answer from a folder.
 #[cfg(not(test))]
 const fn patches_in(_folder: &std::path::Path) -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// The images a test's folder holds, by name.
+#[cfg(test)]
+fn images_in(folder: &std::path::Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path())
+                .filter(|path| crate::attachments::is_image(path))
+                .collect()
+        })
+        .unwrap_or_default();
+    found.sort();
+    found
+}
+
+/// The images a folder holds: only tests answer from a folder.
+#[cfg(not(test))]
+const fn images_in(_folder: &std::path::Path) -> Vec<PathBuf> {
     Vec::new()
 }
 

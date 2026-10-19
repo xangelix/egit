@@ -18,6 +18,7 @@
 
 mod agents;
 mod app;
+mod attachments;
 mod avatars;
 mod blame;
 mod commands;

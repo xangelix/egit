@@ -74,6 +74,8 @@ pub enum Request {
     Send {
         /// What the user wrote.
         text: String,
+        /// Images that go with it.
+        images: Vec<Image>,
     },
     /// The answer to a [`Event::Permission`].
     Answer(Answer),
@@ -91,6 +93,28 @@ pub enum Request {
     },
     /// Asks for [`Event::Info`].
     Info,
+}
+
+/// An image sent with a prompt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Image {
+    /// Its type (`image/png`, `image/jpeg`, `image/gif`, `image/webp`).
+    pub media_type: String,
+    /// Its bytes, in base64.
+    pub data: String,
+}
+
+impl Image {
+    /// An image of `media_type` from its bytes.
+    #[must_use]
+    pub fn of(media_type: &str, bytes: &[u8]) -> Self {
+        use base64::Engine as _;
+        Self {
+            media_type: media_type.to_owned(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }
+    }
 }
 
 /// Whether a tool may run.
@@ -279,5 +303,9 @@ mod tests {
             Some(Mode::BypassPermissions)
         );
         assert_eq!(Mode::parse("sideways"), None);
+        assert_eq!(
+            serde_json::to_string(&Image::of("image/png", b"png")).unwrap(),
+            r#"{"mediaType":"image/png","data":"cG5n"}"#
+        );
     }
 }

@@ -47,6 +47,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
     // Its agents, at the right, beside whatever it shows; then what its tasks and commits
     // printed, at the bottom, under the rest.
     let around = super::agents::Around {
+        repo: id,
         work_tree: repo.repository.work_tree(),
         git,
         accounts: &settings.agent_accounts,
@@ -552,14 +553,8 @@ fn agents_panel(
         .default_size(super::agents::WIDTH)
         .size_range(super::agents::WIDTHS)
         .frame(
-            egui::Frame::new()
-                .fill(palette.panel)
-                .inner_margin(egui::Margin {
-                    left: 12,
-                    right: 12,
-                    top: 0,
-                    bottom: 8,
-                }),
+            // Its parts keep their own margins: the transcript scrolls to the panel's edges.
+            egui::Frame::new().fill(palette.panel),
         )
         .show(ui, |ui| {
             super::agents::panel(ui, (setup, agents), around, actions);

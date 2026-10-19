@@ -14,9 +14,9 @@ use std::sync::mpsc::Receiver;
 
 use egit_agents::accounts::{AuthStatus, Signer, auth_status};
 use egit_agents::install::{Install, Node, find_node};
-use egit_agents::protocol::{Answer, Event, Info, Mode, PermissionRequest, Request};
+use egit_agents::protocol::{Answer, Event, Image, Info, Mode, PermissionRequest, Request};
 use egit_agents::sessions::{SessionInfo, list_sessions, session_history};
-use egit_agents::{Bridge, Launch, Level, Transcript};
+use egit_agents::{Bridge, Launch, Level, Prompt, Transcript};
 use egit_git::CancelToken;
 use egit_git::{Asking, CredentialPlace, Git, fill_credential, store_credential};
 use egui_async::Bind;
@@ -354,10 +354,11 @@ impl RepoAgents {
     /// lists its past ones.
     pub(crate) fn choose_account(&mut self, account: Option<AgentAccount>) {
         if let Some(conversation) = self.conversations.get_mut(self.current)
-            && !conversation.is_running()
-            && conversation.transcript.session().is_none()
-            && conversation.resume.is_none()
+            && !conversation.has_begun()
+            && conversation.account != account
         {
+            // Started ahead as another: started again as this one.
+            conversation.stop();
             conversation.account.clone_from(&account);
         }
         self.account = account;
@@ -463,11 +464,33 @@ impl RepoAgents {
         self.current = self.current.min(self.conversations.len().saturating_sub(1));
     }
 
-    /// Sends `text` to the conversation shown, starting its bridge first if it isn't running.
-    pub(crate) fn send(&mut self, starter: Option<Starter>, work_tree: &Path, text: &str) {
+    /// Sends `prompt` (and `images`) to the conversation shown, starting its bridge first if it
+    /// isn't running.
+    pub(crate) fn send(
+        &mut self,
+        starter: Option<Starter>,
+        work_tree: &Path,
+        (prompt, images): (Prompt, Vec<Image>),
+    ) {
         let waker = self.waker.clone();
         if let Some(conversation) = self.current() {
-            conversation.send(starter, work_tree, text, waker);
+            conversation.send(starter, work_tree, (prompt, images), waker);
+        }
+    }
+
+    /// Starts the conversation shown ahead of its first prompt, once: what it offers (the
+    /// models, the slash commands) and who it runs as are known before anything is sent, and
+    /// the first answer comes sooner. Starting asks Claude Code nothing of Anthropic.
+    pub(crate) fn warm(&mut self, starter: Option<Starter>, work_tree: &Path) {
+        let waker = self.waker.clone();
+        if let Some(conversation) = self.current()
+            && !conversation.warmed
+            && !conversation.is_running()
+            && !conversation.history.is_pending()
+            && let Some(starter) = starter
+        {
+            conversation.warmed = true;
+            conversation.start(starter, work_tree, waker);
         }
     }
 }
@@ -502,8 +525,12 @@ pub(crate) struct Conversation {
     ready: bool,
     /// Requests made before its bridge was ready, sent once it is, in order.
     queued: Vec<Request>,
-    /// Whether Claude Code's information was asked for.
-    asked_info: bool,
+    /// Whether a prompt was sent: its account is then settled.
+    prompted: bool,
+    /// Whether its bridge was started ahead of its first prompt (once).
+    warmed: bool,
+    /// When the turn under way began.
+    turn_began: Option<std::time::Instant>,
     /// What its view keeps (the draft, what is folded open, heights).
     pub(crate) view: crate::views::agents::ConversationView,
 }
@@ -532,14 +559,34 @@ impl Conversation {
             events: None,
             ready: false,
             queued: Vec::new(),
-            asked_info: false,
+            prompted: false,
+            warmed: false,
+            turn_began: None,
             view: crate::views::agents::ConversationView::default(),
         }
     }
 
-    /// Whether nothing has happened in it yet.
+    /// Whether nothing has happened in it yet (it may have started, ahead of a prompt).
     pub(crate) fn is_blank(&self) -> bool {
-        self.resume.is_none() && self.transcript.items().is_empty() && self.bridge.is_none()
+        !self.prompted && self.resume.is_none() && self.transcript.items().is_empty()
+    }
+
+    /// Whether it has begun: a prompt sent, or an earlier conversation gone on with. Its
+    /// account is settled from then.
+    pub(crate) const fn has_begun(&self) -> bool {
+        self.prompted || self.resume.is_some()
+    }
+
+    /// How long the turn under way has run.
+    pub(crate) fn turn_time(&self) -> Option<std::time::Duration> {
+        self.turn_began
+            .filter(|_| self.transcript.busy())
+            .map(|began| began.elapsed())
+    }
+
+    /// Whether its bridge is starting (and not ready yet).
+    pub(crate) fn is_starting(&mut self) -> bool {
+        self.starting.is_pending() || (self.bridge.is_some() && !self.ready)
     }
 
     /// Whether its bridge is starting or running.
@@ -562,42 +609,56 @@ impl Conversation {
         &mut self,
         starter: Option<Starter>,
         work_tree: &Path,
-        text: &str,
+        (prompt, images): (Prompt, Vec<Image>),
         waker: egui::Context,
     ) {
         if self.title.is_empty() {
-            text.lines()
+            prompt
+                .text
+                .lines()
                 .next()
                 .unwrap_or_default()
                 .clone_into(&mut self.title);
         }
-        self.transcript.prompt(text);
-        self.view.follow();
         let request = Request::Send {
-            text: text.to_owned(),
+            text: prompt.text.clone(),
+            images,
         };
+        self.transcript.prompt(prompt);
+        self.prompted = true;
+        self.turn_began = Some(std::time::Instant::now());
+        self.view.follow();
         if self.is_running() {
             self.deliver(request);
             return;
         }
-        self.queued.push(request);
-        let Some(Starter { mut launch, git }) = starter else {
+        let Some(starter) = starter else {
             self.transcript
                 .notice(Level::Error, "Claude isn't set up on this computer.");
             self.transcript.ended();
             return;
         };
-        let start = Request::Start {
-            cwd: work_tree.to_string_lossy().into_owned(),
-            resume: self
-                .transcript
-                .session()
-                .map(str::to_owned)
-                .or_else(|| self.resume.clone()),
-            model: self.model.clone(),
-            mode: self.mode,
-        };
-        self.queued.insert(0, start);
+        self.start(starter, work_tree, waker);
+        self.queued.push(request);
+    }
+
+    /// Starts its bridge (in a job) as its account, going on with its session if it has one;
+    /// requests wait until it is ready.
+    fn start(&mut self, starter: Starter, work_tree: &Path, waker: egui::Context) {
+        let Starter { mut launch, git } = starter;
+        self.queued.insert(
+            0,
+            Request::Start {
+                cwd: work_tree.to_string_lossy().into_owned(),
+                resume: self
+                    .transcript
+                    .session()
+                    .map(str::to_owned)
+                    .or_else(|| self.resume.clone()),
+                model: self.model.clone(),
+                mode: self.mode,
+            },
+        );
         let account = self.account.clone();
         self.starting.request(jobs::blocking(move || {
             // As its account: a folder's login, or its key from git's helpers.
@@ -610,6 +671,19 @@ impl Conversation {
                 .map_err(|error| Problem::new("Claude couldn't be started", error.to_string()))?;
             Ok(Started { bridge, events })
         }));
+    }
+
+    /// Stops its bridge (started ahead, as another account), forgetting what it said of itself;
+    /// it starts again as it is asked.
+    fn stop(&mut self) {
+        self.starting = Bind::new(true);
+        self.bridge = None;
+        self.events = None;
+        self.ready = false;
+        self.queued.clear();
+        self.waiting.clear();
+        self.info = None;
+        self.warmed = false;
     }
 
     /// Answers a permission request (and stops waiting for it).
@@ -660,6 +734,7 @@ impl Conversation {
 
     /// Takes in what its jobs and bridge said.
     fn poll(&mut self) {
+        self.view.poll();
         // Each job's result taken as it lands (not `just_completed`, whose frame every window
         // in a process shares, so another's frame can pass between landing and asking).
         match self.history.take() {
@@ -716,12 +791,7 @@ impl Conversation {
                 }
             }
             Event::Message { message } => {
-                let first = self.transcript.session().is_none();
                 self.transcript.message(&message);
-                if first && self.transcript.session().is_some() && !self.asked_info {
-                    self.asked_info = true;
-                    self.write(&Request::Info);
-                }
             }
             Event::Permission(asked) => self.waiting.push(asked),
             Event::Withdrawn { request } => {

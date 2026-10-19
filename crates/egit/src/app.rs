@@ -189,6 +189,9 @@ pub(crate) enum Action {
     OpenPatches(RepoId, Vec<PathBuf>),
     /// Show or hide a repository's agents.
     ToggleAgents(RepoId),
+    /// Show a file of a repository's work tree (an agent read or changed it): its changes, or,
+    /// when it has none, the file in its app.
+    ShowWorkFile(RepoId, PathBuf),
 }
 
 impl EgitApp {
@@ -433,6 +436,19 @@ impl EgitApp {
                     repo.agents.shown = !repo.agents.shown;
                 }
             }
+            Action::ShowWorkFile(id, path) => {
+                if let Some(repo) = state.repo_mut(id) {
+                    match path.strip_prefix(repo.repository.work_tree()) {
+                        Ok(relative) => {
+                            repo.panel = RepoPanel::History;
+                            repo.history_view
+                                .show_work_file(egit_git::git_path(relative));
+                        }
+                        // Outside the work tree: its app.
+                        Err(_) => state.opener.reveal(path, crate::desktop::Reveal::Open),
+                    }
+                }
+            }
             Action::OpenPatches(id, files) => {
                 if let Some(repo) = state.repo_mut(id) {
                     repo.history_view.show_patches(files);
@@ -623,6 +639,13 @@ impl AppState {
             FileQuestion::ApplyPatches { repo } => {
                 chosen.dedup();
                 self.actions.push(Action::OpenPatches(repo, chosen));
+            }
+            FileQuestion::AttachImages { repo } => {
+                if let Some(conversation) =
+                    self.repo_mut(repo).and_then(|repo| repo.agents.current())
+                {
+                    conversation.view.attach(chosen);
+                }
             }
             FileQuestion::SavePicked { repo, commits, one } => self.actions.push(Action::Task(
                 repo,

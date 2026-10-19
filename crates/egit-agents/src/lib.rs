@@ -17,7 +17,9 @@ pub mod sessions;
 mod transcript;
 
 pub use bridge::{Bridge, Launch, run_once};
-pub use transcript::{Item, ItemKind, Level, Notice, ToolCall, ToolResult, Transcript, TurnEnd};
+pub use transcript::{
+    Item, ItemKind, Level, Notice, Prompt, ToolCall, ToolResult, Transcript, TurnEnd,
+};
 
 /// What can go wrong with an agent.
 #[derive(Debug, thiserror::Error)]

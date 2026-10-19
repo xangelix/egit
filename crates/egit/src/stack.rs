@@ -6,6 +6,7 @@
 //! that grow or shrink keep the view where it is; at the bottom it follows what is added, as a
 //! terminal does.
 
+use std::ops::Add as _;
 use std::time::{Duration, Instant};
 
 use egui::{Id, Rect, ScrollArea, Ui, UiBuilder, pos2, vec2};
@@ -38,14 +39,15 @@ impl Stack {
         self.to_end = true;
     }
 
-    /// Draws the `entries` in view, each by `draw` (its index), `gap` apart, in a scroll area
+    /// Draws the `entries` in view, each by `draw` (its index), `gap` apart and `margin` in
+    /// from the scrolled content's edges (its sides, and its top and bottom), in a scroll area
     /// of its own (`id`).
     pub(crate) fn show(
         &mut self,
         ui: &mut Ui,
         id: Id,
         entries: &[Entry],
-        gap: f32,
+        (gap, margin): (f32, egui::Vec2),
         mut draw: impl FnMut(&mut Ui, usize),
     ) {
         self.heights.truncate(entries.len());
@@ -58,13 +60,14 @@ impl Stack {
             .stick_to_bottom(true);
         if std::mem::take(&mut self.to_end) {
             // As far as it goes: the area keeps the offset within its content.
-            self.scroll_to = Some(self.heights.iter().map(|(height, _)| height).sum());
+            let total: f32 = self.heights.iter().map(|(height, _)| height).sum();
+            self.scroll_to = Some(2.0f32.mul_add(margin.y, total));
         }
         if let Some(offset) = self.scroll_to.take() {
             area = area.vertical_scroll_offset(offset);
         }
         let shown = area.show_viewport(ui, |ui, viewport| {
-            let width = ui.available_width();
+            let width = 2.0f32.mul_add(-margin.x, ui.available_width()).max(0.0);
             if (self.width - width).abs() > 0.5 {
                 // Measured at another width: guesses now, until drawn again.
                 for (_, measured) in &mut self.heights {
@@ -73,12 +76,14 @@ impl Stack {
                 self.width = width;
             }
             let total: f32 = self.heights.iter().map(|(height, _)| height).sum();
-            ui.set_height(total);
+            ui.set_height(2.0f32.mul_add(margin.y, total));
             let place = Place {
-                origin: ui.min_rect().min,
+                origin: ui.min_rect().min.add(margin),
                 width,
                 gap,
             };
+            // The viewport in the items' terms: from their first's top.
+            let viewport = viewport.translate(vec2(0.0, -margin.y));
             let (grew, above) = self.draw_in_view(ui, (entries, viewport, place), &mut draw);
             grew + self.measure_stale(ui, (entries, above, place), &mut draw)
         });

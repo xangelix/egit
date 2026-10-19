@@ -344,6 +344,52 @@ impl Syntax {
     }
 }
 
+/// The most a snippet coloured whole may be ([`highlight_snippet`]), in bytes.
+const SNIPPET_LIMIT: usize = 64 << 10;
+
+/// A snippet's lines coloured in `language` (a fence's word: `rust`, `py`, `sh`; a name or an
+/// extension), each line's spans where they differ from `default`; `None` for a language
+/// unknown or a snippet too long. Small texts only (an agent's code block): parsed whole, at
+/// once.
+pub(crate) fn highlight_snippet(
+    language: &str,
+    code: &str,
+    dark: bool,
+    default: Color32,
+) -> Option<Vec<Vec<Span>>> {
+    if code.len() > SNIPPET_LIMIT || language.is_empty() {
+        return None;
+    }
+    let grammar = SYNTAXES
+        .find_syntax_by_token(language)
+        .filter(|grammar| grammar.name != "Plain Text")?;
+    let theme = theme(dark);
+    let [dark_highlighter, light_highlighter] = &*HIGHLIGHTERS;
+    let highlighter = if dark {
+        dark_highlighter
+    } else {
+        light_highlighter
+    };
+    let mut stream = Stream::new(grammar);
+    let mut buffer = String::new();
+    let mut lines = Vec::new();
+    for line in code.lines() {
+        if line.len() > MAX_LINE {
+            lines.push(Vec::new());
+            continue;
+        }
+        buffer.clear();
+        buffer.push_str(line);
+        buffer.push('\n');
+        let spans = stream
+            .feed(grammar, &buffer)
+            .map(|(ops, scopes)| colored(highlighter, theme, scopes, &ops, &buffer, default))
+            .unwrap_or_default();
+        lines.push(spans);
+    }
+    Some(lines)
+}
+
 /// The theme for the dark or the light look.
 fn theme(dark: bool) -> &'static Theme {
     let name = if dark {
@@ -457,6 +503,19 @@ mod tests {
     /// The byte ranges of `spans`.
     fn ranges(spans: &[Span]) -> Vec<Range<u32>> {
         spans.iter().map(|span| span.bytes.clone()).collect()
+    }
+
+    #[test]
+    fn snippets_are_coloured_by_their_fence_word() {
+        let default = Color32::WHITE;
+        let lines =
+            highlight_snippet("rust", "fn main() {\n    let x = 1;\n}", true, default).unwrap();
+        assert_eq!(lines.len(), 3);
+        // `fn` and `let` coloured apart from the default.
+        assert!(lines[0].iter().any(|span| span.color != default));
+        assert!(lines[1].iter().any(|span| span.color != default));
+        assert!(highlight_snippet("not-a-language", "x", true, default).is_none());
+        assert!(highlight_snippet("", "x", true, default).is_none());
     }
 
     #[test]

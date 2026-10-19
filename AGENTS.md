@@ -39,7 +39,7 @@ it.
 | 25 | The work in progress, people, trees, pictures, LFS, submodules, and Help | done; awaiting the owner's review |
 | 26 | Follow-ups: columns, long text, dates, Help for every word, signing commits picked together | done; awaiting the owner's review |
 | 27 | People's pictures, and hooks' output | done; awaiting the owner's review |
-| 28 | Agents (Claude), on this computer | under way: the panel, conversations, approvals, resume |
+| 28 | Agents (Claude), on this computer | done (a second UI pass, files, commands, images, code); awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -698,16 +698,19 @@ writes paths), never `OsStrExt`.
   - `bridge/claude/` — `bridge.mjs` (plain JavaScript: the SDK's `query` with streaming input,
     Claude Code's own system prompt (`claude_code` preset, recorded), the user's, project's, and
     local settings, partial messages; `canUseTool` turned into permission events answered by
-    egit; interrupt, mode, model, info; `sessions` and `history` run once;
+    egit; a prompt's images as base64 blocks before its text; interrupt, mode, model, info
+    (said once started, unasked: who is signed in, the models, the slash commands; Claude Code
+    asks nothing of Anthropic until a prompt); `sessions` and `history` run once;
     `EGIT_CLAUDE_SDK` names a stand-in SDK for tests), `package.json`, and `package-lock.json`
     (the SDK pinned, `--legacy-peer-deps`: only Anthropic's packages, each with its integrity).
-  - `protocol.rs` — JSON lines: `Request` (start, send, answer, interrupt, mode, model, info),
-    `Event` (ready, message (an SDK message as it is), permission, withdrawn, info, failed,
-    ended); `Mode` (Claude Code's permission modes and their names), `Answer` (allow, always:
+  - `protocol.rs` — JSON lines: `Request` (start, send (its `Image`s: a media type and base64,
+    `Image::of`), answer, interrupt, mode, model, info), `Event` (ready, message (an SDK
+    message as it is), permission, withdrawn, info, failed, ended); `Mode` (Claude Code's permission modes and their names), `Answer` (allow, always:
     the suggestions sent back as rules; input replaced: a question's answers; refusal's
     message, interrupt), `PermissionRequest`, `Info` (account, models, commands).
   - `transcript.rs` — `Transcript`: the SDK's messages (live, or `history`'s) read into `Item`s
-    (prompt, text, thinking, tool call with its result, a turn's end with its cost, tokens,
+    (prompt (`Prompt`: its text and the names of the images attached; a past one's image blocks
+    as "an image"), text, thinking, tool call with its result, a turn's end with its cost, tokens,
     and error, notices: compaction, retries, limits, refusals); streamed text and thinking
     written into a live item made whole by its message; subagents' items under their call
     (`parent`); each item's `changed` against `version`, so views measure again only what
@@ -729,7 +732,8 @@ writes paths), never `OsStrExt`.
   - `sessions.rs` — `list_sessions` (newest first, with branch and title), `session_history`.
   - `tests/bridge.rs` drives the real bridge under Node against `tests/stand-in/sdk.mjs`
     (streaming, allowed once and always, refused, a question answered, interrupted, mode and
-    model, info; sessions listed and read; skipped without Node unless `EGIT_REQUIRE_NODE`,
+    model, info, said too once started; images sent with a prompt; sessions listed and read;
+    skipped without Node unless `EGIT_REQUIRE_NODE`,
     which CI sets). `tests/install.rs` (ignored: `-- --ignored`) runs the real `npm ci` and
     loads the real SDK (an empty folder's sessions, its login status).
 - `crates/egit-gix` — egit's reads through gitoxide (`gix` 0.89 without default features:
@@ -1014,7 +1018,8 @@ writes paths), never `OsStrExt`.
     the latest 4,096 lines' colours are kept. A diff's lines feed an old and a new parser as
     their `Feed` says (context both; a hunk header starts both over). Lines over 4 KiB, and
     lines that aren't UTF-8, are left plain. Dark: `base16-ocean.dark`; light:
-    `InspiredGitHub`.
+    `InspiredGitHub`. `highlight_snippet`: a short text (an agent's code, 64 KiB at most)
+    coloured whole in the language its fence word or extension names, in a job.
   - `repo.rs`'s `RepoTab::commit` (`Action::Commit`) runs `create_commit` under the
     `WriteLock`; the watcher brings the history and `HEAD` along after.
   - `staging.rs` — `StageRequest`s as jobs under the repository's `WriteLock`: whole files
@@ -1198,9 +1203,10 @@ writes paths), never `OsStrExt`.
     `FileDialogs`: the desktop's file dialogs (`rfd`, one at a time) for a `FileQuestion`:
     where a patch or the changes go (a file), where a series goes (a folder), where commits
     picked go (`SavePicked`: a file for one patch, a folder for one each), which patches to
-    apply (files, patches first); for tests a folder answering them all (`in_folder`).
-    `Action::AskFiles` asks, and `AppState::poll` turns the answer into a task, or shows the
-    patches (`Action::OpenPatches`).
+    apply (files, patches first), which images to attach to an agent's prompt
+    (`AttachImages`); for tests a folder answering them all (`in_folder`). `Action::AskFiles`
+    asks, and `AppState::poll` turns the answer into a task, shows the patches
+    (`Action::OpenPatches`), or attaches the images to the tab's conversation shown.
   - `avatars.rs` — people's pictures (`Preferences::pictures`, on by default): `install` (the
     real application only: tests fetch nothing) starts two worker threads taking the newest
     request first (the rows on screen; past 128 waiting, the oldest dropped), each picture read
@@ -1274,7 +1280,8 @@ writes paths), never `OsStrExt`.
     selection and the top row's commit in place when a re-read takes over. The table's
     column titles are small and muted, and so is all but the subject (author, date, commit),
     which leads its row; the author's column shows the author's avatar and the co-authors'
-    (`authors_cell`), and their names ("Ada and Alan", "Ada and 3 others"). Details: the subject as the panel's title, the description in a box
+    (`authors_cell`), and their names ("Ada and Alan", "Ada and 3 others"). Details (never so wide the commit table keeps under
+    360 points, `CENTRAL_LEAST`, where the window has room): the subject as the panel's title, the description in a box
     of its own (`widgets::text_box`), then facts: names,
     parents (buttons: egui announces links as plain text), each person (their avatar, the
     name, leading, the email beneath, muted) and their date as a fact of its own, the
@@ -1297,7 +1304,9 @@ writes paths), never `OsStrExt`.
     (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
     clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or
     "History" goes back; its bar: back, how the file changed and its path, at the right Open
-    file and Show in folder (the work tree's file, as it is now), Blame, and File history;
+    file and Show in folder (the work tree's file, as it is now), Blame, and File history
+    (their icons alone where the bar is narrow, on a row of their own, wrapping, narrower
+    still: panels open beside it);
     then Diff or File (or for Markdown Preview: before and after rendered side by side, the
     blocks that changed marked, under a bar stepping through them ("Change 2 of 5", Previous
     change and Next change, Alt+↑ Alt+↓; or "Nothing changed in how it reads"), or the side
@@ -1648,28 +1657,60 @@ writes paths), never `OsStrExt`.
     problem said so)), and every keyboard shortcut;
     each change pushes `Action::SetPreferences`, in effect at once (each tab's fetch interval
     and sidebar too) and kept.
-  - `views/agents.rs` — the Agents panel at a repository tab's right (`views/repo.rs`'s
+  - `views/agents/` — the Agents panel at a repository tab's right (`views/repo.rs`'s
     `agents_panel`, drawn first: beside everything, the output under the rest; shown and
-    hidden by the top bar's Agents, `Action::ToggleAgents`, so hidden it takes no room): its head (the title; the conversations' menu, named by the one
-    shown: New conversation, those open (Close the conversation), Earlier ones with their age;
-    Hide the agents); until Claude is set up, what agents are and the setup (Node looked for,
-    "Look again" and nodejs.org; "Set up Claude": the SDK's version and size, its progress and
-    Cancel, a failure's words); then the conversation (a `Stack`: prompts in a box, Claude's
-    words as Markdown (streamed), thinking and each tool call a line folding open
-    (`tool_details`: a command, an edit as its old lines over its new, a file written, a
-    plan's steps ticked, other input as JSON; the result, 200 lines at most; a subagent's
-    items under its call, shown while it is open), each turn's time, tokens, and estimated
-    cost, notices in their colours); at the bottom what waits (the oldest permission request:
-    what the tool would do, why Claude Code asks, "Allow once", "Allow for this conversation"
-    (its suggestions as rules), "Refuse" with a reason Claude reads; Claude's questions as
-    choices (several, or one's own words) answered by the input given back; a plan to approve
-    or keep planning), the prompt ("Ask Claude": Enter sends, Shift+Enter a new line; queued
-    while a turn runs), the mode's and the model's menus, Send or (while a turn runs) Stop,
-    and who it runs as with what it cost: the account's menu (Claude Code's own, then the
-    others, chosen before a conversation starts; `tool_menu_of`), who is signed in to its
-    folder (`AgentsSetup::who`), an API key said so, and, nobody signed in, Claude Code's own
-    login command for that folder to run in a terminal, copied, and "Look again". Help:
-    `help/agents.rs`.
+    hidden by the top bar's Agents, `Action::ToggleAgents`, so hidden it takes no room; its
+    parts keep their own margins). `mod.rs`: the head on the window's head band, a hairline
+    under it (the title; the conversations' menu, named by the one shown, its words cut to
+    the room left (`fitted`): New conversation, those open (Close the conversation), Earlier
+    ones with their age; a new conversation's +; Hide the agents); `ConversationView` (the
+    draft and the images attached, read in a job (`attach`); the stack, what is open, the
+    rows made, Markdown's and code's caches, an answer being made, the slash commands
+    offered); images dropped on the window attached while it shows; the conversation shown
+    started ahead of its first prompt (`RepoAgents::warm`). `setup.rs`: until Claude is set
+    up, a card of steps, each done, under way, to do now (its button) or later, or failed:
+    Node.js and npm (Look again, nodejs.org), the SDK and Claude Code (its version and size;
+    Set up Claude, its time and Cancel, a failure's words), signing in. `transcript.rs`: the
+    conversation on the reading background (a `Stack`, its margins inside what scrolls), its
+    `Rows` made again only when the transcript, a fold, or whether Claude works changes: each
+    top-level item, an open call's subagent items stepped in under it (a guide down each step)
+    and its report last (`Row::Report`), and while a turn runs a working row (its seconds;
+    starting; "Waiting for your answer, below"); prompts in a box (their images' names), Claude's
+    words as Markdown, thinking a line of its first words opening onto all of it, each turn's
+    end (time, tokens, estimated cost, a hairline after), notices (a warning's or failure's on
+    a tint); before the first prompt, what Claude does here and tips. `tools.rs`: a tool's
+    line (`line`: caret, icon, verb, detail cut as suits it, a path losing its start
+    (`tables::elided_start`), a note (an edit's "+2 −1", a plan's "1 of 3 done", an agent's
+    kind, an MCP tool's server) and how it stands (running, "Waiting for you", "Failed");
+    clickable only where something opens; a file it read or changed shown from the arrow at
+    its right, `Action::ShowWorkFile`), opening to what suits it (`details`: a command's
+    description, the command when cut on its line, its output; an edit as a diff, several, or a
+    file written whole; a read's contents; a fetch's answer as Markdown; a subagent's
+    instructions; a question's words and answer; a plan as Markdown; other input as JSON),
+    a failure's first line while folded, a plan's steps always (done struck through, the one
+    under way in its own words). `code.rs`: boxes of code (a header saying what they hold, Copy
+    saying it copied; the panel's tone, or the danger's for what failed; at most 200 lines,
+    how many more said; selectable labels, so read and copied as text), an edit's diff (its
+    lines from `egit_text::kept`, removed then added around those kept, `−`/`+` on their
+    colours across the box), coloured by `syntax::highlight_snippet` in jobs (`Highlights`:
+    plain until they land, the latest 256 kept), and Markdown split at its top-level code
+    blocks (`parts`, pulldown-cmark's offsets; one still streaming runs to the end, coloured
+    once it has). `waiting.rs`: the oldest request over the prompt (how many more): a tool's
+    permission in its own terms ("Claude wants to edit src/parser.rs", the command, the diff,
+    the file's content), why Claude Code asks, "Allow once", "Allow for this conversation" (its
+    suggestions as rules), "Refuse…" (asking why: Enter or Refuse, Back); Claude's questions
+    (choices described under their words, several where it takes several, one's own words;
+    Answer, Don't answer); a plan ("Approve and accept edits", "Approve": the mode set first,
+    then the answer; "Keep planning…" asking what to change). `composer.rs`: the images (chips:
+    a thumbnail, name, size, scaled said; × takes one off; a problem box), the slash commands
+    offered while the draft is a `/` and a word (those starting with it, then holding it, eight
+    at most; ↑ ↓, Tab or Enter completes, Escape dismisses, a click), "Ask Claude" and what
+    Enter does as fits, the prompt (Enter sends, Shift+Enter a new line; queued while a turn
+    runs), attaching images (`FileQuestion::AttachImages`), the mode's menu (each mode's words
+    on hover) and the model's, compact under 420 points, Send or Stop; who it runs as (the
+    account's menu, chosen before it begins), who is signed in or an API key, what it has cost;
+    nobody signed in, Claude Code's own login command for that folder, copied, and "Look
+    again". Help: `help/agents.rs`.
   - `views/` — `home` (who commits and the profile's button first, then open by dialog or
     typed path, the problem and its remedy, recent repositories in egui-table-kit, and
     cloning), `profile` (identity and signing editable;
@@ -1707,20 +1748,30 @@ writes paths), never `OsStrExt`.
     (kept in the settings, `agent_accounts`): a name and its `AccountKind`, a `Folder` of its
     own or an `ApiKey` that git's helpers keep for `https://api.anthropic.com` with the name as
     user (never in the settings); its signer filled in the conversation's start job
-    (`Starter`: the bridge as Claude Code's own runs it, and git). `RepoAgents`, a tab's (`RepoTab::agents`): shown or not, its
-    `Conversation`s and the one shown, the account new ones run as (`choose_account`: the one
-    shown too, before it starts; earlier ones listed and read from its folder), the earlier ones Claude Code keeps for the work tree
-    (`past`, read when the menu opens), `begin`, `resume` (its messages read in a job into the
-    transcript; the bridge starts with the next prompt, `resume` set), `close`, `send`. A
-    `Conversation`: its transcript, permission requests waiting, `Info`, mode (as asked, or as
-    Claude Code last said it changed) and model; its bridge started in a job with its first
-    prompt, requests queued until it says it is ready (`deliver`), its events taken in each
-    frame (`poll`), `Info` asked once the session is known; ended, a later prompt starts it
+    (`Starter`: the bridge as Claude Code's own runs it, and git). `RepoAgents`, a tab's
+    (`RepoTab::agents`): shown or not, its `Conversation`s and the one shown, the account new
+    ones run as (`choose_account`: the one shown too, before it begins, its bridge started
+    ahead stopped to start again as it; earlier ones listed and read from its folder), the
+    earlier ones Claude Code keeps for the work tree (`past`, read when the menu opens),
+    `begin`, `resume` (its messages read in a job into the transcript; `resume` set), `close`,
+    `warm` (the one shown started ahead of its first prompt, once: its `Info` said unasked),
+    `send` (a `Prompt` and its images). A `Conversation`: its transcript, permission requests
+    waiting, `Info`, mode (as asked, or as Claude Code last said it changed) and model;
+    `has_begun` (a prompt sent, or resumed: its account settled), `turn_time`; its bridge
+    started in a job (`start`), requests queued until it says it is ready (`deliver`), its
+    events taken in each frame (`poll`, its view's images too); ended, a later prompt starts it
     again going on with its session.
+  - `attachments.rs` — images attached to a prompt: `read` (a job: each file 32 MiB at most,
+    PNG, JPEG, GIF, or WebP by its bytes, decoded within bounds; one the API wouldn't take, over
+    5 MiB as base64 or 8,000 pixels a side, scaled to 1,568 a side and sent as a PNG, else a
+    JPEG; a thumbnail of 64 pixels a side), `Attachment` (its name, the `Image` sent, its size
+    as sent, whether scaled, the thumbnail until its texture is made), `is_image` (dropped
+    files, by extension), `MOST` (20 a prompt).
   - `stack.rs` — `Stack`: a tall list of items of different heights in a scroll area of its
-    own, drawn only where in view (each `Entry`'s version and a guess), measured when drawn
-    or, out of view and never measured or changed since, a little each frame (2 ms) unseen;
-    those above the view growing keep it where it is; at the end it follows what is added.
+    own, drawn only where in view (each `Entry`'s version and a guess), `margin` in from what
+    scrolls (its sides, top, and bottom), measured when drawn or, out of view and never
+    measured or changed since, a little each frame (2 ms) unseen; those above the view growing
+    keep it where it is; at the end it follows what is added.
   - `markdown.rs` — Markdown previewed (`is_markdown`: `.md`, `.markdown`, …):
     `read_documents` reads a change's sides as `pictures.rs` does (1 MiB at most), each a
     `Document`: its text `prepared` (an image a link to it, as nothing is fetched; a task's box
@@ -1932,7 +1983,11 @@ writes paths), never `OsStrExt`.
     and its answer streamed, a command allowed for the conversation (its line opened), a
     question answered, the mode changed, an earlier conversation gone on with; then two
     accounts added in Preferences (a folder, and an API key a sandbox's `store` helper keeps)
-    and a conversation run as each (the stand-in says the key, or the folder, it was given).
+    and a conversation run as each (the stand-in says the key, or the folder, it was given);
+    every state drawn in both themes (setup, empty, a long turn with every kind of line, an
+    edit, a plan, a question, at work, the panel at its narrowest); a slash command completed
+    by Tab, an image attached from the paperclip and sent (the stand-in says its type), and a
+    file Claude read opened from its line (unchanged: in its app; changed: its diff).
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,

@@ -10,11 +10,11 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bstr::{BStr, ByteSlice as _};
+use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
     Bisection, CancelToken, Changes, Committed, ConfigSnapshot, FileChange, Git, Head, LfsTransfer,
     MailboxProgress, ObjectId, Operation, RefKind, Reference, Repository, SignatureCheck, Stash,
-    Status, Verdict, looks_like_patch,
+    Status, Uncommitted, Verdict, looks_like_patch,
 };
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
@@ -194,6 +194,8 @@ pub(crate) struct HistoryView {
     peek: Option<ObjectId>,
     /// Commands asked from the keyboard or the palette, carried out next frame.
     queued: Vec<RepoCommand>,
+    /// A work tree's file asked for (an agent read or changed it), shown next frame.
+    wanted_file: Option<BString>,
     /// What the top bar measured last frame.
     bar: BarRoom,
     /// The selected commit's message being edited in the details, to reword it.
@@ -409,6 +411,7 @@ impl HistoryView {
             sidebar: Sidebar::default(),
             peek: None,
             queued: Vec::new(),
+            wanted_file: None,
             bar: BarRoom::default(),
             message_edit: None,
             keep_row: false,
@@ -425,6 +428,12 @@ impl HistoryView {
     /// Asks it to carry `command` out (next frame, with everything its own buttons have).
     pub(crate) fn queue(&mut self, command: RepoCommand) {
         self.queued.push(command);
+    }
+
+    /// Asks it to show the work tree's file `path` (next frame): its changes, or the file in
+    /// its app when it has none.
+    pub(crate) fn show_work_file(&mut self, path: BString) {
+        self.wanted_file = Some(path);
     }
 
     /// The commit the details show in place of the selected one's: the reflog's selected
@@ -885,7 +894,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
     if history.shown.rows() == 0 && !history.shown.is_loading() {
         view.work_selected = true;
     }
-    dropped_patches(ui, id, view);
+    dropped_patches(ui, (id, shared.agents_shown), view);
 
     let mut pane = TaskPane {
         id,
@@ -985,6 +994,29 @@ struct Sides<'a> {
 /// Carries out the commands asked from the keyboard or the palette, as the buttons and menus
 /// doing the same would (the palette checked they can run).
 fn queued_commands(shared: &Shared<'_>, view: &mut HistoryView, pane: &mut TaskPane<'_>) {
+    if let Some(path) = view.wanted_file.take() {
+        // Its changes not staged first, then a new file's, then those staged.
+        let found = shared.work_status.and_then(|status| {
+            [
+                Uncommitted::Unstaged,
+                Uncommitted::Untracked,
+                Uncommitted::Staged,
+            ]
+            .into_iter()
+            .find_map(|which| WorkFile::find(status, path.as_ref(), which))
+        });
+        match found {
+            Some(work) => {
+                view.tool = None;
+                view.select_work();
+                view.open_work(shared, work);
+            }
+            None => pane.actions.push(Action::Reveal(
+                crate::desktop::in_work_tree(shared.repository.work_tree(), path.as_ref()),
+                crate::desktop::Reveal::Open,
+            )),
+        }
+    }
     for command in std::mem::take(&mut view.queued) {
         match command {
             RepoCommand::Fetch => pane.start(crate::tasks::Task::Fetch),
@@ -1219,9 +1251,9 @@ fn lfs_banner(ui: &mut Ui, shared: &Shared<'_>, pane: &mut TaskPane<'_>) -> bool
     open_page
 }
 
-/// Patch files dropped on the window, shown to apply (others are left alone); a hint while
-/// files are dragged over it.
-fn dropped_patches(ui: &Ui, id: RepoId, view: &mut HistoryView) {
+/// Patch files dropped on the window, shown to apply (others are left alone: images go to the
+/// agents' prompt, while it shows); a hint while files are dragged over it.
+fn dropped_patches(ui: &Ui, (id, agents_shown): (RepoId, bool), view: &mut HistoryView) {
     let (hovering, dropped) = ui.ctx().input(|input| {
         let dropped: Vec<PathBuf> = input
             .raw
@@ -1247,13 +1279,13 @@ fn dropped_patches(ui: &Ui, id: RepoId, view: &mut HistoryView) {
                     .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
                     .inner_margin(Margin::same(16))
                     .show(ui, |ui| {
-                        ui.label(
-                            RichText::new(format!(
-                                "{}  Drop patches to look at them, then apply them",
-                                icon::GIT_DIFF
-                            ))
-                            .semibold(),
-                        );
+                        let said = if agents_shown {
+                            "Drop patches to look at them, then apply them; or images to \
+                             attach them to Claude's prompt"
+                        } else {
+                            "Drop patches to look at them, then apply them"
+                        };
+                        ui.label(RichText::new(format!("{}  {said}", icon::GIT_DIFF)).semibold());
                     });
             });
     }
