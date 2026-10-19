@@ -813,6 +813,11 @@ impl eframe::App for EgitApp {
         self.state.settings.save(storage);
     }
 
+    fn on_exit(&mut self) {
+        // ssh's shared connections end with egit.
+        self.state.prompts.close_connections();
+    }
+
     fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
         visuals.panel_fill.to_normalized_gamma_f32()
     }

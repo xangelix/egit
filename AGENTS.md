@@ -233,6 +233,21 @@ writes paths), never `OsStrExt`.
     labels a command's prompts; `non_interactive` makes them fail at once (and
     `GCM_INTERACTIVE=never`). `tests/askpass.rs` runs without libtest so its executable can be
     the helper git starts.
+  - `ssh.rs` — `SshSharing`: ssh's connections shared while egit runs, so a key's passphrase
+    is asked once (Unix: OpenSSH for Windows can't). A directory of its own
+    (`egit-<uid>/ssh/<pid>-<nonce>`, 0700, under `$XDG_RUNTIME_DIR`, `/tmp`, or the temporary
+    directory: the first where a socket's path, `%C` and ssh's 17-character suffix, fits
+    `sun_path`) holds a wrapper, `ssh`, given to git as `GIT_SSH`: `exec ssh -o
+    ControlMaster=auto -o ControlPersist=1h -o ServerAliveInterval=15 -o
+    ControlPath=<dir>/%C "$@"`. git runs it only where neither `GIT_SSH_COMMAND` nor
+    `core.sshCommand` names an ssh (and none is started when egit's environment sets
+    `GIT_SSH_COMMAND` or `GIT_SSH`); its basename keeps git's OpenSSH variant. Dropped (the
+    app's `on_exit`), each master is closed (`ssh -F /dev/null -S <socket> -O exit`) and the
+    directory removed; those of egit processes gone are swept the same way. `tests/ssh.rs`
+    (Linux; skipped without sshd unless `EGIT_REQUIRE_SSHD`, which CI sets) runs an sshd of
+    its own and a key with a passphrase: a clone, two fetches, and a push ask once; without
+    sharing each fetch asks, and so where the repository sets `core.sshCommand`; dropped, the
+    master exits.
   - `batch.rs` — `GitProcess` from `GitCommand::spawn`: a git kept running for a batch
     protocol (stdin requests, stdout answers); dropping it closes stdin, SIGTERMs its group,
     reaps it.
@@ -1578,7 +1593,7 @@ writes paths), never `OsStrExt`.
     version and path, the
     theme, Commands and Preferences, a warning when
     questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
-    `AskpassServer` at launch and gives git its environment; questions queue and show one
+    `AskpassServer` and an `SshSharing` at launch and gives git their environment; questions queue and show one
     at a time in a modal (`PromptKind` decides the field and buttons); the abandoned are
     dropped (checked every 250 ms while shown); answers are handed over off the interface
     thread (`jobs::detached`), then wiped, with the text field's own undo copy removed from

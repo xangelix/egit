@@ -53,6 +53,7 @@ mod search;
 mod signatures;
 mod signing;
 mod span;
+mod ssh;
 mod stage;
 mod stash;
 mod status;
@@ -150,6 +151,7 @@ pub use repo::{
 pub use search::{CommitFilter, find_commits, resolve_commit};
 pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use signing::{MAX_SIGNED, SignError, Signed, SigningPlan, plan_signing, sign_commits};
+pub use ssh::{KEPT_IDLE, SshSharing};
 pub use stage::{stage, unstage};
 pub use stash::{Stash, StashError, stash_apply, stash_drop, stash_push, stash_store, stashes};
 pub use status::{Change, Conflict, EntryKind, Status, StatusEntry, SubmoduleChanges};

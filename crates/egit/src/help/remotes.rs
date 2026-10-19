@@ -115,7 +115,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "Remotes that need a password every time?",
-                "Background fetches can't answer: they fail quietly. A credential helper or an ssh agent lets them through.",
+                "Background fetches can't answer: they fail quietly. A credential helper or an ssh agent lets them through, and so does an ssh key you unlocked for a fetch of your own: its connection stays shared.",
             ),
             (
                 "Metered or slow connection?",
@@ -729,7 +729,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "ssh keys?",
-                "ssh doesn't use credential helpers: an ssh agent holds unlocked keys, so their passphrases aren't asked each time.",
+                "ssh doesn't use credential helpers. egit shares one connection to each host while it runs, so a key's passphrase is asked once; an ssh agent (ssh-add) keeps it unlocked beyond that.",
             ),
         ],
     },
@@ -769,7 +769,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "Asked for the same passphrase again and again?",
-                "Add the key to an ssh agent (ssh-add): it stays unlocked for the session.",
+                "egit asks once a connection: GIT_SSH_COMMAND, or core.sshCommand, names an ssh of its own, which egit leaves as it is (see Sharing ssh connections). Or add the key to an ssh agent (ssh-add): it stays unlocked for the session.",
             ),
             (
                 "Cancel?",
@@ -1190,6 +1190,32 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "Permission denied (publickey)?",
                 "The host doesn't know your key: add the public key to your account there, or check that the agent holds it.",
+            ),
+        ],
+    },
+    Topic {
+        id: "ssh-sharing",
+        group: Group::Remotes,
+        title: "Sharing ssh connections",
+        on: &[],
+        what: "Each fetch, pull, and push over ssh would connect and prove who you are again, \
+               asking a key's passphrase each time unless an agent holds it. egit has git's \
+               ssh share one connection to each host instead: the first command makes it (and \
+               asks once), later ones go through it without asking. It closes when egit quits, \
+               after an hour unused, or within a minute of the network going away.",
+        git: "GIT_SSH=<egit's wrapper>: ssh -o ControlMaster=auto -o ControlPersist=1h -o ServerAliveInterval=15 -o ControlPath=<a private folder>/%C",
+        cases: &[
+            (
+                "Turn it off?",
+                "Start egit with GIT_SSH_COMMAND set, or set core.sshCommand (for you or one repository): git runs that ssh instead, as it would without egit.",
+            ),
+            (
+                "A fetch failed after the computer slept?",
+                "The shared connection may have gone with the network. It closes itself within a minute; the next command connects afresh (asking once more).",
+            ),
+            (
+                "Windows?",
+                "OpenSSH for Windows can't share connections: an ssh agent (the OpenSSH Authentication Agent service, or Pageant) keeps keys unlocked instead.",
             ),
         ],
     },

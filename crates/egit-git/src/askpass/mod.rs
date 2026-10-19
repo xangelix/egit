@@ -25,6 +25,8 @@ mod platform;
 mod platform;
 
 pub use client::run_helper;
+#[cfg(unix)]
+pub(crate) use platform::{ensure_private, is_stale, make_private_dir};
 pub use protocol::PromptKind;
 pub use server::{AskpassServer, Prompt};
 

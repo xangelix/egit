@@ -43,6 +43,9 @@ const IDENTITY_VARIABLES: [&str; 7] = [
     "EMAIL",
 ];
 
+/// Variables naming the ssh command git runs: a test names its own, or none.
+const SSH_VARIABLES: [&str; 3] = ["GIT_SSH_COMMAND", "GIT_SSH", "GIT_SSH_VARIANT"];
+
 /// What can go wrong setting up a sandbox.
 pub type SandboxError = Box<dyn Error + Send + Sync>;
 
@@ -120,8 +123,17 @@ impl Sandbox {
     fn git_from(env: Vec<(OsString, OsString)>) -> Result<Git, SandboxError> {
         Ok(Git::new(GitOptions {
             program: std::env::var_os("EGIT_TEST_GIT").map(PathBuf::from),
+            // The ssh command's, unless a test names its own.
+            unset: IDENTITY_VARIABLES
+                .iter()
+                .chain(
+                    SSH_VARIABLES
+                        .iter()
+                        .filter(|name| !env.iter().any(|(key, _)| key == **name)),
+                )
+                .map(OsString::from)
+                .collect(),
             env,
-            unset: IDENTITY_VARIABLES.map(OsString::from).to_vec(),
         })?)
     }
 

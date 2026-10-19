@@ -12,6 +12,7 @@ use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
+use egit_git::SshSharing;
 use egit_git::askpass::{AskpassServer, Prompt, PromptKind};
 use egui::{Id, Key, Modal, RichText};
 use zeroize::Zeroizing;
@@ -34,6 +35,8 @@ pub(crate) struct Prompts {
         )
     )]
     server: Option<AskpassServer>,
+    /// ssh's connections shared while egit runs, so a key's passphrase is asked once.
+    ssh: Option<SshSharing>,
     incoming: Option<Receiver<Prompt>>,
     queue: VecDeque<Prompt>,
     /// What is typed for the question shown.
@@ -45,16 +48,27 @@ pub(crate) struct Prompts {
 }
 
 impl Prompts {
-    /// Relays questions for egit's own executable, waking `ctx` when one arrives. Returns the
-    /// environment git needs to ask through it (empty when it couldn't start).
+    /// Relays questions for egit's own executable, waking `ctx` when one arrives, and shares
+    /// ssh's connections, so each is asked once. Returns the environment git needs for both
+    /// (empty when neither could start).
     pub(crate) fn start(ctx: &egui::Context) -> (Self, Vec<(OsString, OsString)>) {
-        match std::env::current_exe() {
+        let (mut prompts, mut environment) = match std::env::current_exe() {
             Ok(executable) => Self::start_with(ctx, &executable, None),
             Err(error) => (
                 Self::unavailable(format!("egit can't find itself: {error}")),
                 Vec::new(),
             ),
+        };
+        prompts.ssh = SshSharing::start();
+        if let Some(ssh) = &prompts.ssh {
+            environment.extend(ssh.environment());
         }
+        (prompts, environment)
+    }
+
+    /// Closes ssh's shared connections (egit is ending).
+    pub(crate) fn close_connections(&mut self) {
+        self.ssh = None;
     }
 
     /// As [`Self::start`], for `executable`, under `base` when given.
@@ -75,6 +89,7 @@ impl Prompts {
                 (
                     Self {
                         server: Some(server),
+                        ssh: None,
                         incoming: Some(incoming),
                         queue: VecDeque::new(),
                         answer: Zeroizing::new(String::new()),
@@ -94,6 +109,7 @@ impl Prompts {
     fn unavailable(reason: String) -> Self {
         Self {
             server: None,
+            ssh: None,
             incoming: None,
             queue: VecDeque::new(),
             answer: Zeroizing::new(String::new()),
