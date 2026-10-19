@@ -519,6 +519,12 @@ impl HistoryView {
         self.file.as_mut()?.diff_lines()
     }
 
+    /// Which of the open work tree file's changes it shows.
+    #[cfg(test)]
+    pub(crate) fn work_side(&self) -> Option<egit_git::Uncommitted> {
+        self.file.as_ref()?.work_side()
+    }
+
     /// How many lines the new side of the open file's split diff has, once split.
     #[cfg(test)]
     pub(crate) fn split_lines(&mut self) -> Option<u32> {

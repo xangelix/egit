@@ -484,6 +484,15 @@ impl FileView {
             .map(|diff| crate::grid::GridSource::measure(&**diff).lines())
     }
 
+    /// Which of a work tree file's changes it shows (none for a commit's file).
+    #[cfg(test)]
+    pub(super) const fn work_side(&self) -> Option<Uncommitted> {
+        match &self.source {
+            Source::WorkTree(work) => Some(work.which),
+            Source::Commit { .. } => None,
+        }
+    }
+
     /// How many lines the new side of its split diff has, once split.
     #[cfg(test)]
     pub(super) fn split_lines(&mut self) -> Option<u32> {

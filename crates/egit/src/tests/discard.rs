@@ -6,6 +6,7 @@
 
 use std::path::Path;
 
+use egit_git::Uncommitted;
 use egit_git::testing::Sandbox;
 use egui::accesskit::Role;
 use egui_kittest::Harness;
@@ -89,6 +90,22 @@ fn staged(sandbox: &Sandbox, repo: &Path) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
+/// Steps until `count` buttons are labelled `label`: the work lists read again (a while at
+/// most; what follows says what didn't come).
+fn wait_for_rows(harness: &mut Harness<'_, EgitApp>, label: &str, count: usize) {
+    for _ in 0..2_000 {
+        if harness
+            .query_all_by_role_and_label(Role::Button, label)
+            .count()
+            == count
+        {
+            break;
+        }
+        harness.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
 /// Right-clicks the work list's row of `path`, then picks `item` in its menu.
 fn row_menu(harness: &mut Harness<'_, EgitApp>, path: &str, item: &str) {
     wait_for_label(harness, path);
@@ -155,13 +172,17 @@ fn changes_not_staged_are_discarded_and_brought_back() {
     settle(&mut harness, "the hunk staged", |_| {
         staged(&sandbox, &repo).contains("+LINE 5")
     });
+    // Its row in the staged list (below the other), once the status is read again: until
+    // then the only row is the unstaged one, whose diff has nine lines too.
+    wait_for_rows(&mut harness, "notes.txt", 2);
     let staged_row = harness
         .query_all_by_role_and_label(Role::Button, "notes.txt")
         .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
         .unwrap();
     staged_row.click();
     settle(&mut harness, "the staged diff", |app| {
-        app.state.repos[0].history_view.diff_lines() == Some(9)
+        let view = &mut app.state.repos[0].history_view;
+        view.work_side() == Some(Uncommitted::Staged) && view.diff_lines() == Some(9)
     });
     menu_beside_the_bar(&mut harness, (5, "Unstage hunk"), |_| {});
     settle(&mut harness, "the hunk unstaged", |_| {
@@ -181,16 +202,7 @@ fn changes_not_staged_are_discarded_and_brought_back() {
     wait_for_label(&mut harness, "Discarded the changes to other.txt.");
     assert_eq!(read(&repo, "other.txt").as_deref(), Some("a\n"));
     // The list read again without it, so the rows aimed at below don't move.
-    for _ in 0..2_000 {
-        if harness
-            .query_by_role_and_label(Role::Button, "other.txt")
-            .is_none()
-        {
-            break;
-        }
-        harness.step();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
+    wait_for_rows(&mut harness, "other.txt", 0);
     harness.run_steps(2);
 
     // An untracked file is deleted, and Undo brings it back.
