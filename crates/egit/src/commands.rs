@@ -26,6 +26,8 @@ pub(crate) enum RepoCommand {
     ToggleSidebar,
     /// Show or hide the output panel (what tasks and hooks printed).
     ToggleOutput,
+    /// Show or hide the agents' panel.
+    ToggleAgents,
     Reflog,
     WorkTree,
     PullRequests,
@@ -80,6 +82,7 @@ impl Command {
             RepoCommand::ToggleSidebar,
             RepoCommand::FilterSidebar,
             RepoCommand::ToggleOutput,
+            RepoCommand::ToggleAgents,
             RepoCommand::Refresh,
         ];
         repo.into_iter()
@@ -126,6 +129,7 @@ impl Command {
                 RepoCommand::FilterSidebar => "Filter the sidebar".to_owned(),
                 RepoCommand::ToggleSidebar => "Show or hide the sidebar".to_owned(),
                 RepoCommand::ToggleOutput => "Show or hide the output".to_owned(),
+                RepoCommand::ToggleAgents => "Show or hide the agents".to_owned(),
                 RepoCommand::Reflog => "Show the reflog".to_owned(),
                 RepoCommand::WorkTree => "Show the uncommitted changes".to_owned(),
                 RepoCommand::PullRequests => format!("Show the {nouns}"),
@@ -153,6 +157,7 @@ impl Command {
             Self::Repo(RepoCommand::FilterSidebar) => "⌥⌘F",
             Self::Repo(RepoCommand::ToggleSidebar) => "⌘B",
             Self::Repo(RepoCommand::ToggleOutput) => "⌘J",
+            Self::Repo(RepoCommand::ToggleAgents) => "⌘L",
             Self::Repo(RepoCommand::Refresh) => "⌘R",
             _ => return None,
         })
@@ -166,7 +171,7 @@ impl Command {
 
 /// The shortcuts the application itself takes (the views take theirs: ⌘F, ⌘Z, …), the more
 /// specific first (⌘K alone would match ⇧⌘K too).
-fn global() -> [(Modifiers, Key, Command); 9] {
+fn global() -> [(Modifiers, Key, Command); 10] {
     [
         (Modifiers::NONE, Key::F1, Command::Help),
         // ⇧⌘P, as other editors have it.
@@ -193,6 +198,11 @@ fn global() -> [(Modifiers, Key, Command); 9] {
             Modifiers::COMMAND,
             Key::J,
             Command::Repo(RepoCommand::ToggleOutput),
+        ),
+        (
+            Modifiers::COMMAND,
+            Key::L,
+            Command::Repo(RepoCommand::ToggleAgents),
         ),
     ]
 }

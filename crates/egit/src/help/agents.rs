@@ -8,7 +8,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "agents",
         group: Group::Agents,
         title: "Agents",
-        on: &["Agents", "Hide the agents"],
+        on: &["Agents", "Hide the agents", "Show or hide the agents"],
         what: "Claude Code working in this repository's work tree, beside the history and the \
                changes it makes: the same Claude Code as in a terminal or an editor (its \
                system prompt, tools, your settings, the project's CLAUDE.md, hooks, MCP servers, \
@@ -19,6 +19,10 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "Does egit change how Claude Code behaves?",
                 "No: it runs Claude Code itself, with your user, project, and local settings, as the terminal does. egit only draws what it says and asks you what it asks.",
+            ),
+            (
+                "Quickly?",
+                "⌘L (Ctrl+L) shows or hides the panel, from anywhere in a repository's tab.",
             ),
             (
                 "Several at once?",

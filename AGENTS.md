@@ -859,10 +859,10 @@ writes paths), never `OsStrExt`.
   - `commands.rs` — what the keyboard can ask: `Command` (the palette, help (F1), preferences, open,
     clone, home, profile, close the tab, a tab by number, a theme, a recent repository) and
     `RepoCommand` (fetch, pull, push, undo, redo, search, the sidebar shown or filtered, the
-    output shown or hidden (⌘J), the
+    output shown or hidden (⌘J), the agents shown or hidden (⌘L), the
     reflog, the work tree, the requests, stash, patches, a branch made or switched to, read
     again), each's words and shortcut; `pressed` takes the application's own shortcuts at a
-    frame's start (⌘K and ⇧⌘P, ⌘,, ⌘O, ⌘W, ⌘B, ⌘R, ⌘1 … ⌘9; the views take theirs), the more
+    frame's start (⌘K and ⇧⌘P, ⌘,, ⌘O, ⌘W, ⌘B, ⌘R, ⌘J, ⌘L, ⌘1 … ⌘9; the views take theirs), the more
     specific first. `keys_text`: a shortcut written as a Mac shows it (`⇧⌘Z`) shown so on
     macOS and as `Ctrl+Shift+Z` elsewhere (egui's command key is Ctrl there). `score`: how
     well typed letters match words (in order; word starts and runs count more). The

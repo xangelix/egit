@@ -1002,6 +1002,7 @@ fn queued_commands(shared: &Shared<'_>, view: &mut HistoryView, pane: &mut TaskP
                 pane.actions
                     .push(Action::Output(shared.id, OutputAsk::Toggle));
             }
+            RepoCommand::ToggleAgents => pane.actions.push(Action::ToggleAgents(shared.id)),
             RepoCommand::Reflog => view.show_reflog("HEAD".into()),
             RepoCommand::WorkTree => view.select_work(),
             RepoCommand::PullRequests => view.show_pull_request(None),
@@ -1974,7 +1975,10 @@ fn search_button(ui: &mut Ui, view: &mut HistoryView, look: Look) {
 /// Shows or hides the agents' panel at the tab's right.
 fn agents_button(ui: &mut Ui, shared: &Shared<'_>, look: Look, actions: &mut Vec<Action>) {
     if widgets::tool(ui, icon::ROBOT, "Agents", shared.agents_shown, look)
-        .on_hover_text("Claude Code, working in this repository beside you")
+        .on_hover_text(format!(
+            "Claude Code, working in this repository beside you ({})",
+            crate::commands::keys_text("⌘L")
+        ))
         .clicked()
     {
         actions.push(Action::ToggleAgents(shared.id));

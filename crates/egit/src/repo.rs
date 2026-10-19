@@ -437,6 +437,7 @@ impl RepoTab {
             | RepoCommand::FilterSidebar
             | RepoCommand::ToggleSidebar
             | RepoCommand::ToggleOutput
+            | RepoCommand::ToggleAgents
             | RepoCommand::Reflog
             | RepoCommand::WorkTree
             | RepoCommand::PullRequests
