@@ -1,7 +1,8 @@
 //! What egit tells of on its own: a background fetch bringing the current branch's upstream
-//! new commits, shown until pulled or dismissed; and how tasks end, under the commit table
-//! (nothing above it moving), one that went well going by itself after a few seconds, one that
-//! stopped staying.
+//! new commits, shown until pulled or dismissed; one failing, its warning gone as soon as a
+//! fetch of the user's own goes through, and none for one a task of the user's stopped; and how
+//! tasks end, under the commit table (nothing above it moving), one that went well going by
+//! itself after a few seconds, one that stopped staying.
 
 use egit_git::testing::Sandbox;
 use egui::accesskit::Role;
@@ -10,8 +11,8 @@ use egui_kittest::kittest::Queryable as _;
 use crate::theme::icon;
 
 use super::screens::{
-    colleague_pushes, harness, history_shown, open_path, profile_loaded, render, settle,
-    shared_remote, uncommitted, wait_for_label,
+    click_when_enabled, colleague_pushes, harness, history_shown, open_path, profile_loaded,
+    render, settle, shared_remote, uncommitted, wait_for_label,
 };
 
 #[test]
@@ -55,6 +56,101 @@ fn a_background_fetch_tells_of_new_commits_upstream() {
     harness.get_by_label("Dismiss").click();
     harness.run_steps(2);
     assert!(harness.state().state.repos[0].tasks.brought.is_none());
+}
+
+#[test]
+fn a_background_fetch_s_trouble_goes_once_a_fetch_of_your_own_goes_through() {
+    let sandbox = Sandbox::new().unwrap();
+    let (_, mine) = shared_remote(&sandbox);
+    let origin = sandbox.path("origin.git");
+    // Out of reach, as a remote whose key nobody has unlocked yet is for a background fetch.
+    sandbox
+        .run(
+            &mine,
+            "remote",
+            &["set-url", "origin", "/nowhere/origin.git"],
+        )
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &mine);
+    settle(&mut harness, "the history", history_shown);
+    let fetched = |count: u64| {
+        move |app: &mut crate::app::EgitApp| app.state.repos[0].tasks.background_fetches >= count
+    };
+    harness.state_mut().state.repos[0]
+        .tasks
+        .fetch_in_background_now();
+    settle(&mut harness, "a background fetch failing", fetched(1));
+    assert!(
+        harness.state().state.repos[0]
+            .tasks
+            .background_problem
+            .is_some()
+    );
+
+    // Within reach again (a passphrase typed, say): the user's own fetch goes through, and the
+    // warning goes with it, not five minutes later.
+    sandbox
+        .run(
+            &mine,
+            "remote",
+            &["set-url", "origin", origin.to_str().unwrap()],
+        )
+        .unwrap();
+    click_when_enabled(&mut harness, &format!("{}  Fetch", icon::ARROWS_CLOCKWISE));
+    wait_for_label(&mut harness, "Fetched.");
+    assert!(
+        harness.state().state.repos[0]
+            .tasks
+            .background_problem
+            .is_none()
+    );
+
+    // A background fetch a task of the user's stops (a remote answering only after a long
+    // pause, git's `ext::` transport running a command as it) is no trouble.
+    sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "protocol.ext.allow", "always"],
+        )
+        .unwrap();
+    let slow = format!(
+        "ext::sh -c sleep% 60;% exec% {}% upload-pack% {}",
+        sandbox.git().program().display(),
+        origin.display()
+    );
+    sandbox
+        .run(&mine, "remote", &["add", "slow", &slow])
+        .unwrap();
+    harness.state_mut().state.repos[0]
+        .tasks
+        .fetch_in_background_now();
+    settle(&mut harness, "a background fetch under way", |app| {
+        app.state.repos[0].tasks.is_fetching_in_background()
+    });
+    let head = sandbox.run(&mine, "rev-parse", &["HEAD"]).unwrap();
+    let at = egit_git::ObjectId::from_hex(head.stdout.trim_ascii()).unwrap();
+    let id = harness.state().state.repos[0].id;
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(crate::app::Action::Task(
+            id,
+            crate::tasks::Task::CreateBranch {
+                name: "topic".into(),
+                at,
+            },
+        ));
+    settle(&mut harness, "the background fetch stopped", |app| {
+        !app.state.repos[0].tasks.is_fetching_in_background()
+    });
+    harness.run_steps(2);
+    let tasks = &harness.state().state.repos[0].tasks;
+    assert!(tasks.background_problem.is_none());
+    assert_eq!(tasks.background_fetches, 1);
 }
 
 #[test]

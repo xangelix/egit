@@ -111,7 +111,7 @@ pub(super) const TOPICS: &[Topic] = &[
         cases: &[
             (
                 "A warning sign beside Fetch?",
-                "The last background fetch failed: point at it to see why. Fetching yourself asks for what it needs.",
+                "The last background fetch failed: point at it to see why. Fetching yourself asks for what it needs, and once it goes through the sign goes (a pull or push of yours brings the next background fetch forward, to see).",
             ),
             (
                 "Remotes that need a password every time?",

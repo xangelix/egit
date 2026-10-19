@@ -1190,8 +1190,10 @@ writes paths), never `OsStrExt`.
     `NotMerged` (a delete refused). And a background fetch as often as the preferences say
     (`fetch_every`; every 5 minutes by default, or never; the first 10 s after opening; only
     with a remote): non-interactive, without the lock, stopped when the
-    user starts a task, its failure kept apart (`background_problem`; `background_fetches`
-    counts them, for the forge); what it brought the current branch's upstream (`Brought`:
+    user starts a task (`Fetched::Stopped`: nothing learned, nothing said), its failure kept
+    apart (`background_problem`, until one goes through, or a fetch of the user's does; another
+    task reaching the remotes, `Task::reaches_remotes`, that goes through brings the next one
+    forward; `background_fetches` counts them, for the forge); what it brought the current branch's upstream (`Brought`:
     `upstream_tip` before and after, `count_between` them; a later fetch continuing where an
     earlier one ended adds to it) kept in `brought` until the user starts a task, and shown
     under the commit table while the branch is behind (`views/tasks.rs`'s `brought`: "↓ 3 new
@@ -2147,7 +2149,8 @@ writes paths), never `OsStrExt`.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,
     a folder staged whole, a commit's files alike, a list again.
     `src/tests/notices.rs` lets background fetches run: one bringing nothing says nothing, two
-    bringing a commit each make one notice of both.
+    bringing a commit each make one notice of both; one failing (its remote out of reach), its
+    warning gone once the user's own Fetch goes through, and none for one a task stopped.
     It also shows an outcome under the commit table (the table's head where it was), gone by
     itself five seconds later, and a refused revert staying.
     `src/tests/search.rs` drives the search bar

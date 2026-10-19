@@ -520,22 +520,9 @@ impl RepoTab {
             self.forge_config = Some(config);
         }
         let exchanged = finished
-            && matches!(
-                self.tasks.task,
-                Some(
-                    Task::Fetch
-                        | Task::Pull(_)
-                        | Task::PullStashing { .. }
-                        | Task::PullAndRemember { .. }
-                        | Task::Push(_)
-                        | Task::PushTag { .. }
-                        | Task::DeleteRemoteBranch { .. }
-                        | Task::CheckOutPullRequest { .. }
-                        | Task::CreatePullRequest(_)
-                        | Task::FetchRemote { .. }
-                        | Task::AddRemote { fetch: true, .. }
-                )
-            );
+            && self.tasks.task.as_ref().is_some_and(|task| {
+                task.reaches_remotes() || matches!(task, Task::CreatePullRequest(_))
+            });
         let fetched = self.tasks.background_fetches != self.forge_fetches;
         self.forge_fetches = self.tasks.background_fetches;
         if exchanged || fetched {

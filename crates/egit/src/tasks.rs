@@ -338,6 +338,25 @@ pub(crate) struct PullRequestToOpen {
 }
 
 impl Task {
+    /// Whether it reaches a remote over the network (as a background fetch does): its going
+    /// through says the remotes can be reached, and the credentials they ask for are at hand.
+    pub(crate) const fn reaches_remotes(&self) -> bool {
+        matches!(
+            self,
+            Self::Fetch
+                | Self::Pull(_)
+                | Self::PullStashing { .. }
+                | Self::PullAndRemember { .. }
+                | Self::Push(_)
+                | Self::PushTag { .. }
+                | Self::DeleteRemoteBranch { .. }
+                | Self::DeleteBranchEverywhere { .. }
+                | Self::CheckOutPullRequest { .. }
+                | Self::FetchRemote { .. }
+                | Self::AddRemote { fetch: true, .. }
+        )
+    }
+
     /// The hooks git may run for it (the repository's own among them run: see `output`).
     pub(crate) const fn hooks(&self) -> &'static [&'static str] {
         match self {
@@ -609,12 +628,13 @@ pub(crate) struct Tasks {
     cancel: CancelToken,
     /// Whether a task's end hasn't been taken in yet.
     open: bool,
-    background: Bind<Option<Brought>, Problem>,
+    background: Bind<Fetched, Problem>,
     background_cancel: CancelToken,
     next_background: Instant,
     /// How often the background fetch runs (`None`: never).
     background_every: Option<Duration>,
-    /// Why the last background fetch failed, if it did.
+    /// Why the last background fetch failed, if it did (until one goes through, or the user's
+    /// own fetch does).
     pub(crate) background_problem: Option<Problem>,
     /// How many background fetches ended (what follows the remotes reads again when it grows).
     pub(crate) background_fetches: u64,
@@ -675,6 +695,12 @@ impl Tasks {
     #[cfg(test)]
     pub(crate) fn fetch_in_background_now(&mut self) {
         self.next_background = Instant::now();
+    }
+
+    /// Whether a background fetch is under way (tests about it).
+    #[cfg(test)]
+    pub(crate) fn is_fetching_in_background(&mut self) -> bool {
+        self.background.is_pending()
     }
 
     /// Whether a task the user asked for is running.
@@ -764,17 +790,28 @@ impl Tasks {
         let finished = self.open && !self.result.is_pending();
         if finished {
             self.open = false;
+            self.reached_remotes(now);
         }
         if self.background.is_finished() {
-            self.background_problem = self.background.err_ref().cloned();
-            if let Some(Ok(Some(brought))) = self.background.take() {
-                self.brought = Some(match self.brought.take() {
-                    Some(earlier) => earlier.then(brought),
-                    None => brought,
-                });
+            match self.background.take() {
+                // A task of the user's stopped it: nothing learned.
+                Some(Ok(Fetched::Stopped)) | None => {}
+                Some(Ok(Fetched::Done(brought))) => {
+                    self.background_problem = None;
+                    if let Some(brought) = brought {
+                        self.brought = Some(match self.brought.take() {
+                            Some(earlier) => earlier.then(brought),
+                            None => brought,
+                        });
+                    }
+                    self.background_fetches = self.background_fetches.wrapping_add(1);
+                }
+                Some(Err(problem)) => {
+                    self.background_problem = Some(problem);
+                    self.background_fetches = self.background_fetches.wrapping_add(1);
+                }
             }
             self.background = Bind::new(true);
-            self.background_fetches = self.background_fetches.wrapping_add(1);
         }
         let due = self.background_every.is_some() && now >= self.next_background;
         if due && has_remotes && !self.result.is_pending() && !self.background.is_pending() {
@@ -789,26 +826,34 @@ impl Tasks {
                     prune: true,
                     background: true,
                 };
-                let failed = |error| Problem::git("Fetching in the background failed", &error);
                 // Where the current branch's upstream is, before and after: a problem reading
                 // it only goes without the notice.
                 let before = repository.upstream_tip(&git).ok().flatten();
-                fetch(&git, &repository, options, &progress, &cancel).map_err(failed)?;
+                match fetch(&git, &repository, options, &progress, &cancel) {
+                    Ok(()) => {}
+                    Err(GitError::Cancelled { .. }) => return Ok(Fetched::Stopped),
+                    Err(error) => {
+                        return Err(Problem::git("Fetching in the background failed", &error));
+                    }
+                }
                 let Some((upstream, from)) = before else {
-                    return Ok(None);
+                    return Ok(Fetched::Done(None));
                 };
                 let after = repository.upstream_tip(&git).ok().flatten();
-                Ok(after
-                    .filter(|(name, to)| *name == upstream && *to != from)
-                    .and_then(|(_, to)| {
-                        let commits = count_between(&git, &repository, from, to, &cancel).ok()?;
-                        (commits > 0).then_some(Brought {
-                            upstream,
-                            from,
-                            to,
-                            commits,
-                        })
-                    }))
+                Ok(Fetched::Done(
+                    after
+                        .filter(|(name, to)| *name == upstream && *to != from)
+                        .and_then(|(_, to)| {
+                            let commits =
+                                count_between(&git, &repository, from, to, &cancel).ok()?;
+                            (commits > 0).then_some(Brought {
+                                upstream,
+                                from,
+                                to,
+                                commits,
+                            })
+                        }),
+                ))
             }));
         }
         let wait = if self.background_every.is_some() {
@@ -818,6 +863,38 @@ impl Tasks {
         };
         (finished, wait)
     }
+}
+
+impl Tasks {
+    /// After a task of the user's ended: one that reached the remotes and went through says
+    /// the last background fetch's trouble is over (a fetch of every remote, as it is, at
+    /// once; another, by the background fetch it brings forward).
+    fn reached_remotes(&mut self, now: Instant) {
+        let went_through = matches!(
+            self.result.read_as_ref(),
+            Some(Ok(outcome)) if !matches!(outcome, Outcome::Cancelled)
+        );
+        let Some(task) = self.task.as_ref().filter(|task| task.reaches_remotes()) else {
+            return;
+        };
+        if !went_through || self.background_problem.is_none() {
+            return;
+        }
+        if matches!(task, Task::Fetch) {
+            self.background_problem = None;
+        } else {
+            self.next_background = now.min(self.next_background);
+        }
+    }
+}
+
+/// How a background fetch ended, but failing.
+#[derive(Clone, Debug)]
+enum Fetched {
+    /// What it brought the current branch's upstream, if anything.
+    Done(Option<Brought>),
+    /// A task of the user's stopped it.
+    Stopped,
 }
 
 impl Drop for Tasks {
