@@ -38,6 +38,23 @@ pub(crate) fn checkbox(ui: &mut Ui, checked: &mut bool, text: impl Into<WidgetTe
     response
 }
 
+/// A checkbox labelled with someone's words (Claude's choices), explained by the help topic
+/// `topic` rather than by them.
+pub(crate) fn checkbox_of(
+    ui: &mut Ui,
+    checked: &mut bool,
+    text: impl Into<WidgetText>,
+    topic: &'static str,
+) -> Response {
+    let mut response = toggle(ui, *checked, text.into(), Mark::Check);
+    crate::help::note_topic(ui, response.rect, topic);
+    if response.clicked() {
+        *checked = !*checked;
+        response.mark_changed();
+    }
+    response
+}
+
 /// A radio button, `selected` or not, labelled `text`.
 pub(crate) fn radio(ui: &mut Ui, selected: bool, text: impl Into<WidgetText>) -> Response {
     let text = text.into();

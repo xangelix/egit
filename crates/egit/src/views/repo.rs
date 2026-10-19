@@ -35,6 +35,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         repos,
         actions,
         home_dir,
+        agents,
         ..
     } = state;
     let git = git.ok_ref();
@@ -42,7 +43,14 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         ui.label(muted(ui, "This repository was closed."));
         return;
     };
-    // What its tasks and commits printed, at the bottom, under whatever it shows.
+    // Its agents, at the right, beside whatever it shows; then what its tasks and commits
+    // printed, at the bottom, under the rest.
+    agents_panel(
+        ui,
+        (agents, &mut repo.agents),
+        (id, repo.repository.work_tree()),
+        actions,
+    );
     super::output::show(ui, &mut repo.output, id);
     let mut behavior = Panels {
         id,
@@ -70,6 +78,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         forge: &repo.forge,
         home: home_dir.as_deref(),
         journal: &repo.journal,
+        agents_shown: repo.agents.shown,
         actions,
     };
     match repo.panel {
@@ -148,6 +157,7 @@ struct Panels<'a> {
     forge: &'a RepoForge,
     home: Option<&'a Path>,
     journal: &'a Journal,
+    agents_shown: bool,
     actions: &'a mut Vec<Action>,
 }
 
@@ -191,6 +201,7 @@ fn history(ui: &mut Ui, panels: &mut Panels<'_>) {
             forge: panels.forge,
             home: panels.home,
             journal: panels.journal,
+            agents_shown: panels.agents_shown,
             lists: Lists {
                 stashes,
                 worktrees: panels.worktrees.read_as_ref(),
@@ -518,5 +529,38 @@ fn configuration(ui: &mut Ui, panels: &mut Panels<'_>) {
                     );
                 }
             }
+        });
+}
+
+/// The agents' panel at the tab's right, while shown (the top bar's Agents shows it).
+fn agents_panel(
+    ui: &mut Ui,
+    (setup, agents): (
+        &mut crate::agents::AgentsSetup,
+        &mut crate::agents::RepoAgents,
+    ),
+    (id, work_tree): (RepoId, &std::path::Path),
+    actions: &mut Vec<Action>,
+) {
+    if !agents.shown {
+        return;
+    }
+    let palette = crate::theme::Palette::of(ui.ctx());
+    egui::Panel::right(egui::Id::new(("agents", id)))
+        .resizable(true)
+        .default_size(super::agents::WIDTH)
+        .size_range(super::agents::WIDTHS)
+        .frame(
+            egui::Frame::new()
+                .fill(palette.panel)
+                .inner_margin(egui::Margin {
+                    left: 12,
+                    right: 12,
+                    top: 0,
+                    bottom: 8,
+                }),
+        )
+        .show(ui, |ui| {
+            super::agents::panel(ui, (setup, agents), work_tree, actions);
         });
 }

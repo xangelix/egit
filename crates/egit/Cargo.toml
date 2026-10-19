@@ -28,6 +28,7 @@ eframe = { workspace = true, features = [
     "wgpu",
     "x11",
 ] }
+egit-agents.workspace = true
 egit-forge.workspace = true
 egit-git.workspace = true
 egit-gix.workspace = true
@@ -49,6 +50,8 @@ pulldown-cmark.workspace = true
 # Native folder dialogs through the desktop portal (no GTK).
 rfd = { workspace = true, features = ["xdg-portal"] }
 serde.workspace = true
+# The agents' messages, as the SDK gives them.
+serde_json.workspace = true
 skrifa.workspace = true
 syntect.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
@@ -64,4 +67,3 @@ notify = { workspace = true, features = ["macos_fsevent"] }
 egit-forge = { workspace = true, features = ["testing"] }
 egit-git = { workspace = true, features = ["testing"] }
 egui_kittest = { workspace = true, features = ["eframe", "snapshot", "wgpu"] }
-serde_json.workspace = true

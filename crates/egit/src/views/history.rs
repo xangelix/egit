@@ -142,6 +142,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) home: Option<&'a Path>,
     /// What egit did here, to take back, and what it took back, to do again.
     pub(crate) journal: &'a Journal,
+    /// Whether its agents' panel shows.
+    pub(crate) agents_shown: bool,
     /// The stashes, worktrees, submodules, and configuration, for the sidebar.
     pub(crate) lists: Lists<'a>,
     pub(crate) actions: &'a mut Vec<Action>,
@@ -847,6 +849,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         forge,
         home,
         journal,
+        agents_shown,
         lists,
         actions,
     } = pane;
@@ -873,6 +876,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         scope: history.scope().clone(),
         home,
         journal,
+        agents_shown,
         lfs: lists.lfs.and_then(Result::ok),
         submodules: lists.submodules.and_then(Result::ok),
         submodule_states: lists.submodule_states.and_then(Result::ok),
@@ -1459,6 +1463,8 @@ pub(super) struct Shared<'a> {
     pub(super) home: Option<&'a Path>,
     /// What egit did here, to take back, and what it took back, to do again.
     journal: &'a Journal,
+    /// Whether its agents' panel shows.
+    agents_shown: bool,
     /// Its Git LFS, once read.
     pub(super) lfs: Option<&'a Arc<crate::lfs::LfsState>>,
     /// Its submodules, and where they stand (nested ones too), once read.
@@ -1572,6 +1578,7 @@ fn top_bar(
     let tools = [
         ((icon::MAGNIFYING_GLASS, "Search"), false),
         ((icon::CLOCK_COUNTER_CLOCKWISE, "Reflog"), false),
+        ((icon::ROBOT, "Agents"), false),
         ((icon::ARCHIVE, stash.as_str()), true),
         ((icon::GIT_DIFF, "Patches"), true),
         ((icon::INFO, "Repository"), true),
@@ -1687,6 +1694,7 @@ fn left_bar(
     widgets::toolbar_separator(ui);
     search_button(ui, view, look);
     reflog_button(ui, view, look);
+    agents_button(ui, shared, look, task_pane.actions);
     let mut asked = None;
     let has_changes = shared.work_status.is_some_and(|status| !status.is_empty());
     let menus = shared.menus(history.shown.refs());
@@ -1960,6 +1968,16 @@ fn search_button(ui: &mut Ui, view: &mut HistoryView, look: Look) {
         } else {
             view.open_search();
         }
+    }
+}
+
+/// Shows or hides the agents' panel at the tab's right.
+fn agents_button(ui: &mut Ui, shared: &Shared<'_>, look: Look, actions: &mut Vec<Action>) {
+    if widgets::tool(ui, icon::ROBOT, "Agents", shared.agents_shown, look)
+        .on_hover_text("Claude Code, working in this repository beside you")
+        .clicked()
+    {
+        actions.push(Action::ToggleAgents(shared.id));
     }
 }
 

@@ -1104,6 +1104,7 @@ version = "0.1.0"
 dependencies = [
  "bstr",
  "eframe",
+ "egit-agents",
  "egit-forge",
  "egit-git",
  "egit-gix",

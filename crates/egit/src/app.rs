@@ -80,6 +80,8 @@ pub(crate) struct AppState {
     pub(crate) palette: PaletteView,
     /// The help window, while open.
     pub(crate) help: crate::help::HelpWindow,
+    /// Claude's setup for the agents: Node, the SDK, who is signed in.
+    pub(crate) agents: crate::agents::AgentsSetup,
 }
 
 /// A repository being opened.
@@ -185,6 +187,8 @@ pub(crate) enum Action {
     },
     /// Show patches to apply to a repository, read from files.
     OpenPatches(RepoId, Vec<PathBuf>),
+    /// Show or hide a repository's agents.
+    ToggleAgents(RepoId),
 }
 
 impl EgitApp {
@@ -269,6 +273,7 @@ impl EgitApp {
             .filter(|path| path.is_dir())
             .collect();
         waiting.extend(paths);
+        let home_dir_for_agents = home_dir.clone();
         let mut state = AppState {
             git: Bind::new(true),
             git_options,
@@ -294,6 +299,9 @@ impl EgitApp {
             palette: PaletteView::default(),
             help: crate::help::HelpWindow::default(),
             fonts: Fallbacks::default(),
+            agents: crate::agents::AgentsSetup::new(
+                crate::agents::cache_folder(home_dir_for_agents.as_deref()).as_deref(),
+            ),
         };
         match git {
             Some(git) => state.git.fill(Ok(git)),
@@ -420,6 +428,11 @@ impl EgitApp {
                 title,
                 name,
             } => state.files.ask(question, title, name),
+            Action::ToggleAgents(id) => {
+                if let Some(repo) = self.state.repos.iter_mut().find(|repo| repo.id == id) {
+                    repo.agents.shown = !repo.agents.shown;
+                }
+            }
             Action::OpenPatches(id, files) => {
                 if let Some(repo) = state.repo_mut(id) {
                     repo.history_view.show_patches(files);
@@ -507,6 +520,7 @@ impl AppState {
     /// Advances the jobs and the watchers: what finished or changed becomes state or actions.
     fn poll(&mut self, ctx: &egui::Context) {
         self.prompts.poll();
+        self.agents.poll();
         self.fonts.poll(ctx);
         crate::avatars::poll(ctx);
         // Back from an editor or a terminal: what the user did there is what they look for.

@@ -136,7 +136,7 @@ export function query({ prompt, options }) {
 export async function listSessions({ dir }) {
   return [
     { sessionId: 'older', summary: 'An older conversation', lastModified: 1_600_000_000_000, cwd: dir },
-    { sessionId: 'newer', summary: 'A newer conversation', lastModified: 1_700_000_000_000, cwd: dir, gitBranch: 'main' },
+    { sessionId: 'newer', summary: 'A newer conversation', lastModified: 1_699_963_200_000, cwd: dir, gitBranch: 'main' },
   ];
 }
 

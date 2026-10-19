@@ -1,5 +1,6 @@
 //! The application driven as a user drives it.
 
+mod agents;
 mod audit;
 mod avatars;
 mod bisect;

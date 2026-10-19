@@ -29,12 +29,13 @@ pub(crate) enum Group {
     Stashes,
     Inside,
     Looking,
+    Agents,
     Egit,
 }
 
 impl Group {
     /// Every group, in the order shown.
-    pub(crate) const ALL: [Self; 10] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Everyday,
         Self::Changes,
         Self::Branches,
@@ -44,6 +45,7 @@ impl Group {
         Self::Stashes,
         Self::Inside,
         Self::Looking,
+        Self::Agents,
         Self::Egit,
     ];
 
@@ -59,6 +61,7 @@ impl Group {
             Self::Stashes => "Stashes and patches",
             Self::Inside => "Submodules, LFS, worktrees",
             Self::Looking => "Looking into history",
+            Self::Agents => "Agents",
             Self::Egit => "egit itself",
         }
     }
@@ -82,6 +85,7 @@ pub(crate) struct Topic {
     pub(crate) cases: &'static [(&'static str, &'static str)],
 }
 
+mod agents;
 mod branches;
 mod history;
 mod inside;
@@ -90,13 +94,14 @@ mod rewriting;
 mod working;
 
 /// Every area's topics.
-const AREAS: [&[Topic]; 6] = [
+const AREAS: [&[Topic]; 7] = [
     working::TOPICS,
     history::TOPICS,
     branches::TOPICS,
     remotes::TOPICS,
     rewriting::TOPICS,
     inside::TOPICS,
+    agents::TOPICS,
 ];
 
 /// Every topic.

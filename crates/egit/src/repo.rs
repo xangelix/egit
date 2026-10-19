@@ -116,6 +116,8 @@ pub(crate) struct RepoTab {
     watching: Watching,
     /// Wakes the window when a job has news.
     waker: egui::Context,
+    /// Its agents: conversations with Claude working in its work tree.
+    pub(crate) agents: crate::agents::RepoAgents,
 }
 
 impl RepoTab {
@@ -165,6 +167,7 @@ impl RepoTab {
             writes: WriteLock::default(),
             watching,
             waker: ctx.clone(),
+            agents: crate::agents::RepoAgents::new(ctx),
         };
         tab.refresh_status(git);
         tab.refresh_config(git);
@@ -175,6 +178,7 @@ impl RepoTab {
     /// Takes in what its jobs finished.
     pub(crate) fn poll(&mut self) {
         self.history.poll();
+        self.agents.poll();
         self.journal.poll();
         if matches!(self.writing_commit_graph.read_as_ref(), Some(Ok(()))) {
             self.history.shown.wrote_commit_graph();

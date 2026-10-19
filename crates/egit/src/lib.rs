@@ -16,6 +16,7 @@
 //! - `watch` — noticing what changes repositories and configuration behind egit's back.
 //! - `worktree` — a repository's working tree: its status, kept current.
 
+mod agents;
 mod app;
 mod avatars;
 mod blame;
@@ -44,6 +45,7 @@ mod problem;
 mod repo;
 mod search;
 mod settings;
+mod stack;
 mod staging;
 mod stats;
 mod submodules;

@@ -39,7 +39,7 @@ it.
 | 25 | The work in progress, people, trees, pictures, LFS, submodules, and Help | done; awaiting the owner's review |
 | 26 | Follow-ups: columns, long text, dates, Help for every word, signing commits picked together | done; awaiting the owner's review |
 | 27 | People's pictures, and hooks' output | done; awaiting the owner's review |
-| 28 | Agents (Claude), on this computer | under way |
+| 28 | Agents (Claude), on this computer | under way: the panel, conversations, approvals, resume |
 
 ## Toolchain & commands
 
@@ -1641,6 +1641,25 @@ writes paths), never `OsStrExt`.
     sidebar), diffs and files (side by side, wrapped, tab width), and every keyboard shortcut;
     each change pushes `Action::SetPreferences`, in effect at once (each tab's fetch interval
     and sidebar too) and kept.
+  - `views/agents.rs` — the Agents panel at a repository tab's right (`views/repo.rs`'s
+    `agents_panel`, drawn first: beside everything, the output under the rest; hidden, a strip
+    with "Show the agents"): its head (the title; the conversations' menu, named by the one
+    shown: New conversation, those open (Close the conversation), Earlier ones with their age;
+    Hide the agents); until Claude is set up, what agents are and the setup (Node looked for,
+    "Look again" and nodejs.org; "Set up Claude": the SDK's version and size, its progress and
+    Cancel, a failure's words); then the conversation (a `Stack`: prompts in a box, Claude's
+    words as Markdown (streamed), thinking and each tool call a line folding open
+    (`tool_details`: a command, an edit as its old lines over its new, a file written, a
+    plan's steps ticked, other input as JSON; the result, 200 lines at most; a subagent's
+    items under its call, shown while it is open), each turn's time, tokens, and estimated
+    cost, notices in their colours); at the bottom what waits (the oldest permission request:
+    what the tool would do, why Claude Code asks, "Allow once", "Allow for this conversation"
+    (its suggestions as rules), "Refuse" with a reason Claude reads; Claude's questions as
+    choices (several, or one's own words) answered by the input given back; a plan to approve
+    or keep planning), the prompt ("Ask Claude": Enter sends, Shift+Enter a new line; queued
+    while a turn runs), the mode's and the model's menus, Send or (while a turn runs) Stop,
+    and who it runs as with what it cost (or, nobody signed in, Claude Code's own login
+    command to run in a terminal, copied, and "Look again"). Help: `help/agents.rs`.
   - `views/` — `home` (who commits and the profile's button first, then open by dialog or
     typed path, the problem and its remedy, recent repositories in egui-table-kit, and
     cloning), `profile` (identity and signing editable;
@@ -1669,6 +1688,23 @@ writes paths), never `OsStrExt`.
     and name; at each row's right what its list adds (`TreeRow`: lines counted, a stage
     button); made again only when the list is replaced, in a job past 5,000 files, the last
     tree shown meanwhile, in a scroll area of its own.
+  - `agents.rs` — agents (`egit-agents`): `AgentsSetup`, the window's (`AppState::agents`):
+    Node found and the SDK's readiness (`found`, a job), installing it (`installing`,
+    cancellable), who is signed in to Claude Code's own folder (`signed_in`), `launch` (how to
+    run the bridge as a `Signer`; the tests' `stand_in`); its cache under egit's
+    (`cache_folder`). `RepoAgents`, a tab's (`RepoTab::agents`): shown or not, its
+    `Conversation`s and the one shown, the earlier ones Claude Code keeps for the work tree
+    (`past`, read when the menu opens), `begin`, `resume` (its messages read in a job into the
+    transcript; the bridge starts with the next prompt, `resume` set), `close`, `send`. A
+    `Conversation`: its transcript, permission requests waiting, `Info`, mode (as asked, or as
+    Claude Code last said it changed) and model; its bridge started in a job with its first
+    prompt, requests queued until it says it is ready (`deliver`), its events taken in each
+    frame (`poll`), `Info` asked once the session is known; ended, a later prompt starts it
+    again going on with its session.
+  - `stack.rs` — `Stack`: a tall list of items of different heights in a scroll area of its
+    own, drawn only where in view (each `Entry`'s version and a guess), measured when drawn
+    or, out of view and never measured or changed since, a little each frame (2 ms) unseen;
+    those above the view growing keep it where it is; at the end it follows what is added.
   - `markdown.rs` — Markdown previewed (`is_markdown`: `.md`, `.markdown`, …):
     `read_documents` reads a change's sides as `pictures.rs` does (1 MiB at most), each a
     `Document`: its text `prepared` (an image a link to it, as nothing is fetched; a task's box
@@ -1730,7 +1766,8 @@ writes paths), never `OsStrExt`.
     pointer), `widgets/` (the pieces every view is built from, so each looks and answers
     alike: titles (`page_title` 22, `panel_title` 16, `heading`), buttons by kind (`primary`,
     `danger` for what loses something, `secondary`, `small`, `link`; a toolbar's quiet `tool`,
-    `tool_menu` with its caret, and `icon_tool`, named in words, `Look::Full` or `Compact`;
+    `tool_menu` with its caret (`tool_menu_of` where its words are someone's: a help topic explains
+    it), and `icon_tool`, named in words, `Look::Full` or `Compact`;
     words never wrap inside a button; `quiet` draws frameless buttons without an inactive
     edge, which egui leaves out of their size but takes out of their padding, so they don't
     grow under the pointer; `tool_width`, how wide a tool would draw, for choosing a look
@@ -1759,7 +1796,8 @@ writes paths), never `OsStrExt`.
     of the palette's `avatars` hashed from their email (FNV-1a, any case), so one person looks
     alike everywhere, or their picture once fetched (`avatars.rs`: a quad of its atlas on their
     colour, ringed alike) (`avatar`; `avatars` overlapping a little, three at most and "+2"); `toggles.rs`: a
-    checkbox (a square box, filled and ticked when checked), radio buttons, and a segmented
+    checkbox (a square box, filled and ticked when checked), radio buttons (`checkbox_of`,
+    `radio_of`: labelled with someone's words, explained by a help topic), and a segmented
     control (sized from its words before it is drawn, a control's height, so it centres on its
     row as any widget does; its 24-point segments' corners following its), each a whole row
     to click; `TARGET`, the 24 points every control takes each way;
@@ -1873,6 +1911,10 @@ writes paths), never `OsStrExt`.
     heading's link opening nothing; a document added and one deleted, each its one side; a
     changelog of 80 sections changed halfway down and further on, opened at the first change
     (in view on both sides, the top out of it), stepped to the next, and back by Alt+↑.
+    `src/tests/agents.rs` drives the Agents panel against `egit-agents`' stand-in SDK (skipped
+    without Node unless `EGIT_REQUIRE_NODE`): shown from its strip, a prompt sent with Enter
+    and its answer streamed, a command allowed for the conversation (its line opened), a
+    question answered, the mode changed, an earlier conversation gone on with.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,

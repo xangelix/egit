@@ -1,6 +1,7 @@
 //! What the tabs show, and the status bar.
 
 mod actions;
+pub(crate) mod agents;
 mod blame;
 pub(crate) mod clone;
 mod dialogs;

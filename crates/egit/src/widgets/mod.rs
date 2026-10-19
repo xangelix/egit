@@ -16,7 +16,7 @@ use egui::{
 };
 
 pub(crate) use avatar::{avatar, avatars};
-pub(crate) use toggles::{checkbox, radio, radio_of, radio_value, segmented};
+pub(crate) use toggles::{checkbox, checkbox_of, radio, radio_of, radio_value, segmented};
 
 use crate::format::display_path;
 use crate::problem::Problem;
@@ -555,6 +555,33 @@ pub(crate) fn tool_menu<R>(
     look: Look,
     add_contents: impl FnOnce(&mut Ui) -> R,
 ) -> (Response, Option<R>) {
+    let shown = menu_button(ui, icon, text, look, add_contents);
+    crate::help::note(ui, shown.0.rect, text);
+    shown
+}
+
+/// A [`tool_menu`] named with someone's words (a conversation's title, a model's name),
+/// explained by the help topic `topic` rather than by them.
+pub(crate) fn tool_menu_of<R>(
+    ui: &mut Ui,
+    (icon, text): (&str, &str),
+    look: Look,
+    topic: &'static str,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> (Response, Option<R>) {
+    let shown = menu_button(ui, icon, text, look, add_contents);
+    crate::help::note_topic(ui, shown.0.rect, topic);
+    shown
+}
+
+/// A toolbar's menu button, unexplained.
+fn menu_button<R>(
+    ui: &mut Ui,
+    icon: &str,
+    text: &str,
+    look: Look,
+    add_contents: impl FnOnce(&mut Ui) -> R,
+) -> (Response, Option<R>) {
     let button = Button::new(format!(
         "{}  {}",
         look.label(icon, text),
@@ -568,7 +595,6 @@ pub(crate) fn tool_menu<R>(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), text)
     });
-    crate::help::note(ui, response.rect, text);
     let response = if look == Look::Compact {
         response.on_hover_text(text)
     } else {
