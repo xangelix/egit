@@ -17,7 +17,7 @@ use super::screens::{
 use crate::app::EgitApp;
 
 /// Node, and the bridge run against the stand-in SDK, where Node is installed.
-fn stand_in() -> Option<(egit_agents::install::Node, egit_agents::Launch)> {
+pub(super) fn stand_in() -> Option<(egit_agents::install::Node, egit_agents::Launch)> {
     let Ok(node) = egit_agents::install::find_node() else {
         assert!(
             std::env::var_os("EGIT_REQUIRE_NODE").is_none(),
@@ -34,12 +34,13 @@ fn stand_in() -> Option<(egit_agents::install::Node, egit_agents::Launch)> {
             agents.join("tests/stand-in/sdk.mjs").into(),
         )],
         unset: Vec::new(),
+        there: None,
     };
     Some((node, launch))
 }
 
 /// Writes `text` in the prompt and sends it with Enter.
-fn ask(harness: &mut Harness<'_, EgitApp>, text: &str) {
+pub(super) fn ask(harness: &mut Harness<'_, EgitApp>, text: &str) {
     let field = harness.get_by_role_and_label(Role::MultilineTextInput, "Ask Claude");
     field.focus();
     field.type_text(text);
@@ -99,7 +100,7 @@ fn narrowed(harness: &mut Harness<'_, EgitApp>) {
 }
 
 /// Waits until the conversation's turn has ended.
-fn turn_ended(harness: &mut Harness<'_, EgitApp>) {
+pub(super) fn turn_ended(harness: &mut Harness<'_, EgitApp>) {
     settle(harness, "the turn's end", |app| {
         app.state.repos[0]
             .agents

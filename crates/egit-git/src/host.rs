@@ -205,6 +205,13 @@ impl GitStdout {
         }
     }
 
+    /// Standard output of a program run where `host` is (see
+    /// [`Git::command_there`](crate::Git::command_there)).
+    #[must_use]
+    pub const fn of(pipe: ChildStdout, host: &Host) -> Self {
+        Self::new(pipe, host)
+    }
+
     /// Whether the program started: here, always; there, once its script marked its output.
     pub(crate) const fn started(&self) -> bool {
         self.marker.is_none()
@@ -235,15 +242,16 @@ impl Read for GitStdout {
 }
 
 /// The process id a command there says first on standard error, once said.
-pub(crate) type RemotePid = Arc<OnceLock<u32>>;
+pub type RemotePid = Arc<OnceLock<u32>>;
 
 /// The most kept of what came before the process id (a login script's words, or ssh's when
 /// logging in failed).
 const BEFORE_LIMIT: usize = 16 << 10;
 
 /// Reads a command's standard error from there: what comes before its process id (a login
-/// script's, or ssh's own) is held back, the id kept in `pid`; what follows is git's.
-pub(crate) struct PidReader {
+/// script's, or ssh's own) is held back, the id kept in `pid`; what follows is the program's.
+#[derive(Debug)]
+pub struct PidReader {
     pid: RemotePid,
     /// What came before the id, in whole lines, and a line not yet ended.
     before: Vec<u8>,
@@ -251,7 +259,9 @@ pub(crate) struct PidReader {
 }
 
 impl PidReader {
-    pub(crate) const fn new(pid: RemotePid) -> Self {
+    /// A reader keeping the id in `pid`.
+    #[must_use]
+    pub const fn new(pid: RemotePid) -> Self {
         Self {
             pid,
             before: Vec::new(),
@@ -259,8 +269,8 @@ impl PidReader {
         }
     }
 
-    /// Takes in `chunk`; returns git's part of it (none until the id came).
-    pub(crate) fn feed<'c>(&mut self, chunk: &'c [u8]) -> Option<std::borrow::Cow<'c, [u8]>> {
+    /// Takes in `chunk`; returns the program's part of it (none until the id came).
+    pub fn feed<'c>(&mut self, chunk: &'c [u8]) -> Option<std::borrow::Cow<'c, [u8]>> {
         if self.pid.get().is_some() {
             return Some(std::borrow::Cow::Borrowed(chunk));
         }
@@ -289,7 +299,8 @@ impl PidReader {
 
     /// What was held back when standard error ended without the id (logging in failed, or the
     /// script couldn't run): all of it, to say why.
-    pub(crate) fn finish(mut self) -> Vec<u8> {
+    #[must_use]
+    pub fn finish(mut self) -> Vec<u8> {
         if self.pid.get().is_some() {
             Vec::new()
         } else {

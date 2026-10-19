@@ -5,8 +5,12 @@
 //! The bridge leads a group of its own (Claude Code's process in it), as git does. Dropped, a
 //! conversation's standard input closes, which ends it; its process is waited for on a thread
 //! of its own and stopped if it lingers, so the window never waits.
+//!
+//! On another computer ([`Launch::there`]) the bridge runs there, through that computer's git
+//! ([`egit_git::Git::command_there`]): a session of egit's shared SSH connection, its output read
+//! from the script's marker on, its process id's line left out of its words.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::{ChildStdin, Command, Stdio};
@@ -14,7 +18,7 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
-use egit_git::Detached;
+use egit_git::{Detached, Git, GitStdout, Host, PidReader, RemotePid};
 use parking_lot::Mutex;
 use serde_json::Value;
 
@@ -26,22 +30,45 @@ const ANSWER_LIMIT: u64 = 256 << 20;
 /// How long a conversation may take to end once its input closed, then once asked to stop.
 const ENDING: Duration = Duration::from_secs(3);
 
-/// How to run the bridge: Node, the script, and its environment.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// How to run the bridge: Node, the script, and its environment; where.
+#[derive(Clone, Debug)]
 pub struct Launch {
     /// `node`.
     pub node: PathBuf,
     /// `bridge.mjs`, in its installation (its `node_modules` beside it).
     pub bridge: PathBuf,
-    /// Variables set for it (an account's, a stand-in SDK's).
+    /// Variables set for it (an account's, a stand-in SDK's). On another computer never a
+    /// secret: a command line there would show it (an account's go in the start request).
     pub env: Vec<(OsString, OsString)>,
-    /// Variables it doesn't get (another account's).
+    /// Variables it doesn't get (another account's); nothing there, where egit's environment
+    /// isn't the bridge's.
     pub unset: Vec<OsString>,
+    /// The other computer it runs on (its git), if it isn't this one.
+    pub there: Option<Git>,
 }
 
 impl Launch {
-    /// The command running the bridge with `args`.
+    /// Where it runs.
+    fn host(&self) -> Host {
+        self.there
+            .as_ref()
+            .map_or(Host::Local, |git| git.host().clone())
+    }
+
+    /// The command running the bridge with `args` (there, the ssh running it there).
     fn command(&self, args: &[&str]) -> Command {
+        if let Some(git) = &self.there {
+            let mut words = vec![self.bridge.as_os_str()];
+            words.extend(args.iter().map(OsStr::new));
+            if let Some(command) = git.command_there(
+                self.node.as_os_str(),
+                &words,
+                self.bridge.parent(),
+                &self.env,
+            ) {
+                return command;
+            }
+        }
         let mut command = Command::new(&self.node);
         command.arg(&self.bridge).args(args);
         if let Some(folder) = self.bridge.parent() {
@@ -86,17 +113,24 @@ impl Bridge {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let said = Arc::new(Mutex::new(String::new()));
+        let host = launch.host();
         if let Some(mut stderr) = stderr {
             let said = Arc::clone(&said);
+            // There, its script's process id comes first: not the bridge's words.
+            let mut pid = (!host.is_local()).then(|| PidReader::new(RemotePid::default()));
             std::thread::Builder::new()
                 .name("agent stderr".to_owned())
                 .spawn(move || {
                     let mut chunk = [0_u8; 4096];
                     while let Ok(read @ 1..) = stderr.read(&mut chunk) {
+                        let chunk = chunk.get(..read).unwrap_or_default();
+                        let chunk = pid.as_mut().map_or_else(
+                            || Some(chunk.to_vec()),
+                            |pid| pid.feed(chunk).map(std::borrow::Cow::into_owned),
+                        );
+                        let Some(chunk) = chunk else { continue };
                         let mut tail = said.lock();
-                        tail.push_str(&String::from_utf8_lossy(
-                            chunk.get(..read).unwrap_or_default(),
-                        ));
+                        tail.push_str(&String::from_utf8_lossy(&chunk));
                         let excess = tail.len().saturating_sub(8192);
                         if excess > 0 {
                             let cut = (excess..tail.len())
@@ -113,7 +147,7 @@ impl Bridge {
                 .name("agent".to_owned())
                 .spawn(move || {
                     let mut ended = false;
-                    for line in BufReader::new(stdout).lines() {
+                    for line in BufReader::new(GitStdout::of(stdout, &host)).lines() {
                         let Ok(line) = line else { break };
                         if line.trim().is_empty() {
                             continue;
@@ -198,16 +232,30 @@ pub fn run_once(launch: &Launch, args: &[&str]) -> Result<Value, AgentError> {
     let child = process.child_mut();
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let host = launch.host();
+    let there = !host.is_local();
     let complaint = std::thread::spawn(move || {
-        let mut said = String::new();
+        let mut said = Vec::new();
         if let Some(stderr) = stderr {
-            let _read = stderr.take(64 << 10).read_to_string(&mut said);
+            let _read = stderr.take(64 << 10).read_to_end(&mut said);
         }
-        said
+        if there {
+            // Its script's process id first: not the bridge's words.
+            let mut pid = PidReader::new(RemotePid::default());
+            let mut words = pid
+                .feed(&said)
+                .map(std::borrow::Cow::into_owned)
+                .unwrap_or_default();
+            words.extend(pid.finish());
+            said = words;
+        }
+        String::from_utf8_lossy(&said).into_owned()
     });
     let mut answer = Vec::new();
     if let Some(stdout) = stdout {
-        stdout.take(ANSWER_LIMIT).read_to_end(&mut answer)?;
+        GitStdout::of(stdout, &host)
+            .take(ANSWER_LIMIT)
+            .read_to_end(&mut answer)?;
     }
     process.stop(ENDING);
     let said = complaint.join().unwrap_or_default();

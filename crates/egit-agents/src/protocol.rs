@@ -69,6 +69,10 @@ pub enum Request {
         model: Option<String>,
         /// The permission mode to start in.
         mode: Mode,
+        /// An account's variables for Claude Code (its API key), where the bridge runs on
+        /// another computer: sent, so no command line there shows them.
+        #[serde(skip_serializing_if = "Secrets::is_empty")]
+        env: Secrets,
     },
     /// A prompt.
     Send {
@@ -93,6 +97,38 @@ pub enum Request {
     },
     /// Asks for [`Event::Info`].
     Info,
+}
+
+/// Variables kept from view: serialized as an object of them, but never shown in debug output,
+/// and wiped from memory when dropped.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct Secrets(pub Vec<(String, zeroize::Zeroizing<String>)>);
+
+impl Secrets {
+    /// Whether it holds none.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for Secrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.0.iter().map(|(name, _)| name))
+            .finish()
+    }
+}
+
+impl Serialize for Secrets {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (name, value) in &self.0 {
+            map.serialize_entry(name, value.as_str())?;
+        }
+        map.end()
+    }
 }
 
 /// An image sent with a prompt.
@@ -260,10 +296,21 @@ mod tests {
             resume: None,
             model: None,
             mode: Mode::AcceptEdits,
+            env: Secrets::default(),
         };
         assert_eq!(
             serde_json::to_string(&start).unwrap(),
             r#"{"op":"start","cwd":"/work","resume":null,"model":null,"mode":"acceptEdits"}"#
+        );
+        // An account's key: sent, never shown.
+        let keyed = Secrets(vec![(
+            "ANTHROPIC_API_KEY".to_owned(),
+            zeroize::Zeroizing::new("sk-test".to_owned()),
+        )]);
+        assert_eq!(format!("{keyed:?}"), r#"["ANTHROPIC_API_KEY"]"#);
+        assert_eq!(
+            serde_json::to_string(&keyed).unwrap(),
+            r#"{"ANTHROPIC_API_KEY":"sk-test"}"#
         );
         assert_eq!(
             serde_json::to_string(&Request::Interrupt).unwrap(),

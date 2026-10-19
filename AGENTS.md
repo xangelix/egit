@@ -40,6 +40,7 @@ it.
 | 26 | Follow-ups: columns, long text, dates, Help for every word, signing commits picked together | done; awaiting the owner's review |
 | 27 | People's pictures, and hooks' output | done; awaiting the owner's review |
 | 28 | Agents (Claude), on this computer | done (a second UI pass, files, commands, images, code); awaiting the owner's review |
+| 29 | Repositories on other computers, over SSH | under way: git, files, following changes, the window, the agents there |
 
 ## Toolchain & commands
 
@@ -745,7 +746,9 @@ writes paths), never `OsStrExt`.
     asks nothing of Anthropic until a prompt); `sessions` and `history` run once;
     `EGIT_CLAUDE_SDK` names a stand-in SDK for tests), `package.json`, and `package-lock.json`
     (the SDK pinned, `--legacy-peer-deps`: only Anthropic's packages, each with its integrity).
-  - `protocol.rs` — JSON lines: `Request` (start, send (its `Image`s: a media type and base64,
+  - `protocol.rs` — JSON lines: `Request` (start (and its account's variables where the bridge
+    runs on another computer: `Secrets`, sent rather than set, never shown in debug output,
+    wiped when dropped), send (its `Image`s: a media type and base64,
     `Image::of`), answer, interrupt, mode, model, info), `Event` (ready, message (an SDK
     message as it is), permission, withdrawn, info, failed, ended); `Mode` (Claude Code's permission modes and their names), `Answer` (allow, always:
     the suggestions sent back as rules; input replaced: a question's answers; refusal's
@@ -762,19 +765,29 @@ writes paths), never `OsStrExt`.
     SDK version and hash of what egit carries; `install` writes the package beside it, runs
     `npm ci --ignore-scripts --legacy-peer-deps` (`Detached`, cancellable), checks Claude
     Code's binary for this platform is there (`claude()`), marks it ready, renames it into
-    place, and removes older ones.
-  - `bridge.rs` — `Launch` (node, the script, environment set and unset); `Bridge::start`: a
+    place, and removes older ones. On another computer (`Install::there(git)`: under
+    `${XDG_CACHE_HOME:-$HOME/.cache}/egit` there; `find_node_there`, its `PATH`'s): the same done
+    there through its git (`Git::command_there`, `Git::files`; `sh_there` for the small steps;
+    Claude Code's binary looked for among Linux's and macOS's packages; `is_ready` and `claude`
+    then ask the other computer: in a job).
+  - `bridge.rs` — `Launch` (node, the script, environment set and unset, and `there`: the
+    other computer's git it runs through, a session of the shared connection, its output read
+    from the script's marker (`GitStdout::of`), its process id's line kept out of its words
+    (`PidReader`); never a secret in its environment there, a command line there would show
+    it); `Bridge::start`: a
     conversation's process, its lines read on a thread into `Event`s (a last `Ended` always,
     with the stderr's end when it died), `send`; dropped, its input closes and it is waited
     for on a thread (stopped after 3 s). `run_once`: one JSON answer.
   - `accounts.rs` — `Signer` (Claude Code as the terminal runs it, a configuration folder of
     its own (`CLAUDE_CONFIG_DIR`, other credentials left out), an API key), its environment;
-    `auth_status` (`claude auth status --json` with the bundled binary); `login_command` (the
-    command signing into a folder with Claude Code itself: egit has no Claude login).
+    `auth_status` (`claude auth status --json` with the bundled binary, there through its git);
+    `login_command` (the command signing into a folder with Claude Code itself, there through
+    `ssh -t <host>`: egit has no Claude login).
   - `sessions.rs` — `list_sessions` (newest first, with branch and title), `session_history`.
   - `tests/bridge.rs` drives the real bridge under Node against `tests/stand-in/sdk.mjs`
     (streaming, allowed once and always, refused, a question answered, interrupted, mode and
-    model, info, said too once started; images sent with a prompt; sessions listed and read;
+    model, info, said too once started; images sent with a prompt; the bridge run on another
+    computer through the tests' sshd, its key sent in the start request; sessions listed and read;
     skipped without Node unless `EGIT_REQUIRE_NODE`,
     which CI sets). `tests/install.rs` (ignored: `-- --ignored`) runs the real `npm ci` and
     loads the real SDK (an empty folder's sessions, its login status).
@@ -1796,7 +1809,10 @@ writes paths), never `OsStrExt`.
     and name; at each row's right what its list adds (`TreeRow`: lines counted, a stage
     button); made again only when the list is replaced, in a job past 5,000 files, the last
     tree shown meanwhile, in a scroll area of its own.
-  - `agents.rs` — agents (`egit-agents`): `AgentsSetup`, the window's (`AppState::agents`):
+  - `agents.rs` — agents (`egit-agents`): `AgentsSetup`, the window's (`AppState::agents`), and
+    one for each other computer a repository is on (`AgentsSetup::there(git)`,
+    `AppState::agents_there` by its name, made as its tab's panel first shows; its installation
+    found with its Node, `installation`, `claude`, `elsewhere`):
     Node found and the SDK's readiness (`found`, a job), installing it (`installing`,
     cancellable), who is signed in to Claude Code's own folder (`signed_in`), `launch` (how to
     run the bridge as a `Signer`; the tests' `stand_in`); its cache under egit's
@@ -1805,7 +1821,10 @@ writes paths), never `OsStrExt`.
     (kept in the settings, `agent_accounts`): a name and its `AccountKind`, a `Folder` of its
     own or an `ApiKey` that git's helpers keep for `https://api.anthropic.com` with the name as
     user (never in the settings); its signer filled in the conversation's start job
-    (`Starter`: the bridge as Claude Code's own runs it, and git). `RepoAgents`, a tab's
+    (`Starter`: the bridge as Claude Code's own runs it, and git (here: its credential
+    helpers keep the keys); there, the signer's variables go in the start request
+    (`Started::secrets`, put into the queued start as the bridge lands), and a folder's account
+    is refused: its login is this computer's). `RepoAgents`, a tab's
     (`RepoTab::agents`): shown or not, its `Conversation`s and the one shown, the account new
     ones run as (`choose_account`: the one shown too, before it begins, its bridge started
     ahead stopped to start again as it; earlier ones listed and read from its folder), the
@@ -2040,7 +2059,8 @@ writes paths), never `OsStrExt`.
     `src/tests/remote.rs` opens a repository on "another computer" (this one, through the
     tests' sshd: `testing::ssh_host`, the sandbox's `options`, `AppState::ssh`) from Home's
     form, reads its history and work tree there, stages and commits there, and follows a
-    commit made there behind its back (skipped without sshd unless `EGIT_REQUIRE_SSHD`).
+    commit made there behind its back; and runs the agents there (the stand-in bridge through
+    the session), skipped without sshd unless `EGIT_REQUIRE_SSHD`.
     `src/tests/agents.rs` drives the Agents panel against `egit-agents`' stand-in SDK (skipped
     without Node unless `EGIT_REQUIRE_NODE`): shown from the top bar, a prompt sent with Enter
     and its answer streamed, a command allowed for the conversation (its line opened), a

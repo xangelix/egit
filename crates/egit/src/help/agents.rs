@@ -8,12 +8,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "agents",
         group: Group::Agents,
         title: "Agents",
-        on: &[
-            "Agents",
-            "Hide the agents",
-            "Show or hide the agents",
-            "Agents on another computer",
-        ],
+        on: &["Agents", "Hide the agents", "Show or hide the agents"],
         what: "Claude Code working in this repository's work tree, beside the history and the \
                changes it makes: the same Claude Code as in a terminal or an editor (its \
                system prompt, tools, your settings, the project's CLAUDE.md, hooks, MCP servers, \
@@ -57,6 +52,10 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "Behind a proxy or a private registry?",
                 "npm uses your own configuration (~/.npmrc): its registry and proxy apply; the checksums still have to match.",
+            ),
+            (
+                "A repository on another computer?",
+                "Claude Code runs there, beside it: Node.js and npm there, the SDK installed into the cache folder there, its login there (or an API key's account, its key sent over the connection, never on a command line there).",
             ),
             (
                 "Does it update by itself?",
@@ -115,6 +114,10 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "Signing in to a folder?",
                 "Under the prompt, nobody signed in shows Claude Code's own login command for that folder: run it in a terminal, then Look again.",
+            ),
+            (
+                "On another computer?",
+                "A folder's account is this computer's login, so it isn't offered there: conversations there run as Claude Code is signed in there, or as an API key's account.",
             ),
             (
                 "Its earlier conversations?",

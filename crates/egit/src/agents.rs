@@ -13,8 +13,10 @@ use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
 use egit_agents::accounts::{AuthStatus, Signer, auth_status};
-use egit_agents::install::{Install, Node, find_node};
-use egit_agents::protocol::{Answer, Event, Image, Info, Mode, PermissionRequest, Request};
+use egit_agents::install::{Install, Node, find_node, find_node_there};
+use egit_agents::protocol::{
+    Answer, Event, Image, Info, Mode, PermissionRequest, Request, Secrets,
+};
 use egit_agents::sessions::{SessionInfo, list_sessions, session_history};
 use egit_agents::{Bridge, Launch, Level, Prompt, Transcript};
 use egit_git::CancelToken;
@@ -120,10 +122,13 @@ pub(crate) struct Starter {
     pub(crate) git: Option<Git>,
 }
 
-/// Claude's setup, for the whole window.
+/// Claude's setup on a computer: this one (for the whole window), or another a repository is
+/// on (`there`: its git).
 pub(crate) struct AgentsSetup {
-    /// Where the SDK is installed (none without a cache folder).
-    pub(crate) install: Option<Install>,
+    /// Where the SDK is installed here (none without a cache folder); there, found with Node.
+    install: Option<Install>,
+    /// The other computer's git, when the setup is there.
+    there: Option<Git>,
     /// Node and npm, and whether the SDK is installed, once looked for.
     pub(crate) found: Bind<Found, Problem>,
     /// Installing the SDK, and why the last try failed.
@@ -146,6 +151,10 @@ pub(crate) struct Found {
     pub(crate) node: Node,
     /// Whether the SDK is installed already.
     pub(crate) ready: bool,
+    /// Where it is (or goes).
+    pub(crate) install: Option<Install>,
+    /// Claude Code's binary there, once installed.
+    pub(crate) claude: Option<PathBuf>,
 }
 
 impl AgentsSetup {
@@ -153,6 +162,7 @@ impl AgentsSetup {
     pub(crate) fn new(cache: Option<&Path>) -> Self {
         Self {
             install: cache.map(Install::at),
+            there: None,
             found: Bind::new(true),
             installing: Bind::new(true),
             install_problem: None,
@@ -162,6 +172,42 @@ impl AgentsSetup {
             form: AccountForm::default(),
             #[cfg(test)]
             stand_in: None,
+        }
+    }
+
+    /// Claude's setup on the other computer `git` runs on: Node there, the SDK installed
+    /// under its cache folder there.
+    pub(crate) fn there(git: Git) -> Self {
+        Self {
+            there: Some(git),
+            ..Self::new(None)
+        }
+    }
+
+    /// The other computer it is on (as ssh reaches it), if it is.
+    pub(crate) fn elsewhere(&self) -> Option<&str> {
+        self.there
+            .as_ref()
+            .and_then(|git| git.host().ssh())
+            .map(|ssh| ssh.destination.as_str())
+    }
+
+    /// Claude Code's binary, once installed (as found when Node and the SDK were looked for).
+    pub(crate) fn claude(&mut self) -> Option<PathBuf> {
+        match self.found.read_as_ref() {
+            Some(Ok(found)) => found.claude.clone(),
+            _ => None,
+        }
+    }
+
+    /// Where the SDK is (or goes): here, known at once; there, once Node was looked for.
+    pub(crate) fn installation(&mut self) -> Option<Install> {
+        if self.there.is_none() {
+            return self.install.clone();
+        }
+        match self.found.read_as_ref() {
+            Some(Ok(found)) => found.install.clone(),
+            _ => None,
         }
     }
 
@@ -191,19 +237,37 @@ impl AgentsSetup {
 
     /// Looks for Node and the SDK again (after installing either).
     pub(crate) fn look_again(&mut self) {
-        let install = self.install.clone();
+        let (install, there) = (self.install.clone(), self.there.clone());
         self.found.request(jobs::blocking(move || {
-            let node = find_node()
-                .map_err(|error| Problem::new("Node.js wasn't found", error.to_string()))?;
+            let missing = |error: egit_agents::AgentError| {
+                Problem::new("Node.js wasn't found", error.to_string())
+            };
+            let (node, install) = match there {
+                None => (find_node().map_err(missing)?, install),
+                // There: its Node, and the cache folder there.
+                Some(git) => {
+                    let node = find_node_there(&git).map_err(missing)?;
+                    let install = Install::there(&git).map_err(|error| {
+                        Problem::new("The other computer couldn't be asked", error.to_string())
+                    })?;
+                    (node, Some(install))
+                }
+            };
             let ready = install.as_ref().is_some_and(Install::is_ready);
-            Ok(Found { node, ready })
+            let claude = install.as_ref().filter(|_| ready).and_then(Install::claude);
+            Ok(Found {
+                node,
+                ready,
+                install,
+                claude,
+            })
         }));
         self.statuses.clear();
     }
 
     /// Installs the SDK with the Node found.
     pub(crate) fn install(&mut self) {
-        let (Some(install), Some(Ok(found))) = (self.install.clone(), self.found.read_as_ref())
+        let (Some(install), Some(Ok(found))) = (self.installation(), self.found.read_as_ref())
         else {
             return;
         };
@@ -237,12 +301,17 @@ impl AgentsSetup {
         let key = folder.map(Path::to_owned);
         if !self.statuses.contains_key(&key) {
             let mut status = Bind::new(true);
-            match self.install.as_ref().and_then(Install::claude) {
-                Some(claude) => {
+            let there = self.there.clone();
+            match self.installation() {
+                Some(install) => {
                     let signer =
                         folder.map_or(Signer::Default, |folder| Signer::Folder(folder.to_owned()));
                     status.request(jobs::blocking(move || {
-                        auth_status(&claude, &signer).map_err(|error| {
+                        // Finding its binary is a command there, too: in the job.
+                        let claude = install.claude().ok_or_else(|| {
+                            Problem::new("Claude Code isn't installed", String::new())
+                        })?;
+                        auth_status(&claude, &signer, there.as_ref()).map_err(|error| {
                             Problem::new(
                                 "Claude Code couldn't say who is signed in",
                                 error.to_string(),
@@ -298,25 +367,40 @@ impl AgentsSetup {
     #[cfg(test)]
     pub(crate) fn stand_in(&mut self, node: Node, launch: Launch) {
         self.stand_in = Some(launch);
-        self.found.fill(Ok(Found { node, ready: true }));
+        self.found.fill(Ok(Found {
+            node,
+            ready: true,
+            install: None,
+            claude: None,
+        }));
     }
 
     /// How to run the bridge as `signer`, once it is installed.
     pub(crate) fn launch(&mut self, signer: &Signer) -> Option<Launch> {
         #[cfg(test)]
         if let Some(launch) = &self.stand_in {
-            return Some(launch.clone());
+            return Some(Launch {
+                there: self.there.clone(),
+                ..launch.clone()
+            });
         }
-        let install = self.install.clone()?;
+        let install = self.installation()?;
         let Some(Ok(found)) = self.found.read_as_ref() else {
             return None;
         };
-        let (env, unset) = signer.environment();
+        // There, an account's variables go in the start request: no command line there
+        // shows them.
+        let (env, unset) = if self.there.is_some() {
+            (Vec::new(), Vec::new())
+        } else {
+            signer.environment()
+        };
         Some(Launch {
             node: found.node.node.clone(),
             bridge: install.bridge(),
             env,
             unset,
+            there: self.there.clone(),
         })
     }
 }
@@ -539,6 +623,8 @@ pub(crate) struct Conversation {
 struct Started {
     bridge: Bridge,
     events: Receiver<Event>,
+    /// Its account's variables, for the start request where it runs on another computer.
+    secrets: Secrets,
 }
 
 impl Conversation {
@@ -657,6 +743,8 @@ impl Conversation {
                     .or_else(|| self.resume.clone()),
                 model: self.model.clone(),
                 mode: self.mode,
+                // Filled in as it starts, where it runs on another computer.
+                env: Secrets::default(),
             },
         );
         let account = self.account.clone();
@@ -665,11 +753,37 @@ impl Conversation {
             let signer =
                 account.map_or(Ok(Signer::Default), |account| account.signer(git.as_ref()))?;
             let (env, unset) = signer.environment();
-            launch.env.extend(env);
-            launch.unset.extend(unset);
+            let secrets = if launch.there.is_some() {
+                if matches!(signer, Signer::Folder(_)) {
+                    return Err(Problem::new(
+                        "This account's Claude Code folder is on this computer",
+                        "On another computer, conversations run as Claude Code is signed in \
+                         there, or as an API key's account.",
+                    ));
+                }
+                // Sent in the start request: no command line there shows them.
+                Secrets(
+                    env.into_iter()
+                        .map(|(key, value)| {
+                            (
+                                key.to_string_lossy().into_owned(),
+                                zeroize::Zeroizing::new(value.to_string_lossy().into_owned()),
+                            )
+                        })
+                        .collect(),
+                )
+            } else {
+                launch.env.extend(env);
+                launch.unset.extend(unset);
+                Secrets::default()
+            };
             let (bridge, events) = Bridge::start(&launch, move || waker.request_repaint())
                 .map_err(|error| Problem::new("Claude couldn't be started", error.to_string()))?;
-            Ok(Started { bridge, events })
+            Ok(Started {
+                bridge,
+                events,
+                secrets,
+            })
         }));
     }
 
@@ -752,6 +866,9 @@ impl Conversation {
             Some(Ok(started)) => {
                 self.bridge = Some(started.bridge);
                 self.events = Some(started.events);
+                if let Some(Request::Start { env, .. }) = self.queued.first_mut() {
+                    *env = started.secrets;
+                }
             }
             Some(Err(problem)) => {
                 self.queued.clear();

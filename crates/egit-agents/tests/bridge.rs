@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
-use egit_agents::protocol::{Answer, Event, Image, Mode, PermissionRequest, Request};
+use egit_agents::protocol::{Answer, Event, Image, Mode, PermissionRequest, Request, Secrets};
 use egit_agents::sessions::{list_sessions, session_history};
 use egit_agents::{Bridge, ItemKind, Launch, Prompt, ToolResult, Transcript};
 
@@ -43,6 +43,7 @@ fn launch() -> Option<Launch> {
             crate_dir.join("tests/stand-in/sdk.mjs").into(),
         )],
         unset: Vec::new(),
+        there: None,
     })
 }
 
@@ -55,6 +56,11 @@ struct Conversation {
 
 impl Conversation {
     fn start(launch: &Launch, mode: Mode) -> Self {
+        Self::start_with(launch, mode, Secrets::default())
+    }
+
+    /// Starts a conversation whose Claude Code gets `env` (an account's key).
+    fn start_with(launch: &Launch, mode: Mode, env: Secrets) -> Self {
         let (bridge, events) = Bridge::start(launch, || {}).unwrap();
         let mut conversation = Self {
             bridge,
@@ -69,6 +75,7 @@ impl Conversation {
                 resume: None,
                 model: None,
                 mode,
+                env,
             })
             .unwrap();
         conversation
@@ -301,6 +308,40 @@ fn what_it_offers_is_said_once_started_and_images_go_with_a_prompt() {
         conversation.last_text(),
         Some("Got 2 images: image/png, image/jpeg")
     );
+}
+
+#[test]
+fn the_bridge_runs_on_another_computer_its_key_sent() {
+    let Some(mut launch) = launch() else {
+        return;
+    };
+    // This computer playing the other, through the tests' sshd (skipped without one).
+    let Ok(host) = egit_git::testing::ssh_host() else {
+        assert!(
+            std::env::var_os("EGIT_REQUIRE_SSHD").is_none(),
+            "EGIT_REQUIRE_SSHD is set, but the tests' sshd couldn't start"
+        );
+        return;
+    };
+    let sandbox = egit_git::testing::Sandbox::new().unwrap();
+    let there = egit_git::Git::new(egit_git::GitOptions {
+        host: egit_git::Host::Ssh(host),
+        ..sandbox.options()
+    })
+    .unwrap();
+    launch.there = Some(there);
+    let key = Secrets(vec![(
+        "ANTHROPIC_API_KEY".to_owned(),
+        zeroize::Zeroizing::new("sk-there".to_owned()),
+    )]);
+    let mut conversation = Conversation::start_with(&launch, Mode::Default, key);
+    conversation.say("who");
+    conversation.until_turn_ends();
+    assert_eq!(conversation.last_text(), Some("Key sk-there, folder none"));
+    // Asked once, there too.
+    let dir = std::env::temp_dir();
+    let sessions = list_sessions(&launch, &dir, 10).unwrap();
+    assert_eq!(sessions.len(), 2);
 }
 
 #[test]

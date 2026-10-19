@@ -12,7 +12,8 @@ use egui_kittest::kittest::Queryable as _;
 use super::screens::{
     harness, history_of, profile_loaded, render, settle, type_into, uncommitted, wait_for_label,
 };
-use crate::app::{EgitApp, SshSettings};
+use crate::app::{Action, EgitApp, SshSettings};
+use crate::settings::Location;
 
 /// The harness, reaching other computers through the tests' sshd as the sandbox's git does,
 /// or `None` where there is no sshd.
@@ -106,4 +107,44 @@ fn a_repository_on_another_computer_is_driven_as_one_here() {
         .commit_file(&repo, "more", "four\n", "Fourth, behind its back")
         .unwrap();
     settle(&mut harness, "the commit made outside", history_of(4));
+}
+
+#[test]
+fn the_agents_run_on_the_computer_the_repository_is_on() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let Some((node, launch)) = super::agents::stand_in() else {
+        return;
+    };
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "f", "1\n", "Start").unwrap();
+    let Some(mut harness) = reaching(&sandbox) else {
+        return;
+    };
+    settle(&mut harness, "the profile", profile_loaded);
+    let there = Location {
+        host: Some("127.0.0.1".to_owned()),
+        path: repo,
+    };
+    harness.state_mut().state.actions.push(Action::Open(there));
+    settle(&mut harness, "the history there", history_of(1));
+    // Claude's setup there: the stand-in, run through the session (as the installed bridge
+    // would be, from its cache folder there).
+    let git = harness.state().state.repos[0].git.clone();
+    let mut setup = crate::agents::AgentsSetup::there(git);
+    setup.stand_in(node, launch);
+    let state = &mut harness.state_mut().state;
+    state.agents_there.insert("127.0.0.1".to_owned(), setup);
+    harness
+        .get_by_role_and_label(Role::Button, "Agents")
+        .click_accesskit();
+    wait_for_label(&mut harness, "Ask Claude to work in repo, on 127.0.0.1");
+    super::agents::ask(&mut harness, "hello");
+    wait_for_label(&mut harness, "Hello");
+    super::agents::turn_ended(&mut harness);
+    // Its conversations are those Claude Code keeps there.
+    let conversation = harness.state_mut().state.repos[0].agents.current();
+    assert!(conversation.is_some_and(|conversation| conversation.transcript.session().is_some()));
 }

@@ -142,8 +142,10 @@ export function query({ prompt, options }) {
     } else if (text === 'images') {
       yield assistant([{ type: 'text', text: `Got ${images.length} images: ${images.join(', ')}` }]);
     } else if (text === 'who') {
-      const key = process.env.ANTHROPIC_API_KEY ?? 'none';
-      const folder = process.env.CLAUDE_CONFIG_DIR ?? 'none';
+      // As Claude Code would see them: the bridge's environment, or the one it was given.
+      const env = options.env ?? process.env;
+      const key = env.ANTHROPIC_API_KEY ?? 'none';
+      const folder = env.CLAUDE_CONFIG_DIR ?? 'none';
       yield assistant([{ type: 'text', text: `Key ${key}, folder ${folder}` }]);
     } else {
       yield assistant([{ type: 'text', text: `You said: ${text}` }]);

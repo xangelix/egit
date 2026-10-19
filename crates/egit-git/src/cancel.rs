@@ -18,8 +18,10 @@ pub(crate) struct Elsewhere {
 
 impl Elsewhere {
     /// Asks its process group there to stop, from a thread of its own (a command there): once
-    /// its id is known, waiting a little for it.
-    fn terminate(&self) {
+    /// its id is known (waiting a little: it may still be on its way), then the session here,
+    /// `group`, if `shared` still runs it. The session is left alive until then, so the id
+    /// can still arrive through it.
+    fn terminate(&self, shared: Arc<Shared>, group: Group) {
         let elsewhere = self.clone();
         let spawned = std::thread::Builder::new()
             .name("stopping git elsewhere".to_owned())
@@ -28,16 +30,22 @@ impl Elsewhere {
                 loop {
                     if let Some(&pid) = elsewhere.pid.get() {
                         elsewhere.host.terminate(pid);
-                        return;
+                        break;
                     }
                     if until.is_none_or(|until| Instant::now() >= until) {
-                        return;
+                        break;
                     }
                     std::thread::sleep(Duration::from_millis(20));
+                }
+                // Still registered: its leader hasn't been reaped, so the id is still its.
+                let running = shared.running.lock();
+                if running.iter().any(|(running, _)| *running == group) {
+                    process::terminate_group(group);
                 }
             });
         if let Err(error) = spawned {
             tracing::warn!(%error, "couldn't start stopping git elsewhere");
+            process::terminate_group(group);
         }
     }
 }
@@ -77,11 +85,11 @@ impl CancelToken {
         self.0.cancelled.store(true, Ordering::Release);
         let running = self.0.running.lock();
         for (group, elsewhere) in running.iter() {
-            // There first: the session here ending doesn't stop it.
-            if let Some(elsewhere) = elsewhere {
-                elsewhere.terminate();
+            match elsewhere {
+                // There first: the session here ending doesn't stop it.
+                Some(elsewhere) => elsewhere.terminate(Arc::clone(&self.0), *group),
+                None => process::terminate_group(*group),
             }
-            process::terminate_group(*group);
         }
         drop(running);
         self.0.woken.notify_all();
@@ -120,10 +128,10 @@ impl CancelToken {
         // A cancel that came between the check before spawning and now: it may not have seen
         // this group, so stop it here.
         if self.is_cancelled() {
-            if let Some(elsewhere) = &elsewhere {
-                elsewhere.terminate();
+            match &elsewhere {
+                Some(elsewhere) => elsewhere.terminate(Arc::clone(&self.0), group),
+                None => process::terminate_group(group),
             }
-            process::terminate_group(group);
         }
         running.push((group, elsewhere));
         drop(running);

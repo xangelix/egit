@@ -82,8 +82,10 @@ pub(crate) struct AppState {
     pub(crate) palette: PaletteView,
     /// The help window, while open.
     pub(crate) help: crate::help::HelpWindow,
-    /// Claude's setup for the agents: Node, the SDK, who is signed in.
+    /// Claude's setup for the agents: Node, the SDK, who is signed in; here, and on each
+    /// other computer a repository is on (by its name as ssh reaches it).
     pub(crate) agents: crate::agents::AgentsSetup,
+    pub(crate) agents_there: std::collections::HashMap<String, crate::agents::AgentsSetup>,
 }
 
 /// A repository being opened: found, with the git it is read with (on another computer, git
@@ -320,6 +322,7 @@ impl EgitApp {
             palette: PaletteView::default(),
             help: crate::help::HelpWindow::default(),
             fonts: Fallbacks::default(),
+            agents_there: std::collections::HashMap::new(),
             agents: crate::agents::AgentsSetup::new(
                 crate::agents::cache_folder(home_dir_for_agents.as_deref()).as_deref(),
             ),
@@ -564,6 +567,9 @@ impl AppState {
     fn poll(&mut self, ctx: &egui::Context) {
         self.prompts.poll();
         self.agents.poll();
+        for setup in self.agents_there.values_mut() {
+            setup.poll();
+        }
         self.fonts.poll(ctx);
         crate::avatars::poll(ctx);
         // Back from an editor or a terminal: what the user did there is what they look for.

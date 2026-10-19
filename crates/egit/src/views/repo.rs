@@ -36,6 +36,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         actions,
         home_dir,
         agents,
+        agents_there,
         settings,
         ..
     } = state;
@@ -53,7 +54,13 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         git,
         accounts: &settings.agent_accounts,
     };
-    agents_panel(ui, (agents, &mut repo.agents), (id, around), actions);
+    // Claude's setup where the repository is: here, or on the computer it is on.
+    let setup = repo.git.host().ssh().map_or(agents, |ssh| {
+        agents_there
+            .entry(ssh.destination.clone())
+            .or_insert_with(|| crate::agents::AgentsSetup::there(repo.git.clone()))
+    });
+    agents_panel(ui, (setup, &mut repo.agents), (id, around), actions);
     super::output::show(ui, &mut repo.output, id);
     let mut behavior = Panels {
         id,

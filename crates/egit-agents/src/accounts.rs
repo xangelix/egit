@@ -10,9 +10,11 @@
 //! signed in to one.
 
 use std::ffi::OsString;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use egit_git::{Git, GitStdout, Host};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
@@ -77,46 +79,83 @@ pub struct AuthStatus {
     pub config_directory: Option<String>,
 }
 
-/// Asks Claude Code (`claude`, the binary the SDK installed) who is signed in for `signer`.
-/// Blocks: run it in a job.
+/// Asks Claude Code (`claude`, the binary the SDK installed) who is signed in for `signer`
+/// (`there`: on the other computer that git runs on). Blocks: run it in a job.
 ///
 /// # Errors
 ///
 /// When it can't be run, or what it says can't be read.
-pub fn auth_status(claude: &Path, signer: &Signer) -> Result<AuthStatus, AgentError> {
+pub fn auth_status(
+    claude: &Path,
+    signer: &Signer,
+    there: Option<&Git>,
+) -> Result<AuthStatus, AgentError> {
     let (set, unset) = signer.environment();
-    let mut command = Command::new(claude);
+    let args = ["auth", "status", "--json"];
+    let elsewhere = there.and_then(|git| {
+        let words: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
+        git.command_there(claude.as_os_str(), &words, None, &set)
+            .map(|command| (command, git.host().clone()))
+    });
+    let (mut command, host) = elsewhere.unwrap_or_else(|| {
+        let mut command = Command::new(claude);
+        command.args(args);
+        for key in &unset {
+            command.env_remove(key);
+        }
+        command.envs(set.iter().map(|(key, value)| (key, value)));
+        (command, Host::Local)
+    });
     command
-        .args(["auth", "status", "--json"])
         .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    for key in unset {
-        command.env_remove(key);
-    }
-    command.envs(set);
     // Not signed in, it says so and exits 1: what it prints is the answer either way.
-    let out = command.output()?;
-    Ok(serde_json::from_slice(&out.stdout)?)
+    let mut child = command.spawn()?;
+    let mut said = Vec::new();
+    if let Some(stdout) = child.stdout.take() {
+        GitStdout::of(stdout, &host).read_to_end(&mut said)?;
+    }
+    child.wait()?;
+    Ok(serde_json::from_slice(&said)?)
 }
 
-/// The command signing into `folder` with Claude Code itself, to run in a terminal.
+/// The command signing into `folder` with Claude Code itself, to run in a terminal (`there`:
+/// on the other computer ssh names so, through `ssh -t`).
 #[must_use]
-pub fn login_command(claude: &Path, folder: Option<&Path>) -> String {
+pub fn login_command(claude: &Path, folder: Option<&Path>, there: Option<&str>) -> String {
+    if let Some(host) = there {
+        let inner = login_command_unix(claude, folder);
+        return format!("ssh -t {host} \"{inner}\"");
+    }
+    if cfg!(windows) {
+        return folder.map_or_else(
+            || format!("& \"{}\" auth login", claude.display()),
+            |folder| {
+                format!(
+                    "$env:CLAUDE_CONFIG_DIR = \"{}\"; & \"{}\" auth login",
+                    folder.display(),
+                    claude.display()
+                )
+            },
+        );
+    }
+    login_command_unix(claude, folder)
+}
+
+/// The command signing into `folder`, for a POSIX shell.
+fn login_command_unix(claude: &Path, folder: Option<&Path>) -> String {
     let quoted = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
     let binary = quoted(&claude.to_string_lossy());
-    match folder {
-        Some(folder) if cfg!(windows) => format!(
-            "$env:CLAUDE_CONFIG_DIR = \"{}\"; & \"{}\" auth login",
-            folder.display(),
-            claude.display()
-        ),
-        Some(folder) => format!(
-            "CLAUDE_CONFIG_DIR={} {binary} auth login",
-            quoted(&folder.to_string_lossy())
-        ),
-        None if cfg!(windows) => format!("& \"{}\" auth login", claude.display()),
-        None => format!("{binary} auth login"),
-    }
+    folder.map_or_else(
+        || format!("{binary} auth login"),
+        |folder| {
+            format!(
+                "CLAUDE_CONFIG_DIR={} {binary} auth login",
+                quoted(&folder.to_string_lossy())
+            )
+        },
+    )
 }
 
 #[cfg(test)]
@@ -141,9 +180,18 @@ mod tests {
         assert_eq!(status.organization.as_deref(), Some("Team"));
         if cfg!(unix) {
             assert_eq!(
-                login_command(Path::new("/opt/it's/claude"), Some(Path::new("/c/work"))),
+                login_command(
+                    Path::new("/opt/it's/claude"),
+                    Some(Path::new("/c/work")),
+                    None
+                ),
                 r"CLAUDE_CONFIG_DIR='/c/work' '/opt/it'\''s/claude' auth login"
             );
         }
+        assert_eq!(
+            login_command(Path::new("/c/claude"), None, Some("devbox")),
+            r#"ssh -t devbox "'/c/claude' auth login""#
+        );
+        if cfg!(unix) {}
     }
 }

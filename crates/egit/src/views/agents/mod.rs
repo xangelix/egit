@@ -173,27 +173,6 @@ pub(crate) fn panel(
     let work_tree = around.work_tree;
     setup.look();
     head(ui, setup, agents, work_tree);
-    if let Some(host) = around.elsewhere {
-        // Claude Code runs where the repository is: not here.
-        Frame::new()
-            .inner_margin(Margin::same(INSET))
-            .show(ui, |ui| {
-                widgets::card(ui, |ui| {
-                    widgets::heading(ui, "Agents on another computer");
-                    ui.add(
-                        egui::Label::new(muted(
-                            ui,
-                            format!(
-                                "This repository is on {host}: agents run there, beside it, which \
-                             egit can't do yet. Run Claude Code in a terminal there meanwhile."
-                            ),
-                        ))
-                        .wrap(),
-                    );
-                });
-            });
-        return;
-    }
     if !setup.is_ready() {
         Frame::new()
             .inner_margin(Margin::same(INSET))

@@ -21,6 +21,7 @@ enum Stands {
 
 /// The setup card.
 pub(super) fn show(ui: &mut Ui, setup: &mut AgentsSetup, actions: &mut Vec<Action>) {
+    let there = setup.elsewhere().map(str::to_owned);
     widgets::card(ui, |ui| {
         widgets::heading(ui, "Set up Claude");
         ui.add_space(4.0);
@@ -28,6 +29,13 @@ pub(super) fn show(ui: &mut Ui, setup: &mut AgentsSetup, actions: &mut Vec<Actio
                      its tools, your settings, CLAUDE.md files, hooks, and sessions, through \
                      Anthropic's Claude Agent SDK.";
         ui.add(egui::Label::new(muted(ui, about)).wrap());
+        if let Some(host) = &there {
+            let said = format!(
+                "This repository is on {host}: Claude Code runs there, beside it, set up \
+                 there as below (its Node, its cache folder, its login)."
+            );
+            ui.add(egui::Label::new(muted(ui, said)).wrap());
+        }
         ui.add_space(12.0);
         let node = node_step(ui, setup, actions);
         ui.add_space(8.0);
@@ -46,9 +54,10 @@ pub(super) fn show(ui: &mut Ui, setup: &mut AgentsSetup, actions: &mut Vec<Actio
 /// Node.js and npm: found (its version), being looked for, or missing (Look again,
 /// nodejs.org). Returns whether it was found.
 fn node_step(ui: &mut Ui, setup: &mut AgentsSetup, actions: &mut Vec<Action>) -> bool {
-    let title = format!(
-        "Node.js {} or newer, and npm",
-        egit_agents::install::NODE_MINIMUM
+    let minimum = egit_agents::install::NODE_MINIMUM;
+    let title = setup.elsewhere().map_or_else(
+        || format!("Node.js {minimum} or newer, and npm"),
+        |host| format!("Node.js {minimum} or newer, and npm, on {host}"),
     );
     match setup.found.read_as_ref() {
         None => {

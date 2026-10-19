@@ -304,9 +304,11 @@ fn welcome(ui: &mut Ui, around: Around<'_>) {
             .color(Palette::of(ui.ctx()).muted),
     );
     ui.add_space(4.0);
-    ui.add(
-        egui::Label::new(RichText::new(format!("Ask Claude to work in {name}")).semibold()).wrap(),
+    let title = around.elsewhere.map_or_else(
+        || format!("Ask Claude to work in {name}"),
+        |host| format!("Ask Claude to work in {name}, on {host}"),
     );
+    ui.add(egui::Label::new(RichText::new(title).semibold()).wrap());
     ui.add_space(4.0);
     ui.add(
         egui::Label::new(muted(

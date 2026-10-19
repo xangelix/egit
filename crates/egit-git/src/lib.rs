@@ -120,7 +120,7 @@ pub use history::{
     write_commit_graph,
 };
 pub use hooks::{Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
-pub use host::{GitStdout, Host, SshHost};
+pub use host::{GitStdout, Host, PidReader, RemotePid, SshHost};
 pub use ignore::{
     IgnoreError, IgnoreIn, Ignored, extension_pattern, ignore, ignore_again, path_pattern, unignore,
 };

@@ -4,7 +4,9 @@
 //
 // Run with no arguments it holds one conversation:
 //
-//   in   {"op":"start","cwd":…,"resume":…,"model":…,"mode":…}  once, first
+//   in   {"op":"start","cwd":…,"resume":…,"model":…,"mode":…,"env":{…}}  once, first (env: an
+//        account's variables for Claude Code, sent rather than set where the bridge runs on
+//        another computer, so no command line there shows them)
 //        {"op":"send","text":…,"images":[{"mediaType":…,"data":…}]}  a prompt (images base64)
 //        {"op":"answer","request":…,"allow":…,"always":…,"input":…,"message":…,"interrupt":…}
 //        {"op":"interrupt"} {"op":"mode","mode":…} {"op":"model","model":…} {"op":"info"}
@@ -129,6 +131,8 @@ async function converse() {
           prompt: prompts,
           options: {
             cwd: request.cwd,
+            // An account's variables (its API key), over this process's own.
+            env: request.env ? { ...process.env, ...request.env } : undefined,
             resume: request.resume ?? undefined,
             model: request.model ?? undefined,
             // Explicitly: left out, Claude Code may start in auto mode.

@@ -161,6 +161,45 @@ impl Git {
         &self.inner.environment
     }
 
+    /// The ssh command running `program` with `args` on the other computer this git runs on
+    /// (in `dir`, with git's environment there and `env`, but this computer's helpers, which
+    /// the ssh gets); `None` when it runs here. Its standard output starts with what a login
+    /// script there printed: read it through [`GitStdout::of`](crate::GitStdout::of); its
+    /// standard error starts with the script's process id: through
+    /// [`PidReader`](crate::PidReader).
+    #[must_use]
+    pub fn command_there(
+        &self,
+        program: &OsStr,
+        args: &[&OsStr],
+        dir: Option<&Path>,
+        env: &[(OsString, OsString)],
+    ) -> Option<std::process::Command> {
+        let ssh = self.inner.host.ssh()?;
+        let environment = self.inner.remote.as_ref();
+        let (here, there): (Vec<_>, Vec<_>) = env
+            .iter()
+            .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
+            .partition(|(key, _)| crate::env::is_local_only(key));
+        let mut set: Vec<(&OsStr, &OsStr)> = environment
+            .map(|environment| environment.settings().collect())
+            .unwrap_or_default();
+        set.extend(there);
+        let script = crate::host::script(&crate::host::Remote {
+            program,
+            args: args.to_vec(),
+            dir,
+            unset: environment
+                .map(|environment| environment.removals().collect())
+                .unwrap_or_default(),
+            set,
+        });
+        let mut command = ssh.command(&script);
+        self.inner.environment.apply(&mut command);
+        command.envs(here);
+        Some(command)
+    }
+
     /// Git's environment on another computer (none here).
     pub(crate) fn remote_environment(&self) -> Option<&Environment> {
         self.inner.remote.as_ref()
