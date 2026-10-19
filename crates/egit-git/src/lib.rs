@@ -26,12 +26,14 @@ mod diff;
 mod discard;
 mod env;
 mod error;
+mod files;
 mod foresee;
 mod format_patch;
 mod forward;
 mod git;
 mod history;
 mod hooks;
+mod host;
 mod ignore;
 mod integrate;
 mod lfs;
@@ -102,6 +104,7 @@ pub use discard::{
     discard_lines, put_back,
 };
 pub use error::{Failure, GitError};
+pub use files::{Entry, Files, Put, TempDir};
 pub use foresee::{Foreseen, MAX_REPLAYED, foresee_merge, foresee_pick, foresee_rebase};
 pub use format_patch::{
     Changes, CombineError, Series, changes_patch, combined_patch, format_patch, format_patches,
@@ -116,6 +119,7 @@ pub use history::{
     write_commit_graph,
 };
 pub use hooks::{Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
+pub use host::{GitStdout, Host, SshHost};
 pub use ignore::{
     IgnoreError, IgnoreIn, Ignored, extension_pattern, ignore, ignore_again, path_pattern, unignore,
 };

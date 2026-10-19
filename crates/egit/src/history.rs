@@ -492,7 +492,7 @@ fn walk(
     };
     let start = Piece::Start {
         refs: Refs::new(refs),
-        commit_graph: repository.has_commit_graph(),
+        commit_graph: repository.has_commit_graph(git),
         scope: applied,
     };
     if pieces.send(start).is_err() {

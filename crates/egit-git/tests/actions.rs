@@ -241,7 +241,7 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
     let path = two_branches(&sandbox);
     let repository = open(&sandbox, &path);
     let git = sandbox.git();
-    let operations = || repository.operations().unwrap();
+    let operations = || repository.operations(sandbox.git()).unwrap();
     // `f` is "one" there, "two" now.
     let one = rev(&sandbox, &path, "main~1");
 

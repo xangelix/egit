@@ -15,6 +15,8 @@ workspace = true
 testing = []
 
 [dependencies]
+# Scripts handed to the shell on another computer.
+base64.workspace = true
 bstr.workspace = true
 getrandom.workspace = true
 parking_lot.workspace = true

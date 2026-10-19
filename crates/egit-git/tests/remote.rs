@@ -402,13 +402,19 @@ fn a_conflicted_pull_is_aborted_or_continued() {
     };
 
     assert_eq!(pulled(PullMode::Merge).unwrap(), Pulled::Conflicts);
-    assert_eq!(repository.operations().unwrap(), [Operation::Merge]);
+    assert_eq!(
+        repository.operations(sandbox.git()).unwrap(),
+        [Operation::Merge]
+    );
     abort_operation(sandbox.git(), &repository, Operation::Merge, &cancel).unwrap();
-    assert_eq!(repository.operations().unwrap(), []);
+    assert_eq!(repository.operations(sandbox.git()).unwrap(), []);
     assert_eq!(rev(&sandbox, &mine, "HEAD"), before);
 
     assert_eq!(pulled(PullMode::Rebase).unwrap(), Pulled::Conflicts);
-    assert_eq!(repository.operations().unwrap(), [Operation::Rebase]);
+    assert_eq!(
+        repository.operations(sandbox.git()).unwrap(),
+        [Operation::Rebase]
+    );
     abort_operation(sandbox.git(), &repository, Operation::Rebase, &cancel).unwrap();
     assert_eq!(rev(&sandbox, &mine, "HEAD"), before);
 
@@ -419,7 +425,7 @@ fn a_conflicted_pull_is_aborted_or_continued() {
     std::fs::write(mine.join("shared"), "both\n").unwrap();
     sandbox.run(&mine, "add", &["shared"]).unwrap();
     continue_operation(sandbox.git(), &repository, Operation::Merge, &cancel).unwrap();
-    assert_eq!(repository.operations().unwrap(), []);
+    assert_eq!(repository.operations(sandbox.git()).unwrap(), []);
     let parents = sandbox
         .run(&mine, "rev-list", &["--parents", "-n", "1", "HEAD"])
         .unwrap();

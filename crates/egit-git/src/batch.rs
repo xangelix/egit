@@ -2,10 +2,11 @@
 //! requests go to its standard input, answers come from its standard output.
 
 use std::io::{self, BufReader};
-use std::process::{Child, ChildStdin, ChildStdout, ExitStatus};
+use std::process::{Child, ChildStdin, ExitStatus};
 use std::thread::JoinHandle;
 
 use crate::error::GitError;
+use crate::host::GitStdout;
 use crate::output::Stderr;
 use crate::process::{self, Group};
 
@@ -22,7 +23,7 @@ pub struct GitProcess {
     child: Child,
     group: Group,
     stdin: Option<ChildStdin>,
-    stdout: BufReader<ChildStdout>,
+    stdout: BufReader<GitStdout>,
     drain: Option<JoinHandle<Stderr>>,
     reaped: bool,
 }
@@ -32,7 +33,7 @@ impl GitProcess {
         subcommand: &'static str,
         child: Child,
         stdin: ChildStdin,
-        stdout: ChildStdout,
+        stdout: GitStdout,
         drain: JoinHandle<Stderr>,
     ) -> Self {
         let group = process::group_of(&child);
@@ -65,7 +66,7 @@ impl GitProcess {
     }
 
     /// Where answers come from.
-    pub const fn output(&mut self) -> &mut BufReader<ChildStdout> {
+    pub const fn output(&mut self) -> &mut BufReader<GitStdout> {
         &mut self.stdout
     }
 

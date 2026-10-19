@@ -3,8 +3,8 @@
 //! applying it, as commits (`git am --3way`) or as changes (`git apply`); and a `git am`
 //! stopped part-way: how far it got, and the patch it stopped at.
 
-use std::fs;
 use std::io;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use bstr::{BStr, BString, ByteSlice as _};
@@ -186,10 +186,11 @@ fn mail_commits(
     patch: &Arc<[u8]>,
     cancel: &CancelToken,
 ) -> Result<(Vec<PatchCommit>, usize), GitError> {
-    let split = tempfile::tempdir().map_err(|source| GitError::Io {
+    let io = |source| GitError::Io {
         subcommand: "mailsplit",
         source,
-    })?;
+    };
+    let split = git.files().temp_dir("egit-mails-").map_err(io)?;
     let mut option = std::ffi::OsString::from("-o");
     option.push(split.path());
     let done = git
@@ -207,12 +208,16 @@ fn mail_commits(
         .and_then(|count| count.parse().ok())
         .ok_or_else(|| GitError::unexpected("mailsplit", "a count of mails"))?;
     let mut commits = Vec::with_capacity(count.min(MAX_SUMMARIZED));
-    for index in 1..=count.min(MAX_SUMMARIZED) {
+    let paths: Vec<PathBuf> = (1..=count.min(MAX_SUMMARIZED))
+        .map(|index| split.path().join(format!("{index:04}")))
+        .collect();
+    let mails = git
+        .files()
+        .read_all(&paths.iter().map(PathBuf::as_path).collect::<Vec<_>>())
+        .map_err(io)?;
+    for mail in mails {
         let mail =
-            fs::read(split.path().join(format!("{index:04}"))).map_err(|source| GitError::Io {
-                subcommand: "mailsplit",
-                source,
-            })?;
+            mail.ok_or_else(|| GitError::unexpected("mailsplit", "a mail it said it made"))?;
         let info = git
             .read("mailinfo")
             .args(["/dev/null", "/dev/null"])
@@ -408,7 +413,7 @@ pub fn apply_patch(
         return Ok(Integrated::Done);
     }
     let applying = repository
-        .operations()
+        .operations(git)
         .map_err(|source| GitError::Io {
             subcommand: "am",
             source,
@@ -445,32 +450,33 @@ impl Repository {
     /// # Errors
     ///
     /// When the files can't be read.
-    pub fn mailbox_progress(&self) -> io::Result<Option<MailboxProgress>> {
+    pub fn mailbox_progress(&self, git: &Git) -> io::Result<Option<MailboxProgress>> {
         let dir = self.git_dir().join("rebase-apply");
-        if !fs::exists(dir.join("applying"))? {
+        let paths = ["applying", "next", "last", "info"].map(|name| dir.join(name));
+        let files = git.files();
+        if !files.exists(&paths[0])? {
             return Ok(None);
         }
-        let number = |name: &str| -> io::Result<u32> {
-            Ok(fs::read(dir.join(name))?
+        let read = files.read_all(&[&paths[1], &paths[2], &paths[3]])?;
+        let [next, last, info] = <[Option<Vec<u8>>; 3]>::try_from(read)
+            .map_err(|_| io::Error::other("a stopped `git am`'s files came back garbled"))?;
+        let number = |read: Option<Vec<u8>>| -> u32 {
+            read.unwrap_or_default()
                 .trim_ascii()
                 .to_str()
                 .ok()
                 .and_then(|number| number.parse().ok())
-                .unwrap_or(0))
+                .unwrap_or(0)
         };
-        let info = match fs::read(dir.join("info")) {
-            Ok(info) => info,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(error),
-        };
+        let info = info.unwrap_or_default();
         let subject = info
             .lines()
             .find_map(|line| line.strip_prefix(b"Subject:"))
             .map(|subject| subject.trim_ascii().to_str_lossy().into_owned())
             .unwrap_or_default();
         Ok(Some(MailboxProgress {
-            next: number("next")?,
-            last: number("last")?,
+            next: number(next),
+            last: number(last),
             subject,
         }))
     }

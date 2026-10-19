@@ -105,7 +105,7 @@ impl BisectLeft {
 /// When git fails or prints what isn't a ref, or the repository's state can't be read.
 pub fn bisection(git: &Git, repository: &Repository) -> Result<Option<Bisection>, GitError> {
     let operations = repository
-        .operations()
+        .operations(git)
         .map_err(|error| GitError::unexpected("bisect", error.to_string()))?;
     if !operations.contains(&Operation::Bisect) {
         return Ok(None);
@@ -244,7 +244,7 @@ pub fn bisect_mark(
     cancel: &CancelToken,
 ) -> Result<(), GitError> {
     let bisecting = repository
-        .operations()
+        .operations(git)
         .map_err(|error| GitError::unexpected("bisect", error.to_string()))?
         .contains(&Operation::Bisect);
     let terms = if bisecting {

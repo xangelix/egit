@@ -66,7 +66,7 @@ fn a_bisection_finds_the_first_bad_commit() {
     assert_eq!(started.left, BisectLeft::NeedsGood);
     assert!(
         repository
-            .operations()
+            .operations(sandbox.git())
             .unwrap()
             .contains(&Operation::Bisect)
     );

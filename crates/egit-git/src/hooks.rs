@@ -2,7 +2,7 @@
 //! made, after a checkout, before a push, …), from its hooks folder: `core.hooksPath` when set
 //! (husky's `.husky`, a team's shared folder), else the git directory's `hooks`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use bstr::ByteSlice as _;
 
@@ -84,30 +84,22 @@ pub fn installed_hooks(git: &Git, repository: &Repository) -> Result<Hooks, GitE
         .output_unchecked()?
         .status
         .success();
+    let paths = KNOWN.map(|name| folder.join(name));
+    let runnable = git
+        .files()
+        .runnable(&paths.iter().map(PathBuf::as_path).collect::<Vec<_>>())
+        .map_err(|source| GitError::Io {
+            subcommand: "rev-parse",
+            source,
+        })?;
     let names = KNOWN
         .iter()
-        .copied()
-        .filter(|name| runnable(&folder.join(name)))
+        .zip(runnable)
+        .filter_map(|(name, runnable)| runnable.then_some(*name))
         .collect();
     Ok(Hooks {
         folder,
         configured,
         names,
     })
-}
-
-/// Whether git would run the file at `path`: a file, executable where files have the bit.
-fn runnable(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        meta.is_file() && meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        meta.is_file()
-    }
 }

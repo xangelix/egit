@@ -267,7 +267,7 @@ fn notices_operations_stopped_on_conflicts() {
         .commit_file(&repo, "file", "theirs\n", "Theirs")
         .unwrap();
     let found = Repository::discover(sandbox.git(), &repo).unwrap();
-    assert_eq!(found.operations().unwrap(), []);
+    assert_eq!(found.operations(sandbox.git()).unwrap(), []);
 
     let merge = sandbox
         .git()
@@ -276,7 +276,7 @@ fn notices_operations_stopped_on_conflicts() {
         .current_dir(&repo)
         .output();
     assert!(merge.is_err(), "the merge should stop on a conflict");
-    assert_eq!(found.operations().unwrap(), [Operation::Merge]);
+    assert_eq!(found.operations(sandbox.git()).unwrap(), [Operation::Merge]);
     sandbox.run(&repo, "merge", &["--abort"]).unwrap();
 
     let pick = sandbox
@@ -286,7 +286,10 @@ fn notices_operations_stopped_on_conflicts() {
         .current_dir(&repo)
         .output();
     assert!(pick.is_err(), "the cherry-pick should stop on a conflict");
-    assert_eq!(found.operations().unwrap(), [Operation::CherryPick]);
+    assert_eq!(
+        found.operations(sandbox.git()).unwrap(),
+        [Operation::CherryPick]
+    );
     sandbox.run(&repo, "cherry-pick", &["--abort"]).unwrap();
 
     let rebase = sandbox
@@ -296,7 +299,10 @@ fn notices_operations_stopped_on_conflicts() {
         .current_dir(&repo)
         .output();
     assert!(rebase.is_err(), "the rebase should stop on a conflict");
-    assert_eq!(found.operations().unwrap(), [Operation::Rebase]);
+    assert_eq!(
+        found.operations(sandbox.git()).unwrap(),
+        [Operation::Rebase]
+    );
     sandbox.run(&repo, "rebase", &["--abort"]).unwrap();
-    assert_eq!(found.operations().unwrap(), []);
+    assert_eq!(found.operations(sandbox.git()).unwrap(), []);
 }

@@ -55,6 +55,10 @@ it.
 - The git floor: `scripts/build-git.sh 2.43.0` builds that release into `target/git/2.43.0`;
   `EGIT_TEST_GIT=$PWD/target/git/2.43.0/bin/git cargo test --workspace` runs every test against
   it. Do this after touching anything that runs git (CI does it in `ubuntu:24.04`).
+- Git on another computer: `EGIT_TEST_SSH=1 cargo test -p egit-git` runs every egit-git test
+  with each git command going through an sshd of the tests' own on the loopback address (Linux,
+  sshd installed): this computer playing the other one. Do this after touching how commands
+  are built or run, or anything reading files directly (CI does it).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
 - Agents: the bridge's tests need Node.js (`EGIT_REQUIRE_NODE=1` makes their absence fail);
   `cargo test -p egit-agents --test install -- --ignored` installs the Claude Agent SDK for real
@@ -136,6 +140,10 @@ writes paths), never `OsStrExt`.
   documents (`MERGE_HEAD`, `rebase-merge/`, …), and to add ignore patterns to `info/exclude`
   (found by `rev-parse --git-path`), which gitignore(5) documents for people to edit. No
   libgit2 (`deny.toml` bans it).
+- What egit reads or writes itself (state files, `.gitignore`, a rebase's todo, a file put
+  back) goes through `Git::files`, which works where git runs: on another computer, by a
+  command there. Never `std::fs` on a path git gave, nor a temporary file here that git there
+  must read (`Files::temp_dir`).
 - Machine-readable output only: `-z`, `--porcelain`, explicit `--format`s, and `-c` overrides
   for any setting that changes a format the parser reads.
 - Reads pass `--no-optional-locks`, so a background refresh never takes `index.lock` from the
@@ -154,7 +162,32 @@ writes paths), never `OsStrExt`.
   - `git.rs` — `Git`: the executable (found on `PATH` (`git.exe` on Windows) or given), its version checked against
     `GitVersion::MINIMUM` (`version.rs`), and the environment every git process gets
     (`env.rs`: repository variables (`git rev-parse --local-env-vars`) removed, `LC_MESSAGES=C`
-    with the character set kept, no pager, editor `:`, `GIT_TERMINAL_PROMPT=0`, no `GPG_TTY`).
+    with the character set kept, no pager, editor `:`, `GIT_TERMINAL_PROMPT=0`, no `GPG_TTY`);
+    its `Host` (`GitOptions::host`): here, or another computer, where git's environment is
+    `Environment::remote` (egit's own, never this computer's helpers: the askpass, the ssh
+    wrapper, a display, which the ssh reaching it gets instead, `is_local_only`), and the
+    program `git` there unless named. `Git::files`: that computer's files (`files.rs`).
+  - `host.rs` — `Host` (`Local`, `Ssh(SshHost)`: a destination as ssh takes it, more of ssh's
+    options (before egit's own: ssh keeps the first value of each), and the folder its
+    connection is shared through, an `SshSharing`'s: `ControlMaster=auto`, `ControlPersist=1h`).
+    A command there is a session (`ssh -T -e none`) whose remote line is fixed, `exec /bin/sh
+    -c 'eval "$(printf %s <base64> | base64 -d)"'`, so any login shell passes it on; the script
+    (`script`, every word in single quotes for sh) says `egit-pid <pid>` on stderr, goes into
+    its directory (exit 126 when it can't: "isn't a directory", as here), marks the start of
+    its output (`\x01EGIT-GO\x02`), and `exec env -u … K=V … git …`. `GitStdout` skips what
+    comes before the marker (a login script's words), a byte at a time, then passes through;
+    `PidReader` takes the id from stderr, holding back what came before it (kept only when it
+    never came: ssh's words on a login that failed). `SshHost::terminate`: `kill -TERM --
+    -<pid>` there (sshd made the session's shell lead its group; git `exec`s in its place).
+  - `files.rs` — `Files`, a `Git`'s computer's files as egit reads and writes them directly:
+    `read`, `read_all` (several in one command there: each a size line, then its bytes),
+    `exist`, `exists`, `is_file`, `runnable` (hooks), `look` (`Entry`: nothing, a link and its
+    target, a file's size and executable bit, a folder), `write`, `append`, `put` (`Put`: a
+    file written beside and renamed over, its permissions the replaced one's with the
+    executable bit as asked; or a link), `remove_file`, `remove_if_there`, `create_dir_all`,
+    `temp_dir` (`TempDir`, removed when dropped, there too). Here `std::fs`; there `sh -c` with
+    the paths as arguments, one session for several paths where it can (a missing path exits 3:
+    `NotFound`).
   - `command.rs` — `GitCommand` from `Git::read` / `Git::write`: `-c` settings, arguments,
     directory, stdin, and a `CancelToken`; `output` (collected up to `stdout_limit`, failing
     unless git succeeds), `output_unchecked` (any exit), `stream` (chunks through one reused
@@ -168,6 +201,11 @@ writes paths), never `OsStrExt`.
     command line (`git commit --file=-`, egit's own `-c` left out), standard output and error
     as they come (teed from the threads reading them), and how it failed or was cancelled; with
     `PRE_COMMIT_COLOR=always`. A secret's command (`secret_stdin`, `secret_output`) never.
+    On another computer (`build_elsewhere`): the ssh running git's script there, git's
+    environment there plus the command's but this computer's helpers, which the ssh gets (a
+    prompt's context reaches the askpass); its stdout a `GitStdout`, its stderr through a
+    `PidReader`; a `CancelToken` cancelling it asks its group there to stop (`Elsewhere`, from
+    a thread, once its id came) as well as the session here.
   - `transcript.rs` — `Transcript`: lines (`LineKind`: command, out, err (hooks' output: git
     sends it there), ended), a `\r` rewriting the line under way as a terminal does (shown live),
     SGR colours turned into `Span`s (`Style`: 16, 256, or exact colours, bold, faint; a colour
@@ -633,7 +671,11 @@ writes paths), never `OsStrExt`.
     progress and patch, skipped, aborted; stopped where a patch doesn't apply at all), a diff
     applied as changes (staged or not, conflicting), and a stopped cherry-pick skipped.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test;
-    `set_mode` (a script's permission bits, where files have them).
+    `EGIT_TEST_SSH` runs it as on another computer (`on_another_computer`): an sshd started once
+    a process (`/tmp/egit-ts-<pid>`: keys of its own, `-F /dev/null`, `BatchMode`,
+    `ControlPersist=5`), kept by a shell that stops it and removes its folder when the test
+    process's end closes its input; tests of what only this computer does (the askpass, git's
+    own ssh) skip then. `set_mode` (a script's permission bits, where files have them).
 - `crates/egit-forge` — forges' web APIs: GitHub's (github.com, Enterprise Server) and GitLab's
   (gitlab.com, self-managed), and people's pictures; no egui. egit's only network connections
   of its own (git makes every other).

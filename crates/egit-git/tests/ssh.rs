@@ -45,6 +45,11 @@ impl Drop for Server {
 
 /// An installed sshd (it must be started by an absolute path).
 fn sshd() -> Option<PathBuf> {
+    // The ssh git runs from this computer is what is tested.
+    if egit_git::testing::on_another_computer() {
+        eprintln!("skipped: git runs on another computer");
+        return None;
+    }
     let found = ["/usr/sbin/sshd", "/usr/bin/sshd", "/usr/local/sbin/sshd"]
         .into_iter()
         .map(PathBuf::from)

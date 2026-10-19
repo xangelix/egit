@@ -5,7 +5,7 @@ use std::fmt;
 use std::io::{self, Read as _, Write as _};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
-use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -13,9 +13,10 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 use crate::batch::GitProcess;
-use crate::cancel::{CancelToken, Registration};
+use crate::cancel::{CancelToken, Elsewhere, Registration};
 use crate::error::GitError;
 use crate::git::Git;
+use crate::host::{self, GitStdout, Host, PidReader, Remote, RemotePid};
 use crate::output::{Completed, Stderr, TailBuffer};
 use crate::process::{self, Group};
 use crate::progress::{Progress, ProgressReader};
@@ -435,11 +436,15 @@ impl GitCommand {
             abandon(child, group, None);
             return Err(self.io_error(io::Error::other("git's pipes weren't set up")));
         };
+        let stdout = GitStdout::new(stdout, self.git.host());
         let reader = self.progress.as_ref().map(Progress::reader);
+        let pid = self
+            .elsewhere()
+            .map(|elsewhere| PidReader::new(elsewhere.pid));
         let drain = thread::Builder::new()
             .name(format!("git {} stderr", self.subcommand))
             .stack_size(HELPER_STACK)
-            .spawn(move || drain(stderr, reader, None));
+            .spawn(move || drain(stderr, (reader, pid), None));
         match drain {
             Ok(drain) => Ok(GitProcess::new(
                 self.subcommand,
@@ -486,7 +491,7 @@ impl GitCommand {
     /// stopped (SIGTERM to its process group) whenever reading ends early.
     fn run_once<R>(
         &self,
-        read: impl FnOnce(&mut ChildStdout) -> Result<(R, bool), ReadError>,
+        read: impl FnOnce(&mut GitStdout) -> Result<(R, bool), ReadError>,
     ) -> Result<(Attempt, R), GitError> {
         if self.cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
             return Err(self.cancelled());
@@ -501,14 +506,20 @@ impl GitCommand {
         let mut child = process::spawn_in_new_session(&mut command)
             .map_err(|source| self.launch_error(source))?;
         let group = process::group_of(&child);
-        let registration = self.cancel.as_ref().map(|token| token.register(group));
+        let elsewhere = self.elsewhere();
+        let registration = self
+            .cancel
+            .as_ref()
+            .map(|token| token.register(group, elsewhere.clone()));
 
         let pipes = (child.stdin.take(), child.stdout.take(), child.stderr.take());
-        let (stdin, Some(mut stdout), Some(stderr)) = pipes else {
+        let (stdin, Some(stdout), Some(stderr)) = pipes else {
             abandon(child, group, registration);
             return Err(self.io_error(io::Error::other("git's pipes weren't set up")));
         };
-        let helpers = match self.start_helpers(stdin, stderr) {
+        let mut stdout = GitStdout::new(stdout, self.git.host());
+        let pid = elsewhere.map(|elsewhere| PidReader::new(elsewhere.pid));
+        let helpers = match self.start_helpers(stdin, stderr, pid) {
             Ok(helpers) => helpers,
             Err(error) => {
                 abandon(child, group, registration);
@@ -517,6 +528,7 @@ impl GitCommand {
         };
 
         let reading = read(&mut stdout);
+        let started = stdout.started();
         drop(stdout);
         if !matches!(reading, Ok((_, false))) {
             process::terminate_group(group);
@@ -531,6 +543,16 @@ impl GitCommand {
         waited.map_err(|error| self.io_error(error))?;
         let status = status.map_err(|error| self.io_error(error))?;
 
+        // There, its script couldn't go into its directory: said as here.
+        if !started
+            && status.code() == Some(host::NO_DIRECTORY)
+            && let Some(dir) = &self.dir
+        {
+            return Err(self.io_error(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} isn't a directory", dir.display()),
+            )));
+        }
         let cancelled = self.cancel.as_ref().is_some_and(CancelToken::is_cancelled);
         if let Some(transcript) = transcript {
             transcript.finish(Stream::Out);
@@ -566,15 +588,21 @@ impl GitCommand {
         ))
     }
 
-    /// Starts the threads that feed git's standard input and drain its standard error.
-    fn start_helpers(&self, stdin: Option<ChildStdin>, stderr: ChildStderr) -> io::Result<Helpers> {
+    /// Starts the threads that feed git's standard input and drain its standard error (on
+    /// another computer, taking its process id from it with `pid`).
+    fn start_helpers(
+        &self,
+        stdin: Option<ChildStdin>,
+        stderr: ChildStderr,
+        pid: Option<PidReader>,
+    ) -> io::Result<Helpers> {
         let reader = self.progress.as_ref().map(Progress::reader);
         let transcript = self.transcript().cloned();
         let drain = thread::Builder::new()
             .name(format!("git {} stderr", self.subcommand))
             .stack_size(HELPER_STACK)
             .spawn(move || {
-                let tail = drain(stderr, reader, transcript.as_ref());
+                let tail = drain(stderr, (reader, pid), transcript.as_ref());
                 if let Some(transcript) = &transcript {
                     transcript.finish(Stream::Err);
                 }
@@ -595,29 +623,24 @@ impl GitCommand {
         Ok(Helpers { drain, feed })
     }
 
-    /// The process, ready to spawn.
+    /// The process, ready to spawn: git here, or the ssh running it on another computer.
     fn build(&self) -> Command {
-        let mut command = Command::new(self.git.program());
-        self.git.environment().apply(&mut command);
-        for (key, value) in &self.env {
-            command.env(key, value);
-        }
-        if self.access == Access::Read {
-            command
-                .env("GIT_OPTIONAL_LOCKS", "0")
-                .arg("--no-optional-locks");
-        }
-        // Shown in a transcript, which draws colours: the pre-commit framework's in colour.
-        if self.transcript().is_some() {
-            command.env("PRE_COMMIT_COLOR", "always");
-        }
-        for setting in DEFAULT_CONFIG {
-            command.arg("-c").arg(setting);
-        }
+        let mut command = match self.git.host() {
+            Host::Local => {
+                let mut command = Command::new(self.git.program());
+                self.git.environment().apply(&mut command);
+                for (key, value) in self.variables() {
+                    command.env(key, value);
+                }
+                command.args(self.git_args());
+                if let Some(dir) = &self.dir {
+                    command.current_dir(dir);
+                }
+                command
+            }
+            Host::Ssh(ssh) => self.build_elsewhere(ssh),
+        };
         command
-            .args(&self.config)
-            .arg(self.subcommand)
-            .args(&self.args)
             .stdin(if self.stdin.is_some() {
                 Stdio::piped()
             } else {
@@ -625,18 +648,86 @@ impl GitCommand {
             })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        if let Some(dir) = &self.dir {
-            command.current_dir(dir);
+        command
+    }
+
+    /// The ssh running git on another computer: git's environment there (but this computer's
+    /// helpers, which the ssh gets for its own prompts), in its directory there.
+    fn build_elsewhere(&self, ssh: &host::SshHost) -> Command {
+        let (here, there): (Vec<_>, Vec<_>) = self
+            .variables()
+            .partition(|(key, _)| crate::env::is_local_only(key));
+        let environment = self.git.remote_environment();
+        let mut set: Vec<(&OsStr, &OsStr)> = environment
+            .map(|environment| environment.settings().collect())
+            .unwrap_or_default();
+        set.extend(there);
+        let args = self.git_args();
+        let script = host::script(&Remote {
+            program: self.git.program().as_os_str(),
+            args: args.iter().map(AsRef::as_ref).collect(),
+            dir: self.dir.as_deref(),
+            unset: environment
+                .map(|environment| environment.removals().collect())
+                .unwrap_or_default(),
+            set,
+        });
+        let mut command = ssh.command(&script);
+        self.git.environment().apply(&mut command);
+        for (key, value) in here {
+            command.env(key, value);
         }
         command
     }
 
+    /// The variables this command sets, over its git's own.
+    fn variables(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
+        let read = (self.access == Access::Read)
+            .then_some((OsStr::new("GIT_OPTIONAL_LOCKS"), OsStr::new("0")));
+        // Shown in a transcript, which draws colours: the pre-commit framework's in colour.
+        let coloured = self
+            .transcript()
+            .is_some()
+            .then_some((OsStr::new("PRE_COMMIT_COLOR"), OsStr::new("always")));
+        self.env
+            .iter()
+            .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
+            .chain(read)
+            .chain(coloured)
+    }
+
+    /// Git's arguments: egit's own settings, the command's, the subcommand, and its arguments.
+    fn git_args(&self) -> Vec<&OsStr> {
+        let mut args = Vec::with_capacity(self.args.len().saturating_add(8));
+        if self.access == Access::Read {
+            args.push(OsStr::new("--no-optional-locks"));
+        }
+        for setting in DEFAULT_CONFIG {
+            args.push(OsStr::new("-c"));
+            args.push(OsStr::new(setting));
+        }
+        args.extend(self.config.iter().map(OsString::as_os_str));
+        args.push(OsStr::new(self.subcommand));
+        args.extend(self.args.iter().map(OsString::as_os_str));
+        args
+    }
+
+    /// Where it runs, when on another computer: there, and its process id once said.
+    fn elsewhere(&self) -> Option<Elsewhere> {
+        self.git.host().ssh().map(|ssh| Elsewhere {
+            host: ssh.clone(),
+            pid: RemotePid::default(),
+        })
+    }
+
     fn launch_error(&self, source: io::Error) -> GitError {
         match &self.dir {
-            Some(dir) if !dir.is_dir() => self.io_error(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("{} isn't a directory", dir.display()),
-            )),
+            Some(dir) if self.git.host().is_local() && !dir.is_dir() => {
+                self.io_error(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("{} isn't a directory", dir.display()),
+                ))
+            }
             _ => GitError::Launch {
                 program: self.git.program().to_owned(),
                 source,
@@ -721,25 +812,36 @@ impl Helpers {
 }
 
 /// Reads standard error to its end, keeping the tail and reporting progress to `reader` (and
-/// everything to `transcript`).
+/// everything to `transcript`); from another computer, its process id first (`pid`), what
+/// came before it kept only when it never came (ssh's words on a login that failed).
 fn drain(
     mut stderr: ChildStderr,
-    mut reader: Option<ProgressReader>,
+    (mut reader, mut pid): (Option<ProgressReader>, Option<PidReader>),
     transcript: Option<&Transcript>,
 ) -> Stderr {
     let mut tail = TailBuffer::default();
     let mut buffer = [0; 4096];
+    let mut take = |chunk: &[u8]| {
+        tail.push(chunk);
+        if let Some(reader) = &mut reader {
+            reader.feed(chunk);
+        }
+        if let Some(transcript) = transcript {
+            transcript.feed(Stream::Err, chunk);
+        }
+    };
     loop {
         match stderr.read(&mut buffer) {
             Ok(0) => break,
             Ok(read) => {
                 let chunk = buffer.get(..read).unwrap_or_default();
-                tail.push(chunk);
-                if let Some(reader) = &mut reader {
-                    reader.feed(chunk);
-                }
-                if let Some(transcript) = transcript {
-                    transcript.feed(Stream::Err, chunk);
+                match &mut pid {
+                    None => take(chunk),
+                    Some(pid) => {
+                        if let Some(git) = pid.feed(chunk) {
+                            take(&git);
+                        }
+                    }
                 }
             }
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
@@ -747,6 +849,12 @@ fn drain(
                 tracing::warn!(%error, "reading git's stderr failed");
                 break;
             }
+        }
+    }
+    if let Some(pid) = pid {
+        let held = pid.finish();
+        if !held.is_empty() {
+            take(&held);
         }
     }
     tail.finish()

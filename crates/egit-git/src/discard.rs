@@ -18,14 +18,15 @@
 //! would store it, against the diff's `index` line).
 
 use std::ffi::OsString;
-use std::io::{self, Write as _};
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 
-use bstr::{BStr, BString, ByteSlice as _, ByteVec as _};
+use bstr::{BStr, BString, ByteSlice as _};
 
 use crate::cancel::CancelToken;
 use crate::diff::FileDiff;
 use crate::error::GitError;
+use crate::files::{Entry, Put};
 use crate::git::Git;
 use crate::history::TreeEntry;
 use crate::object_id::ObjectId;
@@ -190,16 +191,21 @@ pub fn discard_lines(
     }
     let work_tree = repository.work_tree();
     let full = work_tree.join(path.to_path_lossy());
-    let found = look(&full).map_err(|source| io_error(path, source))?;
+    let found = git
+        .files()
+        .look(&[&full])
+        .map_err(|source| io_error(path, source))?
+        .pop()
+        .unwrap_or(Entry::Nothing);
     let mode = match found {
-        Found::File { executable, .. } => mode_of(executable),
-        Found::Nothing => expected.map_or(REGULAR, |entry| entry.mode),
-        Found::Link(_) | Found::Folder => return Err(DiscardError::NotLines(path.to_owned())),
+        Entry::File { executable, .. } => mode_of(executable),
+        Entry::Nothing => expected.map_or(REGULAR, |entry| entry.mode),
+        Entry::Link(_) | Entry::Folder => return Err(DiscardError::NotLines(path.to_owned())),
     };
     // The file must still be what the diff showed (as git would store it), or be gone with it.
     let (_, shown) = diff.blobs.ok_or_else(stale)?;
     let now = match found {
-        Found::Nothing => None,
+        Entry::Nothing => None,
         _ => Some(stored_blob(git, repository, path, cancel)?),
     };
     let gone = shown == shown.format().zero();
@@ -233,7 +239,7 @@ pub fn discard_lines(
         .cancel_token(cancel)
         .output()?
         .stdout;
-    write_file(&full, &written, mode).map_err(|source| io_error(path, source))?;
+    write_file(git, &full, &written, mode).map_err(|source| io_error(path, source))?;
     let after = KeptFile {
         id: hash_bytes(git, work_tree, written, true, cancel)?,
         mode,
@@ -279,7 +285,8 @@ pub fn put_back(
     }
     let work_tree = repository.work_tree();
     for file in files.iter().filter(|file| sides(file).1.is_none()) {
-        remove_file(&work_tree.join(file.path.to_path_lossy()))
+        git.files()
+            .remove_if_there(&work_tree.join(file.path.to_path_lossy()))
             .map_err(|source| io_error(file.path.as_bstr(), source))?;
     }
     let mut writing = files.iter().filter_map(|file| Some((file, sides(file).1?)));
@@ -301,6 +308,7 @@ pub fn put_back(
             },
             |object| {
                 write_file(
+                    git,
                     &work_tree.join(file.path.to_path_lossy()),
                     object.data,
                     kept.mode,
@@ -335,40 +343,6 @@ enum Keeping {
     Store { limit: bool },
 }
 
-/// What is at a path in the work tree.
-enum Found {
-    Nothing,
-    /// A symbolic link, and its target.
-    Link(Vec<u8>),
-    /// A file: its size, and whether it is executable.
-    File {
-        size: u64,
-        executable: bool,
-    },
-    /// A folder (an untracked repository's, say): never kept.
-    Folder,
-}
-
-/// What is at `full`.
-fn look(full: &Path) -> io::Result<Found> {
-    let metadata = match std::fs::symlink_metadata(full) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Found::Nothing),
-        Err(error) => return Err(error),
-    };
-    if metadata.is_symlink() {
-        let target = std::fs::read_link(full)?;
-        return Ok(Found::Link(Vec::from_path_lossy(&target).into_owned()));
-    }
-    if metadata.is_dir() {
-        return Ok(Found::Folder);
-    }
-    Ok(Found::File {
-        size: metadata.len(),
-        executable: is_executable(&metadata),
-    })
-}
-
 /// Each of `paths` (from the work tree's top) as it is now, kept as `keeping` says: `None`
 /// where nothing is; all `None` when one is a folder, or (with a limit) there are too many or
 /// one is too large.
@@ -388,23 +362,38 @@ fn keep(
     }
     let work_tree = repository.work_tree();
     let mut kept = vec![None; paths.len()];
+    // Looked at together (one command on another computer).
+    let fulls: Vec<PathBuf> = paths
+        .iter()
+        .map(|path| work_tree.join(path.to_path_lossy()))
+        .collect();
+    let found = git
+        .files()
+        .look(&fulls.iter().map(PathBuf::as_path).collect::<Vec<_>>())
+        .map_err(|source| io_error(paths.first().copied().unwrap_or_default(), source))?;
     // Read by one `hash-object` together, but those it can't take one per line.
     let mut listed: Vec<(usize, &BStr, u32)> = Vec::new();
-    for ((index, path), slot) in paths.iter().enumerate().zip(kept.iter_mut()) {
-        let full = work_tree.join(path.to_path_lossy());
-        let found = look(&full).map_err(|source| io_error(path, source))?;
+    for (((index, path), slot), (found, full)) in paths
+        .iter()
+        .enumerate()
+        .zip(kept.iter_mut())
+        .zip(found.into_iter().zip(&fulls))
+    {
         match found {
-            Found::Nothing => {}
-            Found::Folder => return Ok(None),
-            Found::File { size, .. } if limit && size > KEEP_BYTES => return Ok(None),
-            Found::Link(target) => {
+            Entry::Nothing => {}
+            Entry::Folder => return Ok(None),
+            Entry::File { size, .. } if limit && size > KEEP_BYTES => return Ok(None),
+            Entry::Link(target) => {
                 let id = hash_bytes(git, work_tree, target, store, cancel)?;
                 *slot = Some(KeptFile { id, mode: LINK });
             }
-            Found::File { executable, .. } => {
+            Entry::File { executable, .. } => {
                 let mode = mode_of(executable);
                 if path.contains(&b'\n') || path.starts_with(b"\"") {
-                    let bytes = std::fs::read(&full).map_err(|source| io_error(path, source))?;
+                    let bytes = git
+                        .files()
+                        .read(full)
+                        .map_err(|source| io_error(path, source))?;
                     let id = hash_bytes(git, work_tree, bytes, store, cancel)?;
                     *slot = Some(KeptFile { id, mode });
                 } else {
@@ -567,89 +556,17 @@ const fn mode_of(executable: bool) -> u32 {
     if executable { EXECUTABLE } else { REGULAR }
 }
 
-/// Puts `bytes` at `full` with `mode`: a file written beside it and renamed over it, so it is
-/// never seen half written (its permissions those of the file it replaces, its executable bit
-/// as `mode` says); a symbolic link where links are made, a file holding its target elsewhere
-/// (as git makes one there).
-fn write_file(full: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
-    let folder = full.parent().unwrap_or_else(|| Path::new("."));
-    std::fs::create_dir_all(folder)?;
-    // Elsewhere, a file holding its target, as git checks a link out without `core.symlinks`.
-    #[cfg(unix)]
-    {
-        if mode == LINK {
-            return make_link(full, bytes);
-        }
-    }
-    let mut file = tempfile::Builder::new()
-        .prefix(".egit-")
-        .suffix(".tmp")
-        .tempfile_in(folder)?;
-    file.write_all(bytes)?;
-    let replaced = std::fs::symlink_metadata(full)
-        .ok()
-        .filter(std::fs::Metadata::is_file);
-    std::fs::set_permissions(
-        file.path(),
-        permissions(replaced.as_ref(), &file.as_file().metadata()?, mode),
-    )?;
-    file.persist(full).map_err(|error| error.error)?;
-    Ok(())
-}
-
-/// Removes the file (or link) at `full`, if there is one.
-fn remove_file(full: &Path) -> io::Result<()> {
-    match std::fs::remove_file(full) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => Ok(()),
-    }
-}
-
-/// Makes `full` a symbolic link to `target`, replacing what is there.
-#[cfg(unix)]
-fn make_link(full: &Path, target: &[u8]) -> io::Result<()> {
-    remove_file(full)?;
-    std::os::unix::fs::symlink(target.to_path_lossy(), full)
-}
-
-#[cfg(unix)]
-fn is_executable(metadata: &std::fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-/// No executable bit here: git records files as it finds them in the index.
-#[cfg(not(unix))]
-const fn is_executable(_metadata: &std::fs::Metadata) -> bool {
-    false
-}
-
-/// A file's permissions: those of the file it replaces (else as git makes a file), executable
-/// where it can be read when `mode` says so, not executable otherwise.
-#[cfg(unix)]
-fn permissions(
-    replaced: Option<&std::fs::Metadata>,
-    _new: &std::fs::Metadata,
-    mode: u32,
-) -> std::fs::Permissions {
-    use std::os::unix::fs::PermissionsExt as _;
-    let bits = replaced.map_or(0o644, |metadata| metadata.permissions().mode() & 0o7777);
-    let bits = if mode == EXECUTABLE {
-        bits | ((bits & 0o444) >> 2)
+/// Puts `bytes` at `full` with `mode`, never seen half written: a file (executable as `mode`
+/// says) or a symbolic link (see [`Files::put`](crate::Files::put)).
+fn write_file(git: &Git, full: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+    let put = if mode == LINK {
+        Put::Link
     } else {
-        bits & !0o111
+        Put::File {
+            executable: mode == EXECUTABLE,
+        }
     };
-    std::fs::Permissions::from_mode(bits)
-}
-
-/// A file's permissions: read-only only if the file it replaces was.
-#[cfg(not(unix))]
-fn permissions(
-    replaced: Option<&std::fs::Metadata>,
-    new: &std::fs::Metadata,
-    _mode: u32,
-) -> std::fs::Permissions {
-    replaced.map_or_else(|| new.permissions(), std::fs::Metadata::permissions)
+    git.files().put(full, bytes, put)
 }
 
 /// An error of the work tree's, with its path.
@@ -681,22 +598,5 @@ mod tests {
         assert!(!same(kept("1", REGULAR), kept("2", REGULAR)));
         assert!(!same(kept("1", REGULAR), kept("1", LINK)));
         assert!(!same(kept("1", REGULAR), None));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn permissions_follow_the_file_replaced_and_the_mode() {
-        use std::os::unix::fs::PermissionsExt as _;
-        let folder = tempfile::tempdir().unwrap();
-        let file = folder.path().join("f");
-        std::fs::write(&file, "x").unwrap();
-        let bits = |mode: u32, replaced: u32| {
-            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(replaced)).unwrap();
-            let metadata = std::fs::metadata(&file).unwrap();
-            permissions(Some(&metadata), &metadata, mode).mode() & 0o777
-        };
-        assert_eq!(bits(EXECUTABLE, 0o640), 0o750);
-        assert_eq!(bits(REGULAR, 0o755), 0o644);
-        assert_eq!(bits(REGULAR, 0o600), 0o600);
     }
 }

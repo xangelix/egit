@@ -614,8 +614,8 @@ impl RepoTab {
             let unreadable = |error: std::io::Error| {
                 Problem::new("The repository's state couldn't be read", error.to_string())
             };
-            let operations = repository.operations().map_err(unreadable)?;
-            let applying = repository.mailbox_progress().map_err(unreadable)?;
+            let operations = repository.operations(&git).map_err(unreadable)?;
+            let applying = repository.mailbox_progress(&git).map_err(unreadable)?;
             let bisect = if operations.contains(&Operation::Bisect) {
                 bisection(&git, &repository)
                     .map_err(|error| Problem::git("The bisection couldn't be read", &error))?

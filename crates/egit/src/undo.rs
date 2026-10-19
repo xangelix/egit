@@ -380,7 +380,7 @@ fn reverse(
         Change::Discarded(files) => {
             put_back(git, repository, files, DiscardSide::Before, cancel).map_err(discard_halt)
         }
-        Change::Ignored(ignored) => unignore(ignored).map_err(ignore_halt),
+        Change::Ignored(ignored) => unignore(git, ignored).map_err(ignore_halt),
     }
 }
 
@@ -486,7 +486,7 @@ fn redo(
             put_back(git, repository, files, DiscardSide::After, cancel).map_err(discard_halt)?;
         }
         Change::Ignored(ignored) => {
-            return ignore_again(ignored)
+            return ignore_again(git, ignored)
                 .map(Change::Ignored)
                 .map_err(ignore_halt);
         }

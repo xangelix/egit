@@ -1171,6 +1171,7 @@ dependencies = [
 name = "egit-git"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "bstr",
  "egit-git",
  "getrandom 0.4.3",

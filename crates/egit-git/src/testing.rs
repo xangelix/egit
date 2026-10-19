@@ -6,7 +6,10 @@
 //! every machine. Repository discovery stops at the sandbox (`GIT_CEILING_DIRECTORIES`).
 //!
 //! Set `EGIT_TEST_GIT` to a git executable to run the tests against it (an older release, say)
-//! instead of the one on `PATH`.
+//! instead of the one on `PATH`. Set `EGIT_TEST_SSH` to run every sandbox's git as on another
+//! computer: this one, through an sshd of the tests' own on the loopback address (Linux, where
+//! sshd runs as any user), each command a session of one shared connection, as egit runs git
+//! over SSH.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -15,7 +18,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
-use crate::{Completed, Git, GitOptions};
+use crate::{Completed, Git, GitOptions, Host};
 
 /// The global configuration every sandbox starts with.
 const GLOBAL_CONFIG: &str = "\
@@ -81,6 +84,13 @@ pub const fn set_mode(_path: &Path, _mode: u32) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Whether sandboxes run git as on another computer (`EGIT_TEST_SSH`): a test of what only
+/// this computer does (its askpass, git's own ssh) skips then.
+#[must_use]
+pub fn on_another_computer() -> bool {
+    std::env::var_os("EGIT_TEST_SSH").is_some()
+}
+
 impl Sandbox {
     /// A new sandbox around the git named by `EGIT_TEST_GIT`, or the one on `PATH`.
     ///
@@ -121,7 +131,13 @@ impl Sandbox {
     }
 
     fn git_from(env: Vec<(OsString, OsString)>) -> Result<Git, SandboxError> {
+        let host = if on_another_computer() {
+            Host::Ssh(ssh::host()?)
+        } else {
+            Host::Local
+        };
         Ok(Git::new(GitOptions {
+            host,
             program: std::env::var_os("EGIT_TEST_GIT").map(PathBuf::from),
             // The ssh command's, unless a test names its own.
             unset: IDENTITY_VARIABLES
@@ -233,5 +249,146 @@ impl Sandbox {
         self.run(repo, "add", &["--", file])?;
         self.run(repo, "commit", &["--quiet", "--message", message])?;
         Ok(())
+    }
+}
+
+/// The tests' own sshd, for `EGIT_TEST_SSH`.
+mod ssh {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+    use std::net::{TcpListener, TcpStream};
+    use std::path::{Path, PathBuf};
+    use std::process::{ChildStdin, Command, Stdio};
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    use parking_lot::Mutex;
+
+    use super::SandboxError;
+    use crate::SshHost;
+
+    /// The sshd every sandbox of the process reaches, and the input of the shell keeping it: it
+    /// stops the sshd, and removes its folder, once that input closes (the process ended).
+    static SERVED: OnceLock<Result<(SshHost, Mutex<ChildStdin>), String>> = OnceLock::new();
+
+    /// The host every sandbox's git runs on, the sshd started the first time.
+    pub(super) fn host() -> Result<SshHost, SandboxError> {
+        SERVED
+            .get_or_init(|| serve().map_err(|error| error.to_string()))
+            .as_ref()
+            .map(|(host, _)| host.clone())
+            .map_err(|error| SandboxError::from(error.clone()))
+    }
+
+    /// Starts an sshd on the loopback address letting this user in by a key of its own, and says
+    /// how to reach it: that key, its host's key, no configuration of the user's, connections
+    /// shared through a folder of its own, kept a few seconds once idle.
+    fn serve() -> Result<(SshHost, Mutex<ChildStdin>), SandboxError> {
+        let dir = PathBuf::from(format!("/tmp/egit-ts-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        super::set_mode(&dir, 0o700)?;
+        let path = |name: &str| dir.join(name).to_string_lossy().into_owned();
+        for key in ["host", "id"] {
+            let made = Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f", &path(key)])
+                .status()?;
+            if !made.success() {
+                return Err("ssh-keygen failed".into());
+            }
+        }
+        std::fs::copy(dir.join("id.pub"), dir.join("authorized_keys"))?;
+        let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
+        let mut config = String::new();
+        writeln!(config, "Port {port}\nListenAddress 127.0.0.1")?;
+        writeln!(
+            config,
+            "HostKey {}\nPidFile {}",
+            path("host"),
+            path("sshd.pid")
+        )?;
+        writeln!(
+            config,
+            "AuthorizedKeysFile {}\nStrictModes no",
+            path("authorized_keys")
+        )?;
+        writeln!(
+            config,
+            "PasswordAuthentication no\nKbdInteractiveAuthentication no"
+        )?;
+        writeln!(
+            config,
+            "PubkeyAuthentication yes\nLogLevel ERROR\nMaxSessions 1000"
+        )?;
+        writeln!(config, "MaxStartups 1000")?;
+        std::fs::write(dir.join("sshd_config"), config)?;
+        let host_key = std::fs::read_to_string(dir.join("host.pub"))?;
+        std::fs::write(
+            dir.join("known_hosts"),
+            format!("[127.0.0.1]:{port} {host_key}"),
+        )?;
+
+        // The sshd stops, and its folder goes, when this process's end closes the shell's input.
+        let sshd = sshd().ok_or("sshd isn't installed")?;
+        let mut keeper = Command::new("sh")
+            .args([
+                "-c",
+                "\"$1\" -D -e -f \"$2\" & pid=$!; cat >/dev/null; kill \"$pid\"; wait \"$pid\"; rm -rf -- \"$3\"",
+                "sh",
+            ])
+            .arg(&sshd)
+            .arg(dir.join("sshd_config"))
+            .arg(&dir)
+            .stdin(Stdio::piped())
+            .spawn()?;
+        let input = keeper
+            .stdin
+            .take()
+            .ok_or("the sshd's keeper has no input")?;
+        let until = Instant::now().checked_add(Duration::from_secs(10));
+        while TcpStream::connect(("127.0.0.1", port)).is_err() {
+            if until.is_none_or(|until| Instant::now() > until) {
+                return Err("the tests' sshd didn't start listening".into());
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let options = [
+            "-F",
+            "/dev/null",
+            "-p",
+            &port.to_string(),
+            "-i",
+            &path("id"),
+            "-o",
+            "IdentitiesOnly=yes",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            &format!("UserKnownHostsFile={}", path("known_hosts")),
+            "-o",
+            "StrictHostKeyChecking=yes",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "ControlPersist=5",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let host = SshHost {
+            destination: "127.0.0.1".to_owned(),
+            options,
+            control: Some(dir),
+        };
+        let mut input = input;
+        input.flush()?;
+        Ok((host, Mutex::new(input)))
+    }
+
+    /// An installed sshd (it must be started by an absolute path).
+    fn sshd() -> Option<PathBuf> {
+        ["/usr/sbin/sshd", "/usr/bin/sshd", "/usr/local/sbin/sshd"]
+            .into_iter()
+            .map(Path::new)
+            .find(|path| path.is_file())
+            .map(Path::to_owned)
     }
 }

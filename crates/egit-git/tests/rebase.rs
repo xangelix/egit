@@ -220,7 +220,10 @@ fn conflicts_stop_the_rebase_and_rewords_after_them_still_apply() {
     )
     .unwrap();
     assert_eq!(stopped, Integrated::Conflicts);
-    assert_eq!(repository.operations().unwrap(), [Operation::Rebase]);
+    assert_eq!(
+        repository.operations(sandbox.git()).unwrap(),
+        [Operation::Rebase]
+    );
     // Each conflict resolved as the commit being replayed has it, until the rebase ends.
     for resolved in ["3\n", "2\n"] {
         std::fs::write(path.join("f"), resolved).unwrap();
@@ -233,7 +236,7 @@ fn conflicts_stop_the_rebase_and_rewords_after_them_still_apply() {
             .output_unchecked()
             .unwrap();
     }
-    assert_eq!(repository.operations().unwrap(), []);
+    assert_eq!(repository.operations(sandbox.git()).unwrap(), []);
     assert_eq!(
         log(&sandbox, &path, "%s"),
         ["Two, after three", "Three", "One"]
@@ -271,7 +274,7 @@ fn the_root_is_reworded_and_a_dirty_work_tree_refused() {
         &CancelToken::new(),
     );
     assert!(matches!(refused, Err(RebaseError::Git(_))), "{refused:?}");
-    assert_eq!(repository.operations().unwrap(), []);
+    assert_eq!(repository.operations(sandbox.git()).unwrap(), []);
     sandbox.run(&path, "checkout", &["--", "f2"]).unwrap();
 
     rebase_interactive(
@@ -358,7 +361,7 @@ fn a_range_with_a_merge_keeps_it_as_its_plan_drops_and_rewords() {
         assert!(refused.is_err(), "{why}");
         assert_eq!(rev(&sandbox, &path, "HEAD"), head, "{why}");
     }
-    assert_eq!(repository.operations().unwrap(), Vec::new());
+    assert_eq!(repository.operations(sandbox.git()).unwrap(), Vec::new());
 
     // A side commit dropped, a commit and the merge reworded: the merge stays one.
     let steps = [

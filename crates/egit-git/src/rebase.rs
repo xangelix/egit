@@ -16,7 +16,6 @@
 //! and nothing is melded: the todo's structure is git's.
 
 use std::fmt::Write as _;
-use std::io::Write as _;
 
 use bstr::ByteSlice as _;
 
@@ -263,15 +262,15 @@ pub fn rebase_interactive(
     cancel: &CancelToken,
 ) -> Result<Integrated, RebaseError> {
     let todo = todo(plan)?;
-    let mut file = tempfile::Builder::new()
-        .prefix("egit-rebase-")
-        .tempfile()
-        .map_err(RebaseError::Todo)?;
-    file.write_all(todo.as_bytes())
-        .and_then(|()| file.flush())
+    // Where git runs (on another computer, there).
+    let files = git.files();
+    let scratch = files.temp_dir("egit-rebase-").map_err(RebaseError::Todo)?;
+    let ours = scratch.path().join("todo");
+    files
+        .write(&ours, todo.as_bytes())
         .map_err(RebaseError::Todo)?;
     // Git runs the sequence editor with the todo's path after it: `cp -- ours theirs`.
-    let editor = format!("cp -- {}", quote(&shell_path(file.path())));
+    let editor = format!("cp -- {}", quote(&shell_path(&ours)));
     let mut command = git
         .write("rebase")
         .args([
@@ -322,22 +321,26 @@ pub fn rebase_keeping_merges(
             _ => {}
         }
     }
-    let scratch = tempfile::Builder::new()
-        .prefix("egit-rebase-")
-        .tempdir()
-        .map_err(RebaseError::Todo)?;
+    // Where git runs (on another computer, there).
+    let files = git.files();
+    let scratch = files.temp_dir("egit-rebase-").map_err(RebaseError::Todo)?;
     let theirs = scratch.path().join("theirs");
     // Git's todo, copied out by a sequence editor that then fails: git gives up before
     // anything moves.
     let copy = format!("cp -- \"$1\" {}; exit 1 #", quote(&shell_path(&theirs)));
     let tried = merging_rebase(git, repository, base, copy, cancel).output_unchecked()?;
-    let generated = std::fs::read_to_string(&theirs).unwrap_or_default();
+    let generated = files
+        .read(&theirs)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
     if generated.trim().is_empty() {
         return Err(GitError::failed("rebase", tried.status, tried.stderr).into());
     }
     let todo = with_plan(&generated, plan)?;
     let ours = scratch.path().join("ours");
-    std::fs::write(&ours, todo).map_err(RebaseError::Todo)?;
+    files
+        .write(&ours, todo.as_bytes())
+        .map_err(RebaseError::Todo)?;
     let editor = format!("cp -- {}", quote(&shell_path(&ours)));
     let done = merging_rebase(git, repository, base, editor, cancel)
         .output()

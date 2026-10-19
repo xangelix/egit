@@ -6,7 +6,6 @@
 //! documents it for people to edit, and `rev-parse --git-path` finds it (in the common
 //! directory, for a worktree).
 
-use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use bstr::{BStr, BString, ByteSlice as _};
@@ -132,7 +131,7 @@ pub fn ignore(
                 .into_owned()
         }
     };
-    add_patterns(&file, patterns)
+    add_patterns(git, &file, patterns)
 }
 
 /// Adds `patterns` again, as they were before [`unignore`] took them back.
@@ -140,14 +139,14 @@ pub fn ignore(
 /// # Errors
 ///
 /// When the file can't be read or written.
-pub fn ignore_again(ignored: &Ignored) -> Result<Ignored, IgnoreError> {
+pub fn ignore_again(git: &Git, ignored: &Ignored) -> Result<Ignored, IgnoreError> {
     let patterns: Vec<BString> = ignored
         .added
         .lines()
         .filter(|line| !line.is_empty())
         .map(BString::from)
         .collect();
-    add_patterns(&ignored.file, &patterns)
+    add_patterns(git, &ignored.file, &patterns)
 }
 
 /// Takes back what [`ignore`] added: its end cut off (the file removed, when it was made for
@@ -157,7 +156,7 @@ pub fn ignore_again(ignored: &Ignored) -> Result<Ignored, IgnoreError> {
 ///
 /// [`IgnoreError::Changed`] when the file no longer ends with it (nothing is changed), and
 /// when it can't be read or written.
-pub fn unignore(ignored: &Ignored) -> Result<(), IgnoreError> {
+pub fn unignore(git: &Git, ignored: &Ignored) -> Result<(), IgnoreError> {
     if ignored.added.is_empty() {
         return Ok(());
     }
@@ -166,7 +165,8 @@ pub fn unignore(ignored: &Ignored) -> Result<(), IgnoreError> {
         path: file.clone(),
         source,
     };
-    let content = match std::fs::read(file) {
+    let files = git.files();
+    let content = match files.read(file) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(IgnoreError::Changed(file.clone()));
@@ -177,23 +177,19 @@ pub fn unignore(ignored: &Ignored) -> Result<(), IgnoreError> {
         return Err(IgnoreError::Changed(file.clone()));
     };
     if ignored.created && kept.is_empty() {
-        return std::fs::remove_file(file).map_err(io);
+        return files.remove_file(file).map_err(io);
     }
-    let length = u64::try_from(kept.len()).map_err(|_| IgnoreError::Changed(file.clone()))?;
-    std::fs::OpenOptions::new()
-        .write(true)
-        .open(file)
-        .and_then(|opened| opened.set_len(length))
-        .map_err(io)
+    files.write(file, kept).map_err(io)
 }
 
 /// Appends those of `patterns` that `file` doesn't hold as a line already.
-fn add_patterns(file: &Path, patterns: &[BString]) -> Result<Ignored, IgnoreError> {
+fn add_patterns(git: &Git, file: &Path, patterns: &[BString]) -> Result<Ignored, IgnoreError> {
     let io = |source| IgnoreError::Io {
         path: file.to_owned(),
         source,
     };
-    let (content, created) = match std::fs::read(file) {
+    let files = git.files();
+    let (content, created) = match files.read(file) {
         Ok(content) => (content, false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), true),
         Err(error) => return Err(io(error)),
@@ -225,14 +221,9 @@ fn add_patterns(file: &Path, patterns: &[BString]) -> Result<Ignored, IgnoreErro
         added = [ending, added.as_slice()].concat().into();
     }
     if let Some(folder) = file.parent() {
-        std::fs::create_dir_all(folder).map_err(io)?;
+        files.create_dir_all(folder).map_err(io)?;
     }
-    std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(file)
-        .and_then(|mut opened| opened.write_all(&added))
-        .map_err(io)?;
+    files.append(file, &added).map_err(io)?;
     Ok(Ignored {
         file: file.to_owned(),
         added,

@@ -449,7 +449,7 @@ pub fn submodule_commits(
     limit: usize,
 ) -> Result<Option<Vec<(ObjectId, BString)>>, GitError> {
     let inside = repository.work_tree().join(path.to_path_lossy());
-    if !inside.join(".git").exists() {
+    if !git.files().exists(&inside.join(".git")).unwrap_or(false) {
         return Ok(None);
     }
     let mut command = git
@@ -575,7 +575,10 @@ pub fn remove_submodule(
     path: &BStr,
     force: bool,
 ) -> Result<(), GitError> {
-    if repository.work_tree().join(".gitmodules").is_file() {
+    if git
+        .files()
+        .is_file(&repository.work_tree().join(".gitmodules"))
+    {
         git.write("add")
             .args(["--", ".gitmodules"])
             .current_dir(repository.work_tree())

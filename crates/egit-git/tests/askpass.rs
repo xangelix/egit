@@ -29,6 +29,12 @@ fn main() -> ExitCode {
         return run_helper(&args.next().unwrap_or_default());
     }
 
+    // git's prompts there aren't relayed here (yet): this computer's askpass is what is tested.
+    let mut stdout = std::io::stdout();
+    if egit_git::testing::on_another_computer() {
+        writeln!(stdout, "skipped: git runs on another computer").unwrap();
+        return ExitCode::SUCCESS;
+    }
     let tests: [(&str, fn()); 3] = [
         ("git asks through the window", git_asks_through_the_window),
         ("a refusal fails git", a_refusal_fails_git),
@@ -37,7 +43,6 @@ fn main() -> ExitCode {
             a_non_interactive_command_never_asks,
         ),
     ];
-    let mut stdout = std::io::stdout();
     for (name, test) in tests {
         test();
         writeln!(stdout, "test {name} ... ok").unwrap();

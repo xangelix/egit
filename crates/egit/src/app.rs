@@ -203,9 +203,8 @@ impl EgitApp {
         // Every git process asks its questions through this window.
         let (prompts, env) = Prompts::start(&creation.egui_ctx);
         let options = GitOptions {
-            program: None,
             env,
-            unset: Vec::new(),
+            ..GitOptions::default()
         };
         // People's pictures, fetched while the preferences ask (the tests fetch none).
         crate::avatars::install(

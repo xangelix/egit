@@ -102,12 +102,12 @@ fn each_name_is_ignored_alone_and_taken_back() {
 
     // Taken back, every name is listed again; added again, ignored again.
     let before = std::fs::read(&ignored.file).unwrap();
-    unignore(&ignored).unwrap();
+    unignore(sandbox.git(), &ignored).unwrap();
     assert_eq!(untracked(&sandbox, &repo).len(), names.len() * 2);
-    let redone = ignore_again(&ignored).unwrap();
+    let redone = ignore_again(sandbox.git(), &ignored).unwrap();
     assert_eq!(std::fs::read(&ignored.file).unwrap(), before);
     assert_eq!(untracked(&sandbox, &repo), left);
-    unignore(&redone).unwrap();
+    unignore(sandbox.git(), &redone).unwrap();
 }
 
 #[test]
@@ -151,9 +151,12 @@ fn an_extension_or_a_folder_is_ignored_in_the_shared_file() {
     // Changed since, it isn't taken back; put back as it was, it is.
     let changed = std::fs::read(repo.join(".gitignore")).unwrap();
     std::fs::write(repo.join(".gitignore"), [&changed[..], b"more\n"].concat()).unwrap();
-    assert!(matches!(unignore(&ignored), Err(IgnoreError::Changed(_))));
+    assert!(matches!(
+        unignore(sandbox.git(), &ignored),
+        Err(IgnoreError::Changed(_))
+    ));
     std::fs::write(repo.join(".gitignore"), &changed).unwrap();
-    unignore(&ignored).unwrap();
+    unignore(sandbox.git(), &ignored).unwrap();
     assert_eq!(
         std::fs::read(repo.join(".gitignore")).unwrap(),
         b"*.tmp\r\n/target"
@@ -171,6 +174,6 @@ fn an_extension_or_a_folder_is_ignored_in_the_shared_file() {
     .unwrap();
     assert!(made.created);
     assert_eq!(std::fs::read(repo.join(".gitignore")).unwrap(), b"*.log\n");
-    unignore(&made).unwrap();
+    unignore(sandbox.git(), &made).unwrap();
     assert!(!repo.join(".gitignore").exists());
 }

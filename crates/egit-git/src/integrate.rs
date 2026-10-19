@@ -221,7 +221,7 @@ pub(crate) fn stopped(
     if error.failure().is_none() {
         return Err(error);
     }
-    let operations = repository.operations().map_err(|source| GitError::Io {
+    let operations = repository.operations(git).map_err(|source| GitError::Io {
         subcommand: "status",
         source,
     })?;
@@ -252,7 +252,7 @@ pub(crate) fn carried_on(
     if error.failure().is_none() {
         return Err(error);
     }
-    let operations = repository.operations().map_err(|source| GitError::Io {
+    let operations = repository.operations(git).map_err(|source| GitError::Io {
         subcommand: "status",
         source,
     })?;

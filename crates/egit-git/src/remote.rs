@@ -271,7 +271,7 @@ pub fn pull(
         });
     }
     let stopped = repository
-        .operations()
+        .operations(git)
         .map_err(|source| GitError::Io {
             subcommand: "pull",
             source,

@@ -243,8 +243,11 @@ fn a_series_applies_as_commits_stopping_where_one_conflicts() {
         .unwrap(),
         Integrated::Conflicts
     );
-    assert_eq!(repository.operations().unwrap(), [Operation::ApplyMailbox]);
-    let progress = repository.mailbox_progress().unwrap().unwrap();
+    assert_eq!(
+        repository.operations(sandbox.git()).unwrap(),
+        [Operation::ApplyMailbox]
+    );
+    let progress = repository.mailbox_progress(sandbox.git()).unwrap().unwrap();
     assert_eq!((progress.next, progress.last), (1, 3));
     assert_eq!(progress.subject, "Change b");
     let stopped_at = String::from_utf8(current_patch(git, &repository).unwrap()).unwrap();
@@ -255,11 +258,14 @@ fn a_series_applies_as_commits_stopping_where_one_conflicts() {
         skip_operation(git, &repository, Operation::ApplyMailbox, &cancel).unwrap(),
         Integrated::Conflicts
     );
-    let progress = repository.mailbox_progress().unwrap().unwrap();
+    let progress = repository.mailbox_progress(sandbox.git()).unwrap().unwrap();
     assert_eq!((progress.next, progress.subject.as_str()), (2, "Change c"));
     abort_operation(git, &repository, Operation::ApplyMailbox, &cancel).unwrap();
-    assert_eq!(repository.operations().unwrap(), Vec::<Operation>::new());
-    assert_eq!(repository.mailbox_progress().unwrap(), None);
+    assert_eq!(
+        repository.operations(sandbox.git()).unwrap(),
+        Vec::<Operation>::new()
+    );
+    assert_eq!(repository.mailbox_progress(sandbox.git()).unwrap(), None);
     assert_eq!(
         subjects(&sandbox, &repo, "main~1..main"),
         ["Change c differently"]
@@ -412,7 +418,10 @@ fn a_stopped_cherry_pick_is_skipped() {
         skip_operation(sandbox.git(), &repository, Operation::CherryPick, &cancel).unwrap(),
         Integrated::Done
     );
-    assert_eq!(repository.operations().unwrap(), Vec::<Operation>::new());
+    assert_eq!(
+        repository.operations(sandbox.git()).unwrap(),
+        Vec::<Operation>::new()
+    );
     assert_eq!(
         subjects(&sandbox, &repo, "main~1..main"),
         ["Change b differently"]

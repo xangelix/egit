@@ -6,7 +6,41 @@ use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
 
+use crate::host::{RemotePid, SshHost};
 use crate::process::{self, Group};
+
+/// A command running on another computer: where, and its process id there once it said it.
+#[derive(Clone, Debug)]
+pub(crate) struct Elsewhere {
+    pub(crate) host: SshHost,
+    pub(crate) pid: RemotePid,
+}
+
+impl Elsewhere {
+    /// Asks its process group there to stop, from a thread of its own (a command there): once
+    /// its id is known, waiting a little for it.
+    fn terminate(&self) {
+        let elsewhere = self.clone();
+        let spawned = std::thread::Builder::new()
+            .name("stopping git elsewhere".to_owned())
+            .spawn(move || {
+                let until = Instant::now().checked_add(Duration::from_secs(3));
+                loop {
+                    if let Some(&pid) = elsewhere.pid.get() {
+                        elsewhere.host.terminate(pid);
+                        return;
+                    }
+                    if until.is_none_or(|until| Instant::now() >= until) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            });
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "couldn't start stopping git elsewhere");
+        }
+    }
+}
 
 /// Cancels the git commands run with it.
 ///
@@ -23,9 +57,10 @@ pub struct CancelToken(Arc<Shared>);
 #[derive(Debug, Default)]
 struct Shared {
     cancelled: AtomicBool,
-    /// The process groups running under this token right now. Each is removed only after its
-    /// leader has exited and before it is reaped, so a group id here is never a reused one.
-    running: Mutex<Vec<Group>>,
+    /// The process groups running under this token right now (and, for a command on another
+    /// computer, where). Each is removed only after its leader has exited and before it is
+    /// reaped, so a group id here is never a reused one.
+    running: Mutex<Vec<(Group, Option<Elsewhere>)>>,
     /// Wakes [`CancelToken::sleep`] when the token is cancelled.
     woken: Condvar,
 }
@@ -41,8 +76,12 @@ impl CancelToken {
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Release);
         let running = self.0.running.lock();
-        for &group in running.iter() {
-            process::terminate_group(group);
+        for (group, elsewhere) in running.iter() {
+            // There first: the session here ending doesn't stop it.
+            if let Some(elsewhere) = elsewhere {
+                elsewhere.terminate();
+            }
+            process::terminate_group(*group);
         }
         drop(running);
         self.0.woken.notify_all();
@@ -76,14 +115,17 @@ impl CancelToken {
     /// Records a process group running under this token until the returned guard is dropped.
     ///
     /// Drop the guard after the group's leader has exited and before reaping it.
-    pub(crate) fn register(&self, group: Group) -> Registration<'_> {
+    pub(crate) fn register(&self, group: Group, elsewhere: Option<Elsewhere>) -> Registration<'_> {
         let mut running = self.0.running.lock();
-        running.push(group);
         // A cancel that came between the check before spawning and now: it may not have seen
         // this group, so stop it here.
         if self.is_cancelled() {
+            if let Some(elsewhere) = &elsewhere {
+                elsewhere.terminate();
+            }
             process::terminate_group(group);
         }
+        running.push((group, elsewhere));
         drop(running);
         Registration { token: self, group }
     }
@@ -99,7 +141,7 @@ pub(crate) struct Registration<'a> {
 impl Drop for Registration<'_> {
     fn drop(&mut self) {
         let mut running = self.token.0.running.lock();
-        if let Some(index) = running.iter().position(|&group| group == self.group) {
+        if let Some(index) = running.iter().position(|(group, _)| *group == self.group) {
             running.swap_remove(index);
         }
     }

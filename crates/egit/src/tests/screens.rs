@@ -2350,7 +2350,11 @@ fn a_long_history_without_a_commit_graph_is_offered_one() {
             .query_by_role_and_label(Role::Button, "Write a commit-graph")
             .is_none()
     );
-    assert!(harness.state().state.repos[0].repository.has_commit_graph());
+    assert!(
+        harness.state().state.repos[0]
+            .repository
+            .has_commit_graph(sandbox.git())
+    );
 }
 
 #[test]

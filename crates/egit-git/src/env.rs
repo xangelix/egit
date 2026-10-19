@@ -49,6 +49,26 @@ const FIXED: [(&str, &str); 7] = [
     ("GIT_MERGE_AUTOEDIT", "no"),
 ];
 
+/// Variables naming this computer's helpers (the askpass, the ssh wrapper, a display): a git on
+/// another computer never gets them; the ssh reaching it does, for its own prompts.
+const LOCAL_ONLY: [&str; 10] = [
+    "GIT_ASKPASS",
+    "SSH_ASKPASS",
+    "SSH_ASKPASS_REQUIRE",
+    crate::askpass::SOCKET_VAR,
+    crate::askpass::TOKEN_VAR,
+    crate::askpass::CONTEXT_VAR,
+    crate::askpass::INTERACTIVE_VAR,
+    "GIT_SSH",
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+];
+
+/// Whether `name` names one of this computer's helpers (see [`LOCAL_ONLY`]).
+pub(crate) fn is_local_only(name: &std::ffi::OsStr) -> bool {
+    LOCAL_ONLY.iter().any(|local| name == *local)
+}
+
 /// The changes made to the inherited environment for every git process.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Environment {
@@ -92,6 +112,42 @@ impl Environment {
         }
 
         Self { remove, set }
+    }
+
+    /// The environment for git on another computer, whose own environment egit doesn't see:
+    /// its repository variables and translations removed, egit's fixed variables set, then
+    /// `env` (but this computer's helpers) and `unset`.
+    pub(crate) fn remote(env: &[(OsString, OsString)], unset: &[OsString]) -> Self {
+        let mut remove: Vec<OsString> = REPOSITORY_VARIABLES.iter().map(OsString::from).collect();
+        remove.extend(["LANGUAGE", "GPG_TTY", "LC_ALL"].map(OsString::from));
+        let mut plan = Self {
+            remove,
+            set: FIXED
+                .iter()
+                .map(|(key, value)| (OsString::from(key), OsString::from(value)))
+                .collect(),
+        };
+        for (key, value) in env {
+            if !is_local_only(key) {
+                plan.push(key.clone(), value.clone());
+            }
+        }
+        for key in unset {
+            plan.unset(key.clone());
+        }
+        plan
+    }
+
+    /// The variables it removes.
+    pub(crate) fn removals(&self) -> impl Iterator<Item = &std::ffi::OsStr> {
+        self.remove.iter().map(OsString::as_os_str)
+    }
+
+    /// The variables it sets, in order (a later one over an earlier).
+    pub(crate) fn settings(&self) -> impl Iterator<Item = (&std::ffi::OsStr, &std::ffi::OsStr)> {
+        self.set
+            .iter()
+            .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
     }
 
     /// Adds a variable, set after (and so over) egit's own.
@@ -203,6 +259,25 @@ mod tests {
     fn an_explicit_character_set_wins_over_lc_all() {
         let environment = plan(&[("LC_ALL", "de_DE.UTF-8"), ("LC_CTYPE", "ja_JP.UTF-8")]);
         assert_eq!(environment.value("LC_CTYPE"), None);
+    }
+
+    #[test]
+    fn git_elsewhere_gets_nothing_of_this_computers_helpers() {
+        let env = [
+            (
+                OsString::from("GIT_ASKPASS"),
+                OsString::from("/here/egit-askpass"),
+            ),
+            (OsString::from("GIT_SSH"), OsString::from("/here/ssh")),
+            (OsString::from("HOME"), OsString::from("/sandbox")),
+        ];
+        let plan = Environment::remote(&env, &[OsString::from("GIT_AUTHOR_NAME")]);
+        assert_eq!(plan.value("GIT_ASKPASS"), None);
+        assert_eq!(plan.value("GIT_SSH"), None);
+        assert_eq!(plan.value("HOME"), Some(OsStr::new("/sandbox")));
+        assert_eq!(plan.value("LC_MESSAGES"), Some(OsStr::new("C")));
+        assert!(plan.removes("GIT_DIR"));
+        assert!(plan.removes("GIT_AUTHOR_NAME"));
     }
 
     #[test]

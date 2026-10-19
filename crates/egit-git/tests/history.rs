@@ -454,9 +454,9 @@ fn writes_a_commit_graph() {
     let sandbox = sandbox();
     let repo = branchy(&sandbox);
     let repository = Repository::discover(sandbox.git(), &repo).unwrap();
-    assert!(!repository.has_commit_graph());
+    assert!(!repository.has_commit_graph(sandbox.git()));
     write_commit_graph(sandbox.git(), &repository, &CancelToken::new()).unwrap();
-    assert!(repository.has_commit_graph());
+    assert!(repository.has_commit_graph(sandbox.git()));
     assert_eq!(walk(&sandbox, &repo).len(), 6);
 }
 
@@ -589,7 +589,7 @@ fn a_partial_clones_commit_graph_fetches_nothing() {
 
     let repository = Repository::discover(sandbox.git(), &clone).unwrap();
     write_commit_graph(sandbox.git(), &repository, &CancelToken::new()).unwrap();
-    assert!(repository.has_commit_graph());
+    assert!(repository.has_commit_graph(sandbox.git()));
     assert_eq!(
         trees(&sandbox, &clone),
         before,

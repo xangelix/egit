@@ -8,18 +8,24 @@ use std::sync::{Arc, OnceLock};
 use crate::command::{Access, GitCommand};
 use crate::env::Environment;
 use crate::error::GitError;
+use crate::files::Files;
+use crate::host::Host;
 use crate::transcript::Transcript;
 use crate::version::GitVersion;
 
 /// How to find and run git.
 #[derive(Clone, Debug, Default)]
 pub struct GitOptions {
-    /// The executable. `None` finds `git` on `PATH`.
+    /// The executable. `None` finds `git` on `PATH` (on another computer, runs `git` there).
     pub program: Option<PathBuf>,
-    /// Environment variables for every git process, set after (and so over) egit's own.
+    /// Environment variables for every git process, set after (and so over) egit's own. On
+    /// another computer, git gets them but this computer's helpers (the askpass, the ssh
+    /// wrapper), which the ssh reaching it gets.
     pub env: Vec<(OsString, OsString)>,
     /// Environment variables no git process gets, whatever egit or [`Self::env`] would set.
     pub unset: Vec<OsString>,
+    /// Where git runs: here, or on another computer over SSH.
+    pub host: Host,
 }
 
 /// The git binary egit drives: where it is, its version, and the environment it runs in; and,
@@ -36,7 +42,11 @@ pub struct Git {
 struct Inner {
     program: PathBuf,
     version: GitVersion,
+    /// The environment of what runs here: git, or the ssh reaching it.
     environment: Environment,
+    host: Host,
+    /// Git's environment on another computer.
+    remote: Option<Environment>,
 }
 
 impl Git {
@@ -49,9 +59,18 @@ impl Git {
     /// started, [`GitError::UnknownVersion`] when it doesn't report a version, and
     /// [`GitError::Unsupported`] when it is older than [`GitVersion::MINIMUM`].
     pub fn new(options: GitOptions) -> Result<Self, GitError> {
-        let program = match options.program {
-            Some(program) => program,
-            None => find_on_path(OsStr::new(GIT)).ok_or(GitError::NotFound)?,
+        let (program, remote) = match &options.host {
+            Host::Local => match options.program {
+                Some(program) => (program, None),
+                None => (
+                    find_on_path(OsStr::new(GIT)).ok_or(GitError::NotFound)?,
+                    None,
+                ),
+            },
+            Host::Ssh(_) => (
+                options.program.unwrap_or_else(|| PathBuf::from("git")),
+                Some(Environment::remote(&options.env, &options.unset)),
+            ),
         };
         let mut environment = Environment::plan(std::env::vars_os());
         for (key, value) in options.env {
@@ -65,6 +84,8 @@ impl Git {
             // Replaced below, once git has said which it is.
             version: GitVersion::MINIMUM,
             environment,
+            host: options.host,
+            remote,
         };
 
         let unchecked = Self {
@@ -124,8 +145,25 @@ impl Git {
         self.inner.version
     }
 
+    /// Where it runs.
+    #[must_use]
+    pub fn host(&self) -> &Host {
+        &self.inner.host
+    }
+
+    /// The files of the computer it runs on, as egit reads and writes them.
+    #[must_use]
+    pub const fn files(&self) -> Files<'_> {
+        Files::of(self)
+    }
+
     pub(crate) fn environment(&self) -> &Environment {
         &self.inner.environment
+    }
+
+    /// Git's environment on another computer (none here).
+    pub(crate) fn remote_environment(&self) -> Option<&Environment> {
+        self.inner.remote.as_ref()
     }
 }
 
@@ -134,6 +172,7 @@ impl fmt::Debug for Git {
         f.debug_struct("Git")
             .field("program", &self.inner.program)
             .field("version", &self.inner.version)
+            .field("host", &self.inner.host)
             .finish_non_exhaustive()
     }
 }

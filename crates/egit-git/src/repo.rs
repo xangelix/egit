@@ -1,6 +1,5 @@
 //! Finding a repository, where its `HEAD` points, and what it is in the middle of.
 
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -64,7 +63,7 @@ impl Repository {
     ///
     /// A [`DiscoverError`] saying why there is no repository egit can open there.
     pub fn discover(git: &Git, path: &Path) -> Result<Self, DiscoverError> {
-        let start = if path.is_file() {
+        let start = if git.files().is_file(path) {
             path.parent().unwrap_or(path)
         } else {
             path
@@ -152,12 +151,18 @@ impl Repository {
     }
 
     /// Whether git keeps a commit-graph file for the repository, which lets a walk of its history
-    /// in topological order start at once (see [`write_commit_graph`](crate::write_commit_graph)).
+    /// in topological order start at once (see [`write_commit_graph`](crate::write_commit_graph));
+    /// not when its files can't be looked at.
     #[must_use]
-    pub fn has_commit_graph(&self) -> bool {
+    pub fn has_commit_graph(&self, git: &Git) -> bool {
         let info = self.common_dir.join("objects/info");
-        info.join("commit-graph").is_file()
-            || info.join("commit-graphs/commit-graph-chain").is_file()
+        let (single, chain) = (
+            info.join("commit-graph"),
+            info.join("commit-graphs/commit-graph-chain"),
+        );
+        git.files()
+            .exist(&[&single, &chain])
+            .is_ok_and(|there| there.contains(&true))
     }
 
     /// Whether this is a linked work tree (`git worktree add`) rather than the main one.
@@ -378,14 +383,35 @@ impl Repository {
     /// # Errors
     ///
     /// When the git directory can't be read.
-    pub fn operations(&self) -> io::Result<Vec<Operation>> {
+    pub fn operations(&self, git: &Git) -> io::Result<Vec<Operation>> {
         let dir = &self.git_dir;
+        let names = [
+            "rebase-merge",
+            "rebase-apply",
+            "rebase-apply/applying",
+            "MERGE_HEAD",
+            "CHERRY_PICK_HEAD",
+            "REVERT_HEAD",
+            "BISECT_LOG",
+        ];
+        let paths = names.map(|name| dir.join(name));
+        let there = git
+            .files()
+            .exist(&paths.iter().map(PathBuf::as_path).collect::<Vec<_>>())?;
+        let has = |name: &str| {
+            names
+                .iter()
+                .position(|known| *known == name)
+                .and_then(|index| there.get(index))
+                .copied()
+                .unwrap_or(false)
+        };
         let mut operations = Vec::new();
-        if fs::exists(dir.join("rebase-merge"))? {
+        if has("rebase-merge") {
             operations.push(Operation::Rebase);
         }
-        if fs::exists(dir.join("rebase-apply"))? {
-            operations.push(if fs::exists(dir.join("rebase-apply/applying"))? {
+        if has("rebase-apply") {
+            operations.push(if has("rebase-apply/applying") {
                 Operation::ApplyMailbox
             } else {
                 Operation::Rebase
@@ -397,7 +423,7 @@ impl Repository {
             ("REVERT_HEAD", Operation::Revert),
             ("BISECT_LOG", Operation::Bisect),
         ] {
-            if fs::exists(dir.join(file))? {
+            if has(file) {
                 operations.push(operation);
             }
         }

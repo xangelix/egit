@@ -47,7 +47,7 @@ pub fn walk_history(
     cancel: &CancelToken,
     each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
 ) -> Result<Walked, GitError> {
-    let start = if repository.has_commit_graph() {
+    let start = if repository.has_commit_graph(git) {
         let listed = git
             .read("rev-list")
             .args(["--no-walk=unsorted", "--exclude=refs/stash", "--all"])
@@ -124,7 +124,7 @@ pub fn walk_history_from(
     cancel: &CancelToken,
     each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
 ) -> Result<Walked, GitError> {
-    let tips = if repository.has_commit_graph() {
+    let tips = if repository.has_commit_graph(git) {
         reduced(git, repository, tips, cancel)?
     } else {
         tips
