@@ -1289,6 +1289,10 @@ pub(crate) struct WorkSide<'a> {
     pub(crate) hooks: Option<&'a egit_git::Hooks>,
 }
 
+/// The least the commit table (or a file looked at) keeps beside the details, where the
+/// window has room for it: the details give way first.
+const CENTRAL_LEAST: f32 = 360.0;
+
 /// The details beside the history (a commit's, or the working tree's), and the commit table
 /// (or a file looked at) in the middle.
 fn panels(
@@ -1311,10 +1315,12 @@ fn panels(
         hooks,
     } = work;
     side_panel(ui, shared, history, view, lists, actions);
+    // Never so wide the commit table (or a file) is left without room, where there is room.
+    let widest = (ui.available_width() - CENTRAL_LEAST).clamp(260.0, 900.0);
     egui::Panel::right(Id::new(("history-details", shared.id)))
         .resizable(true)
-        .default_size(380.0)
-        .size_range(260.0..=900.0)
+        .default_size(380.0_f32.min(widest))
+        .size_range(260.0..=widest)
         // Its first row the window's head band, from the top.
         .frame(chrome(shared).inner_margin(Margin {
             left: 12,

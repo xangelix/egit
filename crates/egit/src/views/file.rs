@@ -560,70 +560,126 @@ fn file_bar(
 ) {
     let palette = shared.palette;
     widgets::bar(ui, |ui| {
-        ui.horizontal(|ui| {
+        // Narrow (panels open beside it), the tools show their icons alone, and narrower
+        // still, they go on a row of their own.
+        let room = ui.available_width();
+        let full = file_tools_width(ui, widgets::Look::Full);
+        let look = if room >= full + BAR_LEFT {
+            widgets::Look::Full
+        } else {
+            widgets::Look::Compact
+        };
+        let apart = room < file_tools_width(ui, widgets::Look::Compact) + BAR_LEFT;
+        let back = |ui: &mut Ui, open: &mut bool| {
             if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
                 .on_hover_text("Back to the history (Escape)")
                 .clicked()
             {
                 *open = false;
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if widgets::tool(
-                    ui,
-                    icon::CLOCK_COUNTER_CLOCKWISE,
-                    "File history",
-                    false,
-                    widgets::Look::Full,
-                )
-                .on_hover_text("Every commit that changed it")
-                .clicked()
-                {
-                    file.wanted = Some(FileWanted::History(file.path().to_owned()));
-                }
-                if widgets::tool(ui, icon::USER_LIST, "Blame", false, widgets::Look::Full)
-                    .on_hover_text("Which commit each of its lines came from")
-                    .clicked()
-                {
-                    file.wanted = Some(file.blame_target(shared));
-                }
-                let reveals = [
-                    (
-                        icon::FOLDER_OPEN,
-                        "Show in folder",
-                        Reveal::InFolder,
-                        "Show the work tree's file in its folder",
-                    ),
-                    (
-                        icon::ARROW_SQUARE_OUT,
-                        "Open file",
-                        Reveal::Open,
-                        "Open the work tree's file in its app (as it is now, not as a commit \
-                         has it)",
-                    ),
-                ];
-                for (glyph, name, how, hover) in reveals {
-                    if widgets::icon_tool(ui, true, glyph, name)
-                        .on_hover_text(hover)
-                        .clicked()
-                    {
-                        let work_tree = shared.repository.work_tree();
-                        let path = crate::desktop::in_work_tree(work_tree, file.path());
-                        actions.push(Action::Reveal(path, how));
-                    }
-                }
-                // A conflict's view has no other choices: its wrapping goes here.
-                if file.merge.is_some() {
-                    wrap_toggle(ui, file);
-                }
-                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                    change_line(ui, palette, file);
+        };
+        if apart {
+            // What doesn't fit wraps onto the next line, rather than under what is beside.
+            ui.horizontal_wrapped(|ui| {
+                back(ui, open);
+                change_line(ui, palette, file);
+            });
+            ui.horizontal_wrapped(|ui| file_tools(ui, shared, file, look, actions));
+        } else {
+            ui.horizontal(|ui| {
+                back(ui, open);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    file_tools(ui, shared, file, look, actions);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        change_line(ui, palette, file);
+                    });
                 });
             });
-        });
+        }
         if file.merge.is_none() {
             ui.horizontal_wrapped(|ui| shown_controls(ui, shared, file));
         }
     });
+}
+
+/// What a file bar's left keeps besides its tools: the back button and some of the change.
+const BAR_LEFT: f32 = 240.0;
+
+/// How wide the file bar's tools draw, as `look` says.
+fn file_tools_width(ui: &Ui, look: widgets::Look) -> f32 {
+    let gap = ui.spacing().item_spacing.x;
+    let compact = widgets::Look::Compact;
+    [
+        widgets::tool_width(
+            ui,
+            (icon::CLOCK_COUNTER_CLOCKWISE, "File history"),
+            look,
+            false,
+        ),
+        widgets::tool_width(ui, (icon::USER_LIST, "Blame"), look, false),
+        widgets::tool_width(ui, (icon::FOLDER_OPEN, "Show in folder"), compact, false),
+        widgets::tool_width(ui, (icon::ARROW_SQUARE_OUT, "Open file"), compact, false),
+    ]
+    .iter()
+    .map(|width| width + gap)
+    .sum()
+}
+
+/// The file bar's tools, from the right: its history, its blame, and the work tree's file
+/// opened or shown in its folder (a conflict's wrapping too).
+fn file_tools(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    file: &mut FileView,
+    look: widgets::Look,
+    actions: &mut Vec<Action>,
+) {
+    if widgets::tool(
+        ui,
+        icon::CLOCK_COUNTER_CLOCKWISE,
+        "File history",
+        false,
+        look,
+    )
+    .on_hover_text("Every commit that changed it")
+    .clicked()
+    {
+        file.wanted = Some(FileWanted::History(file.path().to_owned()));
+    }
+    if widgets::tool(ui, icon::USER_LIST, "Blame", false, look)
+        .on_hover_text("Which commit each of its lines came from")
+        .clicked()
+    {
+        file.wanted = Some(file.blame_target(shared));
+    }
+    let reveals = [
+        (
+            icon::FOLDER_OPEN,
+            "Show in folder",
+            Reveal::InFolder,
+            "Show the work tree's file in its folder",
+        ),
+        (
+            icon::ARROW_SQUARE_OUT,
+            "Open file",
+            Reveal::Open,
+            "Open the work tree's file in its app (as it is now, not as a commit has it)",
+        ),
+    ];
+    for (glyph, name, how, hover) in reveals {
+        if widgets::icon_tool(ui, true, glyph, name)
+            .on_hover_text(hover)
+            .clicked()
+        {
+            let work_tree = shared.repository.work_tree();
+            let path = crate::desktop::in_work_tree(work_tree, file.path());
+            actions.push(Action::Reveal(path, how));
+        }
+    }
+    // A conflict's view has no other choices: its wrapping goes here.
+    if file.merge.is_some() {
+        wrap_toggle(ui, file);
+    }
 }
 
 /// What the file view shows: its diff or the file, (for a diff) unified or side by side and
