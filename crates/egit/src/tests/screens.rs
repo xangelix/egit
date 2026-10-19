@@ -1364,8 +1364,12 @@ fn changes_in_a_pulls_way_are_stashed_and_put_back() {
         .hold_background_fetch();
 
     // A change of mine to a file the pull changes: stashed, pulled, put back.
+    let before = harness.state().state.repos[0].history.shown.rows();
     click_when_enabled(&mut harness, &format!("{}  Pull", icon::ARROW_DOWN));
     wait_for_label(&mut harness, "Your changes are in the way");
+    // The refused pull fetched the colleague's commit: the history read again shows it before
+    // the screen is checked (its landing would move every row).
+    settle(&mut harness, "the fetched history", history_of(before + 1));
     render(&mut harness, "pull-in-the-way");
     harness.get_by_label("Stash, pull, and put back").click();
     wait_for_label(&mut harness, "Pulled, and put your changes back.");
@@ -2728,6 +2732,13 @@ fn pull_requests_without_credentials_offer_to_sign_in() {
     // The refused credential is forgotten.
     let kept = std::fs::read_to_string(sandbox.path("credentials")).unwrap();
     assert!(!kept.contains("wrong"), "{kept}");
+    // Not while a read runs (Refresh waits, disabled, meanwhile).
+    settle(&mut harness, "the requests read", |app| {
+        app.state
+            .repos
+            .first()
+            .is_some_and(|repo| !repo.forge.is_reading())
+    });
     render(&mut harness, "pull-requests-sign-in");
     harness.get_by_label("Create a token…").click();
     harness.run_steps(2);
@@ -2952,7 +2963,15 @@ fn a_commits_message_is_edited_in_place() {
         app.state.repos[0].history_view.details_shown()
     });
     render(&mut harness, "history-long-message");
-    double_click_in_details(&mut harness, LONG);
+    // A double click the harness puts in one frame is now and then lost to a frame that lays
+    // the panel out again (the status read after the reset done outside landing): tried again.
+    for _ in 0..3 {
+        double_click_in_details(&mut harness, LONG);
+        harness.run_steps(2);
+        if harness.query_by_label("Save message").is_some() {
+            break;
+        }
+    }
     wait_for_label(&mut harness, "Save message");
     // The description, a line longer.
     harness

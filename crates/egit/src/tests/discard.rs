@@ -53,18 +53,22 @@ fn right_click_line(harness: &mut Harness<'_, EgitApp>, line: u32) {
     harness.run_steps(2);
 }
 
-/// Clicks the menu's `item`, once it shows beside the bar's button of the same words (lower:
-/// by the pointer), after `before`.
+/// Right-clicks the diff's `line`, then clicks the menu's `item` once it shows beside the bar's
+/// button of the same words (lower: by the pointer), after `before`. A right click landing in
+/// a frame that lays the diff out again opens nothing: it is made again.
 fn menu_beside_the_bar(
     harness: &mut Harness<'_, EgitApp>,
-    item: &str,
+    (line, item): (u32, &str),
     before: impl FnOnce(&mut Harness<'_, EgitApp>),
 ) {
-    for _ in 0..200 {
-        if harness.query_all_by_label(item).count() > 1 {
-            break;
+    'tries: for _ in 0..3 {
+        right_click_line(harness, line);
+        for _ in 0..100 {
+            if harness.query_all_by_label(item).count() > 1 {
+                break 'tries;
+            }
+            harness.step();
         }
-        harness.step();
     }
     before(harness);
     harness
@@ -138,9 +142,12 @@ fn changes_not_staged_are_discarded_and_brought_back() {
     assert_eq!(read(&repo, "notes.txt"), Some(notes(&[5, 25])));
 
     // A right click on a changed line (nothing selected): its menu stages the line's hunk,
-    // and the staged side's unstages it.
-    right_click_line(&mut harness, 5);
-    menu_beside_the_bar(&mut harness, "Stage hunk", |harness| {
+    // and the staged side's unstages it. Once the diff is read again after the undo (both
+    // hunks: nine lines each), or the click lands on nothing.
+    settle(&mut harness, "the diff read again", |app| {
+        app.state.repos[0].history_view.diff_lines() == Some(18)
+    });
+    menu_beside_the_bar(&mut harness, (5, "Stage hunk"), |harness| {
         render(harness, "diff-lines-menu");
     });
     settle(&mut harness, "the hunk staged", |_| {
@@ -154,8 +161,7 @@ fn changes_not_staged_are_discarded_and_brought_back() {
     settle(&mut harness, "the staged diff", |app| {
         app.state.repos[0].history_view.diff_lines() == Some(9)
     });
-    right_click_line(&mut harness, 5);
-    menu_beside_the_bar(&mut harness, "Unstage hunk", |_| {});
+    menu_beside_the_bar(&mut harness, (5, "Unstage hunk"), |_| {});
     settle(&mut harness, "the hunk unstaged", |_| {
         staged(&sandbox, &repo).is_empty()
     });
