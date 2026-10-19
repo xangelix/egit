@@ -93,16 +93,17 @@ pub(super) const TOPICS: &[Topic] = &[
             "Forget the account",
             "Account's name",
             "Signs in with",
-            "A Claude Code folder",
+            "A Claude subscription",
             "An API key",
             "API key",
             "Claude Code's own",
             "Runs as",
         ],
         what: "A conversation runs as Claude Code's own login here, or as another account chosen \
-               under its prompt before it starts. An account is a Claude Code configuration \
-               folder of its own (CLAUDE_CONFIG_DIR: its own login, settings, and sessions; \
-               signed into with Claude Code itself), or an Anthropic API key, which git's \
+               under its prompt before it starts. An account is a Claude subscription (Pro, Max, \
+               Team, Enterprise) in a Claude Code configuration folder of its own \
+               (CLAUDE_CONFIG_DIR: its own login, settings, and sessions; signed into with Claude \
+               Code itself: egit never sees the login), or an Anthropic API key, which git's \
                credential helper keeps (as https://api.anthropic.com, the account's name its \
                user). Each conversation runs as its own, so several accounts work at once.",
         git: "git credential approve, fill, reject (an API key's)",
@@ -116,8 +117,12 @@ pub(super) const TOPICS: &[Topic] = &[
                 "Under the prompt, nobody signed in shows Claude Code's own login command for that folder: run it in a terminal, then Look again.",
             ),
             (
-                "On another computer?",
-                "A folder's account is this computer's login, so it isn't offered there: conversations there run as Claude Code is signed in there, or as an API key's account.",
+                "A subscription's account on another computer?",
+                "It runs from the same folder under the home folder there (~/.claude-work here is ~/.claude-work there), signed into there with Claude Code there: nobody signed in shows the command, through ssh -t, to run in a terminal. Its login never leaves the computer it was made on.",
+            ),
+            (
+                "An API key's account on another computer?",
+                "Its key goes to Claude Code there in the conversation's start, never on a command line there.",
             ),
             (
                 "Its earlier conversations?",

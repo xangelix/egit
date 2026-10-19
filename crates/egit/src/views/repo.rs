@@ -58,7 +58,9 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
     let setup = repo.git.host().ssh().map_or(agents, |ssh| {
         agents_there
             .entry(ssh.destination.clone())
-            .or_insert_with(|| crate::agents::AgentsSetup::there(repo.git.clone()))
+            .or_insert_with(|| {
+                crate::agents::AgentsSetup::there(repo.git.clone(), home_dir.as_deref())
+            })
     });
     agents_panel(ui, (setup, &mut repo.agents), (id, around), actions);
     super::output::show(ui, &mut repo.output, id);

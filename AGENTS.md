@@ -800,13 +800,15 @@ writes paths), never `OsStrExt`.
     other computer's git it runs through, a session of the shared connection, its output read
     from the script's marker (`GitStdout::of`), its process id's line kept out of its words
     (`PidReader`); never a secret in its environment there, a command line there would show
-    it); `Bridge::start`: a
+    it; what it doesn't get, there through `env -u`); `Bridge::start`: a
     conversation's process, its lines read on a thread into `Event`s (a last `Ended` always,
     with the stderr's end when it died), `send`; dropped, its input closes and it is waited
     for on a thread (stopped after 3 s). `run_once`: one JSON answer.
   - `accounts.rs` — `Signer` (Claude Code as the terminal runs it, a configuration folder of
     its own (`CLAUDE_CONFIG_DIR`, other credentials left out), an API key), its environment;
-    `auth_status` (`claude auth status --json` with the bundled binary, there through its git);
+    `auth_status` (`claude auth status --json` with the bundled binary, there through its git,
+    other credentials left out by `env -u`; never an API key there:
+    `AgentError::SecretOnCommandLine`);
     `login_command` (the command signing into a folder with Claude Code itself, there through
     `ssh -t <host>`: egit has no Claude login).
   - `sessions.rs` — `list_sessions` (newest first, with branch and title), `session_history`.
@@ -1762,8 +1764,8 @@ writes paths), never `OsStrExt`.
     egit looks (theme, text size, commit dates), repositories (the background fetch, the
     sidebar), diffs and files (side by side, wrapped, tab width), agents (the accounts
     besides Claude Code's own: each forgotten (an API key erased from the helper; a folder
-    kept), one added: its name, a Claude Code folder (`~/.claude-<name>` unless typed) or an
-    API key (a password field, stored and found again in a job: no helper keeping it is a
+    kept), one added: its name, "A Claude subscription" (a Claude Code folder of its own,
+    `~/.claude-<name>` unless typed) or an API key (a password field, stored and found again in a job: no helper keeping it is a
     problem said so)), and every keyboard shortcut;
     each change pushes `Action::SetPreferences`, in effect at once (each tab's fetch interval
     and sidebar too) and kept.
@@ -1852,7 +1854,7 @@ writes paths), never `OsStrExt`.
     button); made again only when the list is replaced, in a job past 5,000 files, the last
     tree shown meanwhile, in a scroll area of its own.
   - `agents.rs` — agents (`egit-agents`): `AgentsSetup`, the window's (`AppState::agents`), and
-    one for each other computer a repository is on (`AgentsSetup::there(git)`,
+    one for each other computer a repository is on (`AgentsSetup::there(git, home)`,
     `AppState::agents_there` by its name, made as its tab's panel first shows; its installation
     found with its Node, `installation`, `claude`, `elsewhere`):
     Node found and the SDK's readiness (`found`, a job), installing it (`installing`,
@@ -1863,10 +1865,13 @@ writes paths), never `OsStrExt`.
     (kept in the settings, `agent_accounts`): a name and its `AccountKind`, a `Folder` of its
     own or an `ApiKey` that git's helpers keep for `https://api.anthropic.com` with the name as
     user (never in the settings); its signer filled in the conversation's start job
-    (`Starter`: the bridge as Claude Code's own runs it, and git (here: its credential
-    helpers keep the keys); there, the signer's variables go in the start request
-    (`Started::secrets`, put into the queued start as the bridge lands), and a folder's account
-    is refused: its login is this computer's). `RepoAgents`, a tab's
+    (`Starter`: the bridge as Claude Code's own runs it, git (here: its credential helpers
+    keep the keys), and `Homes`, this computer's home folder and the other's: a subscription's
+    folder under this one's is the same folder under the home folder there, `Homes::place`,
+    where Claude Code there signs into it, as `who` asks and the login command, through
+    `ssh -t`, offers; there, an API key goes in the start request (`Started::secrets`, put
+    into the queued start as the bridge lands), a folder's path on the command line, and the
+    other credentials are left out by `env -u`). `RepoAgents`, a tab's
     (`RepoTab::agents`): shown or not, its `Conversation`s and the one shown, the account new
     ones run as (`choose_account`: the one shown too, before it begins, its bridge started
     ahead stopped to start again as it; earlier ones listed and read from its folder), the
@@ -2103,8 +2108,11 @@ writes paths), never `OsStrExt`.
     form (`~/repo`, the home folder there), reads its history and work tree there, shows a
     change's diff, stages and commits there, follows a commit made there behind its back, is
     told at once of a file changed there (inotify-tools installed; the Overview says so,
-    rendered), and cancels a fetch whose remote hasn't answered; and runs the agents there (the stand-in bridge through
-    the session), skipped without sshd unless `EGIT_REQUIRE_SSHD`.
+    rendered), and cancels a fetch whose remote hasn't answered; and runs the agents there (the
+    stand-in bridge through the session): Claude Code's own account taking the API key the
+    login there exports, a subscription's account (a folder under the home folder here) running
+    from the same folder under the home folder there, that key left out; skipped without sshd
+    unless `EGIT_REQUIRE_SSHD`.
     `src/tests/agents.rs` drives the Agents panel against `egit-agents`' stand-in SDK (skipped
     without Node unless `EGIT_REQUIRE_NODE`): shown from the top bar, a prompt sent with Enter
     and its answer streamed, a command allowed for the conversation (its line opened), a

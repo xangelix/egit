@@ -115,11 +115,42 @@ pub(crate) struct AccountForm {
 }
 
 /// How a conversation's bridge starts: the bridge as Claude Code's own account would run it,
-/// and git, to fill another's API key.
+/// git, to fill another's API key, and where an account's folder is on the computer it runs on.
 #[derive(Clone)]
 pub(crate) struct Starter {
     pub(crate) launch: Launch,
     pub(crate) git: Option<Git>,
+    pub(crate) homes: Homes,
+}
+
+/// The home folders of this computer and of the one conversations run on, when that is
+/// another: an account's Claude Code folder under this one's (`~/.claude-work`) is the same
+/// folder under the home folder there, where Claude Code there signs into it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Homes {
+    pub(crate) here: Option<PathBuf>,
+    pub(crate) there: Option<PathBuf>,
+}
+
+impl Homes {
+    /// Where `folder` (as this computer names it) is on the computer conversations run on.
+    pub(crate) fn folder(&self, folder: &Path) -> PathBuf {
+        let Some(there) = &self.there else {
+            return folder.to_owned();
+        };
+        self.here
+            .as_deref()
+            .and_then(|here| folder.strip_prefix(here).ok())
+            .map_or_else(|| folder.to_owned(), |inside| there.join(inside))
+    }
+
+    /// `signer` on the computer conversations run on (its folder placed there).
+    pub(crate) fn place(&self, signer: Signer) -> Signer {
+        match signer {
+            Signer::Folder(folder) => Signer::Folder(self.folder(&folder)),
+            other => other,
+        }
+    }
 }
 
 /// Claude's setup on a computer: this one (for the whole window), or another a repository is
@@ -129,6 +160,8 @@ pub(crate) struct AgentsSetup {
     install: Option<Install>,
     /// The other computer's git, when the setup is there.
     there: Option<Git>,
+    /// This computer's home folder, and the other's (where accounts' folders are there).
+    homes: Homes,
     /// Node and npm, and whether the SDK is installed, once looked for.
     pub(crate) found: Bind<Found, Problem>,
     /// Installing the SDK, and why the last try failed.
@@ -163,6 +196,7 @@ impl AgentsSetup {
         Self {
             install: cache.map(Install::at),
             there: None,
+            homes: Homes::default(),
             found: Bind::new(true),
             installing: Bind::new(true),
             install_problem: None,
@@ -176,12 +210,22 @@ impl AgentsSetup {
     }
 
     /// Claude's setup on the other computer `git` runs on: Node there, the SDK installed
-    /// under its cache folder there.
-    pub(crate) fn there(git: Git) -> Self {
+    /// under its cache folder there; accounts' folders under `home` (this computer's home
+    /// folder) are under its home folder there.
+    pub(crate) fn there(git: Git, home: Option<&Path>) -> Self {
         Self {
+            homes: Homes {
+                here: home.map(Path::to_owned),
+                there: git.home_there().map(Path::to_owned),
+            },
             there: Some(git),
             ..Self::new(None)
         }
+    }
+
+    /// Where accounts' folders are on its computer.
+    pub(crate) fn homes(&self) -> Homes {
+        self.homes.clone()
     }
 
     /// The other computer it is on (as ssh reaches it), if it is.
@@ -388,12 +432,14 @@ impl AgentsSetup {
         let Some(Ok(found)) = self.found.read_as_ref() else {
             return None;
         };
-        // There, an account's variables go in the start request: no command line there
-        // shows them.
-        let (env, unset) = if self.there.is_some() {
-            (Vec::new(), Vec::new())
+        // There, an API key goes in the start request (no command line there shows it); its
+        // folder and the credentials left out are no secret.
+        let signer = self.homes.place(signer.clone());
+        let (env, unset) = signer.environment();
+        let env = if self.there.is_some() && matches!(signer, Signer::ApiKey(_)) {
+            Vec::new()
         } else {
-            signer.environment()
+            env
         };
         Some(Launch {
             node: found.node.node.clone(),
@@ -731,7 +777,11 @@ impl Conversation {
     /// Starts its bridge (in a job) as its account, going on with its session if it has one;
     /// requests wait until it is ready.
     fn start(&mut self, starter: Starter, work_tree: &Path, waker: egui::Context) {
-        let Starter { mut launch, git } = starter;
+        let Starter {
+            mut launch,
+            git,
+            homes,
+        } = starter;
         self.queued.insert(
             0,
             Request::Start {
@@ -749,19 +799,15 @@ impl Conversation {
         );
         let account = self.account.clone();
         self.starting.request(jobs::blocking(move || {
-            // As its account: a folder's login, or its key from git's helpers.
+            // As its account: a folder's login (there, the same folder under the home folder
+            // there), or its key from git's helpers.
             let signer =
                 account.map_or(Ok(Signer::Default), |account| account.signer(git.as_ref()))?;
+            let signer = homes.place(signer);
             let (env, unset) = signer.environment();
-            let secrets = if launch.there.is_some() {
-                if matches!(signer, Signer::Folder(_)) {
-                    return Err(Problem::new(
-                        "This account's Claude Code folder is on this computer",
-                        "On another computer, conversations run as Claude Code is signed in \
-                         there, or as an API key's account.",
-                    ));
-                }
-                // Sent in the start request: no command line there shows them.
+            launch.unset.extend(unset);
+            let secrets = if launch.there.is_some() && matches!(signer, Signer::ApiKey(_)) {
+                // Sent in the start request: no command line there shows it.
                 Secrets(
                     env.into_iter()
                         .map(|(key, value)| {
@@ -774,7 +820,6 @@ impl Conversation {
                 )
             } else {
                 launch.env.extend(env);
-                launch.unset.extend(unset);
                 Secrets::default()
             };
             let (bridge, events) = Bridge::start(&launch, move || waker.request_repaint())
@@ -941,4 +986,40 @@ impl Conversation {
 pub(crate) fn cache_folder(home: Option<&Path>) -> Option<PathBuf> {
     crate::avatars::cache_folder(home)
         .and_then(|pictures| pictures.ancestors().nth(2).map(Path::to_owned))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_accounts_folder_is_the_same_under_the_home_folder_there() {
+        let homes = Homes {
+            here: Some(PathBuf::from("/home/me")),
+            there: Some(PathBuf::from("/srv/users/me")),
+        };
+        assert_eq!(
+            homes.folder(Path::new("/home/me/.claude-work")),
+            PathBuf::from("/srv/users/me/.claude-work")
+        );
+        // Outside the home folder: the same path there.
+        assert_eq!(
+            homes.folder(Path::new("/opt/claude/work")),
+            PathBuf::from("/opt/claude/work")
+        );
+        assert_eq!(
+            homes.place(Signer::Folder(PathBuf::from("/home/me/.claude-x"))),
+            Signer::Folder(PathBuf::from("/srv/users/me/.claude-x"))
+        );
+        assert_eq!(homes.place(Signer::Default), Signer::Default);
+        // Here, every folder is where it is.
+        let here = Homes {
+            here: Some(PathBuf::from("/home/me")),
+            there: None,
+        };
+        assert_eq!(
+            here.folder(Path::new("/home/me/.claude-work")),
+            PathBuf::from("/home/me/.claude-work")
+        );
+    }
 }

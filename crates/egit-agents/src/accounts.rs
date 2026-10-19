@@ -84,7 +84,8 @@ pub struct AuthStatus {
 ///
 /// # Errors
 ///
-/// When it can't be run, or what it says can't be read.
+/// When it can't be run, or what it says can't be read; [`AgentError::SecretOnCommandLine`]
+/// for an API key there.
 pub fn auth_status(
     claude: &Path,
     signer: &Signer,
@@ -92,9 +93,19 @@ pub fn auth_status(
 ) -> Result<AuthStatus, AgentError> {
     let (set, unset) = signer.environment();
     let args = ["auth", "status", "--json"];
+    if there.is_some() && matches!(signer, Signer::ApiKey(_)) {
+        // A command line there would show it.
+        return Err(AgentError::SecretOnCommandLine);
+    }
     let elsewhere = there.and_then(|git| {
-        let words: Vec<&std::ffi::OsStr> = args.iter().map(std::ffi::OsStr::new).collect();
-        git.command_there(claude.as_os_str(), &words, None, &set)
+        // Through `env -u`, the credentials it doesn't get (whatever the login there exports).
+        let mut words = Vec::new();
+        for key in &unset {
+            words.extend([std::ffi::OsStr::new("-u"), key.as_os_str()]);
+        }
+        words.push(claude.as_os_str());
+        words.extend(args.iter().map(std::ffi::OsStr::new));
+        git.command_there(std::ffi::OsStr::new("env"), &words, None, &set)
             .map(|command| (command, git.host().clone()))
     });
     let (mut command, host) = elsewhere.unwrap_or_else(|| {

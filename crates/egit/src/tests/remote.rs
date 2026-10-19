@@ -17,6 +17,7 @@ use super::screens::{
     click_when_enabled, harness, history_of, profile_loaded, render, settle, show_panel, type_into,
     uncommitted, wait_for_label,
 };
+use crate::agents::{AccountKind, AgentAccount};
 use crate::app::{Action, EgitApp, SshSettings};
 use crate::repo::FollowingThere;
 use crate::settings::Location;
@@ -212,6 +213,13 @@ fn the_agents_run_on_the_computer_the_repository_is_on() {
     let Some(mut harness) = reaching(&sandbox) else {
         return;
     };
+    // The login there exports an API key (only Claude Code's own account takes it).
+    harness
+        .state_mut()
+        .state
+        .git_options
+        .env
+        .push(("ANTHROPIC_API_KEY".into(), "sk-exported-there".into()));
     settle(&mut harness, "the profile", profile_loaded);
     let there = Location {
         host: Some("127.0.0.1".to_owned()),
@@ -222,7 +230,8 @@ fn the_agents_run_on_the_computer_the_repository_is_on() {
     // Claude's setup there: the stand-in, run through the session (as the installed bridge
     // would be, from its cache folder there).
     let git = harness.state().state.repos[0].git.clone();
-    let mut setup = crate::agents::AgentsSetup::there(git);
+    let home = harness.state().state.home_dir.clone();
+    let mut setup = crate::agents::AgentsSetup::there(git, home.as_deref());
     setup.stand_in(node, launch);
     let state = &mut harness.state_mut().state;
     state.agents_there.insert("127.0.0.1".to_owned(), setup);
@@ -236,4 +245,40 @@ fn the_agents_run_on_the_computer_the_repository_is_on() {
     // Its conversations are those Claude Code keeps there.
     let conversation = harness.state_mut().state.repos[0].agents.current();
     assert!(conversation.is_some_and(|conversation| conversation.transcript.session().is_some()));
+    super::agents::ask(&mut harness, "who");
+    wait_for_label(&mut harness, "Key sk-exported-there, folder none");
+    super::agents::turn_ended(&mut harness);
+
+    // A subscription's account, its folder here under the home folder: there, the same folder
+    // under the home folder there, and no other credentials.
+    let folder = sandbox.home().join(".claude-work");
+    harness
+        .state_mut()
+        .state
+        .settings
+        .agent_accounts
+        .push(AgentAccount {
+            name: "work".to_owned(),
+            kind: AccountKind::Folder(folder.as_path().into()),
+        });
+    harness
+        .get_by_role_and_label(Role::Button, "New conversation")
+        .click_accesskit();
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(Role::Button, "Claude Code's own")
+        .click_accesskit();
+    harness.run_steps(2);
+    harness.get_by_label("work").click_accesskit();
+    harness.run_steps(2);
+    super::agents::ask(&mut harness, "who");
+    let there = harness.state().state.repos[0]
+        .git
+        .home_there()
+        .unwrap()
+        .join(".claude-work");
+    wait_for_label(
+        &mut harness,
+        &format!("Key none, folder {}", there.display()),
+    );
 }

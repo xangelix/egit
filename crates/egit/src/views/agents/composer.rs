@@ -547,7 +547,6 @@ fn who(ui: &mut Ui, setup: &mut AgentsSetup, agents: &mut RepoAgents, accounts: 
     };
     let account = conversation.account.clone();
     let begun = conversation.has_begun();
-    let there = setup.elsewhere().is_some();
     let cost = conversation.transcript.cost_usd();
     let told = conversation.info.as_ref().and_then(|info| {
         let email = info.account.email.clone()?;
@@ -556,15 +555,16 @@ fn who(ui: &mut Ui, setup: &mut AgentsSetup, agents: &mut RepoAgents, accounts: 
             None => email,
         })
     });
+    // Its folder on the computer it runs on (there, under the home folder there).
     let folder = match account.as_ref().map(|account| &account.kind) {
         None => Some(None),
-        Some(AccountKind::Folder(folder)) => Some(Some(folder.to_path())),
+        Some(AccountKind::Folder(folder)) => Some(Some(setup.homes().folder(&folder.to_path()))),
         Some(AccountKind::ApiKey) => None,
     };
     let mut chosen = None;
     let mut sign_in = None;
     ui.horizontal(|ui| {
-        chosen = account_menu(ui, account.as_ref(), accounts, (begun, there));
+        chosen = account_menu(ui, account.as_ref(), accounts, begun);
         let said = match (&told, &folder) {
             (Some(told), _) => told.clone(),
             (None, None) => "an API key, from git's credential helper".to_owned(),
@@ -608,7 +608,7 @@ fn account_menu(
     ui: &mut Ui,
     account: Option<&AgentAccount>,
     accounts: &[AgentAccount],
-    (begun, there): (bool, bool),
+    begun: bool,
 ) -> Option<Chosen> {
     let name = account.map_or(OWN, |account| account.name.as_str());
     let allowed = if begun {
@@ -636,13 +636,6 @@ fn account_menu(
             }
             for other in accounts {
                 let this = account.is_some_and(|account| account.name == other.name);
-                // A folder's login is this computer's: on another, Claude Code's there or a key.
-                let allowed = match &other.kind {
-                    AccountKind::Folder(_) if there => {
-                        Err("Its Claude Code folder is on this computer, not the other")
-                    }
-                    _ => allowed,
-                };
                 if actions::item_of(ui, (mark(this), &other.name), allowed, "agents-accounts") {
                     chosen = Some(Chosen::Account(other.clone()));
                 }

@@ -40,8 +40,8 @@ pub struct Launch {
     /// Variables set for it (an account's, a stand-in SDK's). On another computer never a
     /// secret: a command line there would show it (an account's go in the start request).
     pub env: Vec<(OsString, OsString)>,
-    /// Variables it doesn't get (another account's); nothing there, where egit's environment
-    /// isn't the bridge's.
+    /// Variables it doesn't get (another account's credentials): here, out of egit's
+    /// environment; there, out of the one it gets there (`env -u`).
     pub unset: Vec<OsString>,
     /// The other computer it runs on (its git), if it isn't this one.
     pub there: Option<Git>,
@@ -58,14 +58,16 @@ impl Launch {
     /// The command running the bridge with `args` (there, the ssh running it there).
     fn command(&self, args: &[&str]) -> Command {
         if let Some(git) = &self.there {
-            let mut words = vec![self.bridge.as_os_str()];
+            // Through `env -u`, those it doesn't get (whatever the login there exports).
+            let mut words = Vec::new();
+            for key in &self.unset {
+                words.extend([OsStr::new("-u"), key.as_os_str()]);
+            }
+            words.extend([self.node.as_os_str(), self.bridge.as_os_str()]);
             words.extend(args.iter().map(OsStr::new));
-            if let Some(command) = git.command_there(
-                self.node.as_os_str(),
-                &words,
-                self.bridge.parent(),
-                &self.env,
-            ) {
+            if let Some(command) =
+                git.command_there(OsStr::new("env"), &words, self.bridge.parent(), &self.env)
+            {
                 return command;
             }
         }

@@ -38,7 +38,8 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
 const LABEL: f32 = 150.0;
 
 /// The accounts agents run as, besides Claude Code's own: those there are, forgotten from here,
-/// and one added (a Claude Code folder, or an API key kept by git's credential helper).
+/// and one added (a Claude subscription in a Claude Code folder, or an API key kept by git's
+/// credential helper).
 fn agents(ui: &mut Ui, state: &mut AppState) {
     if let Some(added) = state.agents.adding.take_ok() {
         state.settings.agent_accounts.push(added);
@@ -51,9 +52,10 @@ fn agents(ui: &mut Ui, state: &mut AppState) {
             Label::new(muted(
                 ui,
                 "Conversations run as Claude Code is signed in here, unless one chooses another \
-                 account under its prompt: a Claude Code folder of its own (signed into with \
-                 Claude Code itself), or an Anthropic API key, which git's credential helper \
-                 keeps (never egit's settings).",
+                 account under its prompt: a Claude subscription in a Claude Code folder of its \
+                 own (signed into with Claude Code itself; on another computer, the same folder \
+                 under the home folder there), or an Anthropic API key, which git's credential \
+                 helper keeps (never egit's settings).",
             ))
             .wrap(),
         );
@@ -195,7 +197,7 @@ fn add_account(ui: &mut Ui, state: &mut AppState) {
         widgets::segmented(
             ui,
             &mut form.api_key,
-            &[(false, "A Claude Code folder"), (true, "An API key")],
+            &[(false, "A Claude subscription"), (true, "An API key")],
         );
     });
     let name = form.name.trim().to_owned();

@@ -194,9 +194,11 @@ pub(crate) fn panel(
     {
         conversation.view.attach(dropped);
     }
+    let homes = setup.homes();
     let starter = setup.launch(&Signer::Default).map(|launch| Starter {
         launch,
         git: around.git.cloned(),
+        homes,
     });
     // Started ahead of its first prompt: its models, commands, and account known at once.
     agents.warm(starter.clone(), work_tree);

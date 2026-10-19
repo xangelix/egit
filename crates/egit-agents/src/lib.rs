@@ -45,6 +45,9 @@ pub enum AgentError {
     /// What the bridge (or Claude Code) printed couldn't be read.
     #[error("couldn't read the answer: {0}")]
     Unreadable(#[from] serde_json::Error),
+    /// A secret would have gone on a command line on another computer, which shows it there.
+    #[error("an API key isn't put on a command line on another computer")]
+    SecretOnCommandLine,
     /// A file or process couldn't be handled.
     #[error(transparent)]
     Io(#[from] std::io::Error),
