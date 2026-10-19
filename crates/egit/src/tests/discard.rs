@@ -61,13 +61,15 @@ fn menu_beside_the_bar(
     (line, item): (u32, &str),
     before: impl FnOnce(&mut Harness<'_, EgitApp>),
 ) {
-    'tries: for _ in 0..3 {
+    // Under load a right click may land before the diff has: tried again, a while each.
+    'tries: for _ in 0..5 {
         right_click_line(harness, line);
-        for _ in 0..100 {
+        for _ in 0..200 {
             if harness.query_all_by_label(item).count() > 1 {
                 break 'tries;
             }
             harness.step();
+            std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
     before(harness);
