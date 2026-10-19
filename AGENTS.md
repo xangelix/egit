@@ -59,7 +59,9 @@ it.
 - Git on another computer: `EGIT_TEST_SSH=1 cargo test -p egit-git` runs every egit-git test
   with each git command going through an sshd of the tests' own on the loopback address (Linux,
   sshd installed): this computer playing the other one. Do this after touching how commands
-  are built or run, or anything reading files directly (CI does it).
+  are built or run, or anything reading files directly (CI does it). Following changes there
+  at once needs inotify-tools (`inotifywait`): its tests skip without it unless
+  `EGIT_REQUIRE_INOTIFYWAIT` is set (CI sets it).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
 - Agents: the bridge's tests need Node.js (`EGIT_REQUIRE_NODE=1` makes their absence fail);
   `cargo test -p egit-agents --test install -- --ignored` installs the Claude Agent SDK for real
@@ -188,9 +190,30 @@ writes paths), never `OsStrExt`.
     target, a file's size and executable bit, a folder), `write`, `append`, `put` (`Put`: a
     file written beside and renamed over, its permissions the replaced one's with the
     executable bit as asked; or a link), `remove_file`, `remove_if_there`, `create_dir_all`,
-    `temp_dir` (`TempDir`, removed when dropped, there too). Here `std::fs`; there `sh -c` with
+    `temp_dir` (`TempDir`, removed when dropped, there too), `folders_within` (folders and those
+    inside them, `.git` left out, at most so many: breadth first here, `find` there). Here
+    `std::fs`; there `sh -c` with
     the paths as arguments, one session for several paths where it can (a missing path exits 3:
     `NotFound`).
+  - `looking.rs` — following a repository on another computer: `look_there` (a `Follow`: how
+    often to look, and the `inotifywait` to be told by) runs a session there that, where
+    `inotifywait` is installed, runs it on the git directories, `refs` (recursive), and the
+    user's configuration's folders, each path it names sorted by `classify` (a `Looked` set:
+    refs, state, config, index; lock files, objects, logs nothing; shared with the app's
+    watches); live once both of its watchers say their watches are set up; one stopping
+    (inotify's limits) falls back to the `sh` loop looking every few seconds (refs through
+    their folders' times, `packed-refs`, `HEAD`'s text; an operation's files; the
+    configuration's and index's times), as where it isn't installed. `look_at_folders_there`:
+    a work tree's folders (each on its own, NUL-separated on its input, those gone left out by
+    `xargs`, listed in a temporary file for `inotifywait --fromfile`), each change `Seen`
+    (ready, changed, a folder created, missing, failed with its words). Every session says `.`
+    every 5 s (a reader gone without a word ends it) and stops its watchers, and itself, as soon
+    as its input ends (`Looking` holds it: dropped, the session closes). `Liveness`, how one
+    stands, shared. `tests/looking.rs` (through the tests' sshd; the live ones skipped without
+    inotify-tools unless `EGIT_REQUIRE_INOTIFYWAIT`, which CI sets): told at once of a commit,
+    a file staged, a bisection, both configurations, branches in a new folder; looking every
+    second without it, or with one that stops; folders followed and no others, a folder made
+    seen; every watcher there stopped at once when dropped.
   - `command.rs` — `GitCommand` from `Git::read` / `Git::write`: `-c` settings, arguments,
     directory, stdin, and a `CancelToken`; `output` (collected up to `stdout_limit`, failing
     unless git succeeds), `output_unchecked` (any exit), `stream` (chunks through one reused
@@ -1029,18 +1052,31 @@ writes paths), never `OsStrExt`.
     overflowed (a rescan); meanwhile the status bar says outside changes aren't followed.
     `TreeWatcher`: a work tree's folders, each on its own (`Changes::WORK_TREE`); its owner sets
     which (`watch`, from a job: a system call each), and it notes folders created (for the owner
-    to consider) and removed (their watches went with them). For a repository on another computer, `Watcher::elsewhere`: a
-    session there looking every 2 s (`egit_git::look_there`), its words (refs, state, config,
-    index) noted as changes are; the session ending (the connection lost) is a watch failing,
-    tried again with its backoff.
+    to consider) and removed (their watches went with them). For a repository on another
+    computer, `Watcher::elsewhere`: a session there (`egit_git::look_there`,
+    `Follow::at_once`), told at once by `inotifywait` where it is installed there, else looking
+    every 2 s (`LOOKING_THERE`), what it says noted as changes are (`Changes::from_looked`;
+    `is_live`); the session ending (the connection lost) is a watch failing, tried again with
+    its backoff. `classify_repository` is `egit_git::classify`'s, so both sort paths alike.
+    `TreeWatcher::elsewhere`: the folders followed by a session there
+    (`look_at_folders_there`), started again whenever its owner names other folders, a folder
+    made there noted as here; none where `inotifywait` isn't installed; one that failed or lost
+    its connection tried again after `RETRY_THERE` (30 s), its words the owner's problem;
+    `is_live` (here always; there once its watches are set up, read from the session's
+    `Liveness` without the lock a job may hold).
   - `worktree.rs` — `WorkTree`: a repository's `Status`, read at once after egit's own writes
     and when the window regains focus, soon after the repository's watcher (index, `HEAD`,
     operations) or the work tree's; one read at a time, at most one a second while files keep
     changing, every 5 s while the work tree can't be watched. The read's job also sets the
     folders watched: the top, `HEAD`'s (`tree_folders`, cached by commit), those of the
     status's entries, and folders created since (with up to 1,024 inside) that `ignored_paths`
-    doesn't name, so `mkdir -p` then a new file is seen, and `node_modules` costs no watch. On another computer (`here` false) no folder is watched: its status
-    is read every 5 s.
+    doesn't name, so `mkdir -p` then a new file is seen, and `node_modules` costs no watch
+    (those inside a new folder listed by `Files::folders_within`, on either computer). On
+    another computer (`here` false) the watcher is made with the first read's git
+    (`TreeWatcher::elsewhere`); while it isn't told (setting up, down, no `inotifywait` there:
+    `is_live`), the status is read every 5 s. `RepoTab::following_there` (`FollowingThere`: at
+    once, the files looked for, or all looked for) is said on the Overview's "Where it lives"
+    card, under the computer.
   - `grid.rs` — the text grid: a `GridSource` (a measured `egit_text::Text`, colours, line
     backgrounds, a gutter) drawn as a terminal draws it. Each visible row is one galley of
     sections of one colour and advance, letter-spaced so every glyph takes exactly its cells
@@ -2065,8 +2101,9 @@ writes paths), never `OsStrExt`.
     `src/tests/remote.rs` opens a repository on "another computer" (this one, through the
     tests' sshd: `testing::ssh_host`, the sandbox's `options`, `AppState::ssh`) from Home's
     form (`~/repo`, the home folder there), reads its history and work tree there, shows a
-    change's diff, stages and commits there, follows a commit made there behind its back, and
-    cancels a fetch whose remote hasn't answered; and runs the agents there (the stand-in bridge through
+    change's diff, stages and commits there, follows a commit made there behind its back, is
+    told at once of a file changed there (inotify-tools installed; the Overview says so,
+    rendered), and cancels a fetch whose remote hasn't answered; and runs the agents there (the stand-in bridge through
     the session), skipped without sshd unless `EGIT_REQUIRE_SSHD`.
     `src/tests/agents.rs` drives the Agents panel against `egit-agents`' stand-in SDK (skipped
     without Node unless `EGIT_REQUIRE_NODE`): shown from the top bar, a prompt sent with Enter

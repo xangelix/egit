@@ -51,16 +51,18 @@ jobs:
       EGIT_REQUIRE_LFS: "1"
       # And ssh's shared connections, against an sshd of the test's own.
       EGIT_REQUIRE_SSHD: "1"
+      # And changes on another computer told at once (inotify-tools' inotifywait there).
+      EGIT_REQUIRE_INOTIFYWAIT: "1"
       # And the agents' bridge, under the runner's Node.js, against a stand-in SDK.
       EGIT_REQUIRE_NODE: "1"
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install Mesa's software renderer, the signers (GnuPG, gpgsm, OpenSSH), Git LFS, and sshd
+      - name: Install Mesa's software renderer, the signers (GnuPG, gpgsm, OpenSSH), Git LFS, sshd, and inotify-tools
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            mesa-vulkan-drivers gnupg gpgsm openssh-client openssh-server git-lfs
+            mesa-vulkan-drivers gnupg gpgsm openssh-client openssh-server git-lfs inotify-tools
 
       - name: Install the pinned toolchain
         run: rustup toolchain install

@@ -50,6 +50,33 @@ pub(crate) enum RepoPanel {
     Configuration,
 }
 
+/// How changes made on another computer are followed there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FollowingThere {
+    /// Told at once, refs and files alike (`inotifywait` there).
+    AtOnce,
+    /// The git directories told at once; the work tree's status read every few seconds
+    /// (its watches there failed).
+    FilesLooked,
+    /// Looked for every few seconds (no `inotifywait` there).
+    Looked,
+}
+
+impl FollowingThere {
+    /// In words.
+    pub(crate) const fn words(self) -> &'static str {
+        match self {
+            Self::AtOnce => "At once, as they are made there (inotifywait)",
+            Self::FilesLooked => {
+                "Its refs and index at once; its files' changes looked for every 5 seconds"
+            }
+            Self::Looked => {
+                "Looked for every few seconds: install inotify-tools there to see them at once"
+            }
+        }
+    }
+}
+
 /// An open repository.
 pub(crate) struct RepoTab {
     pub(crate) id: RepoId,
@@ -523,6 +550,18 @@ impl RepoTab {
             Head::Branch(branch) => branch.commit.as_ref().map(|commit| commit.id),
             Head::Detached(commit) => Some(commit.id),
         }
+    }
+
+    /// How changes made on the other computer the repository is on are followed (`None` here,
+    /// where they are watched, or while they aren't followed at all: see
+    /// [`Self::watch_problem`]).
+    pub(crate) fn following_there(&self) -> Option<FollowingThere> {
+        let live = self.watching.is_live()?;
+        Some(match (live, self.work_tree.is_live()) {
+            (true, true) => FollowingThere::AtOnce,
+            (true, false) => FollowingThere::FilesLooked,
+            (false, _) => FollowingThere::Looked,
+        })
     }
 
     /// Why changes made outside egit aren't being followed, while they aren't.

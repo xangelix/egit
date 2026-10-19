@@ -297,6 +297,41 @@ impl<'g> Files<'g> {
         }
     }
 
+    /// The folders `roots` are and those inside them, at most `most`: a `.git` folder and what
+    /// it holds left out, as is a root that isn't a folder (here breadth first; there in the
+    /// order `find` walks them).
+    ///
+    /// # Errors
+    ///
+    /// When the other computer can't be asked.
+    pub fn folders_within(&self, roots: &[&Path], most: usize) -> io::Result<Vec<PathBuf>> {
+        match self.git.host() {
+            Host::Local => Ok(folders_here(roots, most)),
+            Host::Ssh(ssh) => {
+                if roots.is_empty() || most == 0 {
+                    return Ok(Vec::new());
+                }
+                let most = most.to_string();
+                let mut args = vec![OsStr::new(&most)];
+                args.extend(roots.iter().map(|root| root.as_os_str()));
+                let found = self
+                    .run(
+                        ssh,
+                        "most=$1; shift; find \"$@\" -name .git -prune -o -type d -print0 \
+                         2>/dev/null | head -z -n \"$most\"",
+                        &args,
+                        None,
+                    )?
+                    .into_result(Path::new(""))?;
+                Ok(found
+                    .split(|byte| *byte == 0)
+                    .filter(|path| !path.is_empty())
+                    .map(|path| bstr::ByteSlice::to_path_lossy(path).into_owned())
+                    .collect())
+            }
+        }
+    }
+
     /// The home folder on the other computer (`$HOME` there), where `~` and relative paths
     /// typed for it lead.
     pub(crate) fn home_there(self, ssh: &SshHost) -> io::Result<PathBuf> {
@@ -422,6 +457,32 @@ impl<'g> Files<'g> {
 }
 
 /// Whether git would run the file at `path` here: a file, executable where files have the bit.
+/// [`Files::folders_within`] here: breadth first.
+fn folders_here(roots: &[&Path], most: usize) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut queue: std::collections::VecDeque<PathBuf> =
+        roots.iter().map(|root| root.to_path_buf()).collect();
+    while let Some(folder) = queue.pop_front() {
+        if found.len() >= most {
+            break;
+        }
+        if folder.file_name().is_some_and(|name| name == ".git") {
+            continue;
+        }
+        // Gone again, unreadable, or not a folder: nothing in it.
+        if let Ok(entries) = std::fs::read_dir(&folder) {
+            queue.extend(
+                entries
+                    .flatten()
+                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+                    .map(|entry| entry.path()),
+            );
+            found.push(folder);
+        }
+    }
+    found
+}
+
 fn runnable_here(path: &Path) -> bool {
     let Ok(meta) = std::fs::metadata(path) else {
         return false;

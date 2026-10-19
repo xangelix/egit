@@ -11,8 +11,12 @@
 //! One read runs at a time (one asked for at once replaces it), and while files keep changing,
 //! reads start at most every [`READ_GAP`]. Without a watch (inotify's limits), the status is read
 //! every [`UNWATCHED_READS`] instead.
+//!
+//! On another computer the same folders are followed by a session there, through
+//! `inotifywait` where it is installed; until it is told (or where it isn't, or while its
+//! session is down), the status is read every [`UNWATCHED_READS`].
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -60,8 +64,8 @@ pub(crate) struct WorkTree {
     problem: Arc<Mutex<Option<String>>>,
     head_folders: Arc<Mutex<HeadFolders>>,
     repository: Arc<Repository>,
-    /// Whether it is on this computer, where its folders can be watched (on another, its status
-    /// is read every [`UNWATCHED_READS`]).
+    /// Whether it is on this computer (on another, its folders are followed by a session there,
+    /// made with the first read's git).
     here: bool,
     waker: egui::Context,
 }
@@ -81,7 +85,9 @@ impl WorkTree {
             here,
             waker: ctx.clone(),
         };
-        work_tree.start_watching();
+        if here {
+            work_tree.start_watching(None);
+        }
         work_tree
     }
 
@@ -115,6 +121,13 @@ impl WorkTree {
             .is_some_and(|watcher| watcher.watches(folder))
     }
 
+    /// Whether its watcher is told what changes (else its status is read every few seconds).
+    pub(crate) fn is_live(&self) -> bool {
+        self.watcher
+            .as_ref()
+            .is_some_and(|watcher| watcher.is_live())
+    }
+
     /// Why the work tree's changes aren't (all) followed, while they aren't.
     pub(crate) fn problem(&self) -> Option<String> {
         self.problem.lock().clone()
@@ -130,7 +143,10 @@ impl WorkTree {
         now: Instant,
     ) -> Option<Duration> {
         let mut wait = None;
-        match self.watcher.as_ref().map(|watcher| watcher.take(now)) {
+        // A watcher not told yet (there: its session setting up, down, or without
+        // `inotifywait`) is no watcher: the status is read every few seconds meanwhile.
+        let watcher = self.watcher.as_ref().filter(|watcher| watcher.is_live());
+        match watcher.map(|watcher| watcher.take(now)) {
             Some(Taken::Changed(_)) => self.changed(),
             Some(Taken::Wait(delay)) => wait = Some(delay),
             Some(Taken::Nothing) => {}
@@ -175,7 +191,7 @@ impl WorkTree {
         self.due = None;
         self.started = Some((now, head));
         if self.watcher.is_none() {
-            self.start_watching();
+            self.start_watching(Some(git));
         }
         let (git, repository) = (git.clone(), Arc::clone(&self.repository));
         let watcher = self.watcher.clone();
@@ -205,13 +221,20 @@ impl WorkTree {
         }));
     }
 
-    /// Makes the work tree's watcher (it watches nothing until the next read); none on another
-    /// computer.
-    fn start_watching(&mut self) {
+    /// Makes the work tree's watcher (it watches nothing until the next read): here, or on the
+    /// other computer `git` runs on.
+    fn start_watching(&mut self, git: Option<&Git>) {
+        let waker = self.waker.clone();
         if !self.here {
+            if let Some(git) = git {
+                self.watcher = Some(Arc::new(TreeWatcher::elsewhere(
+                    git.clone(),
+                    Arc::clone(&self.repository),
+                    move |delay| waker.request_repaint_after(delay),
+                )));
+            }
             return;
         }
-        let waker = self.waker.clone();
         match TreeWatcher::new(
             self.repository.work_tree().to_owned(),
             self.repository.git_dir().to_owned(),
@@ -278,7 +301,7 @@ fn folders(
             }
         }
     }
-    let created = created_folders(root, watcher.take_created(), &folders);
+    let created = created_folders(git, root, &watcher.take_created(), &folders)?;
     if !created.is_empty() {
         let relative: Vec<BString> = created
             .iter()
@@ -305,29 +328,27 @@ fn folders(
 }
 
 /// The folders in `created` (made since the last read) and those inside them, up to
-/// [`NEW_FOLDERS`], but those `known` already and git's own.
-fn created_folders(root: &Path, created: Vec<PathBuf>, known: &HashSet<PathBuf>) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let mut queue: VecDeque<PathBuf> = created.into();
-    while let Some(folder) = queue.pop_front() {
-        if found.len() >= NEW_FOLDERS {
-            break;
-        }
-        let is_git = folder.file_name().is_some_and(|name| name == ".git");
-        if is_git || !folder.starts_with(root) || known.contains(&folder) || found.contains(&folder)
-        {
-            continue;
-        }
-        // Gone again, or unreadable: nothing in it to watch.
-        if let Ok(entries) = std::fs::read_dir(&folder) {
-            queue.extend(
-                entries
-                    .flatten()
-                    .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-                    .map(|entry| entry.path()),
-            );
-            found.push(folder);
-        }
+/// [`NEW_FOLDERS`], but those `known` already and git's own, on the computer `git` runs on.
+fn created_folders(
+    git: &Git,
+    root: &Path,
+    created: &[PathBuf],
+    known: &HashSet<PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
+    let roots: Vec<&Path> = created
+        .iter()
+        .filter(|folder| folder.starts_with(root) && !known.contains(*folder))
+        .map(PathBuf::as_path)
+        .collect();
+    if roots.is_empty() {
+        return Ok(Vec::new());
     }
-    found
+    let mut found = git
+        .files()
+        .folders_within(&roots, NEW_FOLDERS)
+        .map_err(|error| error.to_string())?;
+    found.retain(|folder| folder.starts_with(root) && !known.contains(folder));
+    found.sort();
+    found.dedup();
+    Ok(found)
 }

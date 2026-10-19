@@ -62,6 +62,14 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
     });
     agents_panel(ui, (setup, &mut repo.agents), (id, around), actions);
     super::output::show(ui, &mut repo.output, id);
+    let following_there = repo
+        .following_there()
+        .map(crate::repo::FollowingThere::words);
+    let there = repo
+        .git
+        .host()
+        .ssh()
+        .map(|ssh| (ssh.destination.as_str(), following_there));
     let mut behavior = Panels {
         id,
         // The repository's own: on another computer, the git there.
@@ -93,6 +101,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         } else {
             repo.git.home_there()
         },
+        there,
         journal: &repo.journal,
         agents_shown: repo.agents.shown,
         actions,
@@ -172,6 +181,9 @@ struct Panels<'a> {
     writing_commit_graph: &'a mut Bind<(), Problem>,
     forge: &'a RepoForge,
     home: Option<&'a Path>,
+    /// The other computer it is on, as ssh reaches it, and how changes made there are
+    /// followed, in words (none here; the second while they aren't followed at all).
+    there: Option<(&'a str, Option<&'static str>)>,
     journal: &'a Journal,
     agents_shown: bool,
     actions: &'a mut Vec<Action>,
@@ -268,7 +280,7 @@ fn overview(ui: &mut Ui, panels: &mut Panels<'_>) {
         ui.add_space(12.0);
         identity_card(ui, panels);
         ui.add_space(12.0);
-        location_card(ui, panels.repository, panels.home);
+        location_card(ui, panels.repository, panels.home, panels.there);
         ui.add_space(12.0);
         hooks_card(ui, panels.hooks, panels.home);
     });
@@ -484,7 +496,12 @@ fn identity_card(ui: &mut Ui, panels: &mut Panels<'_>) {
     });
 }
 
-fn location_card(ui: &mut Ui, repository: &Repository, home: Option<&Path>) {
+fn location_card(
+    ui: &mut Ui,
+    repository: &Repository,
+    home: Option<&Path>,
+    there: Option<(&str, Option<&str>)>,
+) {
     widgets::card(ui, |ui| {
         widgets::heading(ui, "Where it lives");
         Grid::new(("repo-location", repository.work_tree()))
@@ -492,6 +509,11 @@ fn location_card(ui: &mut Ui, repository: &Repository, home: Option<&Path>) {
             .min_col_width(widgets::FACT_LABEL)
             .spacing([16.0, 8.0])
             .show(ui, |ui| {
+                if let Some((computer, _)) = there {
+                    ui.label(muted(ui, "Computer"));
+                    ui.label(format!("{computer}, over SSH"));
+                    ui.end_row();
+                }
                 ui.label(muted(ui, "Work tree"));
                 ui.label(display_path(repository.work_tree(), home));
                 ui.end_row();
@@ -512,6 +534,11 @@ fn location_card(ui: &mut Ui, repository: &Repository, home: Option<&Path>) {
                         .replace("SHA", "SHA-"),
                 );
                 ui.end_row();
+                if let Some((_, Some(following))) = there {
+                    ui.label(muted(ui, "Changes there"));
+                    ui.add(egui::Label::new(following).wrap());
+                    ui.end_row();
+                }
             });
     });
 }

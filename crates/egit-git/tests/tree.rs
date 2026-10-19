@@ -55,3 +55,30 @@ fn says_which_paths_are_ignored_but_not_tracked_ones() {
         Vec::<bstr::BString>::new()
     );
 }
+
+#[test]
+fn lists_the_folders_inside_new_ones_up_to_a_limit() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    for folder in ["new/a b/deep", "new/c", "new/.git/objects", "other"] {
+        std::fs::create_dir_all(repo.join(folder)).unwrap();
+    }
+    std::fs::write(repo.join("new/file"), "x\n").unwrap();
+    let files = sandbox.git().files();
+    let roots = [repo.join("new"), repo.join("gone"), repo.join("new/file")];
+    let roots: Vec<&std::path::Path> = roots.iter().map(AsRef::as_ref).collect();
+
+    let mut found = files.folders_within(&roots, 100).unwrap();
+    found.sort();
+    let expected: Vec<_> = ["new", "new/a b", "new/a b/deep", "new/c"]
+        .iter()
+        .map(|folder| repo.join(folder))
+        .collect();
+    // Neither git's own folder, nor what isn't a folder, nor what isn't there.
+    assert_eq!(found, expected);
+    assert_eq!(files.folders_within(&roots, 2).unwrap().len(), 2);
+    assert_eq!(
+        files.folders_within(&[], 10).unwrap(),
+        Vec::<std::path::PathBuf>::new()
+    );
+}

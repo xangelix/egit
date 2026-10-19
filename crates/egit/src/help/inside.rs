@@ -1309,8 +1309,10 @@ pub(super) const TOPICS: &[Topic] = &[
                (OpenSSH's ControlMaster), so logging in (a passphrase, a password, a host's key \
                to accept) is asked once, through egit's prompts. The computer is named as ssh \
                takes it: a host, user@host, or an alias from your ~/.ssh/config (its port, user, \
-               key, and jump host apply). Changes made there outside egit are looked for every \
-               two seconds; the work tree's status is read every five.",
+               key, and jump host apply). Changes made there outside egit (a commit in a \
+               terminal there, a file saved) show at once where inotify-tools is installed \
+               there; elsewhere they are looked for every two seconds, and the work tree's status \
+               is read every five.",
         git: "ssh <computer> /bin/sh, then git there",
         cases: &[
             (
@@ -1328,6 +1330,10 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "Slow?",
                 "Each command is a round trip: on a far network, reading many small things takes a while. A jump host (ProxyJump) close to it helps.",
+            ),
+            (
+                "Changes made there show a few seconds late?",
+                "Install inotify-tools there (apt install inotify-tools, dnf install inotify-tools): egit then hears of each change as it is made, as it does here. The Overview's \"Changes there\" says which it does. A very large work tree can use up inotify's watches there (fs.inotify.max_user_watches): its files are then looked for every five seconds.",
             ),
         ],
     },

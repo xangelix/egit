@@ -13,13 +13,18 @@
 //! A watch can fail to be set up: inotify's limits are per user, and an editor watching a large
 //! tree can use them all. [`Watching`] then tries again, ever less often, and once it works it
 //! hands over every kind of change, since what changed meanwhile went unseen.
+//!
+//! A repository on another computer is followed by sessions there (`egit_git::look_there`,
+//! `look_at_folders_there`): told at once where `inotifywait` is installed there, else looking
+//! at its git directories every [`LOOKING_THERE`] (and its work tree's status read every few
+//! seconds by its owner).
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use egit_git::Repository;
+use egit_git::{Follow, Git, INOTIFYWAIT, Liveness, Looked, Looking, Repository, Seen};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 use parking_lot::Mutex;
 
@@ -67,6 +72,24 @@ impl Changes {
 
     pub(crate) const fn is_empty(self) -> bool {
         self.0 == 0
+    }
+
+    /// What a session there said changed.
+    const fn from_looked(looked: Looked) -> Self {
+        let mut changes = Self::NONE;
+        if looked.intersects(Looked::REFS) {
+            changes = changes.union(Self::REFS);
+        }
+        if looked.intersects(Looked::STATE) {
+            changes = changes.union(Self::STATE);
+        }
+        if looked.intersects(Looked::CONFIG) {
+            changes = changes.union(Self::CONFIG);
+        }
+        if looked.intersects(Looked::INDEX) {
+            changes = changes.union(Self::INDEX);
+        }
+        changes
     }
 }
 
@@ -123,8 +146,9 @@ enum Inner {
     There(egit_git::Looking),
 }
 
-/// How often a repository on another computer is looked at.
-const LOOKING_THERE: Duration = Duration::from_secs(2);
+/// How often a repository on another computer is looked at, where its session isn't told at
+/// once.
+pub(crate) const LOOKING_THERE: Duration = Duration::from_secs(2);
 
 impl Watcher {
     /// Watches `watches`, sorting each changed path with `classify`; `wake` is called (on the
@@ -172,23 +196,21 @@ impl Watcher {
         })
     }
 
-    /// Follows a repository on another computer (`git`'s): a session there looking every
-    /// [`LOOKING_THERE`] at what a watch here would see.
+    /// Follows a repository on another computer (`git`'s): a session there told at once what
+    /// a watch here would see, where `inotifywait` is installed there, else looking every
+    /// [`LOOKING_THERE`].
     pub(crate) fn elsewhere(
-        git: &egit_git::Git,
+        git: &Git,
         repository: &Repository,
         wake: impl Fn(Duration) + Send + 'static,
     ) -> notify::Result<Self> {
         let pending = Arc::new(Mutex::new(Pending::default()));
         let shared = Arc::clone(&pending);
-        let looking = egit_git::look_there(git, repository, LOOKING_THERE, move |looked| {
-            let changes = match looked {
-                egit_git::Looked::Refs => Changes::REFS,
-                egit_git::Looked::State => Changes::STATE,
-                egit_git::Looked::Config => Changes::CONFIG,
-                egit_git::Looked::Index => Changes::INDEX,
-            };
-            shared.lock().note(changes, Instant::now());
+        let follow = Follow::at_once(LOOKING_THERE);
+        let looking = egit_git::look_there(git, repository, &follow, move |looked| {
+            shared
+                .lock()
+                .note(Changes::from_looked(looked), Instant::now());
             wake(SETTLE);
         })
         .map_err(notify::Error::io)?;
@@ -203,6 +225,15 @@ impl Watcher {
         match &self.inner {
             Inner::Here { .. } => false,
             Inner::There(looking) => looking.has_ended(),
+        }
+    }
+
+    /// For a repository on another computer, whether its session is told at once what changes
+    /// (else it looks every [`LOOKING_THERE`]); `None` here.
+    pub(crate) fn is_live(&self) -> Option<bool> {
+        match &self.inner {
+            Inner::Here { .. } => None,
+            Inner::There(looking) => Some(looking.is_live()),
         }
     }
 
@@ -267,27 +298,54 @@ impl Watcher {
 }
 
 /// Watches a work tree, reporting [`Changes::WORK_TREE`]: on Linux its folders each on its own
-/// (never their subfolders), elsewhere the whole tree in one watch.
+/// (never their subfolders), on macOS and Windows the whole tree in one watch, and on another
+/// computer its folders each on its own through a session there (where `inotifywait` is
+/// installed there).
 ///
 /// Which folders is up to its owner ([`Self::watch`]): those git has files in, so a build's
 /// output or downloaded dependencies cost no watch. Folders created meanwhile are noted for the
 /// owner to consider ([`Self::take_created`]), and a folder removed loses its watch.
 pub(crate) struct TreeWatcher {
     work_tree: PathBuf,
-    watches: Mutex<TreeWatches>,
+    watches: Mutex<Watches>,
     events: Arc<Mutex<TreeEvents>>,
+    /// Whether it watches here (where it is told once made).
+    here: bool,
+    /// There, how its session stands (apart from `watches`, which a job may hold a while).
+    liveness: Mutex<Option<Liveness>>,
 }
 
 /// Whether one watch takes in a whole tree here (`FSEvents`, `ReadDirectoryChangesW`), so a work
 /// tree is watched at once rather than folder by folder (inotify's watches are one a folder).
 const WHOLE_TREE: bool = cfg!(any(target_os = "macos", windows));
 
-/// The watcher and the folders it watches.
+/// How long after a session there failed (inotify's limits there, a connection lost) one is
+/// started again.
+const RETRY_THERE: Duration = Duration::from_secs(30);
+
+/// What follows the work tree's folders.
+enum Watches {
+    Here(TreeWatches),
+    There(TreeThere),
+}
+
+/// The watcher here and the folders it watches.
 struct TreeWatches {
     watcher: RecommendedWatcher,
     folders: HashSet<PathBuf>,
     /// Whether the whole work tree is watched ([`WHOLE_TREE`]).
     whole: bool,
+}
+
+/// The session following the folders there, started again whenever they change.
+struct TreeThere {
+    git: Git,
+    repository: Arc<Repository>,
+    wake: Arc<dyn Fn(Duration) + Send + Sync>,
+    session: Option<Looking>,
+    folders: HashSet<PathBuf>,
+    /// Why the last session failed, and when one may be started again.
+    failed: Option<(String, Instant)>,
 }
 
 /// What the watcher's events left for its owner.
@@ -298,6 +356,10 @@ struct TreeEvents {
     created: Vec<PathBuf>,
     /// Folders removed (their watches went with them).
     removed: HashSet<PathBuf>,
+    /// There: `inotifywait` isn't installed (its status is read every few seconds instead).
+    missing: bool,
+    /// There: why its session gave up, when it did.
+    failed: Option<String>,
 }
 
 impl TreeWatcher {
@@ -343,30 +405,71 @@ impl TreeWatcher {
         })?;
         Ok(Self {
             work_tree,
-            watches: Mutex::new(TreeWatches {
+            watches: Mutex::new(Watches::Here(TreeWatches {
                 watcher,
                 folders: HashSet::new(),
                 whole: false,
-            }),
+            })),
             events,
+            here: true,
+            liveness: Mutex::new(None),
         })
     }
 
+    /// A watcher for `repository`'s work tree on the other computer `git` runs on: a session
+    /// there, once [`Self::watch`] names its folders.
+    pub(crate) fn elsewhere(
+        git: Git,
+        repository: Arc<Repository>,
+        wake: impl Fn(Duration) + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            work_tree: repository.work_tree().to_owned(),
+            watches: Mutex::new(Watches::There(TreeThere {
+                git,
+                repository,
+                wake: Arc::new(wake),
+                session: None,
+                folders: HashSet::new(),
+                failed: None,
+            })),
+            events: Arc::new(Mutex::new(TreeEvents::default())),
+            here: false,
+            liveness: Mutex::new(None),
+        }
+    }
+
     /// Watches exactly `folders`: those new are added, those gone dropped. A folder that no
-    /// longer exists is left out. Each new watch is a system call: run it in a job.
+    /// longer exists is left out. Each new watch is a system call (there, a session started
+    /// again): run it in a job.
     ///
     /// # Errors
     ///
     /// When a watch can't be added (inotify's per-user limit, most likely); those added
-    /// before it stay.
+    /// before it stay. There, when its session gave up (not tried again for a while).
     pub(crate) fn watch(&self, folders: HashSet<PathBuf>) -> notify::Result<()> {
-        let removed = std::mem::take(&mut self.events.lock().removed);
         let mut state = self.watches.lock();
+        match &mut *state {
+            Watches::Here(watches) => {
+                let removed = std::mem::take(&mut self.events.lock().removed);
+                self.watch_here(watches, folders, &removed)
+            }
+            Watches::There(there) => self.watch_there(there, folders),
+        }
+    }
+
+    /// [`Self::watch`] here.
+    fn watch_here(
+        &self,
+        state: &mut TreeWatches,
+        folders: HashSet<PathBuf>,
+        removed: &HashSet<PathBuf>,
+    ) -> notify::Result<()> {
         let TreeWatches {
             watcher,
             folders: watched,
             whole,
-        } = &mut *state;
+        } = state;
         if WHOLE_TREE {
             if !*whole {
                 watcher.watch(&self.work_tree, RecursiveMode::Recursive)?;
@@ -383,7 +486,6 @@ impl TreeWatcher {
             let _ = watcher.unwatch(&folder);
             watched.remove(&folder);
         }
-        let mut outcome = Ok(());
         for folder in folders {
             if watched.contains(&folder) {
                 continue;
@@ -393,25 +495,102 @@ impl TreeWatcher {
                     watched.insert(folder);
                 }
                 Err(error) if gone_already(&error) => {}
-                Err(error) => {
-                    outcome = Err(error);
-                    break;
-                }
+                Err(error) => return Err(error),
             }
         }
-        drop(state);
-        outcome
+        Ok(())
+    }
+
+    /// [`Self::watch`] there: the session started again with `folders` unless it follows them
+    /// already; none where `inotifywait` isn't installed, nor for a while after one failed.
+    fn watch_there(&self, there: &mut TreeThere, folders: HashSet<PathBuf>) -> notify::Result<()> {
+        let now = Instant::now();
+        let (missing, failed) = {
+            let mut events = self.events.lock();
+            (events.missing, events.failed.take())
+        };
+        if missing {
+            there.session = None;
+            *self.liveness.lock() = None;
+            return Ok(());
+        }
+        let ended = there.session.as_ref().is_some_and(Looking::has_ended);
+        if let Some(reason) = failed
+            .or_else(|| ended.then(|| "the connection to the other computer was lost".to_owned()))
+        {
+            there.session = None;
+            there.failed = Some((reason, now.checked_add(RETRY_THERE).unwrap_or(now)));
+        }
+        if there.session.is_some() && there.folders == folders {
+            return Ok(());
+        }
+        if let Some((reason, retry_at)) = &there.failed
+            && now < *retry_at
+        {
+            return Err(notify::Error::generic(&format!(
+                "{reason} (on the other computer)"
+            )));
+        }
+        there.failed = None;
+        let (shared, wake) = (Arc::clone(&self.events), Arc::clone(&there.wake));
+        let session = egit_git::look_at_folders_there(
+            &there.git,
+            &there.repository,
+            folders.iter().map(PathBuf::as_path),
+            std::ffi::OsStr::new(INOTIFYWAIT),
+            move |seen| {
+                {
+                    let mut events = shared.lock();
+                    match seen {
+                        // What changed while its watches were set up, too.
+                        Seen::Ready | Seen::Changed => {}
+                        Seen::Created(folder) => events.created.push(folder),
+                        Seen::Missing => {
+                            events.missing = true;
+                            return;
+                        }
+                        Seen::Failed(reason) => {
+                            events.failed = Some(if reason.is_empty() {
+                                "inotifywait stopped".to_owned()
+                            } else {
+                                reason
+                            });
+                        }
+                    }
+                    events.pending.note(Changes::WORK_TREE, Instant::now());
+                }
+                wake(SETTLE);
+            },
+        )
+        .map_err(notify::Error::io)?;
+        // The session it replaces stops as it is dropped.
+        *self.liveness.lock() = Some(session.liveness());
+        there.session = Some(session);
+        there.folders = folders;
+        Ok(())
+    }
+
+    /// Whether it is told what changes: here once made; there while its session is (else its
+    /// owner reads the status every few seconds).
+    pub(crate) fn is_live(&self) -> bool {
+        self.here || self.liveness.lock().as_ref().is_some_and(Liveness::is_live)
     }
 
     /// Whether `folder` is watched.
     #[cfg(test)]
     pub(crate) fn watches(&self, folder: &Path) -> bool {
-        self.watches.lock().folders.contains(folder)
+        match &*self.watches.lock() {
+            Watches::Here(watches) => watches.folders.contains(folder),
+            Watches::There(there) => there.folders.contains(folder),
+        }
     }
 
     /// How many folders are watched.
     pub(crate) fn len(&self) -> usize {
-        self.watches.lock().folders.len()
+        match &*self.watches.lock() {
+            Watches::Here(watches) => watches.folders.len(),
+            Watches::There(there) => there.folders.len(),
+        }
     }
 
     /// The folders created since last asked.
@@ -502,6 +681,15 @@ impl Watching {
         }
     }
 
+    /// For a repository on another computer, whether its session is told at once what changes
+    /// (else it looks every [`LOOKING_THERE`]); `None` here, or while nothing follows them.
+    pub(crate) fn is_live(&self) -> Option<bool> {
+        match &self.state {
+            State::Active(watcher) => watcher.is_live(),
+            State::Failed { .. } => None,
+        }
+    }
+
     /// Why changes aren't being followed, while they aren't.
     pub(crate) fn problem(&self) -> Option<&str> {
         match &self.state {
@@ -539,106 +727,12 @@ const fn matters(kind: EventKind) -> bool {
 
 /// What a changed path in a repository's git directories means.
 fn classify_repository(path: &Path, git_dir: &Path, common_dir: &Path) -> Changes {
-    // A lock file means a write in progress; its rename into place is what counts.
-    if path
-        .extension()
-        .is_some_and(|extension| extension == "lock")
-    {
-        return Changes::NONE;
-    }
-    // A linked work tree's git directory is inside the common one: look at it first.
-    if let Ok(relative) = path.strip_prefix(git_dir) {
-        let found = classify_git_dir(relative);
-        if !found.is_empty() || git_dir != common_dir {
-            return found;
-        }
-    }
-    path.strip_prefix(common_dir)
-        .map_or(Changes::NONE, classify_common_dir)
-}
-
-/// A path relative to a work tree's own git directory.
-fn classify_git_dir(relative: &Path) -> Changes {
-    let Some(first) = relative.components().next() else {
-        return Changes::NONE;
-    };
-    match first.as_os_str().to_str() {
-        Some("HEAD") => Changes::REFS.union(Changes::STATE),
-        Some("index") => Changes::INDEX,
-        Some("config.worktree") => Changes::CONFIG,
-        Some(
-            "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "BISECT_LOG" | "rebase-merge"
-            | "rebase-apply" | "sequencer",
-        ) => Changes::STATE,
-        _ => Changes::NONE,
-    }
-}
-
-/// A path relative to the directory every work tree shares.
-fn classify_common_dir(relative: &Path) -> Changes {
-    let Some(first) = relative.components().next() else {
-        return Changes::NONE;
-    };
-    match first.as_os_str().to_str() {
-        Some("refs" | "packed-refs") => Changes::REFS,
-        Some("config") => Changes::CONFIG,
-        _ => Changes::NONE,
-    }
+    Changes::from_looked(egit_git::classify(path, git_dir, common_dir))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn main_worktree(path: &str) -> Changes {
-        classify_repository(Path::new(path), Path::new("/r/.git"), Path::new("/r/.git"))
-    }
-
-    fn linked_worktree(path: &str) -> Changes {
-        classify_repository(
-            Path::new(path),
-            Path::new("/r/.git/worktrees/w"),
-            Path::new("/r/.git"),
-        )
-    }
-
-    #[test]
-    fn sorts_a_main_work_trees_changes() {
-        assert_eq!(
-            main_worktree("/r/.git/HEAD"),
-            Changes::REFS.union(Changes::STATE)
-        );
-        assert_eq!(main_worktree("/r/.git/refs/heads/feature/x"), Changes::REFS);
-        assert_eq!(main_worktree("/r/.git/packed-refs"), Changes::REFS);
-        assert_eq!(main_worktree("/r/.git/config"), Changes::CONFIG);
-        assert_eq!(main_worktree("/r/.git/index"), Changes::INDEX);
-        assert_eq!(main_worktree("/r/.git/MERGE_HEAD"), Changes::STATE);
-        assert_eq!(main_worktree("/r/.git/rebase-merge/done"), Changes::STATE);
-    }
-
-    #[test]
-    fn ignores_what_isnt_state() {
-        assert_eq!(main_worktree("/r/.git/index.lock"), Changes::NONE);
-        assert_eq!(main_worktree("/r/.git/refs/heads/main.lock"), Changes::NONE);
-        assert_eq!(main_worktree("/r/.git/objects/ab/cdef"), Changes::NONE);
-        assert_eq!(main_worktree("/r/.git/logs/HEAD"), Changes::NONE);
-        assert_eq!(main_worktree("/r/.git/FETCH_HEAD"), Changes::NONE);
-        assert_eq!(main_worktree("/elsewhere/HEAD"), Changes::NONE);
-    }
-
-    #[test]
-    fn a_linked_work_tree_has_its_own_head_and_shares_refs() {
-        assert_eq!(
-            linked_worktree("/r/.git/worktrees/w/HEAD"),
-            Changes::REFS.union(Changes::STATE)
-        );
-        assert_eq!(linked_worktree("/r/.git/worktrees/w/index"), Changes::INDEX);
-        assert_eq!(linked_worktree("/r/.git/refs/heads/main"), Changes::REFS);
-        assert_eq!(linked_worktree("/r/.git/config"), Changes::CONFIG);
-        // The main work tree's own HEAD and index aren't this one's.
-        assert_eq!(linked_worktree("/r/.git/HEAD"), Changes::NONE);
-        assert_eq!(linked_worktree("/r/.git/index"), Changes::NONE);
-    }
 
     #[test]
     fn hands_changes_over_once_settled() {

@@ -132,7 +132,10 @@ pub use lfs::{
     lfs_locks, lfs_patterns, lfs_prune, lfs_set_up, lfs_track, lfs_transfer, lfs_untrack,
     lfs_version,
 };
-pub use looking::{Looked, Looking, look_there};
+pub use looking::{
+    Follow, INOTIFYWAIT, Liveness, Looked, Looking, Seen, classify, look_at_folders_there,
+    look_there,
+};
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};

@@ -5,6 +5,7 @@
 //! and committed there, a commit made there behind egit's back followed by the session looking
 //! there, and a fetch cancelled while its remote hasn't answered.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use egit_git::testing::Sandbox;
@@ -13,10 +14,11 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 
 use super::screens::{
-    click_when_enabled, harness, history_of, profile_loaded, render, settle, type_into,
+    click_when_enabled, harness, history_of, profile_loaded, render, settle, show_panel, type_into,
     uncommitted, wait_for_label,
 };
 use crate::app::{Action, EgitApp, SshSettings};
+use crate::repo::FollowingThere;
 use crate::settings::Location;
 
 /// The harness, reaching other computers through the tests' sshd as the sandbox's git does,
@@ -40,6 +42,19 @@ fn reaching(sandbox: &Sandbox) -> Option<Harness<'static, EgitApp>> {
         options: host.options,
     };
     Some(harness)
+}
+
+/// Whether `inotifywait` is installed (here is there); when it must be and isn't, fails.
+fn inotifywait_installed() -> bool {
+    let found = std::process::Command::new(egit_git::INOTIFYWAIT)
+        .arg("--help")
+        .output()
+        .is_ok_and(|output| !output.stdout.is_empty() || !output.stderr.is_empty());
+    assert!(
+        found || std::env::var_os("EGIT_REQUIRE_INOTIFYWAIT").is_none(),
+        "EGIT_REQUIRE_INOTIFYWAIT is set, but inotifywait isn't installed"
+    );
+    found
 }
 
 #[test]
@@ -114,8 +129,44 @@ fn a_repository_on_another_computer_is_driven_as_one_here() {
         .unwrap();
     settle(&mut harness, "the commit made outside", history_of(4));
 
-    // A fetch from a remote answering only after a long pause (git's `ext::` transport runs a
-    // command as the remote), cancelled: git's group there is asked to stop, then the session.
+    told_at_once(&mut harness, &repo);
+
+    cancels_a_fetch(&mut harness, &sandbox, &repo);
+}
+
+/// Where inotify-tools is installed (else changes there are looked for every few seconds):
+/// told at once there, a file changed there shows, and the Overview says how changes are
+/// followed.
+fn told_at_once(harness: &mut Harness<'static, EgitApp>, repo: &Path) {
+    if !inotifywait_installed() {
+        return;
+    }
+    settle(harness, "told at once there", |app| {
+        app.state.repos[0].following_there() == Some(FollowingThere::AtOnce)
+    });
+    std::fs::write(repo.join("notes"), "five\n").unwrap();
+    settle(harness, "the change there", |app| {
+        app.state.repos[0]
+            .work_tree
+            .status()
+            .and_then(Result::ok)
+            .is_some_and(|status| status.entries().count() == 1)
+    });
+    show_panel(harness, "Overview");
+    wait_for_label(harness, FollowingThere::AtOnce.words());
+    render(harness, "remote-overview");
+    harness
+        .get_by_role_and_label(
+            Role::Button,
+            &format!("{}  History", crate::theme::icon::ARROW_LEFT),
+        )
+        .click();
+    harness.run_steps(2);
+}
+
+/// A fetch from a remote answering only after a long pause (git's `ext::` transport runs a
+/// command as the remote), cancelled: git's group there is asked to stop, then the session.
+fn cancels_a_fetch(harness: &mut Harness<'static, EgitApp>, sandbox: &Sandbox, repo: &Path) {
     sandbox
         .run(
             sandbox.home(),
@@ -129,13 +180,13 @@ fn a_repository_on_another_computer_is_driven_as_one_here() {
         repo.display()
     );
     sandbox
-        .run(&repo, "remote", &["add", "slow", &slow])
+        .run(repo, "remote", &["add", "slow", &slow])
         .unwrap();
     click_when_enabled(
-        &mut harness,
+        harness,
         &format!("{}  Fetch", crate::theme::icon::ARROWS_CLOCKWISE),
     );
-    wait_for_label(&mut harness, "Cancel");
+    wait_for_label(harness, "Cancel");
     let cancelled = Instant::now();
     // The task bar's, at the top (the output's, below, has one too).
     harness
@@ -143,7 +194,7 @@ fn a_repository_on_another_computer_is_driven_as_one_here() {
         .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
         .unwrap()
         .click();
-    wait_for_label(&mut harness, "Cancelled.");
+    wait_for_label(harness, "Cancelled.");
     assert!(cancelled.elapsed() < Duration::from_secs(20));
 }
 

@@ -242,7 +242,7 @@ pub(super) fn history_of(rows: u64) -> impl Fn(&mut EgitApp) -> bool {
 }
 
 /// Clicks a repository's panel tab.
-fn show_panel(harness: &mut Harness<'_, EgitApp>, panel: &str) {
+pub(super) fn show_panel(harness: &mut Harness<'_, EgitApp>, panel: &str) {
     harness
         .get_by_role_and_label(Role::Button, "Repository")
         .click();
