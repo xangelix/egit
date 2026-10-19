@@ -170,8 +170,12 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
                 state.actions.push(Action::Open(Location::here(path)));
             }
         });
-        ui.add_space(6.0);
-        open_there(ui, state, ready);
+        // Not from Windows: its OpenSSH can't share one connection (each command would log in
+        // again), and its paths join with `\`, which the other computer's don't.
+        if !cfg!(windows) {
+            ui.add_space(6.0);
+            open_there(ui, state, ready);
+        }
         if state.home.picking.is_pending() {
             widgets::working(ui, "Waiting for the folder dialog…");
         }
@@ -219,7 +223,7 @@ fn open_there(ui: &mut Ui, state: &mut AppState, ready: bool) {
         let field = ui
             .add(
                 widgets::line_field(&mut home.there_path)
-                    .hint_text("/home/you/project")
+                    .hint_text("~/project")
                     .desired_width(room * 0.55),
             )
             .labelled_by(folder.id);
@@ -394,7 +398,7 @@ fn profile_card(ui: &mut Ui, state: &mut AppState) {
 }
 
 /// A typed path with a leading `~` meaning the home folder.
-pub(super) fn expand_home(typed: &str, home: Option<&Path>) -> PathBuf {
+pub(crate) fn expand_home(typed: &str, home: Option<&Path>) -> PathBuf {
     match (typed.strip_prefix('~'), home) {
         (Some(""), Some(home)) => home.to_owned(),
         (Some(rest), Some(home)) if rest.starts_with('/') => {

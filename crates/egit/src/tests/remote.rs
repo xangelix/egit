@@ -1,8 +1,11 @@
 //! A repository on another computer, driven as a user drives one here: this computer playing
 //! the other, through an sshd of the tests' own on the loopback address (Linux; skipped where
-//! sshd isn't installed, unless `EGIT_REQUIRE_SSHD` is set). Opened from Home's form, its
-//! history and work tree read there, a change staged and committed there, and a commit made
-//! there behind egit's back followed by the session looking there.
+//! sshd isn't installed, unless `EGIT_REQUIRE_SSHD` is set). Opened from Home's form (`~` the
+//! home folder there), its history and work tree read there, a change's diff shown, staged,
+//! and committed there, a commit made there behind egit's back followed by the session looking
+//! there, and a fetch cancelled while its remote hasn't answered.
+
+use std::time::{Duration, Instant};
 
 use egit_git::testing::Sandbox;
 use egui::accesskit::Role;
@@ -10,7 +13,8 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 
 use super::screens::{
-    harness, history_of, profile_loaded, render, settle, type_into, uncommitted, wait_for_label,
+    click_when_enabled, harness, history_of, profile_loaded, render, settle, type_into,
+    uncommitted, wait_for_label,
 };
 use crate::app::{Action, EgitApp, SshSettings};
 use crate::settings::Location;
@@ -44,7 +48,8 @@ fn a_repository_on_another_computer_is_driven_as_one_here() {
         return;
     }
     let sandbox = Sandbox::new().unwrap();
-    let repo = sandbox.init("repo").unwrap();
+    // In the home folder there (git's `HOME` there is the sandbox's).
+    let repo = sandbox.init("home/repo").unwrap();
     sandbox
         .commit_file(&repo, "notes", "one\n", "Start")
         .unwrap();
@@ -57,19 +62,14 @@ fn a_repository_on_another_computer_is_driven_as_one_here() {
     };
     settle(&mut harness, "the profile", profile_loaded);
 
-    // Opened from Home: the computer, and the folder there.
+    // Opened from Home: the computer, and the folder there, `~` its home folder there.
     type_into(
         &mut harness,
         Role::TextInput,
         "On another computer",
         "127.0.0.1",
     );
-    type_into(
-        &mut harness,
-        Role::TextInput,
-        "folder",
-        &repo.display().to_string(),
-    );
+    type_into(&mut harness, Role::TextInput, "folder", "~/repo");
     harness
         .get_by_role_and_label(
             Role::Button,
@@ -81,15 +81,21 @@ fn a_repository_on_another_computer_is_driven_as_one_here() {
         let repo = &harness.state().state.repos[0];
         assert!(repo.git.host().ssh().is_some(), "{:?}", repo.git);
         assert_eq!(repo.title, "repo · 127.0.0.1");
+        assert_eq!(repo.git.home_there(), Some(sandbox.home()));
     }
     // Remembered with its computer.
     let recent = harness.state().state.settings.recent[0].location();
     assert_eq!(recent.host.as_deref(), Some("127.0.0.1"));
 
-    // Its work tree read there; a change staged and committed there.
+    // Its work tree read there; a change's diff, then the change staged and committed there.
     wait_for_label(&mut harness, &uncommitted(1));
     harness.get_by_label(&uncommitted(1)).click();
     wait_for_label(&mut harness, "Stage all");
+    harness.get_by_role_and_label(Role::Button, "notes").click();
+    settle(&mut harness, "the diff there", |app| {
+        let view = &mut app.state.repos[0].history_view;
+        view.file_shown() == Some(("notes".to_owned(), true)) && view.diff_lines() == Some(3)
+    });
     harness.get_by_label("Stage all").click();
     wait_for_label(&mut harness, "Commit 1 file");
     type_into(&mut harness, Role::TextInput, "Summary", "Third, from afar");
@@ -107,6 +113,38 @@ fn a_repository_on_another_computer_is_driven_as_one_here() {
         .commit_file(&repo, "more", "four\n", "Fourth, behind its back")
         .unwrap();
     settle(&mut harness, "the commit made outside", history_of(4));
+
+    // A fetch from a remote answering only after a long pause (git's `ext::` transport runs a
+    // command as the remote), cancelled: git's group there is asked to stop, then the session.
+    sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "protocol.ext.allow", "always"],
+        )
+        .unwrap();
+    let slow = format!(
+        "ext::sh -c sleep% 60;% exec% {}% upload-pack% {}",
+        sandbox.git().program().display(),
+        repo.display()
+    );
+    sandbox
+        .run(&repo, "remote", &["add", "slow", &slow])
+        .unwrap();
+    click_when_enabled(
+        &mut harness,
+        &format!("{}  Fetch", crate::theme::icon::ARROWS_CLOCKWISE),
+    );
+    wait_for_label(&mut harness, "Cancel");
+    let cancelled = Instant::now();
+    // The task bar's, at the top (the output's, below, has one too).
+    harness
+        .query_all_by_label("Cancel")
+        .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+        .click();
+    wait_for_label(&mut harness, "Cancelled.");
+    assert!(cancelled.elapsed() < Duration::from_secs(20));
 }
 
 #[test]

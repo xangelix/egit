@@ -47,6 +47,8 @@ struct Inner {
     host: Host,
     /// Git's environment on another computer.
     remote: Option<Environment>,
+    /// The home folder on another computer.
+    home_there: Option<PathBuf>,
 }
 
 impl Git {
@@ -57,7 +59,8 @@ impl Git {
     ///
     /// [`GitError::NotFound`] without a `git` on `PATH`, [`GitError::Launch`] when it can't be
     /// started, [`GitError::UnknownVersion`] when it doesn't report a version, and
-    /// [`GitError::Unsupported`] when it is older than [`GitVersion::MINIMUM`].
+    /// [`GitError::Unsupported`] when it is older than [`GitVersion::MINIMUM`]; on another
+    /// computer, [`GitError::NoHome`] when it doesn't say where its home folder is.
     pub fn new(options: GitOptions) -> Result<Self, GitError> {
         let (program, remote) = match &options.host {
             Host::Local => match options.program {
@@ -86,6 +89,7 @@ impl Git {
             environment,
             host: options.host,
             remote,
+            home_there: None,
         };
 
         let unchecked = Self {
@@ -101,6 +105,14 @@ impl Git {
             return Err(GitError::Unsupported { found: version });
         }
         inner.version = version;
+        if let Some(ssh) = inner.host.ssh() {
+            inner.home_there = Some(
+                unchecked
+                    .files()
+                    .home_there(ssh)
+                    .map_err(|source| GitError::NoHome { source })?,
+            );
+        }
         Ok(Self {
             inner: Arc::new(inner),
             transcript: None,
@@ -149,6 +161,12 @@ impl Git {
     #[must_use]
     pub fn host(&self) -> &Host {
         &self.inner.host
+    }
+
+    /// The home folder on the other computer it runs on (read as it was reached); `None` here.
+    #[must_use]
+    pub fn home_there(&self) -> Option<&Path> {
+        self.inner.home_there.as_deref()
     }
 
     /// The files of the computer it runs on, as egit reads and writes them.

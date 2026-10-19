@@ -40,7 +40,7 @@ it.
 | 26 | Follow-ups: columns, long text, dates, Help for every word, signing commits picked together | done; awaiting the owner's review |
 | 27 | People's pictures, and hooks' output | done; awaiting the owner's review |
 | 28 | Agents (Claude), on this computer | done (a second UI pass, files, commands, images, code); awaiting the owner's review |
-| 29 | Repositories on other computers, over SSH | under way: git, files, following changes, the window, the agents there |
+| 29 | Repositories on other computers, over SSH | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -167,7 +167,9 @@ writes paths), never `OsStrExt`.
     its `Host` (`GitOptions::host`): here, or another computer, where git's environment is
     `Environment::remote` (egit's own, never this computer's helpers: the askpass, the ssh
     wrapper, a display, which the ssh reaching it gets instead, `is_local_only`), and the
-    program `git` there unless named. `Git::files`: that computer's files (`files.rs`).
+    program `git` there unless named, and its home folder read once reached (`home_there`:
+    `$HOME` there, `GitError::NoHome` when it isn't a folder). `Git::files`: that computer's
+    files (`files.rs`).
   - `host.rs` — `Host` (`Local`, `Ssh(SshHost)`: a destination as ssh takes it, more of ssh's
     options (before egit's own: ssh keeps the first value of each), and the folder its
     connection is shared through, an `SshSharing`'s: `ControlMaster=auto`, `ControlPersist=1h`).
@@ -693,7 +695,8 @@ writes paths), never `OsStrExt`.
     `/-/merge_requests/12`), a commit, a branch, its name escaped). `forge_repository`: a
     remote URL of any form (https, ssh, scp-like, `git://`) to its repository; an ssh host
     alias through `resolve_ssh_alias` (`ssh -G -- <alias>`'s `hostname`, 2 s at most; never an
-    option).
+    option), or `resolve_ssh_alias_on` a git's computer (a repository there names its remotes
+    by that computer's ssh configuration).
   - `http.rs` — `Http`, a ureq agent per host: rustls on aws-lc-rs (`deny.toml` bans `ring`
     and `webpki-roots`), certificates checked by the platform verifier (the system's trust
     store), the environment's proxy (none for the loopback address), no redirects, 10 s to
@@ -1245,8 +1248,10 @@ writes paths), never `OsStrExt`.
   - `forge.rs` — `RepoForge`, a tab's forge side: `configured` (whenever new configuration
     lands) works out in a job which remotes are GitHub repositories or GitLab projects
     (`remote_urls`, as git rewrites them, else as `remote.<name>.url` writes them; the hosts
-    listed as `egit.githubHost` and `egit.gitlabHost`); an `Account` per host (the
-    repository's credential configuration); the open requests read in a detached job, each
+    listed as `egit.githubHost` and `egit.gitlabHost`; an ssh alias as the repository's
+    computer resolves it); an `Account` per host (the repository's credential configuration;
+    for a repository on another computer this computer's git and the user's configuration
+    here, `here`: this computer reaches the forge, and its prompts are relayed); the open requests read in a detached job, each
     repository up to `LIMIT` (1,000),
     each page into a shared `Found` as it lands (the window woken); a read again
     (`refresh`: after any task that exchanged with a remote, each background fetch, a
@@ -1781,8 +1786,9 @@ writes paths), never `OsStrExt`.
     nobody signed in, Claude Code's own login command for that folder, copied, and "Look
     again". Help: `help/agents.rs`.
   - `views/` — `home` (who commits and the profile's button first, then open by dialog or
-    typed path, or on another computer over SSH (its computer and the folder there, "Open
-    there"), the problem and its remedy, recent repositories in egui-table-kit (another
+    typed path, or on another computer over SSH (its computer and the folder there, `~` and a
+    relative path its home folder's (`folder_there`); "Open there"; not on Windows, whose
+    OpenSSH shares no connection and whose paths join with `\`), the problem and its remedy, recent repositories in egui-table-kit (another
     computer's said before their folder), and cloning), `profile` (identity and signing editable;
     credentials, the GitHub Enterprise and self-managed GitLab hosts (added and removed as
     `egit.githubHost` and `egit.gitlabHost`), pull and push, and every setting, each with its
@@ -2058,8 +2064,9 @@ writes paths), never `OsStrExt`.
     (in view on both sides, the top out of it), stepped to the next, and back by Alt+↑.
     `src/tests/remote.rs` opens a repository on "another computer" (this one, through the
     tests' sshd: `testing::ssh_host`, the sandbox's `options`, `AppState::ssh`) from Home's
-    form, reads its history and work tree there, stages and commits there, and follows a
-    commit made there behind its back; and runs the agents there (the stand-in bridge through
+    form (`~/repo`, the home folder there), reads its history and work tree there, shows a
+    change's diff, stages and commits there, follows a commit made there behind its back, and
+    cancels a fetch whose remote hasn't answered; and runs the agents there (the stand-in bridge through
     the session), skipped without sshd unless `EGIT_REQUIRE_SSHD`.
     `src/tests/agents.rs` drives the Agents panel against `egit-agents`' stand-in SDK (skipped
     without Node unless `EGIT_REQUIRE_NODE`): shown from the top bar, a prompt sent with Enter

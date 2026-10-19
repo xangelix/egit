@@ -87,7 +87,12 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         submodule_states: &mut repo.submodule_states,
         writing_commit_graph: &mut repo.writing_commit_graph,
         forge: &repo.forge,
-        home: home_dir.as_deref(),
+        // `~` is the home folder of the computer the repository is on.
+        home: if repo.git.host().is_local() {
+            home_dir.as_deref()
+        } else {
+            repo.git.home_there()
+        },
         journal: &repo.journal,
         agents_shown: repo.agents.shown,
         actions,

@@ -74,6 +74,14 @@ pub enum GitError {
         source: io::Error,
     },
 
+    /// The other computer git runs on didn't say where its home folder is.
+    #[error("the home folder there couldn't be read: {source}")]
+    NoHome {
+        /// Why.
+        #[source]
+        source: io::Error,
+    },
+
     /// Git printed something egit couldn't make sense of.
     #[error("`git {subcommand}` printed something egit can't read: {detail}")]
     Unexpected {

@@ -297,6 +297,17 @@ impl<'g> Files<'g> {
         }
     }
 
+    /// The home folder on the other computer (`$HOME` there), where `~` and relative paths
+    /// typed for it lead.
+    pub(crate) fn home_there(self, ssh: &SshHost) -> io::Result<PathBuf> {
+        const SCRIPT: &str = "case $HOME in /*) printf %s \"$HOME\" ;; \
+                              *) echo 'HOME is not set to a folder' >&2; exit 1 ;; esac";
+        let said = self
+            .run(ssh, SCRIPT, &[], None)?
+            .into_result(Path::new("~"))?;
+        Ok(bstr::ByteSlice::to_path_lossy(said.as_slice()).into_owned())
+    }
+
     /// A new, empty folder of egit's own (its name starting `prefix`), removed with what it
     /// holds when dropped.
     ///

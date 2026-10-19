@@ -31,4 +31,4 @@ pub use model::{
     PullRequestPage, RepositoryInfo, Review, ReviewDecision, ReviewState,
 };
 pub use pictures::{Fetched, PictureSources, Pictures, Source as PictureSource};
-pub use repository::{ForgeRepository, forge_repository, resolve_ssh_alias};
+pub use repository::{ForgeRepository, forge_repository, resolve_ssh_alias, resolve_ssh_alias_on};

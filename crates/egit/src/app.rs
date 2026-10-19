@@ -4,7 +4,7 @@
 //! after the frame's views are drawn. Background results arrive through `Bind`s polled at the
 //! start of each frame ([`AppState::poll`]), which turns finished jobs into actions too.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -505,7 +505,9 @@ impl EgitApp {
         }
         let id = state.next_repo;
         state.next_repo = state.next_repo.wrapping_add(1);
-        let mut tab = RepoTab::new(id, repository, git, ctx);
+        // On another computer, its forge's sign-ins are this computer's.
+        let here = state.git.ok_ref().filter(|_| !git.host().is_local());
+        let mut tab = RepoTab::new(id, repository, (git, here), ctx);
         tab.prefer(state.settings.preferences, Instant::now());
         state.repos.push(tab);
         tabs::show(&mut self.tabs, Pane::Repo(id));
@@ -819,6 +821,11 @@ impl AppState {
                     (reached, destination)
                 }
             };
+            // A folder typed for another computer reads as a shell there reads it.
+            let path = match git.home_there() {
+                Some(home) => folder_there(&path, home),
+                None => path,
+            };
             Repository::discover(&git, &path)
                 .map(|repository| (repository, git))
                 .map_err(|error| OpenProblem::from_discovery(&error, host.as_deref()))
@@ -1055,6 +1062,20 @@ fn sooner(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
     }
 }
 
+/// A folder typed for another computer, as a shell there reads it: `~` its `home` folder,
+/// and a path that doesn't start at the root inside it (where ssh starts).
+fn folder_there(typed: &Path, home: &Path) -> PathBuf {
+    let expanded = typed.to_str().map_or_else(
+        || typed.to_owned(),
+        |text| crate::views::home::expand_home(text, Some(home)),
+    );
+    if expanded.has_root() {
+        expanded
+    } else {
+        home.join(expanded)
+    }
+}
+
 /// What ssh (or git there) said when another computer couldn't be reached.
 fn reach_detail(error: &egit_git::GitError) -> String {
     match error {
@@ -1071,5 +1092,21 @@ fn reach_detail(error: &egit_git::GitError) -> String {
             "git there didn't say its version: is it installed (2.43 or newer)?".to_owned()
         }
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_folder_typed_for_another_computer_reads_as_a_shell_there_reads_it() {
+        let there = |typed: &str| folder_there(Path::new(typed), Path::new("/home/me"));
+        assert_eq!(there("~"), PathBuf::from("/home/me"));
+        assert_eq!(there("~/src/egit"), PathBuf::from("/home/me/src/egit"));
+        assert_eq!(there("src/egit"), PathBuf::from("/home/me/src/egit"));
+        assert_eq!(there("/srv/egit"), PathBuf::from("/srv/egit"));
+        // Someone else's home isn't looked up: a folder of that name in this one.
+        assert_eq!(there("~ada/x"), PathBuf::from("/home/me/~ada/x"));
     }
 }

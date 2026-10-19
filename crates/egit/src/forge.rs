@@ -12,7 +12,7 @@ use std::sync::Arc;
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_forge::{
     Account, CheckState, ForgeError, ForgeHost, ForgeHosts, ForgeKind, ForgeRepository,
-    PullRequest, forge_repository, pull_requests, resolve_ssh_alias,
+    PullRequest, forge_repository, pull_requests, resolve_ssh_alias_on,
 };
 use egit_git::{CancelToken, ConfigSnapshot, Git, ObjectId, Repository, remote_urls};
 use egui_async::Bind;
@@ -163,11 +163,16 @@ pub(crate) struct RepoForge {
     pub(crate) sign_in_problem: Option<Problem>,
     /// Wakes the window as pages land.
     waker: egui::Context,
+    /// For a repository on another computer, this computer's git: it is this computer that
+    /// reaches the forge, so its helpers keep the sign-ins, under the user's configuration
+    /// here (and its prompts are relayed to the window, which those there aren't).
+    here: Option<Git>,
 }
 
 impl RepoForge {
-    /// A repository's forge, nothing known yet.
-    pub(crate) fn new(waker: &egui::Context) -> Self {
+    /// A repository's forge, nothing known yet; `here` is this computer's git for a repository
+    /// on another computer.
+    pub(crate) fn new(waker: &egui::Context, here: Option<Git>) -> Self {
         Self {
             resolving: Bind::new(true),
             remotes: Arc::from([]),
@@ -184,6 +189,7 @@ impl RepoForge {
             signing: false,
             sign_in_problem: None,
             waker: waker.clone(),
+            here,
         }
     }
 
@@ -207,19 +213,21 @@ impl RepoForge {
         self.resolving.request(jobs::blocking(move || {
             let urls = remote_urls(&git, &repository)
                 .map_err(|error| Problem::git("The remotes couldn't be read", &error))?;
+            // An ssh alias as the computer the repository is on resolves it.
+            let alias = |alias: &str| resolve_ssh_alias_on(&git, alias);
             Ok(urls
                 .into_iter()
                 .filter_map(|(remote, url)| {
                     let resolved = url
                         .to_str()
                         .ok()
-                        .and_then(|url| forge_repository(url, &hosts, resolve_ssh_alias));
+                        .and_then(|url| forge_repository(url, &hosts, alias));
                     let repository = resolved.or_else(|| {
                         let written = written
                             .iter()
                             .find(|(name, _)| *name == remote)
                             .and_then(|(_, url)| url.to_str().ok())?;
-                        forge_repository(written, &hosts, resolve_ssh_alias)
+                        forge_repository(written, &hosts, alias)
                     })?;
                     Some(ForgeRemote { remote, repository })
                 })
@@ -465,10 +473,9 @@ impl RepoForge {
                 continue;
             }
             let account = self.account(host).unwrap_or_else(|| {
-                Arc::new(Account::new(
-                    git.clone(),
-                    Some(Arc::clone(repository)),
-                    host.clone(),
+                Arc::new(self.here.as_ref().map_or_else(
+                    || Account::new(git.clone(), Some(Arc::clone(repository)), host.clone()),
+                    |here| Account::new(here.clone(), None, host.clone()),
                 ))
             });
             accounts.push(account);

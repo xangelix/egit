@@ -2,11 +2,12 @@
 //! `git@gitlab.com:group/subgroup/project.git`, `ssh://git@ssh.github.com:443/owner/name`, a
 //! listed host's, and an ssh host alias's (resolved as ssh resolves it).
 
+use std::ffi::OsStr;
 use std::io::Read as _;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use egit_git::ObjectId;
+use egit_git::{Git, GitStdout, Host, ObjectId};
 
 use crate::host::{ForgeHost, ForgeHosts, ForgeKind, strip_prefix_ignore_case};
 
@@ -227,17 +228,49 @@ const SSH_TIMEOUT: Duration = Duration::from_secs(2);
 /// when ssh isn't there, fails, or the alias isn't one (ssh then names the alias itself).
 #[must_use]
 pub fn resolve_ssh_alias(alias: &str) -> Option<String> {
+    resolve_alias(alias, None)
+}
+
+/// [`resolve_ssh_alias`] on the computer `git` runs on: a repository on another computer
+/// names its remotes by that computer's ssh configuration.
+#[must_use]
+pub fn resolve_ssh_alias_on(git: &Git, alias: &str) -> Option<String> {
+    resolve_alias(alias, Some(git))
+}
+
+/// `ssh -G -- <alias>`'s `hostname`, here or on `there`'s computer.
+fn resolve_alias(alias: &str, there: Option<&Git>) -> Option<String> {
     // Never an option, whatever a URL says.
     if alias.starts_with('-') || !is_name(alias) {
         return None;
     }
-    let mut child = Command::new("ssh")
-        .args(["-G", "--", alias])
+    let words = ["-G", "--", alias];
+    let (mut command, host) = if let Some(git) = there.filter(|git| !git.host().is_local()) {
+        let words = words.map(OsStr::new);
+        (
+            git.command_there(OsStr::new("ssh"), &words, None, &[])?,
+            git.host().clone(),
+        )
+    } else {
+        let mut command = Command::new("ssh");
+        command.args(words);
+        (command, Host::Local)
+    };
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
+    let stdout = child.stdout.take()?;
+    // Read as it comes: a pipe filled while waiting would hold ssh up.
+    let reading = std::thread::spawn(move || {
+        let mut printed = String::new();
+        GitStdout::of(stdout, &host)
+            .read_to_string(&mut printed)
+            .ok()
+            .map(|_| printed)
+    });
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -252,8 +285,7 @@ pub fn resolve_ssh_alias(alias: &str) -> Option<String> {
             }
         }
     };
-    let mut printed = String::new();
-    child.stdout.take()?.read_to_string(&mut printed).ok()?;
+    let printed = reading.join().ok()??;
     if !status.success() {
         return None;
     }
