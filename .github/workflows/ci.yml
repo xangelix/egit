@@ -51,6 +51,8 @@ jobs:
       EGIT_REQUIRE_LFS: "1"
       # And ssh's shared connections, against an sshd of the test's own.
       EGIT_REQUIRE_SSHD: "1"
+      # And the agents' bridge, under the runner's Node.js, against a stand-in SDK.
+      EGIT_REQUIRE_NODE: "1"
     steps:
       - uses: actions/checkout@v7
 

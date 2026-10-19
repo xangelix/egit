@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/egit",
+    "crates/egit-agents",
     "crates/egit-forge",
     "crates/egit-gix",
     "crates/egit-git",
@@ -17,6 +18,7 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
+egit-agents = { path = "crates/egit-agents" }
 egit-forge = { path = "crates/egit-forge" }
 egit-gix = { path = "crates/egit-gix" }
 egit-git = { path = "crates/egit-git" }

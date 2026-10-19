@@ -131,6 +131,7 @@ pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Stderr};
 pub use patch::{Direction, LinesError, apply_lines, write_index_content};
 pub use people::{Author, map_contacts, recent_authors};
+pub use process::Detached;
 pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use progress::{Progress, ProgressReport};
 pub use rebase::{

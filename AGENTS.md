@@ -39,6 +39,7 @@ it.
 | 25 | The work in progress, people, trees, pictures, LFS, submodules, and Help | done; awaiting the owner's review |
 | 26 | Follow-ups: columns, long text, dates, Help for every word, signing commits picked together | done; awaiting the owner's review |
 | 27 | People's pictures, and hooks' output | done; awaiting the owner's review |
+| 28 | Agents (Claude), on this computer | under way |
 
 ## Toolchain & commands
 
@@ -55,6 +56,12 @@ it.
   `EGIT_TEST_GIT=$PWD/target/git/2.43.0/bin/git cargo test --workspace` runs every test against
   it. Do this after touching anything that runs git (CI does it in `ubuntu:24.04`).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
+- Agents: the bridge's tests need Node.js (`EGIT_REQUIRE_NODE=1` makes their absence fail);
+  `cargo test -p egit-agents --test install -- --ignored` installs the Claude Agent SDK for real
+  (about 250 MB from npm's registry) and loads it. Moving to a newer SDK: change its version
+  in `bridge/claude/package.json` and `install::SDK_VERSION`, then `npm install
+  --package-lock-only --legacy-peer-deps --ignore-scripts` there. Nothing in a test signs in
+  or sends a prompt to Anthropic.
 - Other platforms: `scripts/check-platforms.sh` lints every target for Windows
   (`x86_64-pc-windows-gnu`, mingw-w64's gcc for the C dependencies) and macOS
   (`aarch64-apple-darwin`, zig's `cc` carrying Apple's libc headers) from Linux; nothing is
@@ -177,7 +184,10 @@ writes paths), never `OsStrExt`.
     (`1.20 MiB | 2.30 MiB/s`), whether the remote is doing it (`remote: `), and the other
     lines as notes (the latest fifty). `step` reports work egit does itself one item at a
     time (commits signed) the same way.
-  - `process.rs` — git leading a group of its own, stopped and waited on safely, per platform
+  - `process.rs` — `Detached`: a program other than git (an agent's bridge, npm) run as git is:
+    leading a group of its own without a terminal, `stop` waiting, then asking the group to
+    stop (SIGTERM; Windows' gentle way), then killing; never signalled once reaped.
+    Git leading a group of its own, stopped and waited on safely, per platform
     (with the askpass's `getpeereid`, the crate's only `unsafe`). `process/unix.rs`: `setsid`
     in `pre_exec` (no controlling terminal; git leads its process group), SIGTERM to the
     group, the leader waited for with `waitid(WNOWAIT)` so a cancel can't signal a reused id.
@@ -680,6 +690,45 @@ writes paths), never `OsStrExt`.
     (pages, details, repository, who is signed in, opening; the bearer token checked; a rate
     limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each
     call against it, signed in through a sandbox's `store` helper (and an askpass script).
+- `crates/egit-agents` — agents working in a repository beside egit: Claude Code, driven
+  through Anthropic's Claude Agent SDK (TypeScript) by a small bridge under Node; no egui.
+  - `bridge/claude/` — `bridge.mjs` (plain JavaScript: the SDK's `query` with streaming input,
+    Claude Code's own system prompt (`claude_code` preset, recorded), the user's, project's, and
+    local settings, partial messages; `canUseTool` turned into permission events answered by
+    egit; interrupt, mode, model, info; `sessions` and `history` run once;
+    `EGIT_CLAUDE_SDK` names a stand-in SDK for tests), `package.json`, and `package-lock.json`
+    (the SDK pinned, `--legacy-peer-deps`: only Anthropic's packages, each with its integrity).
+  - `protocol.rs` — JSON lines: `Request` (start, send, answer, interrupt, mode, model, info),
+    `Event` (ready, message (an SDK message as it is), permission, withdrawn, info, failed,
+    ended); `Mode` (Claude Code's permission modes and their names), `Answer` (allow, always:
+    the suggestions sent back as rules; input replaced: a question's answers; refusal's
+    message, interrupt), `PermissionRequest`, `Info` (account, models, commands).
+  - `transcript.rs` — `Transcript`: the SDK's messages (live, or `history`'s) read into `Item`s
+    (prompt, text, thinking, tool call with its result, a turn's end with its cost, tokens,
+    and error, notices: compaction, retries, limits, refusals); streamed text and thinking
+    written into a live item made whole by its message; subagents' items under their call
+    (`parent`); each item's `changed` against `version`, so views measure again only what
+    changed; unknown messages ignored. `ToolCall::summary`: ("Read", path), ("Run", the
+    command's first line), …
+  - `install.rs` — `find_node` (Node 18+ and npm on `PATH`); `Install::at(cache)`: a folder per
+    SDK version and hash of what egit carries; `install` writes the package beside it, runs
+    `npm ci --ignore-scripts --legacy-peer-deps` (`Detached`, cancellable), checks Claude
+    Code's binary for this platform is there (`claude()`), marks it ready, renames it into
+    place, and removes older ones.
+  - `bridge.rs` — `Launch` (node, the script, environment set and unset); `Bridge::start`: a
+    conversation's process, its lines read on a thread into `Event`s (a last `Ended` always,
+    with the stderr's end when it died), `send`; dropped, its input closes and it is waited
+    for on a thread (stopped after 3 s). `run_once`: one JSON answer.
+  - `accounts.rs` — `Signer` (Claude Code as the terminal runs it, a configuration folder of
+    its own (`CLAUDE_CONFIG_DIR`, other credentials left out), an API key), its environment;
+    `auth_status` (`claude auth status --json` with the bundled binary); `login_command` (the
+    command signing into a folder with Claude Code itself: egit has no Claude login).
+  - `sessions.rs` — `list_sessions` (newest first, with branch and title), `session_history`.
+  - `tests/bridge.rs` drives the real bridge under Node against `tests/stand-in/sdk.mjs`
+    (streaming, allowed once and always, refused, a question answered, interrupted, mode and
+    model, info; sessions listed and read; skipped without Node unless `EGIT_REQUIRE_NODE`,
+    which CI sets). `tests/install.rs` (ignored: `-- --ignored`) runs the real `npm ci` and
+    loads the real SDK (an empty folder's sessions, its login status).
 - `crates/egit-gix` — egit's reads through gitoxide (`gix` 0.89 without default features:
   local reads only, no network or TLS; its dynamic pack cache, as the static one needs
   MPL-2.0 `uluru`), each giving what egit's git commands give, and measured faster (phase 12);
