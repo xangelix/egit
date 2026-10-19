@@ -24,6 +24,8 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         ui.add_space(12.0);
         files(ui, &mut preferences);
         ui.add_space(12.0);
+        agents(ui, state);
+        ui.add_space(12.0);
         shortcuts(ui);
         if preferences != state.settings.preferences {
             state.actions.push(Action::SetPreferences(preferences));
@@ -34,6 +36,142 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
 
 /// The width of the preferences' labels.
 const LABEL: f32 = 150.0;
+
+/// The accounts agents run as, besides Claude Code's own: those there are, forgotten from here,
+/// and one added (a Claude Code folder, or an API key kept by git's credential helper).
+fn agents(ui: &mut Ui, state: &mut AppState) {
+    if let Some(added) = state.agents.adding.take_ok() {
+        state.settings.agent_accounts.push(added);
+        state.agents.form = crate::agents::AccountForm::default();
+    }
+    widgets::card(ui, |ui| {
+        widgets::heading(ui, "Agents");
+        ui.add_space(4.0);
+        ui.add(
+            Label::new(muted(
+                ui,
+                "Conversations run as Claude Code is signed in here, unless one chooses another \
+                 account under its prompt: a Claude Code folder of its own (signed into with \
+                 Claude Code itself), or an Anthropic API key, which git's credential helper \
+                 keeps (never egit's settings).",
+            ))
+            .wrap(),
+        );
+        ui.add_space(8.0);
+        let mut forgotten = None;
+        for (index, account) in state.settings.agent_accounts.iter().enumerate() {
+            let what = match &account.kind {
+                crate::agents::AccountKind::Folder(folder) => format!(
+                    "Claude Code folder {}",
+                    crate::format::display_path(&folder.to_path(), state.home_dir.as_deref())
+                ),
+                crate::agents::AccountKind::ApiKey => "API key".to_owned(),
+            };
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(account.name.as_str()).strong());
+                ui.label(muted(ui, what));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if widgets::secondary(ui, true, "Forget the account")
+                        .on_hover_text("A folder stays where it is; an API key is erased from git's credential helper")
+                        .clicked()
+                    {
+                        forgotten = Some(index);
+                    }
+                });
+            });
+        }
+        if let Some(index) = forgotten {
+            let account = state.settings.agent_accounts.remove(index);
+            if account.kind == crate::agents::AccountKind::ApiKey
+                && let Some(git) = state.git.ok_ref().cloned()
+            {
+                crate::jobs::detached(move || {
+                    if let Err(error) = egit_git::erase_credential(&git, None, account.place()) {
+                        tracing::warn!(%error, "an API key couldn't be erased");
+                    }
+                });
+            }
+        }
+        ui.add_space(8.0);
+        add_account(ui, state);
+    });
+}
+
+/// The form adding an account.
+fn add_account(ui: &mut Ui, state: &mut AppState) {
+    let form = &mut state.agents.form;
+    widgets::form_row(ui, LABEL, "Account's name", |ui| {
+        ui.add(widgets::line_field(&mut form.name).desired_width(240.0))
+    });
+    widgets::fact(ui, LABEL, "Signs in with", |ui| {
+        widgets::segmented(
+            ui,
+            &mut form.api_key,
+            &[(false, "A Claude Code folder"), (true, "An API key")],
+        );
+    });
+    let name = form.name.trim().to_owned();
+    if form.api_key {
+        widgets::form_row(ui, LABEL, "API key", |ui| {
+            ui.add(
+                widgets::line_field(&mut *form.key)
+                    .password(true)
+                    .desired_width(240.0),
+            )
+        });
+    } else {
+        let hint = format!("~/.claude-{}", name.replace(char::is_whitespace, "-"));
+        widgets::form_row(ui, LABEL, "Folder", |ui| {
+            ui.add(
+                widgets::line_field(&mut form.folder)
+                    .hint_text(hint.as_str())
+                    .desired_width(240.0),
+            )
+        });
+    }
+    let taken = name == "Claude Code's own"
+        || state
+            .settings
+            .agent_accounts
+            .iter()
+            .any(|account| account.name == name);
+    let fits = !name.is_empty() && !taken && !name.contains(char::is_control);
+    let complete = fits && (!form.api_key || !form.key.trim().is_empty());
+    let adding = state.agents.adding.is_pending();
+    ui.horizontal(|ui| {
+        let add = widgets::primary(ui, complete && !adding, "Add the account");
+        let add = if taken {
+            add.on_disabled_hover_text("Another account has that name")
+        } else {
+            add
+        };
+        if add.clicked() {
+            let form = &mut state.agents.form;
+            let kind = if form.api_key {
+                crate::agents::AccountKind::ApiKey
+            } else {
+                let typed = form.folder.trim();
+                let typed = if typed.is_empty() {
+                    format!("~/.claude-{}", name.replace(char::is_whitespace, "-"))
+                } else {
+                    typed.to_owned()
+                };
+                let folder = super::home::expand_home(&typed, state.home_dir.as_deref());
+                crate::agents::AccountKind::Folder(folder.as_path().into())
+            };
+            let key = std::mem::take(&mut form.key);
+            let account = crate::agents::AgentAccount { name, kind };
+            let git = state.git.ok_ref().cloned();
+            state.agents.add_account(git.as_ref(), account, key);
+        }
+        if adding {
+            ui.spinner();
+        }
+    });
+    if let Some(problem) = state.agents.adding.err_ref().cloned() {
+        widgets::problem_box(ui, &problem, |_| {});
+    }
+}
 
 /// The theme, the text's size, and how commit dates show.
 fn appearance(ui: &mut Ui, state: &mut AppState, preferences: &mut Preferences) {

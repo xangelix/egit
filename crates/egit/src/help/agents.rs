@@ -77,6 +77,42 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "agents-accounts",
+        group: Group::Agents,
+        title: "Accounts",
+        on: &[
+            "Add the account",
+            "Forget the account",
+            "Account's name",
+            "Signs in with",
+            "A Claude Code folder",
+            "An API key",
+            "API key",
+            "Claude Code's own",
+        ],
+        what: "A conversation runs as Claude Code's own login here, or as another account chosen \
+               under its prompt before it starts. An account is a Claude Code configuration \
+               folder of its own (CLAUDE_CONFIG_DIR: its own login, settings, and sessions; \
+               signed into with Claude Code itself), or an Anthropic API key, which git's \
+               credential helper keeps (as https://api.anthropic.com, the account's name its \
+               user). Each conversation runs as its own, so several accounts work at once.",
+        git: "git credential approve, fill, reject (an API key's)",
+        cases: &[
+            (
+                "Adding an API key fails?",
+                "No credential helper kept it: set one up in Profile (the system's keychain is best), then add it again.",
+            ),
+            (
+                "Signing in to a folder?",
+                "Under the prompt, nobody signed in shows Claude Code's own login command for that folder: run it in a terminal, then Look again.",
+            ),
+            (
+                "Its earlier conversations?",
+                "Each folder keeps its own: the menu lists those of the account chosen. An API key's are Claude Code's own folder's.",
+            ),
+        ],
+    },
+    Topic {
         id: "agents-conversations",
         group: Group::Agents,
         title: "Conversations",

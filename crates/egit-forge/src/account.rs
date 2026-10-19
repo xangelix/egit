@@ -134,6 +134,7 @@ impl Account {
         let place = CredentialPlace {
             protocol: self.host().protocol(),
             host: self.host().name(),
+            username: None,
         };
         let filled = fill_credential(&self.git, self.repository.as_deref(), place, asking, cancel)?;
         Ok(filled.map(Arc::new))

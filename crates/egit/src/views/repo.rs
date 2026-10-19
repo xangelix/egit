@@ -36,6 +36,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         actions,
         home_dir,
         agents,
+        settings,
         ..
     } = state;
     let git = git.ok_ref();
@@ -45,12 +46,12 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
     };
     // Its agents, at the right, beside whatever it shows; then what its tasks and commits
     // printed, at the bottom, under the rest.
-    agents_panel(
-        ui,
-        (agents, &mut repo.agents),
-        (id, repo.repository.work_tree()),
-        actions,
-    );
+    let around = super::agents::Around {
+        work_tree: repo.repository.work_tree(),
+        git,
+        accounts: &settings.agent_accounts,
+    };
+    agents_panel(ui, (agents, &mut repo.agents), (id, around), actions);
     super::output::show(ui, &mut repo.output, id);
     let mut behavior = Panels {
         id,
@@ -539,7 +540,7 @@ fn agents_panel(
         &mut crate::agents::AgentsSetup,
         &mut crate::agents::RepoAgents,
     ),
-    (id, work_tree): (RepoId, &std::path::Path),
+    (id, around): (RepoId, super::agents::Around<'_>),
     actions: &mut Vec<Action>,
 ) {
     if !agents.shown {
@@ -561,6 +562,6 @@ fn agents_panel(
                 }),
         )
         .show(ui, |ui| {
-            super::agents::panel(ui, (setup, agents), work_tree, actions);
+            super::agents::panel(ui, (setup, agents), around, actions);
         });
 }

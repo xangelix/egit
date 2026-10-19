@@ -3,7 +3,8 @@
 //
 //   hello  streams "Hello"            run   asks to run a command (Bash), then runs it or not
 //   ask    asks a question            wait  waits until interrupted
-//   mode   says the mode and model    else  says back what it was told
+//   mode   says the mode and model    who   says which credentials it was given
+//   else   says back what it was told
 
 /** One of the SDK's messages streamed in parts. */
 const stream = (event) => ({ type: 'stream_event', event, parent_tool_use_id: null });
@@ -84,6 +85,10 @@ export function query({ prompt, options }) {
       return;
     } else if (text === 'mode') {
       yield assistant([{ type: 'text', text: `Mode ${mode}, model ${model}` }]);
+    } else if (text === 'who') {
+      const key = process.env.ANTHROPIC_API_KEY ?? 'none';
+      const folder = process.env.CLAUDE_CONFIG_DIR ?? 'none';
+      yield assistant([{ type: 'text', text: `Key ${key}, folder ${folder}` }]);
     } else {
       yield assistant([{ type: 'text', text: `You said: ${text}` }]);
     }

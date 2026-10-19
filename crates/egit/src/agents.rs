@@ -7,6 +7,7 @@
 //! What the bridge says is taken in each frame ([`RepoAgents::poll`]): the SDK's messages into
 //! the conversation's transcript, permission requests into the answers awaited.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -17,14 +18,107 @@ use egit_agents::protocol::{Answer, Event, Info, Mode, PermissionRequest, Reques
 use egit_agents::sessions::{SessionInfo, list_sessions, session_history};
 use egit_agents::{Bridge, Launch, Level, Transcript};
 use egit_git::CancelToken;
+use egit_git::{Asking, CredentialPlace, Git, fill_credential, store_credential};
 use egui_async::Bind;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::jobs;
 use crate::problem::Problem;
+use crate::settings::StoredPath;
 
 /// How many past conversations are listed.
 const PAST: usize = 50;
+
+/// The host an account's API key is kept for, by git's credential helpers (the account's name
+/// its user).
+pub(crate) const API_HOST: &str = "api.anthropic.com";
+
+/// An account agents run as, besides Claude Code's own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AgentAccount {
+    /// Its name, as the user gave it (each account's own).
+    pub(crate) name: String,
+    /// How it signs in.
+    pub(crate) kind: AccountKind,
+}
+
+/// How an account signs in.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum AccountKind {
+    /// A Claude Code configuration folder of its own, signed into with Claude Code itself.
+    Folder(StoredPath),
+    /// An Anthropic API key, kept by git's credential helpers (never in egit's settings).
+    ApiKey,
+}
+
+impl AgentAccount {
+    /// Where git's helpers keep its key.
+    pub(crate) fn place(&self) -> CredentialPlace<'_> {
+        CredentialPlace {
+            protocol: "https",
+            host: API_HOST,
+            username: Some(&self.name),
+        }
+    }
+
+    /// Who it runs as without its key: its folder, or Claude Code's own (where an API key's
+    /// sessions are kept). For listing sessions, and asking who is signed in.
+    pub(crate) fn folder_signer(&self) -> Signer {
+        match &self.kind {
+            AccountKind::Folder(folder) => Signer::Folder(folder.to_path()),
+            AccountKind::ApiKey => Signer::Default,
+        }
+    }
+
+    /// Who it runs as: its folder, or its key filled from git's helpers (never asking). Blocks:
+    /// in a job.
+    fn signer(&self, git: Option<&Git>) -> Result<Signer, Problem> {
+        if let AccountKind::Folder(folder) = &self.kind {
+            return Ok(Signer::Folder(folder.to_path()));
+        }
+        let missing = || {
+            Problem::new(
+                format!("No API key is kept for {}", self.name),
+                "git's credential helpers have none for it: add the account again in \
+                 Preferences.",
+            )
+        };
+        let git = git.ok_or_else(missing)?;
+        let filled = fill_credential(git, None, self.place(), Asking::Never, &CancelToken::new())
+            .map_err(|error| {
+                Problem::git(
+                    format!("The API key for {} couldn't be read", self.name),
+                    &error,
+                )
+            })?
+            .ok_or_else(missing)?;
+        Ok(Signer::ApiKey(zeroize::Zeroizing::new(
+            filled.password().to_owned(),
+        )))
+    }
+}
+
+/// What the Preferences' form adding an account holds.
+#[derive(Default)]
+pub(crate) struct AccountForm {
+    /// The account's name.
+    pub(crate) name: String,
+    /// An API key rather than a folder.
+    pub(crate) api_key: bool,
+    /// The folder, as typed (`~` the home folder).
+    pub(crate) folder: String,
+    /// The key, as typed.
+    pub(crate) key: zeroize::Zeroizing<String>,
+}
+
+/// How a conversation's bridge starts: the bridge as Claude Code's own account would run it,
+/// and git, to fill another's API key.
+#[derive(Clone)]
+pub(crate) struct Starter {
+    pub(crate) launch: Launch,
+    pub(crate) git: Option<Git>,
+}
 
 /// Claude's setup, for the whole window.
 pub(crate) struct AgentsSetup {
@@ -36,8 +130,11 @@ pub(crate) struct AgentsSetup {
     pub(crate) installing: Bind<(), Problem>,
     pub(crate) install_problem: Option<Problem>,
     cancel: CancelToken,
-    /// Who is signed in to Claude Code's own folder.
-    pub(crate) signed_in: Bind<AuthStatus, Problem>,
+    /// Who is signed in, by Claude Code's configuration folder (`None`: its own), as asked.
+    statuses: HashMap<Option<PathBuf>, Bind<AuthStatus, Problem>>,
+    /// An account being added (its API key stored in a job), and the form adding it.
+    pub(crate) adding: Bind<AgentAccount, Problem>,
+    pub(crate) form: AccountForm,
     /// The bridge run in place of the installed one (the tests' stand-in SDK).
     #[cfg(test)]
     stand_in: Option<Launch>,
@@ -60,27 +157,28 @@ impl AgentsSetup {
             installing: Bind::new(true),
             install_problem: None,
             cancel: CancelToken::new(),
-            signed_in: Bind::new(true),
+            statuses: HashMap::new(),
+            adding: Bind::new(true),
+            form: AccountForm::default(),
             #[cfg(test)]
             stand_in: None,
         }
     }
 
-    /// Takes in what its jobs found; looks for Node the first time it is asked, and who is
-    /// signed in once the SDK is there.
+    /// Takes in what its jobs found.
     pub(crate) fn poll(&mut self) {
         self.found.poll();
         self.installing.poll();
-        self.signed_in.poll();
+        self.adding.poll();
+        for status in self.statuses.values_mut() {
+            status.poll();
+        }
         // Taken as it lands (not `just_completed`, whose frame every window in a process
         // shares): installed, Node and the SDK are looked for again; failed, said.
         match self.installing.take() {
             Some(Ok(())) => self.look_again(),
             Some(Err(problem)) => self.install_problem = Some(problem),
             None => {}
-        }
-        if self.is_ready() && self.signed_in.is_idle() {
-            self.ask_who();
         }
     }
 
@@ -100,7 +198,7 @@ impl AgentsSetup {
             let ready = install.as_ref().is_some_and(Install::is_ready);
             Ok(Found { node, ready })
         }));
-        self.signed_in = Bind::new(true);
+        self.statuses.clear();
     }
 
     /// Installs the SDK with the Node found.
@@ -130,23 +228,68 @@ impl AgentsSetup {
         matches!(self.found.read_as_ref(), Some(Ok(found)) if found.ready)
     }
 
-    /// Asks Claude Code who is signed in to its own folder.
-    pub(crate) fn ask_who(&mut self) {
-        let Some(claude) = self.install.as_ref().and_then(Install::claude) else {
-            // Nothing to ask (a stand-in in the tests): said once, not looked for each frame.
-            self.signed_in.fill(Err(Problem::new(
-                "Claude Code isn't installed",
-                String::new(),
-            )));
-            return;
-        };
-        self.signed_in.request(jobs::blocking(move || {
-            auth_status(&claude, &Signer::Default).map_err(|error| {
-                Problem::new(
-                    "Claude Code couldn't say who is signed in",
-                    error.to_string(),
-                )
-            })
+    /// Who is signed in to Claude Code's configuration `folder` (`None`: its own), asked the
+    /// first time (in a job), once it is installed.
+    pub(crate) fn who(&mut self, folder: Option<&Path>) -> Option<Result<&AuthStatus, &Problem>> {
+        if !self.is_ready() {
+            return None;
+        }
+        let key = folder.map(Path::to_owned);
+        if !self.statuses.contains_key(&key) {
+            let mut status = Bind::new(true);
+            match self.install.as_ref().and_then(Install::claude) {
+                Some(claude) => {
+                    let signer =
+                        folder.map_or(Signer::Default, |folder| Signer::Folder(folder.to_owned()));
+                    status.request(jobs::blocking(move || {
+                        auth_status(&claude, &signer).map_err(|error| {
+                            Problem::new(
+                                "Claude Code couldn't say who is signed in",
+                                error.to_string(),
+                            )
+                        })
+                    }));
+                }
+                // Nothing to ask (a stand-in in the tests).
+                None => status.fill(Err(Problem::new(
+                    "Claude Code isn't installed",
+                    String::new(),
+                ))),
+            }
+            self.statuses.insert(key.clone(), status);
+        }
+        self.statuses.get_mut(&key).and_then(Bind::read_as_ref)
+    }
+
+    /// Asks who is signed in to `folder` again (after signing in).
+    pub(crate) fn ask_who_again(&mut self, folder: Option<&Path>) {
+        self.statuses.remove(&folder.map(Path::to_owned));
+    }
+
+    /// Adds `account` once stored: an API key handed to git's helpers (and found there again,
+    /// or there is no helper keeping it), in a job.
+    pub(crate) fn add_account(
+        &mut self,
+        git: Option<&Git>,
+        account: AgentAccount,
+        key: zeroize::Zeroizing<String>,
+    ) {
+        let git = git.cloned();
+        self.adding.request(jobs::blocking(move || {
+            if account.kind == AccountKind::ApiKey {
+                let git = git.ok_or_else(|| Problem::new("The API key couldn't be kept", "git isn't ready."))?;
+                let title = format!("The API key for {} couldn't be kept", account.name);
+                store_credential(&git, None, account.place(), &key).map_err(|error| Problem::git(&title, &error))?;
+                let kept = fill_credential(&git, None, account.place(), Asking::Never, &CancelToken::new())
+                    .map_err(|error| Problem::git(&title, &error))?;
+                if kept.is_none_or(|kept| kept.password() != key.as_str()) {
+                    return Err(Problem::new(
+                        title,
+                        "No credential helper kept it: set one up (Profile, Credentials), then add it again.",
+                    ));
+                }
+            }
+            Ok(account)
         }));
     }
 
@@ -188,6 +331,9 @@ pub(crate) struct RepoAgents {
     pub(crate) current: usize,
     /// The past conversations Claude Code keeps for the work tree, newest first.
     pub(crate) past: Bind<Arc<[SessionInfo]>, Problem>,
+    /// The account new conversations run as, whose past ones are listed (`None`: Claude
+    /// Code's own).
+    pub(crate) account: Option<AgentAccount>,
     /// Wakes the window when a bridge says something.
     waker: egui::Context,
 }
@@ -199,8 +345,30 @@ impl RepoAgents {
             conversations: vec![Conversation::new(None)],
             current: 0,
             past: Bind::new(true),
+            account: None,
             waker: waker.clone(),
         }
+    }
+
+    /// Runs new conversations as `account` (and the one shown, when it hasn't started), and
+    /// lists its past ones.
+    pub(crate) fn choose_account(&mut self, account: Option<AgentAccount>) {
+        if let Some(conversation) = self.conversations.get_mut(self.current)
+            && !conversation.is_running()
+            && conversation.transcript.session().is_none()
+            && conversation.resume.is_none()
+        {
+            conversation.account.clone_from(&account);
+        }
+        self.account = account;
+        self.past = Bind::new(true);
+    }
+
+    /// Who past conversations are listed as, and read as.
+    pub(crate) fn folder_signer(&self) -> Signer {
+        self.account
+            .as_ref()
+            .map_or(Signer::Default, AgentAccount::folder_signer)
     }
 
     /// The conversation shown.
@@ -238,10 +406,14 @@ impl RepoAgents {
     pub(crate) fn begin(&mut self) {
         if let Some(index) = self.conversations.iter().position(Conversation::is_blank) {
             self.current = index;
-            return;
+        } else {
+            self.conversations.push(Conversation::new(None));
+            self.current = self.conversations.len().saturating_sub(1);
         }
-        self.conversations.push(Conversation::new(None));
-        self.current = self.conversations.len().saturating_sub(1);
+        let account = self.account.clone();
+        if let Some(conversation) = self.current() {
+            conversation.account = account;
+        }
     }
 
     /// Opens a past conversation (or shows it, if open), its messages read in a job.
@@ -260,6 +432,7 @@ impl RepoAgents {
         }
         let mut conversation = Conversation::new(Some(session.session_id.clone()));
         conversation.title.clone_from(&session.summary);
+        conversation.account.clone_from(&self.account);
         if let Some(launch) = launch {
             let dir = work_tree.to_owned();
             let id = session.session_id.clone();
@@ -291,10 +464,10 @@ impl RepoAgents {
     }
 
     /// Sends `text` to the conversation shown, starting its bridge first if it isn't running.
-    pub(crate) fn send(&mut self, launch: Option<Launch>, work_tree: &Path, text: &str) {
+    pub(crate) fn send(&mut self, starter: Option<Starter>, work_tree: &Path, text: &str) {
         let waker = self.waker.clone();
         if let Some(conversation) = self.current() {
-            conversation.send(launch, work_tree, text, waker);
+            conversation.send(starter, work_tree, text, waker);
         }
     }
 }
@@ -315,6 +488,8 @@ pub(crate) struct Conversation {
     reported: Option<Mode>,
     /// The model asked for (`None`: Claude Code's default).
     pub(crate) model: Option<String>,
+    /// The account it runs as (`None`: Claude Code's own); chosen before it starts.
+    pub(crate) account: Option<AgentAccount>,
     /// The past session it goes on with.
     pub(crate) resume: Option<String>,
     /// Its past messages, being read.
@@ -349,6 +524,7 @@ impl Conversation {
             mode: Mode::Default,
             reported: None,
             model: None,
+            account: None,
             resume,
             history: Bind::new(true),
             starting: Bind::new(true),
@@ -382,7 +558,13 @@ impl Conversation {
     }
 
     /// Sends a prompt, starting the bridge first if it isn't running.
-    fn send(&mut self, launch: Option<Launch>, work_tree: &Path, text: &str, waker: egui::Context) {
+    fn send(
+        &mut self,
+        starter: Option<Starter>,
+        work_tree: &Path,
+        text: &str,
+        waker: egui::Context,
+    ) {
         if self.title.is_empty() {
             text.lines()
                 .next()
@@ -399,7 +581,7 @@ impl Conversation {
             return;
         }
         self.queued.push(request);
-        let Some(launch) = launch else {
+        let Some(Starter { mut launch, git }) = starter else {
             self.transcript
                 .notice(Level::Error, "Claude isn't set up on this computer.");
             self.transcript.ended();
@@ -416,7 +598,14 @@ impl Conversation {
             mode: self.mode,
         };
         self.queued.insert(0, start);
+        let account = self.account.clone();
         self.starting.request(jobs::blocking(move || {
+            // As its account: a folder's login, or its key from git's helpers.
+            let signer =
+                account.map_or(Ok(Signer::Default), |account| account.signer(git.as_ref()))?;
+            let (env, unset) = signer.environment();
+            launch.env.extend(env);
+            launch.unset.extend(unset);
             let (bridge, events) = Bridge::start(&launch, move || waker.request_repaint())
                 .map_err(|error| Problem::new("Claude couldn't be started", error.to_string()))?;
             Ok(Started { bridge, events })

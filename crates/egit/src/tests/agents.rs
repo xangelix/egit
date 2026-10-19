@@ -75,7 +75,7 @@ fn a_conversation_with_claude_runs_in_the_panel() {
     // Shown from the top bar; a prompt sent with Enter, its answer streamed in.
     harness
         .get_by_role_and_label(Role::Button, "Agents")
-        .click();
+        .click_accesskit();
     wait_for_label(&mut harness, "Ask Claude to work in repo");
     ask(&mut harness, "hello");
     wait_for_label(&mut harness, "Hello");
@@ -87,26 +87,28 @@ fn a_conversation_with_claude_runs_in_the_panel() {
     render(&mut harness, "agents-permission");
     harness
         .get_by_role_and_label(Role::Button, "Allow for this conversation")
-        .click();
+        .click_accesskit();
     turn_ended(&mut harness);
     harness.run_steps(2);
-    harness.get_by_label_contains("Run  echo hi").click();
+    harness
+        .get_by_label_contains("Run  echo hi")
+        .click_accesskit();
     wait_for_label(&mut harness, "hi (always)");
 
     // A question, answered.
     ask(&mut harness, "ask");
     wait_for_label(&mut harness, "Claude asks");
-    harness.get_by_label("Two").click();
+    harness.get_by_label("Two").click_accesskit();
     harness.run_steps(2);
     harness
         .get_by_role_and_label(Role::Button, "Answer")
-        .click();
+        .click_accesskit();
     turn_ended(&mut harness);
 
     // The mode, changed from its menu, is what Claude Code runs in.
-    harness.get_by_label_contains("Ask first").click();
+    harness.get_by_label_contains("Ask first").click_accesskit();
     harness.run_steps(2);
-    harness.get_by_label("Plan").click();
+    harness.get_by_label("Plan").click_accesskit();
     harness.run_steps(2);
     assert!(harness.query_by_label_contains("Plan").is_some());
     ask(&mut harness, "mode");
@@ -115,7 +117,9 @@ fn a_conversation_with_claude_runs_in_the_panel() {
     render(&mut harness, "agents");
 
     // An earlier conversation, gone on with.
-    harness.get_by_role_and_label(Role::Button, "hello").click();
+    harness
+        .get_by_role_and_label(Role::Button, "hello")
+        .click_accesskit();
     // Long ago: its date (in the viewer's time zone).
     settle(&mut harness, "the earlier conversations", |app| {
         app.state.repos[0].agents.past.is_ok()
@@ -123,6 +127,118 @@ fn a_conversation_with_claude_runs_in_the_panel() {
     harness.run_steps(2);
     harness
         .get_by_label_contains("A newer conversation · 20")
-        .click();
+        .click_accesskit();
     wait_for_label(&mut harness, "Earlier, in newer");
+}
+
+#[test]
+fn conversations_run_as_the_accounts_added() {
+    let Some((node, launch)) = stand_in() else {
+        return;
+    };
+    let sandbox = Sandbox::new().unwrap();
+    // A helper keeping credentials in a file, as the user's would in their keychain.
+    let kept = sandbox.path("credentials");
+    let helper = format!("store --file={}", kept.display());
+    sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "credential.helper", &helper],
+        )
+        .unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "f", "1\n", "Start").unwrap();
+    let mut harness = harness(&sandbox);
+    harness.state_mut().state.agents.stand_in(node, launch);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+
+    // Two accounts, added in Preferences: a folder, and an API key the helper keeps.
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(crate::app::Action::ShowPreferences);
+    wait_for_label(&mut harness, "Add the account");
+    let type_in = |harness: &mut Harness<'_, EgitApp>, field: &str, text: &str| {
+        let node = harness.get_by_role_and_label(Role::TextInput, field);
+        node.focus();
+        node.type_text(text);
+        harness.run_steps(2);
+    };
+    // Below the fold: clicked as a screen reader clicks.
+    type_in(&mut harness, "Account's name", "work");
+    harness.get_by_label("Add the account").click_accesskit();
+    wait_for_label(&mut harness, "Forget the account");
+    type_in(&mut harness, "Account's name", "ci");
+    harness.get_by_label("An API key").click_accesskit();
+    harness.run_steps(2);
+    let key = harness.get_by_role_and_label(Role::PasswordInput, "API key");
+    key.focus();
+    key.type_text("sk-test");
+    harness.run_steps(2);
+    harness.get_by_label("Add the account").click_accesskit();
+    settle(&mut harness, "both accounts", |app| {
+        app.state.settings.agent_accounts.len() == 2
+    });
+    assert!(std::fs::read_to_string(&kept).unwrap().contains("sk-test"));
+    // Scrolled down to the card, rendered.
+    harness
+        .get_by_label("In effect at once, and kept for next time.")
+        .hover();
+    for _ in 0..60 {
+        if harness.get_by_label("Add the account").rect().bottom() < 640.0 {
+            break;
+        }
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -40.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run_steps(4);
+    render(&mut harness, "agents-accounts");
+
+    // Back to the repository (its tab the second).
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Num2);
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(Role::Button, "Agents")
+        .click_accesskit();
+    wait_for_label(&mut harness, "Ask Claude to work in repo");
+
+    // As the API key: given to Claude Code, from the helper.
+    harness
+        .get_by_role_and_label(Role::Button, "Claude Code's own")
+        .click_accesskit();
+    harness.run_steps(2);
+    harness.get_by_label("ci").click_accesskit();
+    harness.run_steps(2);
+    ask(&mut harness, "who");
+    wait_for_label(&mut harness, "Key sk-test, folder none");
+    turn_ended(&mut harness);
+
+    // A new conversation keeps the account; as the folder: its own, no key.
+    harness
+        .get_by_role_and_label(Role::Button, "who")
+        .click_accesskit();
+    harness.run_steps(2);
+    harness.get_by_label("New conversation").click_accesskit();
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(Role::Button, "ci")
+        .click_accesskit();
+    harness.run_steps(2);
+    harness.get_by_label("work").click_accesskit();
+    harness.run_steps(2);
+    ask(&mut harness, "who");
+    let folder = sandbox.home().join(".claude-work");
+    wait_for_label(
+        &mut harness,
+        &format!("Key none, folder {}", folder.display()),
+    );
 }

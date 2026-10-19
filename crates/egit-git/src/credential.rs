@@ -20,13 +20,16 @@ use crate::error::GitError;
 use crate::git::Git;
 use crate::repo::Repository;
 
-/// Where a credential is for: a protocol and a host (with its port, if any).
+/// Where a credential is for: a protocol and a host (with its port, if any), and the user it is
+/// for when a host has several.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CredentialPlace<'a> {
     /// `https`, say.
     pub protocol: &'a str,
     /// `github.com`, or `example.com:8443`.
     pub host: &'a str,
+    /// The user (`None`: whichever the helpers give).
+    pub username: Option<&'a str>,
 }
 
 impl CredentialPlace<'_> {
@@ -36,7 +39,28 @@ impl CredentialPlace<'_> {
         let fits = |value: &str| {
             !value.is_empty() && !value.bytes().any(|byte| matches!(byte, b'\n' | b'\r' | 0))
         };
-        fits(self.protocol) && fits(self.host)
+        fits(self.protocol) && fits(self.host) && self.username.is_none_or(fits)
+    }
+
+    /// The attributes naming it, ended by an empty line unless `then` follows.
+    fn attributes(self, then: Option<&str>) -> Zeroizing<Vec<u8>> {
+        let mut attributes = Zeroizing::new(Vec::new());
+        attributes.extend_from_slice(b"protocol=");
+        attributes.extend_from_slice(self.protocol.as_bytes());
+        attributes.extend_from_slice(b"\nhost=");
+        attributes.extend_from_slice(self.host.as_bytes());
+        if let Some(username) = self.username {
+            attributes.extend_from_slice(b"\nusername=");
+            attributes.extend_from_slice(username.as_bytes());
+        }
+        attributes.push(b'\n');
+        if let Some(password) = then {
+            attributes.extend_from_slice(b"password=");
+            attributes.extend_from_slice(password.as_bytes());
+            attributes.push(b'\n');
+        }
+        attributes.push(b'\n');
+        attributes
     }
 }
 
@@ -148,14 +172,8 @@ pub fn fill_credential(
         tracing::warn!(?place, "not asking for a credential for an unusable place");
         return Ok(None);
     }
-    let mut request = Zeroizing::new(Vec::new());
-    request.extend_from_slice(b"protocol=");
-    request.extend_from_slice(place.protocol.as_bytes());
-    request.extend_from_slice(b"\nhost=");
-    request.extend_from_slice(place.host.as_bytes());
-    request.extend_from_slice(b"\n\n");
     let command = credential_command(git, repository, "fill")
-        .secret_stdin(request)
+        .secret_stdin(place.attributes(None))
         .cancel_token(cancel);
     let command = match asking {
         Asking::Never => command.non_interactive(),
@@ -201,6 +219,54 @@ pub fn reject_credential(
 ) -> Result<(), GitError> {
     credential_command(git, repository, "reject")
         .secret_stdin(credential.description())
+        .output()
+        .map(drop)
+}
+
+/// Has git's credential helpers keep `secret` for `place` (an API key under an account's name).
+///
+/// It is handed over as though it had been filled and worked. Whether they keep it is theirs to
+/// say: with no helper set up, nothing does.
+///
+/// # Errors
+///
+/// When the place or secret would inject attributes (a line break), or git fails.
+pub fn store_credential(
+    git: &Git,
+    repository: Option<&Repository>,
+    place: CredentialPlace<'_>,
+    secret: &str,
+) -> Result<(), GitError> {
+    if !place.is_valid() || secret.is_empty() || secret.contains(['\n', '\r', '\0']) {
+        return Err(GitError::Io {
+            subcommand: "credential",
+            source: std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "a credential can't be empty or hold a line break",
+            ),
+        });
+    }
+    credential_command(git, repository, "approve")
+        .secret_stdin(place.attributes(Some(secret)))
+        .output()
+        .map(drop)
+}
+
+/// Has git's credential helpers forget what they keep for `place`.
+///
+/// # Errors
+///
+/// When git fails.
+pub fn erase_credential(
+    git: &Git,
+    repository: Option<&Repository>,
+    place: CredentialPlace<'_>,
+) -> Result<(), GitError> {
+    if !place.is_valid() {
+        return Ok(());
+    }
+    credential_command(git, repository, "reject")
+        .secret_stdin(place.attributes(None))
         .output()
         .map(drop)
 }
@@ -262,8 +328,19 @@ mod tests {
         let place = |host| CredentialPlace {
             protocol: "https",
             host,
+            username: None,
         };
         assert!(place("github.com").is_valid());
+        let user = |username| CredentialPlace {
+            username: Some(username),
+            ..place("api.example.com")
+        };
+        assert!(user("work").is_valid());
+        assert!(!user("work\npassword=x").is_valid());
+        assert_eq!(
+            user("work").attributes(Some("k")).as_slice(),
+            b"protocol=https\nhost=api.example.com\nusername=work\npassword=k\n\n"
+        );
         assert!(place("example.com:8443").is_valid());
         assert!(!place("evil.com\npassword=x").is_valid());
         assert!(!place("").is_valid());

@@ -33,6 +33,8 @@ pub(crate) struct Settings {
     pub(crate) clone_folder: Option<StoredPath>,
     /// How the user likes egit.
     pub(crate) preferences: Preferences,
+    /// The accounts agents run as, besides Claude Code's own.
+    pub(crate) agent_accounts: Vec<crate::agents::AgentAccount>,
 }
 
 /// A repository opened before.

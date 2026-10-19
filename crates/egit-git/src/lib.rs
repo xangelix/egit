@@ -90,7 +90,8 @@ pub use conflict::{
     ResolveError, WholeOnly, conflict_sides, incoming_commit, merge_sides, resolve_conflict,
 };
 pub use credential::{
-    Asking, Credential, CredentialPlace, approve_credential, fill_credential, reject_credential,
+    Asking, Credential, CredentialPlace, approve_credential, erase_credential, fill_credential,
+    reject_credential, store_credential,
 };
 pub use diff::{
     DiffLine, DiffLineKind, DiffOptions, FileDiff, Uncommitted, WHOLE_FILE, file_diff,

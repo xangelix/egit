@@ -16,13 +16,14 @@ use std::path::Path;
 use egit_git::testing::Sandbox;
 use egit_git::{
     Asking, CancelToken, Credential, CredentialPlace, Repository, approve_credential,
-    fill_credential, reject_credential,
+    erase_credential, fill_credential, reject_credential, store_credential,
 };
 
 const fn place(host: &str) -> CredentialPlace<'_> {
     CredentialPlace {
         protocol: "https",
         host,
+        username: None,
     }
 }
 
@@ -94,4 +95,38 @@ fn a_secret_fed_to_git_never_shows_in_debug_output() {
         .read("credential")
         .secret_stdin(zeroize::Zeroizing::new(b"password=hush\n".to_vec()));
     assert!(!format!("{command:?}").contains("hush"));
+}
+
+#[test]
+fn a_secret_is_stored_for_a_user_and_erased() {
+    let sandbox = Sandbox::new().unwrap();
+    let file = sandbox.path("credentials");
+    store_helper(&sandbox, sandbox.home(), "--global", &file);
+    let key = |username| CredentialPlace {
+        protocol: "https",
+        host: "api.example.com",
+        username: Some(username),
+    };
+    let kept = |username| {
+        fill_credential(
+            sandbox.git(),
+            None,
+            key(username),
+            Asking::Never,
+            &CancelToken::new(),
+        )
+        .unwrap()
+    };
+    store_credential(sandbox.git(), None, key("work"), "sk-work").unwrap();
+    store_credential(sandbox.git(), None, key("home"), "sk-home").unwrap();
+    // Each user's own.
+    assert_eq!(kept("work").unwrap().password(), "sk-work");
+    assert_eq!(kept("home").unwrap().password(), "sk-home");
+    assert!(kept("other").is_none());
+
+    erase_credential(sandbox.git(), None, key("work")).unwrap();
+    assert!(kept("work").is_none());
+    assert_eq!(kept("home").unwrap().password(), "sk-home");
+    // Nothing that would inject attributes is stored.
+    assert!(store_credential(sandbox.git(), None, key("work"), "a\nb").is_err());
 }

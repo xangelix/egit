@@ -13,7 +13,9 @@ use egui::{Color32, Frame, Id, Key, Margin, Modifiers, RichText, Ui, vec2};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use serde_json::Value;
 
-use crate::agents::{AgentsSetup, Conversation, RepoAgents};
+use egit_agents::accounts::Signer;
+
+use crate::agents::{AccountKind, AgentAccount, AgentsSetup, Conversation, RepoAgents, Starter};
 use crate::app::Action;
 use crate::stack::{Entry, Stack};
 use crate::theme::{CODE, Palette, RADIUS_BOX, Weighted as _, icon};
@@ -54,13 +56,23 @@ impl ConversationView {
     }
 }
 
+/// What the panel works with: the work tree, git (an API key is filled through it), and the
+/// accounts besides Claude Code's own.
+#[derive(Clone, Copy)]
+pub(crate) struct Around<'a> {
+    pub(crate) work_tree: &'a Path,
+    pub(crate) git: Option<&'a egit_git::Git>,
+    pub(crate) accounts: &'a [AgentAccount],
+}
+
 /// The panel.
 pub(crate) fn panel(
     ui: &mut Ui,
     (setup, agents): (&mut AgentsSetup, &mut RepoAgents),
-    work_tree: &Path,
+    around: Around<'_>,
     actions: &mut Vec<Action>,
 ) {
+    let work_tree = around.work_tree;
     setup.look();
     head(ui, setup, agents, work_tree);
     ui.separator();
@@ -68,17 +80,23 @@ pub(crate) fn panel(
         set_up(ui, setup, actions);
         return;
     }
-    let launch = setup.launch(&egit_agents::accounts::Signer::Default);
+    let starter = setup.launch(&Signer::Default).map(|launch| Starter {
+        launch,
+        git: around.git.cloned(),
+    });
     let sent = egui::Panel::bottom(Id::new(("agents-prompt", work_tree)))
         .frame(Frame::new().inner_margin(Margin::symmetric(0, 8)))
         .show(ui, |ui| {
             let conversation = agents.current()?;
             waiting(ui, conversation);
-            prompt(ui, setup, conversation).then(|| std::mem::take(&mut conversation.view.draft))
+            let sent =
+                prompt(ui, conversation).then(|| std::mem::take(&mut conversation.view.draft));
+            who(ui, setup, agents, around.accounts);
+            sent
         })
         .inner;
     if let Some(text) = sent {
-        agents.send(launch, work_tree, text.trim());
+        agents.send(starter, work_tree, text.trim());
     }
     let Some(conversation) = agents.current() else {
         return;
@@ -107,7 +125,7 @@ fn head(ui: &mut Ui, setup: &mut AgentsSetup, agents: &mut RepoAgents, work_tree
                 .map(|conversation| conversation.title.clone())
                 .filter(|title| !title.is_empty())
                 .unwrap_or_else(|| "New conversation".to_owned());
-            let launch = setup.launch(&egit_agents::accounts::Signer::Default);
+            let launch = setup.launch(&agents.folder_signer());
             let title = elided(&title, 32);
             let (response, _) = widgets::tool_menu_of(
                 ui,
@@ -853,7 +871,7 @@ fn refuse(asked: &PermissionRequest, why: &str) -> Answer {
 
 /// The prompt, and under it the mode, model, what it cost, and Send or Stop. Returns whether
 /// the prompt was sent (Enter, or Send).
-fn prompt(ui: &mut Ui, setup: &mut AgentsSetup, conversation: &mut Conversation) -> bool {
+fn prompt(ui: &mut Ui, conversation: &mut Conversation) -> bool {
     let id = Id::new(("agent-prompt", std::ptr::from_ref(conversation).addr()));
     let focused = ui.memory(|memory| memory.has_focus(id));
     // Enter sends (Shift+Enter starts a new line), before the field takes it.
@@ -894,7 +912,6 @@ fn prompt(ui: &mut Ui, setup: &mut AgentsSetup, conversation: &mut Conversation)
             }
         });
     });
-    who(ui, setup, conversation);
     if sent {
         field.request_focus();
     }
@@ -982,74 +999,164 @@ fn model_menu(ui: &mut Ui, conversation: &mut Conversation) {
     }
 }
 
-/// Who the conversation runs as (Claude Code's account, or how to sign in when nobody is), and
-/// what its turns cost.
-fn who(ui: &mut Ui, setup: &mut AgentsSetup, conversation: &Conversation) {
+/// Who the conversation runs as (its account's menu, chosen before it starts; who is signed
+/// in, or how to sign in when nobody is), and what its turns cost.
+fn who(ui: &mut Ui, setup: &mut AgentsSetup, agents: &mut RepoAgents, accounts: &[AgentAccount]) {
+    let Some(conversation) = agents.current() else {
+        return;
+    };
+    let account = conversation.account.clone();
+    let started = conversation.is_running()
+        || conversation.transcript.session().is_some()
+        || conversation.resume.is_some();
     let cost = conversation.transcript.cost_usd();
     let cost = if cost > 0.0 {
         format!(" · ≈ ${cost:.2}")
     } else {
         String::new()
     };
-    if let Some(email) = conversation
-        .info
-        .as_ref()
-        .and_then(|info| info.account.email.clone())
-    {
-        let plan = conversation
-            .info
+    let told = conversation.info.as_ref().and_then(|info| {
+        let email = info.account.email.clone()?;
+        let plan = info
+            .account
+            .subscription_type
             .as_ref()
-            .and_then(|info| info.account.subscription_type.clone())
             .map_or_else(String::new, |plan| format!(" ({plan})"));
-        ui.label(
-            muted(ui, format!("Claude Code as {email}{plan}{cost}")).size(crate::theme::SMALL),
-        )
-        .on_hover_text("The cost as Claude Code estimates it: a plan's usage isn't billed by it");
-        return;
-    }
-    let claude = setup
-        .install
-        .as_ref()
-        .and_then(egit_agents::install::Install::claude);
-    match setup.signed_in.read_as_ref() {
-        Some(Ok(status)) if status.logged_in => {
-            let who = status
-                .email
-                .clone()
-                .unwrap_or_else(|| status.auth_method.clone());
-            ui.label(muted(ui, format!("Claude Code as {who}")).size(crate::theme::SMALL));
-        }
-        Some(Ok(_)) => {
-            let palette = Palette::of(ui.ctx());
-            ui.add(
-                egui::Label::new(
-                    RichText::new(format!(
-                        "{}  Nobody is signed in to Claude Code here. Sign in with Claude Code \
-                         itself, in a terminal:",
-                        icon::WARNING
-                    ))
-                    .color(palette.warn),
-                )
-                .wrap(),
+        Some(format!("{email}{plan}"))
+    });
+    let folder = match account.as_ref().map(|account| &account.kind) {
+        None => Some(None),
+        Some(AccountKind::Folder(folder)) => Some(Some(folder.to_path())),
+        Some(AccountKind::ApiKey) => None,
+    };
+    let mut chosen = None;
+    let mut sign_in = None;
+    ui.horizontal_wrapped(|ui| {
+        chosen = account_menu(ui, account.as_ref(), accounts, started);
+        let said = match (&told, &folder) {
+            (Some(told), _) => told.clone(),
+            (None, None) => "an API key, kept by git's credential helper".to_owned(),
+            (None, Some(folder)) => match setup.who(folder.as_deref()) {
+                Some(Ok(status)) if status.logged_in => status
+                    .email
+                    .clone()
+                    .unwrap_or_else(|| status.auth_method.clone()),
+                Some(Ok(_)) => {
+                    sign_in = Some(folder.clone());
+                    "nobody signed in".to_owned()
+                }
+                Some(Err(problem)) => problem.title.clone(),
+                None => String::new(),
+            },
+        };
+        ui.label(muted(ui, format!("{said}{cost}")).size(crate::theme::SMALL))
+            .on_hover_text(
+                "The cost as Claude Code estimates it: a plan's usage isn't billed by it",
             );
-            if let Some(claude) = claude {
-                let command = egit_agents::accounts::login_command(&claude, None);
-                code(ui, &command, None);
-                widgets::buttons_row(ui, |ui| {
-                    if widgets::secondary(ui, true, "Copy the command").clicked() {
-                        ui.ctx().copy_text(command.clone());
-                    }
-                    if widgets::secondary(ui, true, "Look again").clicked() {
-                        setup.ask_who();
-                    }
-                });
-            }
-        }
-        Some(Err(problem)) => {
-            ui.label(muted(ui, problem.title.clone()).size(crate::theme::SMALL));
-        }
+    });
+    match chosen {
+        Some(Chosen::Own) => agents.choose_account(None),
+        Some(Chosen::Account(account)) => agents.choose_account(Some(account)),
         None => {}
     }
+    if let Some(folder) = sign_in {
+        signing_in(ui, setup, folder.as_deref());
+    }
+}
+
+/// The accounts' menu: Claude Code's own, then the others (chosen before a conversation
+/// starts); returns the one chosen.
+fn account_menu(
+    ui: &mut Ui,
+    account: Option<&AgentAccount>,
+    accounts: &[AgentAccount],
+    started: bool,
+) -> Option<Chosen> {
+    let name = account.map_or(OWN, |account| account.name.as_str());
+    let allowed = if started {
+        Err("It has started: choose another for a new conversation")
+    } else {
+        Ok(())
+    };
+    let mut chosen = None;
+    widgets::tool_menu_of(
+        ui,
+        (icon::USER_CIRCLE, name),
+        Look::Full,
+        "agents-accounts",
+        |ui| {
+            super::actions::menu_rows(ui);
+            let mark = |this: bool| if this { icon::CHECK } else { "" };
+            if super::actions::item_of(
+                ui,
+                (mark(account.is_none()), OWN),
+                allowed,
+                "agents-accounts",
+            ) {
+                chosen = Some(Chosen::Own);
+                ui.close();
+            }
+            for other in accounts {
+                let this = account.is_some_and(|account| account.name == other.name);
+                if super::actions::item_of(
+                    ui,
+                    (mark(this), &other.name),
+                    allowed,
+                    "agents-accounts",
+                ) {
+                    chosen = Some(Chosen::Account(other.clone()));
+                    ui.close();
+                }
+            }
+            if accounts.is_empty() {
+                ui.label(muted(ui, "Others are added in Preferences."));
+            }
+        },
+    );
+    chosen
+}
+
+/// An account chosen from the menu.
+enum Chosen {
+    /// Claude Code's own.
+    Own,
+    Account(AgentAccount),
+}
+
+/// What Claude Code's own account is called.
+const OWN: &str = "Claude Code's own";
+
+/// Nobody is signed in to `folder` (`None`: Claude Code's own): the command signing in with
+/// Claude Code itself, to copy, and Look again.
+fn signing_in(ui: &mut Ui, setup: &mut AgentsSetup, folder: Option<&Path>) {
+    let palette = Palette::of(ui.ctx());
+    ui.add(
+        egui::Label::new(
+            RichText::new(format!(
+                "{}  Nobody is signed in. Sign in with Claude Code itself, in a terminal:",
+                icon::WARNING
+            ))
+            .color(palette.warn),
+        )
+        .wrap(),
+    );
+    let Some(claude) = setup
+        .install
+        .as_ref()
+        .and_then(egit_agents::install::Install::claude)
+    else {
+        return;
+    };
+    let command = egit_agents::accounts::login_command(&claude, folder);
+    code(ui, &command, None);
+    widgets::buttons_row(ui, |ui| {
+        if widgets::secondary(ui, true, "Copy the command").clicked() {
+            ui.ctx().copy_text(command.clone());
+        }
+        if widgets::secondary(ui, true, "Look again").clicked() {
+            setup.ask_who_again(folder);
+        }
+    });
 }
 
 /// A tool's icon.

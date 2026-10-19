@@ -600,12 +600,15 @@ writes paths), never `OsStrExt`.
     its path there and a rename's old one). `tests/blame.rs` blames across a rename and a move
     (either way) and the work tree, and follows a rename's history.
   - `credential.rs` — git's credential helpers: `fill_credential` for a `CredentialPlace`
-    (protocol, host; refused with line breaks, which would inject attributes), in a
+    (protocol, host, and the user when a host has several; refused with line breaks, which
+    would inject attributes), in a
     repository's configuration or the user's (`/`), `Asking::Never` (non-interactive: no
     credential is `None`, not an error) or labelled prompts; `approve_credential` and
     `reject_credential` hand back every attribute `fill` gave (an expiry, a refresh token).
-    A `Credential` is wiped when dropped. `tests/credential.rs` fills, rejects, and approves
-    through a sandbox's `store` helper.
+    A `Credential` is wiped when dropped. `store_credential` hands a secret of egit's (an
+    agent's API key, under its account's name) to the helpers as approved, `erase_credential`
+    has them forget a place's. `tests/credential.rs` fills, rejects, and approves through a
+    sandbox's `store` helper, and stores two users' secrets for one host, erasing one.
   - `reflog.rs` — `reflog`: a ref's moves (`HEAD`, or a full name; never an option), newest
     first, at most a limit (`log --walk-reflogs -z --date=unix`, so `%gd` carries the time):
     each `ReflogEntry`'s place, commit, time, what moved it (`%gs`), and subject; none when
@@ -1222,7 +1225,7 @@ writes paths), never `OsStrExt`.
   - `views/history.rs` — the history's chrome (the top bar, the sidebar, the details: `chrome`,
     the panel tone) around the commit table on the window's background. The top bar: Undo and
     Redo, then the views and menus as quiet tools
-    (Search, Reflog, Stash, Patches, LFS where the repository keeps files in it (its state;
+    (Search, Reflog, Agents (the agents' panel at the tab's right), Stash, Patches, LFS where the repository keeps files in it (its state;
     pull, fetch, check out, push to each remote, prune; its page), Submodules where it has
     some (how they stand; mend everything, update all to the commits recorded or their
     branches' latest, sync addresses; their page), and Repository: its Overview, Settings,
@@ -1638,12 +1641,16 @@ writes paths), never `OsStrExt`.
     carried out next frame by the same code as its button.
     `views/preferences.rs` — the Preferences tab (⌘, or the status bar's): cards for how
     egit looks (theme, text size, commit dates), repositories (the background fetch, the
-    sidebar), diffs and files (side by side, wrapped, tab width), and every keyboard shortcut;
+    sidebar), diffs and files (side by side, wrapped, tab width), agents (the accounts
+    besides Claude Code's own: each forgotten (an API key erased from the helper; a folder
+    kept), one added: its name, a Claude Code folder (`~/.claude-<name>` unless typed) or an
+    API key (a password field, stored and found again in a job: no helper keeping it is a
+    problem said so)), and every keyboard shortcut;
     each change pushes `Action::SetPreferences`, in effect at once (each tab's fetch interval
     and sidebar too) and kept.
   - `views/agents.rs` — the Agents panel at a repository tab's right (`views/repo.rs`'s
-    `agents_panel`, drawn first: beside everything, the output under the rest; hidden, a strip
-    with "Show the agents"): its head (the title; the conversations' menu, named by the one
+    `agents_panel`, drawn first: beside everything, the output under the rest; shown and
+    hidden by the top bar's Agents, `Action::ToggleAgents`, so hidden it takes no room): its head (the title; the conversations' menu, named by the one
     shown: New conversation, those open (Close the conversation), Earlier ones with their age;
     Hide the agents); until Claude is set up, what agents are and the setup (Node looked for,
     "Look again" and nodejs.org; "Set up Claude": the SDK's version and size, its progress and
@@ -1658,8 +1665,11 @@ writes paths), never `OsStrExt`.
     choices (several, or one's own words) answered by the input given back; a plan to approve
     or keep planning), the prompt ("Ask Claude": Enter sends, Shift+Enter a new line; queued
     while a turn runs), the mode's and the model's menus, Send or (while a turn runs) Stop,
-    and who it runs as with what it cost (or, nobody signed in, Claude Code's own login
-    command to run in a terminal, copied, and "Look again"). Help: `help/agents.rs`.
+    and who it runs as with what it cost: the account's menu (Claude Code's own, then the
+    others, chosen before a conversation starts; `tool_menu_of`), who is signed in to its
+    folder (`AgentsSetup::who`), an API key said so, and, nobody signed in, Claude Code's own
+    login command for that folder to run in a terminal, copied, and "Look again". Help:
+    `help/agents.rs`.
   - `views/` — `home` (who commits and the profile's button first, then open by dialog or
     typed path, the problem and its remedy, recent repositories in egui-table-kit, and
     cloning), `profile` (identity and signing editable;
@@ -1692,8 +1702,14 @@ writes paths), never `OsStrExt`.
     Node found and the SDK's readiness (`found`, a job), installing it (`installing`,
     cancellable), who is signed in to Claude Code's own folder (`signed_in`), `launch` (how to
     run the bridge as a `Signer`; the tests' `stand_in`); its cache under egit's
-    (`cache_folder`). `RepoAgents`, a tab's (`RepoTab::agents`): shown or not, its
-    `Conversation`s and the one shown, the earlier ones Claude Code keeps for the work tree
+    (`cache_folder`); who is signed in, by configuration folder (`who`, asked once each,
+    `ask_who_again`); adding an account (`add_account`, `AccountForm`). An `AgentAccount`
+    (kept in the settings, `agent_accounts`): a name and its `AccountKind`, a `Folder` of its
+    own or an `ApiKey` that git's helpers keep for `https://api.anthropic.com` with the name as
+    user (never in the settings); its signer filled in the conversation's start job
+    (`Starter`: the bridge as Claude Code's own runs it, and git). `RepoAgents`, a tab's (`RepoTab::agents`): shown or not, its
+    `Conversation`s and the one shown, the account new ones run as (`choose_account`: the one
+    shown too, before it starts; earlier ones listed and read from its folder), the earlier ones Claude Code keeps for the work tree
     (`past`, read when the menu opens), `begin`, `resume` (its messages read in a job into the
     transcript; the bridge starts with the next prompt, `resume` set), `close`, `send`. A
     `Conversation`: its transcript, permission requests waiting, `Info`, mode (as asked, or as
@@ -1912,9 +1928,11 @@ writes paths), never `OsStrExt`.
     changelog of 80 sections changed halfway down and further on, opened at the first change
     (in view on both sides, the top out of it), stepped to the next, and back by Alt+↑.
     `src/tests/agents.rs` drives the Agents panel against `egit-agents`' stand-in SDK (skipped
-    without Node unless `EGIT_REQUIRE_NODE`): shown from its strip, a prompt sent with Enter
+    without Node unless `EGIT_REQUIRE_NODE`): shown from the top bar, a prompt sent with Enter
     and its answer streamed, a command allowed for the conversation (its line opened), a
-    question answered, the mode changed, an earlier conversation gone on with.
+    question answered, the mode changed, an earlier conversation gone on with; then two
+    accounts added in Preferences (a folder, and an API key a sandbox's `store` helper keeps)
+    and a conversation run as each (the stand-in says the key, or the folder, it was given).
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,
