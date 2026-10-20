@@ -1,0 +1,215 @@
+//! The sign-in dialog, for a GitHub or GitLab host: why egit asks (pull or merge requests,
+//! pipelines), then in two steps what to do: create a personal access token on the host (its
+//! page opened with the scope egit needs ticked), and paste it. Checked with the host, which says
+//! whose it is, it is kept by git's credential helper, where git finds it for the host's HTTPS
+//! remotes too. Or, for those whose credential helper signs in itself (Git Credential Manager,
+//! in the browser), through it. Once signed in, who it is, and whether it lasts past this run.
+
+use egit_forge::{ForgeHost, ForgeKind};
+use egui::{Id, Key, Modal, RichText, Ui};
+
+use crate::app::Action;
+use crate::sign_ins::{SignInDialog, SignIns};
+use crate::theme::{Palette, icon};
+use crate::widgets::{self, muted};
+
+/// The scope a token needs on `kind`, as its page names it.
+pub(crate) const fn scope_of(kind: ForgeKind) -> &'static str {
+    match kind {
+        ForgeKind::GitHub => "repo",
+        ForgeKind::GitLab => "api",
+    }
+}
+
+/// What egit reads from `kind`: its words.
+pub(crate) const fn what_is_read(kind: ForgeKind) -> &'static str {
+    match kind {
+        ForgeKind::GitHub => "pull requests and their checks",
+        ForgeKind::GitLab => "merge requests and CI/CD pipelines",
+    }
+}
+
+/// The dialog, while it is open.
+pub(crate) fn show(ctx: &egui::Context, sign_ins: &mut SignIns, actions: &mut Vec<Action>) {
+    let Some(dialog) = &mut sign_ins.dialog else {
+        return;
+    };
+    let palette = Palette::of(ctx);
+    let frame = egui::Frame::new()
+        .fill(palette.surface)
+        .stroke(egui::Stroke::new(1.0, palette.border))
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CARD))
+        .inner_margin(egui::Margin::same(20));
+    let shown = Modal::new(Id::new("sign-in")).frame(frame).show(ctx, |ui| {
+        ui.set_width(520.0);
+        fill(ui, dialog, actions)
+    });
+    // Escape or a click outside closes it, but not while the host is being asked.
+    let closing = shown.inner || (shown.should_close() && !dialog.signing.is_pending());
+    if closing {
+        sign_ins.dialog = None;
+    }
+}
+
+/// The dialog's contents; returns whether it should close.
+fn fill(ui: &mut Ui, dialog: &mut SignInDialog, actions: &mut Vec<Action>) -> bool {
+    let palette = Palette::of(ui.ctx());
+    let host = dialog.host.clone();
+    let kind = host.kind();
+    widgets::panel_title(ui, format!("{}  Sign in to {}", icon::SIGN_IN, kind.name()));
+    ui.label(muted(ui, host.name()));
+    ui.add_space(8.0);
+    if let Some((login, kept)) = dialog.signed.clone() {
+        return signed(ui, palette, &host, (&login, kept));
+    }
+    ui.add(
+        egui::Label::new(format!(
+            "egit reads {} from {} with a personal access token. Git uses the same one for \
+             {}'s HTTPS remotes: your credential helper keeps it, not egit.",
+            what_is_read(kind),
+            host.name(),
+            host.name()
+        ))
+        .wrap(),
+    );
+    ui.add_space(12.0);
+    let signing = dialog.signing.is_pending();
+    step(ui, "1", "Create a token", |ui| {
+        ui.add(
+            egui::Label::new(muted(
+                ui,
+                format!(
+                    "Its page opens with the {} scope ticked: name it, choose when it expires, \
+                     create it, and copy it.",
+                    scope_of(kind)
+                ),
+            ))
+            .wrap(),
+        );
+        if widgets::secondary(
+            ui,
+            true,
+            &format!("{}  Create a token…", icon::ARROW_SQUARE_OUT),
+        )
+        .clicked()
+        {
+            actions.push(Action::OpenUrl(host.new_token_url()));
+        }
+    });
+    ui.add_space(8.0);
+    let mut submitted = false;
+    step(ui, "2", "Paste it here", |ui| {
+        let hint = match kind {
+            ForgeKind::GitHub => "ghp_…",
+            ForgeKind::GitLab => "glpat-…",
+        };
+        let field = widgets::form_row(ui, 56.0, "Token", |ui| {
+            ui.add_enabled(
+                !signing,
+                widgets::line_field(&mut *dialog.token)
+                    .password(true)
+                    .hint_text(hint)
+                    .desired_width(320.0),
+            )
+        });
+        submitted = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
+        // Typed into at once.
+        if !signing
+            && dialog.token.is_empty()
+            && !field.has_focus()
+            && ui.memory(|m| m.focused().is_none())
+        {
+            field.request_focus();
+        }
+    });
+    ui.add_space(12.0);
+    let mut close = false;
+    let ready = !signing && !dialog.token.trim().is_empty();
+    ui.horizontal(|ui| {
+        if widgets::primary(ui, ready, "Sign in").clicked() || (submitted && ready) {
+            dialog.with_token();
+        }
+        close = widgets::secondary(ui, !signing, "Cancel").clicked();
+    });
+    ui.add_space(6.0);
+    let helper = widgets::link(ui, "Sign in through git's credential helper instead")
+        .on_hover_text(
+            "Git Credential Manager opens the host's sign-in page in your browser; other helpers, \
+         and git without one, ask for a username and password (a token as the password)",
+        );
+    if helper.clicked() && !signing {
+        dialog.with_helper();
+    }
+    // What comes and goes follows the buttons.
+    ui.scope_builder(egui::UiBuilder::new().id(Id::new("sign-in-state")), |ui| {
+        if signing {
+            ui.add_space(8.0);
+            widgets::working(ui, &format!("Asking {}…", host.name()));
+        } else if let Some(Err(problem)) = dialog.signing.read_as_ref() {
+            ui.add_space(8.0);
+            let problem = problem.clone();
+            widgets::problem_box(ui, &problem, |_| {});
+        }
+    });
+    close
+}
+
+/// A numbered step: its number in a circle, its title, and what `add` draws under it.
+fn step(ui: &mut Ui, number: &str, title: &str, add: impl FnOnce(&mut Ui)) {
+    let palette = Palette::of(ui.ctx());
+    ui.horizontal_top(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::hover());
+        ui.painter()
+            .circle_stroke(rect.center(), 10.0, egui::Stroke::new(1.0, palette.accent));
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            number,
+            egui::TextStyle::Small.resolve(ui.style()),
+            palette.accent,
+        );
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            ui.label(RichText::new(title).strong());
+            add(ui);
+        });
+    });
+}
+
+/// Signed in: whose it is, whether it lasts past this run, and Done; returns whether Done was
+/// clicked.
+fn signed(ui: &mut Ui, palette: Palette, host: &ForgeHost, (login, kept): (&str, bool)) -> bool {
+    ui.label(
+        RichText::new(format!(
+            "{}  Signed in to {} as {login}.",
+            icon::CHECK_CIRCLE,
+            host.name()
+        ))
+        .color(palette.ok),
+    );
+    ui.add_space(4.0);
+    ui.add(
+        egui::Label::new(format!(
+            "egit reads {} for every open repository on {} now.",
+            what_is_read(host.kind()),
+            host.name()
+        ))
+        .wrap(),
+    );
+    if !kept {
+        ui.add_space(8.0);
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!(
+                    "{}  No credential helper keeps it: egit is signed in until it quits. Set \
+                     one up (Profile, Credentials) to stay signed in.",
+                    icon::WARNING
+                ))
+                .color(palette.warn),
+            )
+            .wrap(),
+        );
+    }
+    ui.add_space(12.0);
+    widgets::primary(ui, true, "Done").clicked()
+}

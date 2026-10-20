@@ -47,6 +47,7 @@ mod problem;
 mod repo;
 mod search;
 mod settings;
+mod sign_ins;
 mod stack;
 mod staging;
 mod stats;

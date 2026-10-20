@@ -157,12 +157,6 @@ pub(crate) struct RepoForge {
     indexed: (u64, usize),
     /// Bumped whenever another read takes over.
     generation: u64,
-    /// A sign-in under way (or done): who it is.
-    signing_in: Bind<String, Problem>,
-    /// Whether a sign-in is under way.
-    pub(crate) signing: bool,
-    /// Why the last sign-in failed, if it did.
-    pub(crate) sign_in_problem: Option<Problem>,
     /// Wakes the window as pages land.
     waker: egui::Context,
     /// GitLab's pipelines: each commit's latest.
@@ -189,9 +183,6 @@ impl RepoForge {
             badges: Vec::new(),
             indexed: (0, 0),
             generation: 0,
-            signing_in: Bind::new(true),
-            signing: false,
-            sign_in_problem: None,
             waker: waker.clone(),
             ci: Pipelines::new(waker),
             here,
@@ -271,15 +262,6 @@ impl RepoForge {
             self.again = false;
             self.refresh();
         }
-        if self.signing_in.is_finished() {
-            match self.signing_in.take() {
-                // Read with the new credential.
-                Some(Ok(_)) => self.refresh(),
-                Some(Err(problem)) => self.sign_in_problem = Some(problem),
-                None => {}
-            }
-        }
-        self.signing = self.signing_in.is_pending();
         self.index();
         self.ci.poll(&self.repositories, &self.accounts);
     }
@@ -300,31 +282,40 @@ impl RepoForge {
         self.reading = Some(reading);
     }
 
-    /// Signs in to `host`, asking the user as git's helpers do; the pull requests are read again
-    /// once it worked.
-    pub(crate) fn sign_in(&mut self, host: &str) {
-        let Some(account) = self
+    /// Takes a sign-in to `host` made elsewhere (the sign-in dialog, through another account),
+    /// and reads the requests and pipelines again with it.
+    pub(crate) fn signed_in(&mut self, host: &ForgeHost, signed: &egit_forge::SignedIn) {
+        if let Some(account) = self.account(host) {
+            account.adopt(signed);
+            self.refresh();
+        }
+    }
+
+    /// Forgets the sign-in to `host` (signed out elsewhere), and reads the requests again: none
+    /// can be, which says signing in would help.
+    pub(crate) fn signed_out(&mut self, host: &ForgeHost) {
+        if let Some(account) = self.account(host) {
+            account.signed_out();
+            self.refresh();
+        }
+    }
+
+    /// The host signing in to would help (nobody is, or the host refused the credentials), and
+    /// whether it refused; none while a read is under way or the requests could be read.
+    pub(crate) fn needs_sign_in(&self) -> Option<(ForgeHost, bool)> {
+        let found = self.shown.lock();
+        let Some(ForgeProblem::SignIn { host, refused }) = &found.problem else {
+            return None;
+        };
+        let refused = *refused;
+        let host = self
             .accounts
             .iter()
-            .find(|account| account.host().name() == host)
-            .cloned()
-        else {
-            return;
-        };
-        self.sign_in_problem = None;
-        self.signing = true;
-        self.signing_in.request(jobs::blocking(move || {
-            let context = format!("Signing in to {}", account.host().name());
-            account
-                .sign_in(&context, &CancelToken::new())
-                .map_err(|error| match error {
-                    ForgeError::NotSignedIn { host } => Problem::new(
-                        format!("Not signed in to {host}"),
-                        "No credentials were given.",
-                    ),
-                    other => Problem::new("Signing in failed", other.to_string()),
-                })
-        }));
+            .map(|account| account.host())
+            .find(|known| known.name() == host)?
+            .clone();
+        drop(found);
+        Some((host, refused))
     }
 
     /// The pull requests shown.

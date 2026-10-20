@@ -259,7 +259,10 @@ fn refused_credentials_rate_limits_and_missing_projects_say_so() {
 fn signing_in_says_who() {
     let (_fake, _sandbox, account, _project) = setup(0, TOKEN);
     assert_eq!(
-        account.sign_in("Signing in", &CancelToken::new()).unwrap(),
+        account
+            .sign_in("Signing in", &CancelToken::new())
+            .unwrap()
+            .login,
         "ada"
     );
     assert_eq!(account.login().as_deref(), Some("ada"));

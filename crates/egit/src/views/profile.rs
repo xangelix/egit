@@ -1,13 +1,15 @@
-//! The Profile tab: who you are to git, how you sign, how git gets your credentials, the GitHub
-//! and GitLab hosts pull and merge requests come from, and how pull and push behave, each with
-//! where it is set.
+//! The Profile tab: who you are to git, how you sign, how git gets your credentials, who you
+//! are signed in as on GitHub and GitLab (signing in and out) and the hosts pull and merge
+//! requests come from, and how pull and push behave, each with where it is set.
 //! Identity, signing, and the listed GitHub and GitLab hosts can be changed here (in your global
 //! configuration).
 
 use std::path::Path;
 use std::sync::Arc;
 
-use egit_forge::{ForgeHost, ForgeKind};
+use bstr::ByteSlice as _;
+
+use egit_forge::{ForgeHost, ForgeHosts, ForgeKind};
 use egit_git::{
     ConfigEntry, ConfigScope, ConfigSnapshot, PullFastForward, PullRebase, SigningFormat,
 };
@@ -209,15 +211,16 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         ui.add_space(8.0);
         save_row(ui, view, &mut state.actions);
         ui.add_space(12.0);
-        credentials_card(ui, &snapshot, home.as_deref());
-        ui.add_space(12.0);
+        let git = state.git();
         forges_card(
             ui,
-            &mut state.profile,
-            &snapshot,
+            (&mut state.profile, &mut state.sign_ins),
+            (&snapshot, git.as_ref()),
             home.as_deref(),
             &mut state.actions,
         );
+        ui.add_space(12.0);
+        credentials_card(ui, &snapshot, home.as_deref());
         ui.add_space(12.0);
         pull_push_card(ui, &snapshot, home.as_deref());
         ui.add_space(12.0);
@@ -441,8 +444,8 @@ fn credentials_card(ui: &mut Ui, snapshot: &ConfigSnapshot, home: Option<&Path>)
 /// `egit.gitlabHost`), added and removed here.
 fn forges_card(
     ui: &mut Ui,
-    view: &mut ProfileView,
-    snapshot: &ConfigSnapshot,
+    (view, sign_ins): (&mut ProfileView, &mut crate::sign_ins::SignIns),
+    (snapshot, git): (&ConfigSnapshot, Option<&egit_git::Git>),
     home: Option<&Path>,
     actions: &mut Vec<Action>,
 ) {
@@ -453,11 +456,15 @@ fn forges_card(
             egui::Label::new(muted(
                 ui,
                 "egit reads the pull requests of remotes on github.com and the merge requests \
-                 of those on gitlab.com, and of those on the hosts listed here, signing in with \
-                 the credentials git keeps for each host.",
+                 and pipelines of those on gitlab.com, and of those on the hosts listed here, \
+                 signed in with a token git's credential helper keeps for each host.",
             ))
             .wrap(),
         );
+        if let Some(git) = git {
+            ui.add_space(8.0);
+            accounts(ui, sign_ins, git, snapshot, actions);
+        }
         for (kind, key, typed) in [
             (
                 ForgeKind::GitHub,
@@ -480,6 +487,83 @@ fn forges_card(
             listed.show(ui, snapshot, typed, actions);
         }
     });
+}
+
+/// Who is signed in to each host (github.com, gitlab.com, and those listed), asked once with
+/// what git's helpers keep, and Sign in… or Sign out beside each.
+fn accounts(
+    ui: &mut Ui,
+    sign_ins: &mut crate::sign_ins::SignIns,
+    git: &egit_git::Git,
+    snapshot: &ConfigSnapshot,
+    actions: &mut Vec<Action>,
+) {
+    let palette = Palette::of(ui.ctx());
+    let listed = |key| {
+        snapshot
+            .get_all(key)
+            .filter_map(|entry| entry.text().to_str().ok())
+    };
+    let hosts = ForgeHosts::with_listed(listed(GITHUB_HOSTS_KEY), listed(GITLAB_HOSTS_KEY));
+    ui.label(RichText::new("Accounts").semibold());
+    Grid::new("profile-forge-accounts")
+        .num_columns(3)
+        .min_col_width(widgets::FACT_LABEL)
+        .spacing([12.0, 6.0])
+        .show(ui, |ui| {
+            for host in hosts.hosts() {
+                ui.label(format!("{} ({})", host.name(), host.kind().name()));
+                let signed_in = match sign_ins.who(git, host) {
+                    None => {
+                        widgets::working(ui, "Asking…");
+                        None
+                    }
+                    Some(Ok(Some(login))) => {
+                        ui.label(
+                            RichText::new(format!("{}  Signed in as {login}", icon::CHECK_CIRCLE))
+                                .color(palette.ok),
+                        );
+                        Some(true)
+                    }
+                    Some(Ok(None)) => {
+                        ui.label(muted(ui, "Not signed in"));
+                        Some(false)
+                    }
+                    Some(Err(problem)) => {
+                        ui.label(RichText::new(problem.title.as_str()).color(palette.danger))
+                            .on_hover_text(problem.detail.as_str());
+                        Some(false)
+                    }
+                };
+                let leaving = sign_ins.is_signing_out(host);
+                match signed_in {
+                    Some(true) => {
+                        if widgets::secondary(ui, !leaving, "Sign out")
+                            .on_hover_text(format!(
+                                "git's credential helper forgets the token it keeps for {}: git \
+                                 asks again the next time it reaches it over HTTPS",
+                                host.name()
+                            ))
+                            .clicked()
+                        {
+                            actions.push(Action::SignOut(host.clone()));
+                        }
+                    }
+                    Some(false) => {
+                        if widgets::secondary(ui, true, "Sign in…").clicked() {
+                            actions.push(Action::SignIn {
+                                repo: None,
+                                host: host.clone(),
+                            });
+                        }
+                    }
+                    None => {
+                        ui.label("");
+                    }
+                }
+                ui.end_row();
+            }
+        });
 }
 
 /// One forge's hosts in the profile: each listed, removable where the user's own settings list

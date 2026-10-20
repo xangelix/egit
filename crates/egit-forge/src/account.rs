@@ -1,7 +1,11 @@
 //! Signing in to a forge's host with the credential git's helpers keep for it: taken without
 //! asking for work nobody watches, asked for (through egit's prompts, or a helper's own window)
-//! when the user signs in; kept by the helpers (`approve`) once the host accepts it, forgotten
-//! (`reject`) when it refuses it, as git itself does with a remote's.
+//! when the user signs in, or given as a token; kept by the helpers (`approve`) once the host
+//! accepts it, forgotten (`reject`) when it refuses it, as git itself does with a remote's.
+//!
+//! A token given is checked first by an account of its own that never touches the helpers, so
+//! a mistyped one makes them forget nothing; accepted, it is kept under the login the host says
+//! it is, where git finds it for the host's HTTPS remotes too.
 
 use std::sync::Arc;
 
@@ -9,6 +13,17 @@ use egit_git::{
     Asking, CancelToken, Credential, CredentialPlace, Git, Repository, approve_credential,
     fill_credential, reject_credential,
 };
+
+/// A sign-in that went through.
+#[derive(Clone, Debug)]
+pub struct SignedIn {
+    /// Who the host says it is.
+    pub login: String,
+    /// Whether git's credential helpers keep it (else it lasts until egit quits).
+    pub kept: bool,
+    /// The credential, for the host's other accounts (other repositories' sign-ins) to take.
+    pub credential: Arc<Credential>,
+}
 use parking_lot::Mutex;
 
 use crate::error::ForgeError;
@@ -23,6 +38,8 @@ pub struct Account {
     git: Git,
     repository: Option<Arc<Repository>>,
     state: Mutex<State>,
+    /// Whether it only checks a credential given, never telling the helpers anything.
+    probing: bool,
 }
 
 /// What is known of the sign-in.
@@ -47,6 +64,7 @@ impl Account {
             git,
             repository,
             state: Mutex::default(),
+            probing: false,
         }
     }
 
@@ -69,14 +87,116 @@ impl Account {
     ///
     /// [`ForgeError::NotSignedIn`] when the user declined, [`ForgeError::Refused`] when the
     /// host refused the credential (the helpers forget it), and any failure to reach the host.
-    pub fn sign_in(&self, context: &str, cancel: &CancelToken) -> Result<String, ForgeError> {
+    pub fn sign_in(&self, context: &str, cancel: &CancelToken) -> Result<SignedIn, ForgeError> {
         let credential = self
-            .fill(Asking::As(context), cancel)?
+            .fill(Asking::As(context), None, cancel)?
             .ok_or_else(|| self.not_signed_in())?;
-        self.state.lock().credential = Some(credential);
+        self.state.lock().credential = Some(Arc::clone(&credential));
         let login = crate::api::viewer(self, cancel)?;
         self.state.lock().login = Some(login.clone());
-        Ok(login)
+        let kept = self.is_kept(&credential, cancel);
+        Ok(SignedIn {
+            login,
+            kept,
+            credential,
+        })
+    }
+
+    /// Signs in with `token`, given by the user: checked with the host (which says whose it
+    /// is) without the helpers hearing of it, then kept by them under that login, so git uses
+    /// it for the host's HTTPS remotes too.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError::Refused`] when the host refuses it (or it can't be a token: empty, or
+    /// holding a line break), and any failure to reach the host.
+    pub fn sign_in_with_token(
+        &self,
+        token: &str,
+        cancel: &CancelToken,
+    ) -> Result<SignedIn, ForgeError> {
+        let token = token.trim();
+        let refused = || ForgeError::Refused {
+            host: self.host().name().to_owned(),
+        };
+        let probe = Credential::given(self.place(None), token).ok_or_else(refused)?;
+        let checking = Self {
+            http: Http::new(self.host().clone()),
+            git: self.git.clone(),
+            repository: self.repository.clone(),
+            state: Mutex::new(State {
+                credential: Some(Arc::new(probe)),
+                ..State::default()
+            }),
+            probing: true,
+        };
+        let login = crate::api::viewer(&checking, cancel)?;
+        let credential =
+            Arc::new(Credential::given(self.place(Some(&login)), token).ok_or_else(refused)?);
+        *self.state.lock() = State {
+            credential: Some(Arc::clone(&credential)),
+            login: Some(login.clone()),
+            ..State::default()
+        };
+        self.keep(&credential);
+        let kept = self.is_kept(&credential, cancel);
+        Ok(SignedIn {
+            login,
+            kept,
+            credential,
+        })
+    }
+
+    /// Takes the sign-in another account of the host made (a repository's, the profile's).
+    pub fn adopt(&self, signed: &SignedIn) {
+        *self.state.lock() = State {
+            credential: Some(Arc::clone(&signed.credential)),
+            login: Some(signed.login.clone()),
+            approved: true,
+            refused: false,
+        };
+    }
+
+    /// Who is signed in: the login the host said, else asked of it with what git's helpers
+    /// keep (never asking anyone); `None` with nothing kept.
+    ///
+    /// # Errors
+    ///
+    /// [`ForgeError::Refused`] when the host refuses what the helpers keep (they forget it),
+    /// and any failure to reach the host.
+    pub fn who(&self, cancel: &CancelToken) -> Result<Option<String>, ForgeError> {
+        if let Some(login) = self.login() {
+            return Ok(Some(login));
+        }
+        match crate::api::viewer(self, cancel) {
+            Ok(login) => Ok(Some(login)),
+            Err(ForgeError::NotSignedIn { .. }) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Signs out: git's helpers forget the credential (git asks again the next time it reaches
+    /// the host over HTTPS), and so does this account.
+    ///
+    /// # Errors
+    ///
+    /// When git's helpers fail.
+    pub fn sign_out(&self, cancel: &CancelToken) -> Result<(), ForgeError> {
+        let known = self.state.lock().credential.clone();
+        let credential = match known {
+            Some(credential) => Some(credential),
+            None => self.fill(Asking::Never, None, cancel)?,
+        };
+        *self.state.lock() = State::default();
+        if let Some(credential) = credential {
+            reject_credential(&self.git, self.repository.as_deref(), &credential)?;
+        }
+        Ok(())
+    }
+
+    /// Forgets the sign-in here alone (another account of the host signed out).
+    pub fn signed_out(&self) {
+        *self.state.lock() = State::default();
     }
 
     /// Sends `body` to `url` (a GET without one) with the credential, filled without asking
@@ -92,7 +212,7 @@ impl Account {
         let credential = if let Some(credential) = known {
             credential
         } else {
-            let filled = self.fill(Asking::Never, cancel)?.ok_or_else(|| {
+            let filled = self.fill(Asking::Never, None, cancel)?.ok_or_else(|| {
                 if self.state.lock().refused {
                     ForgeError::Refused {
                         host: self.host().name().to_owned(),
@@ -125,19 +245,34 @@ impl Account {
         self.state.lock().login = Some(login.to_owned());
     }
 
-    /// The credential git's helpers (or the user) give.
+    /// Where its credential is kept: the host, for `username` (`None`: whichever).
+    fn place<'a>(&'a self, username: Option<&'a str>) -> CredentialPlace<'a> {
+        CredentialPlace {
+            protocol: self.host().protocol(),
+            host: self.host().name(),
+            username,
+        }
+    }
+
+    /// The credential git's helpers (or the user) give, for `username` (`None`: whichever).
     fn fill(
         &self,
         asking: Asking<'_>,
+        username: Option<&str>,
         cancel: &CancelToken,
     ) -> Result<Option<Arc<Credential>>, ForgeError> {
-        let place = CredentialPlace {
-            protocol: self.host().protocol(),
-            host: self.host().name(),
-            username: None,
-        };
+        let place = self.place(username);
         let filled = fill_credential(&self.git, self.repository.as_deref(), place, asking, cancel)?;
         Ok(filled.map(Arc::new))
+    }
+
+    /// Whether git's helpers give `credential` back (none keeps one where none is set up).
+    fn is_kept(&self, credential: &Credential, cancel: &CancelToken) -> bool {
+        let username = Some(credential.username()).filter(|name| !name.is_empty());
+        self.fill(Asking::Never, username, cancel)
+            .ok()
+            .flatten()
+            .is_some_and(|kept| kept.password() == credential.password())
     }
 
     /// Has the helpers keep `credential`, once.
@@ -147,7 +282,7 @@ impl Account {
             .credential
             .as_ref()
             .is_some_and(|known| Arc::ptr_eq(known, credential));
-        if !current || state.approved {
+        if !current || state.approved || self.probing {
             return;
         }
         state.approved = true;
@@ -173,6 +308,10 @@ impl Account {
             };
         }
         drop(state);
+        // A token being checked was never theirs to forget.
+        if self.probing {
+            return;
+        }
         if let Err(error) = reject_credential(&self.git, self.repository.as_deref(), credential) {
             tracing::warn!(%error, host = self.host().name(), "the credential couldn't be forgotten");
         }

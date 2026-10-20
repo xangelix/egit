@@ -2740,7 +2740,12 @@ fn pull_requests_without_credentials_offer_to_sign_in() {
                 )
         })
     });
-    harness.get_by_label("Pull requests").click();
+    // The top bar offers to sign in where it would count the requests; the requests' page
+    // (from the palette) says why.
+    wait_for_label(&mut harness, "Sign in to GitHub");
+    harness.state_mut().state.repos[0]
+        .history_view
+        .queue(crate::commands::RepoCommand::PullRequests);
     let host = fake.address();
     wait_for_label(
         &mut harness,
@@ -2761,7 +2766,16 @@ fn pull_requests_without_credentials_offer_to_sign_in() {
             .is_some_and(|repo| !repo.forge.is_reading())
     });
     render(&mut harness, "pull-requests-sign-in");
-    harness.get_by_label("Create a token…").click();
+    // Its card (under the banner's) opens the sign-in dialog: the token's page a click away.
+    harness
+        .query_all_by_label("Sign in…")
+        .max_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+        .unwrap()
+        .click();
+    wait_for_label(&mut harness, "Paste it here");
+    harness
+        .get_by_label(&format!("{}  Create a token…", icon::ARROW_SQUARE_OUT))
+        .click();
     harness.run_steps(2);
     assert_eq!(
         harness.state().state.opener.recorded(),
@@ -2769,8 +2783,10 @@ fn pull_requests_without_credentials_offer_to_sign_in() {
             "http://{host}/settings/tokens/new?scopes=repo&description=egit"
         )]
     );
-    // Nobody can answer git's question here: signing in says so.
-    harness.get_by_label("Sign in").click();
+    // Nobody can answer git's question here: signing in through it says so.
+    harness
+        .get_by_label("Sign in through git's credential helper instead")
+        .click();
     wait_for_label(&mut harness, "No credentials were given.");
 }
 

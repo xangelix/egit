@@ -212,7 +212,10 @@ fn signing_in_says_who_and_keeps_the_credential() {
     ));
     let (fake, sandbox, account, _repository) = setup(0, TOKEN);
     assert_eq!(
-        account.sign_in("Signing in", &CancelToken::new()).unwrap(),
+        account
+            .sign_in("Signing in", &CancelToken::new())
+            .unwrap()
+            .login,
         "ada"
     );
     assert_eq!(account.login().as_deref(), Some("ada"));
@@ -270,7 +273,10 @@ fn signing_in_asks_the_user_and_has_the_helper_keep_what_worked() {
     let host = ForgeHost::parse(ForgeKind::GitHub, &fake.host_entry()).unwrap();
     let account = Account::new(git, None, host);
     assert_eq!(
-        account.sign_in("Signing in", &CancelToken::new()).unwrap(),
+        account
+            .sign_in("Signing in", &CancelToken::new())
+            .unwrap()
+            .login,
         "ada"
     );
     let kept = std::fs::read_to_string(sandbox.path("credentials")).unwrap();
@@ -291,4 +297,61 @@ fn a_github_repository_has_no_pipelines_and_nothing_is_asked() {
         Err(ForgeError::NotFound { .. })
     ));
     assert!(fake.state().requests.is_empty());
+}
+
+#[test]
+fn a_token_given_is_checked_kept_under_its_login_and_signed_out() {
+    let (fake, sandbox, account, repository) = setup(1, "old");
+    let file = sandbox.path("credentials");
+    // A mistyped token: refused, and what the helper kept stays.
+    assert!(matches!(
+        account.sign_in_with_token("mistyped", &CancelToken::new()),
+        Err(ForgeError::Refused { .. })
+    ));
+    assert!(std::fs::read_to_string(&file).unwrap().contains(":old@"));
+
+    // The right one: whose the host says, kept under that login.
+    let signed = account
+        .sign_in_with_token(&format!(" {TOKEN}\n"), &CancelToken::new())
+        .unwrap();
+    assert_eq!(signed.login, "ada");
+    assert!(signed.kept);
+    assert!(
+        std::fs::read_to_string(&file)
+            .unwrap()
+            .contains(&format!("ada:{TOKEN}@"))
+    );
+    assert_eq!(
+        account.who(&CancelToken::new()).unwrap().as_deref(),
+        Some("ada")
+    );
+
+    // Another account of the host takes it, whatever the helpers give first.
+    let host = ForgeHost::parse(ForgeKind::GitHub, &fake.host_entry()).unwrap();
+    let other = Account::new(sandbox.git().clone(), None, host.clone());
+    other.adopt(&signed);
+    pull_requests(&other, &repository, 10, &CancelToken::new(), |_| {}).unwrap();
+
+    // Signed out: the helper forgets it, and nobody is signed in.
+    account.sign_out(&CancelToken::new()).unwrap();
+    assert!(!std::fs::read_to_string(&file).unwrap().contains(TOKEN));
+    other.signed_out();
+    // The old one, for the same login, was replaced when the new one was kept.
+    assert!(!std::fs::read_to_string(&file).unwrap().contains(":old@"));
+    let fresh = Account::new(sandbox.git().clone(), None, host);
+    assert_eq!(fresh.who(&CancelToken::new()).unwrap(), None);
+}
+
+#[test]
+fn a_token_no_helper_keeps_lasts_until_egit_quits() {
+    let (fake, _sandbox, _, repository) = setup(1, TOKEN);
+    let bare = egit_git::testing::Sandbox::new().unwrap();
+    let host = ForgeHost::parse(ForgeKind::GitHub, &fake.host_entry()).unwrap();
+    let account = Account::new(bare.git().clone(), None, host);
+    let signed = account
+        .sign_in_with_token(TOKEN, &CancelToken::new())
+        .unwrap();
+    assert!(!signed.kept);
+    // Signed in all the same, for as long as the account lasts.
+    pull_requests(&account, &repository, 10, &CancelToken::new(), |_| {}).unwrap();
 }

@@ -107,6 +107,17 @@ impl Credential {
         })
     }
 
+    /// A credential the user gave egit for `place` (a token pasted, say), its `username` the
+    /// place's (none: none at all), as `fill` would have given it; `None` when the secret is
+    /// empty, or when it or the place would inject attributes (a line break).
+    #[must_use]
+    pub fn given(place: CredentialPlace<'_>, secret: &str) -> Option<Self> {
+        if !place.is_valid() || secret.is_empty() || secret.contains(['\n', '\r', '\0']) {
+            return None;
+        }
+        Self::parse(place.attributes(Some(secret)))
+    }
+
     /// The username (empty if the helpers gave none).
     #[must_use]
     pub fn username(&self) -> &str {
@@ -305,6 +316,30 @@ mod tests {
               password_expiry_utc=1700000000\n\n"
         );
         assert!(!format!("{credential:?}").contains("s3cret"));
+    }
+
+    #[test]
+    fn a_given_credential_is_as_fill_gives_one() {
+        let place = CredentialPlace {
+            protocol: "https",
+            host: "gitlab.com",
+            username: Some("ada"),
+        };
+        let credential = Credential::given(place, "glpat-t0ken").unwrap();
+        assert_eq!(credential.username(), "ada");
+        assert_eq!(credential.password(), "glpat-t0ken");
+        assert_eq!(
+            credential.description().as_slice(),
+            b"protocol=https\nhost=gitlab.com\nusername=ada\npassword=glpat-t0ken\n\n"
+        );
+        // Nothing that would pass for another attribute, and no empty secret.
+        assert!(Credential::given(place, "glpat\nhost=elsewhere").is_none());
+        assert!(Credential::given(place, "").is_none());
+        let anyone = CredentialPlace {
+            username: None,
+            ..place
+        };
+        assert_eq!(Credential::given(anyone, "t").unwrap().username(), "");
     }
 
     #[test]

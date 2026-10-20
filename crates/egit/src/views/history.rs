@@ -1093,6 +1093,7 @@ fn bar_panel(
         .frame(chrome(shared).inner_margin(Margin::symmetric(12, 8)))
         .show(ui, |ui| {
             top_bar(ui, shared, history, work_tree, view, writing, pane);
+            sign_in_banner(ui, shared, pane.actions);
             if lfs_banner(ui, shared, pane) {
                 view.show_lfs();
             }
@@ -1211,6 +1212,95 @@ fn submodules_banner(
         },
     );
     open_page
+}
+
+/// Where the hosts are kept that the user said "Not now" to signing in to (their banner hidden,
+/// the top bar's button left): in egui's memory, kept across runs.
+fn sign_in_later_id() -> Id {
+    Id::new("sign-in-later")
+}
+
+/// Where a remote is on GitHub or GitLab and nobody is signed in to its host (or it refused the
+/// credentials git keeps), a banner saying what signing in shows, Sign in…, and Not now (the
+/// host's banner hidden from then on; the top bar's button stays).
+fn sign_in_banner(ui: &mut Ui, shared: &Shared<'_>, actions: &mut Vec<Action>) {
+    let Some((host, refused)) = shared.forge.needs_sign_in() else {
+        return;
+    };
+    let later = ui.ctx().data_mut(|data| {
+        data.get_persisted_mut_or_default::<Vec<String>>(sign_in_later_id())
+            .iter()
+            .any(|name| name == host.name())
+    });
+    if later {
+        return;
+    }
+    let palette = shared.palette;
+    let kind = host.kind();
+    ui.scope_builder(
+        UiBuilder::new().id(Id::new(("sign-in-banner", shared.id))),
+        |ui| {
+            ui.add_space(4.0);
+            Frame::new()
+                .fill(palette.accent.gamma_multiply(0.10))
+                .stroke(Stroke::new(1.0, palette.accent.gamma_multiply(0.7)))
+                .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
+                .inner_margin(Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    crate::help::note_topic(ui, ui.max_rect(), "forge-sign-in");
+                    let headline = if refused {
+                        format!("{} refused the credentials git keeps for it.", host.name())
+                    } else {
+                        format!(
+                            "Sign in to {} to see this repository's {}.",
+                            kind.name(),
+                            super::sign_in::what_is_read(kind)
+                        )
+                    };
+                    ui.add(
+                        Label::new(
+                            RichText::new(format!("{}  {headline}", icon::SIGN_IN))
+                                .color(palette.text)
+                                .semibold(),
+                        )
+                        .wrap(),
+                    );
+                    ui.add(
+                        Label::new(muted(
+                            ui,
+                            format!(
+                                "egit asks for a personal access token for {}, which your \
+                             credential helper keeps for git too.",
+                                host.name()
+                            ),
+                        ))
+                        .wrap(),
+                    );
+                    ui.horizontal(|ui| {
+                        if widgets::primary(ui, true, "Sign in…").clicked() {
+                            actions.push(Action::SignIn {
+                                repo: Some(shared.id),
+                                host: host.clone(),
+                            });
+                        }
+                        if widgets::secondary(ui, true, "Not now")
+                            .on_hover_text(format!(
+                                "Hide this for {}: the top bar's Sign in to {} stays",
+                                host.name(),
+                                kind.name()
+                            ))
+                            .clicked()
+                        {
+                            ui.ctx().data_mut(|data| {
+                                data.get_persisted_mut_or_default::<Vec<String>>(sign_in_later_id())
+                                .push(host.name().to_owned());
+                            });
+                        }
+                    });
+                });
+        },
+    );
 }
 
 /// Where the repository keeps files in Git LFS but they can't be whole here (git-lfs missing,
@@ -1480,6 +1570,14 @@ fn side_panel(
             actions.push(Action::Reveal(path, crate::desktop::Reveal::Open));
         }
         Some(SidebarEvent::Submodules) => view.show_submodules(),
+        Some(SidebarEvent::SignIn) => {
+            if let Some((host, _)) = shared.forge.needs_sign_in() {
+                actions.push(Action::SignIn {
+                    repo: Some(shared.id),
+                    host,
+                });
+            }
+        }
         None => {}
     }
 }
@@ -1812,7 +1910,7 @@ fn left_bar(
         kept += SPINNER + spacing;
     }
     work_tree_problem(ui, work_tree, shared.palette);
-    pull_requests_button(ui, shared, view);
+    pull_requests_button(ui, shared, view, task_pane.actions);
     kept
 }
 
@@ -2194,9 +2292,36 @@ fn scope_line(ui: &mut Ui, shared: &Shared<'_>, applied: &Scope, actions: &mut V
 }
 
 /// The pull (or merge) requests' button, when a remote is on GitHub or GitLab: how many are
-/// open.
-fn pull_requests_button(ui: &mut Ui, shared: &Shared<'_>, view: &mut HistoryView) {
+/// open; or, where they can't be read for want of a sign-in, the way to sign in.
+fn pull_requests_button(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    view: &mut HistoryView,
+    actions: &mut Vec<Action>,
+) {
     if shared.forge.repositories.is_empty() {
+        return;
+    }
+    if let Some((host, refused)) = shared.forge.needs_sign_in() {
+        let text = format!("Sign in to {}", host.kind().name());
+        let why = if refused {
+            format!("{} refused the credentials git keeps", host.name())
+        } else {
+            format!(
+                "Signed in to {}, egit shows its {}",
+                host.name(),
+                super::sign_in::what_is_read(host.kind())
+            )
+        };
+        if widgets::tool(ui, icon::SIGN_IN, &text, false, Look::Full)
+            .on_hover_text(why)
+            .clicked()
+        {
+            actions.push(Action::SignIn {
+                repo: Some(shared.id),
+                host,
+            });
+        }
         return;
     }
     let open = shared.forge.found().pulls.len();
@@ -2613,7 +2738,10 @@ fn pull_request_event(
         PullRequestEvent::ShowCommit(id) => return Some(BlameEvent::ShowCommit(id)),
         PullRequestEvent::Task(task) => actions.push(Action::Task(shared.id, task)),
         PullRequestEvent::Open(url) => actions.push(Action::OpenUrl(url)),
-        PullRequestEvent::SignIn(host) => actions.push(Action::SignIn(shared.id, host)),
+        PullRequestEvent::SignIn(host) => actions.push(Action::SignIn {
+            repo: Some(shared.id),
+            host,
+        }),
         PullRequestEvent::Refresh => actions.push(Action::RefreshPullRequests(shared.id)),
     }
     None

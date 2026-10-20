@@ -80,6 +80,8 @@ pub(crate) struct AppState {
     pub(crate) files: FileDialogs,
     /// The command palette (⌘K).
     pub(crate) palette: PaletteView,
+    /// Signing in to GitHub and GitLab hosts: the dialog, and who is signed in where.
+    pub(crate) sign_ins: crate::sign_ins::SignIns,
     /// The help window, while open.
     pub(crate) help: crate::help::HelpWindow,
     /// Claude's setup for the agents: Node, the SDK, who is signed in; here, and on each
@@ -185,8 +187,14 @@ pub(crate) enum Action {
     Closed(RepoId),
     /// Use a theme.
     SetTheme(ThemeChoice),
-    /// Sign in to a forge's host, for a repository's pull requests.
-    SignIn(RepoId, String),
+    /// Sign in to a forge's host: the dialog, signing in through a repository's account for it
+    /// (its own credential helpers), or the user's.
+    SignIn {
+        repo: Option<RepoId>,
+        host: egit_forge::ForgeHost,
+    },
+    /// Sign out of a forge's host: git's helpers forget its credential.
+    SignOut(egit_forge::ForgeHost),
     /// Read a repository's pull requests again.
     RefreshPullRequests(RepoId),
     /// Open a web page in the user's browser.
@@ -325,6 +333,7 @@ impl EgitApp {
             opener: Opener::default(),
             files: FileDialogs::default(),
             palette: PaletteView::default(),
+            sign_ins: crate::sign_ins::SignIns::default(),
             help: crate::help::HelpWindow::default(),
             fonts: Fallbacks::default(),
             agents_there: std::collections::HashMap::new(),
@@ -448,9 +457,10 @@ impl EgitApp {
             Action::ShowPreferences => tabs::show(&mut self.tabs, Pane::Preferences),
             Action::ShowPalette => self.run(Command::Palette),
             Action::ShowHelp => self.run(Command::Help),
-            Action::SignIn(id, host) => {
-                if let Some(repo) = state.repo_mut(id) {
-                    repo.forge.sign_in(&host);
+            Action::SignIn { repo, host } => state.open_sign_in(repo, host),
+            Action::SignOut(host) => {
+                if let Some(git) = state.git() {
+                    state.sign_ins.sign_out(&git, host);
                 }
             }
             Action::RefreshPullRequests(id) => {
@@ -541,6 +551,21 @@ impl AppState {
         }
     }
 
+    /// Opens the sign-in dialog for `host`, signing in through `repo`'s account for it (its own
+    /// credential helpers), else the user's.
+    fn open_sign_in(&mut self, repo: Option<RepoId>, host: egit_forge::ForgeHost) {
+        let account = repo
+            .and_then(|id| self.repos.iter().find(|open| open.id == id))
+            .and_then(|open| open.forge.account(&host))
+            .or_else(|| {
+                self.git()
+                    .map(|git| Arc::new(egit_forge::Account::new(git, None, host.clone())))
+            });
+        if let Some(account) = account {
+            self.sign_ins.open(host, account);
+        }
+    }
+
     /// Starts cloning as `request` says (once git is found): here, or onto the other computer
     /// it names.
     fn start_clone(&mut self, request: CloneRequest) {
@@ -578,6 +603,20 @@ impl AppState {
     /// Advances the jobs and the watchers: what finished or changed becomes state or actions.
     fn poll(&mut self, ctx: &egui::Context) {
         self.prompts.poll();
+        // A sign-in (or out) made once is every open repository's of that host.
+        match self.sign_ins.poll() {
+            Some(crate::sign_ins::Landed::In(host, signed)) => {
+                for repo in &mut self.repos {
+                    repo.forge.signed_in(&host, &signed);
+                }
+            }
+            Some(crate::sign_ins::Landed::Out(host)) => {
+                for repo in &mut self.repos {
+                    repo.forge.signed_out(&host);
+                }
+            }
+            None => {}
+        }
         self.agents.poll();
         for setup in self.agents_there.values_mut() {
             setup.poll();
@@ -927,6 +966,7 @@ impl eframe::App for EgitApp {
         if let Some(command) = palette::show(ui.ctx(), &mut self.state.palette) {
             self.run(command);
         }
+        crate::views::sign_in::show(ui.ctx(), &mut self.state.sign_ins, &mut self.state.actions);
         self.state.prompts.show(ui.ctx());
         crate::help::window(ui.ctx(), &mut self.state.help);
         self.apply_actions(ui.ctx());

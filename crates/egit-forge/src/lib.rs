@@ -24,7 +24,7 @@ mod repository;
 #[cfg(feature = "testing")]
 pub mod testing;
 
-pub use account::Account;
+pub use account::{Account, SignedIn};
 pub use api::{create_pull_request, pull_request_details, pull_requests, repository_info};
 pub use error::ForgeError;
 pub use host::{ForgeHost, ForgeHosts, ForgeKind};

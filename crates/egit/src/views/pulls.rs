@@ -57,7 +57,7 @@ pub(super) enum PullRequestEvent {
     ShowCommit(ObjectId),
     Task(Task),
     Open(String),
-    SignIn(String),
+    SignIn(egit_forge::ForgeHost),
     Refresh,
 }
 
@@ -283,35 +283,14 @@ fn empty(
                 }
                 ui.label(muted(
                     ui,
-                    format!(
-                        "egit asks git for the credentials it uses for {host}: your credential \
-                         helper's, or a personal access token you give as the password. egit \
-                         keeps none of its own."
-                    ),
+                    "With a personal access token, which your credential helper keeps for git \
+                     too: egit keeps none of its own.",
                 ));
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    let signing = shared.forge.signing;
-                    if widgets::primary(ui, !signing, "Sign in").clicked() {
-                        event = Some(PullRequestEvent::SignIn(host.clone()));
-                    }
-                    if let Some(account) = account
-                        && widgets::secondary(ui, true, "Create a token…")
-                            .on_hover_text(format!(
-                                "Its page on the host, with the scope {}s need",
-                                request_noun(kind)
-                            ))
-                            .clicked()
-                    {
-                        event = Some(PullRequestEvent::Open(account.host().new_token_url()));
-                    }
-                });
-                if shared.forge.signing {
-                    ui.add_space(6.0);
-                    widgets::working(ui, "Signing in…");
-                } else if let Some(problem) = &shared.forge.sign_in_problem {
-                    ui.add_space(6.0);
-                    widgets::problem_box(ui, problem, |_| {});
+                if let Some(account) = account
+                    && widgets::primary(ui, true, "Sign in…").clicked()
+                {
+                    event = Some(PullRequestEvent::SignIn(account.host().clone()));
                 }
             });
         }

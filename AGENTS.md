@@ -42,6 +42,7 @@ it.
 | 28 | Agents (Claude), on this computer | done (a second UI pass, files, commands, images, code); awaiting the owner's review |
 | 29 | Repositories on other computers, over SSH | done; awaiting the owner's review |
 | 30 | GitLab's CI/CD pipelines: a mark on each commit, a pipeline's stages and jobs | done; awaiting the owner's review |
+| 31 | Signing in to GitHub and GitLab, offered wherever it counts, with a token | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -679,7 +680,8 @@ writes paths), never `OsStrExt`.
     repository's configuration or the user's (`/`), `Asking::Never` (non-interactive: no
     credential is `None`, not an error) or labelled prompts; `approve_credential` and
     `reject_credential` hand back every attribute `fill` gave (an expiry, a refresh token).
-    A `Credential` is wiped when dropped. `store_credential` hands a secret of egit's (an
+    A `Credential` is wiped when dropped; `Credential::given` makes one of a secret the user
+    gave (a token pasted), as `fill` would. `store_credential` hands a secret of egit's (an
     agent's API key, under its account's name) to the helpers as approved, `erase_credential`
     has them forget a place's. `tests/credential.rs` fills, rejects, and approves through a
     sandbox's `store` helper, and stores two users' secrets for one host, erasing one.
@@ -740,6 +742,15 @@ writes paths), never `OsStrExt`.
     credential filled without asking on first use; `sign_in` asks (labelled) and checks it
     (who it is); a 401 rejects and forgets it (`Refused`; finding none after that is still
     `Refused`, until a credential is accepted), the first success approves it.
+    `sign_in_with_token`: a token the user gave, checked first by an account of its own that
+    never tells the helpers anything (a mistyped one makes them forget nothing), then kept
+    under the login the host says it is (git finds it for the host's HTTPS remotes too);
+    `SignedIn` (the login, whether the helpers keep it: `fill` gives it back, and the
+    credential). `adopt` (another account's sign-in), `who` (the login, or asked with what the
+    helpers keep; none without), `sign_out` (the helpers forget it), `signed_out` (forgotten
+    here alone). `tests/github.rs` refuses a mistyped token (the helper's entry kept), keeps
+    the right one under its login, has another account adopt it, signs out, and lasts a run
+    where no helper keeps it.
   - `api.rs` — the calls, each sent to its repository's forge: `pull_requests` (open, most
     recently updated first, 100 a page, each handed over as it lands, up to a limit),
     `pull_request_details`, `repository_info` (default branch, the repository it was forked
@@ -1040,6 +1051,16 @@ writes paths), never `OsStrExt`.
     total). `HistoryState`: the history shown,
     and a re-read (`reload`) that takes over only once complete (`replaced`), so the table
     never empties or jumps meanwhile.
+  - `sign_ins.rs` — signing in to GitHub and GitLab hosts (`AppState::sign_ins`): the dialog
+    (`SignInDialog`: its host, the account it signs in through, a repository's (its own
+    credential helpers) or the user's, the token typed, `with_token`, `with_helper`, how it
+    went), who is signed in to each host (`who`, asked once each in a job), signing out; `poll`
+    hands what finished (`Landed`) to the window, which passes a sign-in to every open
+    repository's account for the host (`RepoForge::signed_in`), or a sign-out
+    (`signed_out`). `Action::SignIn` (from a repository's banner, top bar, sidebar, or
+    requests' card: its account; from Profile: the user's) and `Action::SignOut`. The banner
+    under a repository's top bar (`views/history.rs`'s `sign_in_banner`: what signing in shows,
+    Sign in…, and Not now, which hides it for that host from then on, kept in egui's memory).
   - `ci.rs` — a repository's GitLab pipelines, for the commit table's marks (`Pipelines`, its
     forge's: `RepoForge::pipeline_of`, `has_pipelines`): each GitLab project's newest `LIMIT`
     (500) read in a job when the remotes are known, and again whenever the requests are
@@ -1333,8 +1354,10 @@ writes paths), never `OsStrExt`.
     and saying why (`ForgeProblem`: sign in, refused, rate limited until, other). Badges:
     head commits sorted with their pull request's number and checks, made again when the
     list grows or is replaced (`badges_at`, a binary search). `pull_request_for` (a branch's
-    open one), `remote_of`, `repository_of`, `sign_in` (asks through egit's prompts;
-    `signing`, `sign_in_problem`); `kind`, `kind_of`, `nouns`. Each forge's words:
+    open one), `remote_of`, `repository_of`, `needs_sign_in` (the host whose requests want a
+    sign-in, and whether it refused), `signed_in` and `signed_out` (a sign-in made or undone
+    elsewhere taken by the host's account, and everything read again); `kind`, `kind_of`,
+    `nouns`. Each forge's words:
     `request_noun` ("pull request", "merge request"), `request_number` (`#12`, `!12`), and
     `fork_head` (`refs/pull/12/head` into `pr/12`, `refs/merge-requests/12/head` into
     `mr/12`).
@@ -1389,7 +1412,8 @@ writes paths), never `OsStrExt`.
     table's place (`Tool::Stats`; closed, it is kept, `stats_kept`, and shows again at once
     while the history is the same: `Names::identity`) (a spinner beside it while the history is
     read), why the work tree couldn't
-    be read (when it couldn't), the requests; at its right `views/tasks.rs`'s bar (drawn first,
+    be read (when it couldn't), the requests (or, while they want a sign-in, "Sign in to
+    GitLab", opening the dialog); at its right `views/tasks.rs`'s bar (drawn first,
     into the row; its words capped at 300 points). The look is chosen from `BarRoom`: the left
     part's width drawn compact last frame (room kept for the spinner, so its coming never
     changes it) plus what the tools' words add (`widgets::tool_width`), against
@@ -1674,7 +1698,8 @@ writes paths), never `OsStrExt`.
     with its count (named "Branches: 5"; a click folds it; its menu; a "+" adding a remote, a
     stash, or a worktree): branches, folded into folders by their `/`s; remotes, each with its
     branches (its menu: fetch, pruned or not, change its address, rename, remove, copy the
-    address, open on its forge); pull or merge requests (on a forge; a click shows one); tags
+    address, open on its forge); pull or merge requests (on a forge; a click shows one; while
+    they want a sign-in, a row in the accent offering it, `sign_in_row`); tags
     (folded at first); stashes (a click shows its commit in the details: `HistoryView::peek`,
     which the details show in place of the selection while the history doesn't have it; Apply,
     Pop, Drop); worktrees (here, locked, missing marked; a double click or "Open in a tab";
@@ -1792,8 +1817,8 @@ writes paths), never `OsStrExt`.
     forge's ref for it into `pr/<n>` or `mr/<n>` (`fork_head`); disabled, saying why, while a
     task runs or an
     operation is in progress), "Open on GitHub", its size and mergeability, labels, checks
-    (each with its page), latest reviews, description. Without credentials, a card to sign in
-    (git's prompts) or to create a token on the host. `check_look` gives a checks state's
+    (each with its page), latest reviews, description. Without credentials, a card saying why,
+    its Sign in… opening the dialog. `check_look` gives a checks state's
     icon and colour, which the commit table's pull request badges (`#12`, on head commits,
     their title on hover; a click shows it, the menu opens its page) share.
     `views/pull_form.rs` — `PullRequestForm`, the dialog opening a pull (or merge) request,
@@ -1883,9 +1908,16 @@ writes paths), never `OsStrExt`.
     relative path its home folder's (`folder_there`); "Open there"; not on Windows, whose
     OpenSSH shares no connection and whose paths join with `\`), the problem and its remedy, recent repositories in egui-table-kit (another
     computer's said before their folder), and cloning), `profile` (identity and signing editable;
-    credentials, the GitHub Enterprise and self-managed GitLab hosts (added and removed as
-    `egit.githubHost` and `egit.gitlabHost`), pull and push, and every setting, each with its
-    origin), `repo` (the history, or a page: the overview (with a Hooks card: where git looks for them
+    GitHub and GitLab: its accounts (github.com, gitlab.com, and the hosts listed: who is
+    signed in to each, asked once with what git's helpers keep, `SignIns::who`; Sign in… or
+    Sign out), and the GitHub Enterprise and self-managed GitLab hosts (added and removed as
+    `egit.githubHost` and `egit.gitlabHost`); credentials, pull and push, and every setting,
+    each with its origin), `sign_in` (the sign-in dialog, the window's: for a host, what egit
+    reads from it, then two steps: Create a token… (its page, the scope egit needs ticked:
+    `scope_of`) and the token pasted (a password field typed into at once; Enter signs in);
+    Sign in, Cancel, or "Sign in through git's credential helper instead" (Git Credential
+    Manager's browser sign-in, or git's questions); asking the host, a refusal said as one to
+    act on; signed in, as whom, a warning where no helper keeps it, and Done), `repo` (the history, or a page: the overview (with a Hooks card: where git looks for them
     (`core.hooksPath` said), those installed, where their output shows) or the settings table, under a bar
     going back to the history (or Escape) and switching between the two), `status_bar` (git's
     version and path, the
@@ -2183,6 +2215,11 @@ writes paths), never `OsStrExt`.
     edit, a plan, a question, at work, the panel at its narrowest); a slash command completed
     by Tab, an image attached from the paperclip and sent (the stand-in says its type), and a
     file Claude read opened from its line (unchanged: in its app; changed: its diff).
+    `src/tests/sign_in.rs` meets a fake GitLab never signed in to: offered in the banner, the
+    top bar, and the sidebar (rendered); the dialog opening the token's page, refusing a
+    mistyped token (the helper's file untouched), taking the right one (kept under its login),
+    the merge requests read at once; Profile saying who (rendered) and signing out (forgotten,
+    offered again); and Not now hiding the banner, the top bar's way staying.
     `src/tests/pipelines.rs` serves a fake GitLab's pipelines: each commit's latest marked (an
     older one of the same commit not), the mark following its pipeline as it finishes (read
     again at once: `read_pipelines_now`), its page (stages in order, jobs and their words, "may

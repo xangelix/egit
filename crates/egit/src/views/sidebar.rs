@@ -153,6 +153,8 @@ enum Row {
     Worktree(usize),
     Submodule(usize),
     Request(usize),
+    /// The requests can't be read for want of a sign-in: the way to sign in, in words.
+    SignIn(String),
     /// A section with nothing to show, or a list that couldn't be read.
     Note {
         text: String,
@@ -188,6 +190,8 @@ struct Made {
     submodules: Option<Arc<[Submodule]>>,
     config: Option<Arc<ConfigSnapshot>>,
     requests: (u64, usize),
+    /// The sign-in row's words, while the requests want one.
+    sign_in: Option<String>,
     problems: usize,
 }
 
@@ -204,6 +208,8 @@ pub(super) enum SidebarEvent {
     Reveal(PathBuf),
     /// Show the submodules' page.
     Submodules,
+    /// Sign in to the host the requests want.
+    SignIn,
 }
 
 /// The filter: what is typed, and what it asks next frame.
@@ -262,6 +268,8 @@ struct RowsInput {
     submodules: Option<Result<Arc<[Submodule]>, String>>,
     /// The forge's requests' labels, when a remote is on a forge.
     requests: Option<Vec<String>>,
+    /// The sign-in row's words, while the requests want one.
+    sign_in: Option<String>,
 }
 
 impl Default for Sidebar {
@@ -549,6 +557,7 @@ impl Sidebar {
         .count();
         self.sort_refs(refs, lists);
         let listed = forge.listed();
+        let sign_in = sign_in_words(forge);
         let current = self.made.as_ref().is_some_and(|made| {
             Arc::ptr_eq(&made.sorted, &self.sorted)
                 && same(made.stashes.as_ref(), stashes)
@@ -556,6 +565,7 @@ impl Sidebar {
                 && same(made.submodules.as_ref(), submodules)
                 && same(made.config.as_ref(), lists.config)
                 && made.requests == listed
+                && made.sign_in == sign_in
                 && made.problems == problems
         });
         if current && !self.stale {
@@ -607,6 +617,7 @@ impl Sidebar {
             submodules: submodules.cloned(),
             config: lists.config.cloned(),
             requests: listed,
+            sign_in,
             problems,
         });
         self.stale = false;
@@ -627,6 +638,7 @@ impl Sidebar {
                     .map(|request| request.label.clone())
                     .collect()
             }),
+            sign_in: sign_in_words(forge),
         }
     }
 
@@ -666,7 +678,12 @@ impl Sidebar {
         ] {
             if section == Section::Tags {
                 Self::remote_rows(&mut rows, sorted, &matches, &folded);
-                Self::request_rows(&mut rows, input.requests.as_deref(), &matches, &folded);
+                Self::request_rows(
+                    &mut rows,
+                    (input.requests.as_deref(), input.sign_in.as_deref()),
+                    &matches,
+                    &folded,
+                );
             }
             let count = of_kind(kind).count();
             rows.push(Row::Section { section, count });
@@ -761,7 +778,7 @@ impl Sidebar {
     /// The pull (or merge) requests, when a remote is on a forge.
     fn request_rows(
         rows: &mut Vec<Row>,
-        requests: Option<&[String]>,
+        (requests, sign_in): (Option<&[String]>, Option<&str>),
         matches: &dyn Fn(&[u8]) -> bool,
         folded: &dyn Fn(Section, &[u8]) -> bool,
     ) {
@@ -781,7 +798,9 @@ impl Sidebar {
         if folded(Section::Requests, b"") {
             return;
         }
-        if shown.is_empty() {
+        if let Some(words) = sign_in {
+            rows.push(Row::SignIn(words.to_owned()));
+        } else if shown.is_empty() {
             rows.push(note("None open"));
         }
         rows.extend(shown.into_iter().map(Row::Request));
@@ -1134,6 +1153,7 @@ fn draw_row(
         Row::Worktree(at) => worktree_row(ui, drawing, view, *at),
         Row::Submodule(at) => submodule_row(ui, drawing, view, *at),
         Row::Request(at) => request_row(ui, drawing, view, *at),
+        Row::SignIn(words) => sign_in_row(ui, drawing, words),
         Row::Note { text, warn } => {
             let (rect, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
@@ -2038,6 +2058,41 @@ fn request_row(
         )))));
     }
     None
+}
+
+/// The requests' section's row offering to sign in, in the accent: a click opens the dialog.
+fn sign_in_row(ui: &mut Ui, drawing: &Drawing<'_>, words: &str) -> Option<SidebarEvent> {
+    let id = Id::new(("sidebar-sign-in", drawing.shared.id));
+    let (rect, response) = row_area(ui, id, words, false, 0.0);
+    crate::help::note_topic(ui, rect, "forge-sign-in");
+    let accent = drawing.palette.accent;
+    paint_row(
+        ui,
+        drawing,
+        (rect, 0.0),
+        0,
+        (icon::SIGN_IN, accent),
+        &[(words, accent)],
+        Weight::Medium,
+    );
+    response.clicked().then_some(SidebarEvent::SignIn)
+}
+
+/// The sign-in row's words while the forge's requests want a sign-in ("Sign in to see merge
+/// requests"); none otherwise.
+fn sign_in_words(forge: &RepoForge) -> Option<String> {
+    let (host, refused) = forge.needs_sign_in()?;
+    Some(if refused {
+        format!("Sign in to {} again…", host.name())
+    } else {
+        format!(
+            "Sign in to see {}…",
+            match host.kind() {
+                egit_forge::ForgeKind::GitHub => "pull requests",
+                egit_forge::ForgeKind::GitLab => "merge requests",
+            }
+        )
+    })
 }
 
 /// The narrow strip shown in the sidebar's place while it is hidden ([`HIDDEN_WIDTH`]): a

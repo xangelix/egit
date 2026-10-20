@@ -901,22 +901,52 @@ pub(super) const TOPICS: &[Topic] = &[
     Topic {
         id: "forge-sign-in",
         group: Group::Remotes,
-        title: "Signing in to a forge",
-        on: &["Sign in", "Sign in to *", "Create a token…"],
-        what: "egit reads requests with the credentials git keeps for that host: your credential \
-               helper's, or a personal access token you give as the password. Signing in asks \
-               git's helper, checks the answer with the host, and lets the helper store it. egit \
-               keeps no credentials of its own. Create a token… opens the host's page for a new \
-               one with the scope egit needs.",
-        git: "git credential fill, approve, reject (protocol https, the host)",
+        title: "Signing in to GitHub or GitLab",
+        on: &[
+            "Sign in",
+            "Sign in…",
+            "Sign in to *",
+            "Create a token…",
+            "Token",
+            "Sign in through git's credential helper instead",
+            "Sign out",
+            "Not now",
+            "Done",
+        ],
+        what: "egit reads pull requests (GitHub), and merge requests and CI/CD pipelines \
+               (GitLab), with a personal access token for the host. Wherever a remote's host \
+               isn't signed in, egit offers to: a banner over the history, the top bar's Sign in \
+               to GitHub (or GitLab), a row in the sidebar's requests, and Profile's accounts. \
+               The dialog opens the host's page for a new token with the scope egit needs \
+               ticked (Create a token…); pasted, the token is checked with the host, which says \
+               whose it is, and git's credential helper keeps it under that login, where git \
+               finds it for the host's HTTPS remotes too. egit keeps no credentials of its own. \
+               Sign out (Profile) has the helper forget it.",
+        git: "git credential approve, fill, reject (protocol https, the host, your login)",
         cases: &[
-            (
-                "Refused?",
-                "The host said the credentials don't work (expired, revoked, or too narrow): egit tells the helper to forget them, so the next sign-in asks again.",
-            ),
             (
                 "Which scopes?",
                 "GitHub: repo (or, for a fine-grained token, read access to pull requests and contents; write to open them). GitLab: api, or read_api to only read.",
+            ),
+            (
+                "Not kept past this run?",
+                "No credential helper is set up: egit stays signed in until it quits. Set one up (Profile, Credentials: the system's keychain is best) and sign in again.",
+            ),
+            (
+                "Git Credential Manager?",
+                "Sign in through git's credential helper instead: it opens the host's own sign-in page in your browser, no token to make.",
+            ),
+            (
+                "Refused?",
+                "The host said the credentials don't work (expired, revoked, or too narrow): egit tells the helper to forget them, so the next sign-in asks again. A token mistyped in the dialog makes the helper forget nothing.",
+            ),
+            (
+                "Not now?",
+                "Hides the banner for that host from then on; the top bar's button and Profile still sign in.",
+            ),
+            (
+                "Signing out and git?",
+                "The helper forgets the token for every use of the host: git asks again the next time it fetches or pushes over HTTPS (ssh remotes are untouched).",
             ),
             (
                 "An organization with single sign-on?",

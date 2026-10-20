@@ -31,6 +31,7 @@ mod screens;
 mod scrolling;
 mod search;
 mod sidebar;
+mod sign_in;
 mod stats;
 mod submodules;
 mod tree;
