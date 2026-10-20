@@ -1092,6 +1092,81 @@ pub(super) const TOPICS: &[Topic] = &[
         )],
     },
     Topic {
+        id: "pipeline-mark",
+        group: Group::Remotes,
+        title: "Pipeline marks",
+        on: &["Show the pipeline"],
+        what: "Beside a commit's name, the status of the latest GitLab CI/CD pipeline that ran \
+               for it, by colour and by icon: green passed, red failed, blue under way (queued \
+               or running), orange waiting for someone to start a manual job or for a delayed \
+               one's time, grey cancelled or skipped. Its number and status show under the \
+               pointer; a click shows its stages and jobs, its menu opens it on GitLab. egit \
+               reads each GitLab project's newest 500 pipelines with your GitLab sign-in, again \
+               after every fetch, pull, and push, and every 20 seconds while one shown is under \
+               way.",
+        git: "GitLab's GraphQL API: project { pipelines { sha status } } (nothing of git's own)",
+        cases: &[
+            (
+                "A commit without a mark?",
+                "No pipeline ran for it among each project's newest 500, or its project isn't a remote here, or you aren't signed in to its GitLab (the merge requests' page offers to).",
+            ),
+            (
+                "Several pipelines for one commit?",
+                "The mark is the latest one's: a branch pipeline and a merge request's for the same commit, or one run again, show as the newest of them.",
+            ),
+            (
+                "GitHub?",
+                "GitHub's Actions show as a pull request's checks, on its badge: egit reads pipelines from GitLab alone.",
+            ),
+            (
+                "Passed with warnings?",
+                "A job allowed to fail did: the pipeline counts as passed, and says so under the pointer.",
+            ),
+        ],
+    },
+    Topic {
+        id: "pipeline-page",
+        group: Group::Remotes,
+        title: "A pipeline",
+        on: &["Ran for", "Started", "Ran"],
+        what: "A pipeline in the history's place: how it stands, the branch or tag it ran for, \
+               its commit (Show the commit selects it in the history), who started it and how, \
+               and how long it ran; then its stages in the order they run, each with its jobs. \
+               It is read again every few seconds while it is under way. Escape, or History, \
+               goes back.",
+        git: "GitLab's GraphQL API: project { pipeline(iid) { stages { jobs } } }",
+        cases: &[
+            (
+                "Its logs?",
+                "A job opens its page on GitLab, in your browser: its log, artifacts, retrying it, and the rest stay GitLab's.",
+            ),
+            (
+                "A job run again?",
+                "Each job shows its latest run; the runs before it are on its page on GitLab.",
+            ),
+        ],
+    },
+    Topic {
+        id: "pipeline-job",
+        group: Group::Remotes,
+        title: "A pipeline's jobs",
+        on: &[],
+        what: "A job of a pipeline's stage: its status (as the marks colour them), its name, \
+               whether it may fail without failing the pipeline or waits to be started by hand, \
+               and how long it ran. A click opens its page on GitLab, in your browser.",
+        git: "",
+        cases: &[
+            (
+                "Start a manual job?",
+                "From its page on GitLab: egit only shows that it waits.",
+            ),
+            (
+                "A trigger job?",
+                "It starts another pipeline (a child's, or another project's): a click opens that one.",
+            ),
+        ],
+    },
+    Topic {
         id: "pull-request-check-out",
         group: Group::Remotes,
         title: "Checking a request out",

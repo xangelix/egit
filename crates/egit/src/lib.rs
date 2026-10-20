@@ -21,6 +21,7 @@ mod app;
 mod attachments;
 mod avatars;
 mod blame;
+mod ci;
 mod commands;
 mod desktop;
 mod diff;

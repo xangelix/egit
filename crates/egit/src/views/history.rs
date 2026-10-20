@@ -34,6 +34,7 @@ use super::file_history::{self, FileHistoryView};
 use super::lfs::LfsEvent;
 use super::patch::{self, PatchEvent, PatchSource, PatchView};
 use super::picked::{self, Click, Exporting, Picked, PickedEvent};
+use super::pipeline::{self, MarkEvent, PipelineEvent, PipelineView};
 use super::pull_form::{self, PullRequestForm};
 use super::pulls::{self, PullRequestEvent, PullRequestView};
 use super::rebase::{self, RebaseEvent, RebaseView};
@@ -279,6 +280,7 @@ enum Tool {
     Blame(BlameView),
     FileHistory(FileHistoryView),
     PullRequests(PullRequestView),
+    Pipeline(Box<PipelineView>),
     Patch(PatchView),
     Reflog(Box<ReflogView>),
     Lfs(Box<super::lfs::LfsView>),
@@ -642,6 +644,12 @@ impl HistoryView {
     fn show_pull_request(&mut self, selected: Option<(usize, u32)>) {
         self.file = None;
         self.tool = Some(Tool::PullRequests(PullRequestView::new(selected)));
+    }
+
+    /// Shows `mark`'s pipeline in the commit table's place.
+    fn show_pipeline(&mut self, mark: crate::ci::CiMark) {
+        self.file = None;
+        self.tool = Some(Tool::Pipeline(Box::new(PipelineView::new(mark))));
     }
 
     /// Shows the patches in `files`, to apply, in the commit table's place.
@@ -2277,7 +2285,8 @@ fn commit_table(
     let salt = ("history", shared.id);
     let place = ui.available_rect_before_wrap();
     let room = place.width() - ui.spacing().scroll.allocated_width();
-    let widths = column_widths(ui, room, history.shown.widest());
+    let marks = shared.forge.has_pipelines();
+    let widths = column_widths(ui, room, (history.shown.widest(), marks));
     let columns = columns(widths);
     let all = columns.len();
     // Under the titles, pinned as they are, the work in progress when there is some: the
@@ -2502,27 +2511,18 @@ fn tool(
             None => None,
         },
         Some(Tool::FileHistory(found)) => file_history::show(ui, shared, found),
-        Some(Tool::PullRequests(pulls)) => match pulls::show(ui, shared, history, pulls) {
-            Some(PullRequestEvent::Close) => Some(BlameEvent::Close),
-            Some(PullRequestEvent::ShowCommit(id)) => Some(BlameEvent::ShowCommit(id)),
-            Some(PullRequestEvent::Task(task)) => {
-                actions.push(Action::Task(shared.id, task));
-                None
-            }
-            Some(PullRequestEvent::Open(url)) => {
-                actions.push(Action::OpenUrl(url));
-                None
-            }
-            Some(PullRequestEvent::SignIn(host)) => {
-                actions.push(Action::SignIn(shared.id, host));
-                None
-            }
-            Some(PullRequestEvent::Refresh) => {
-                actions.push(Action::RefreshPullRequests(shared.id));
-                None
-            }
-            None => None,
-        },
+        Some(Tool::PullRequests(pulls)) => pulls::show(ui, shared, history, pulls)
+            .and_then(|asked| pull_request_event(asked, shared, actions)),
+        Some(Tool::Pipeline(page)) => {
+            pipeline::show(ui, shared, page).and_then(|asked| match asked {
+                PipelineEvent::Close => Some(BlameEvent::Close),
+                PipelineEvent::ShowCommit(id) => Some(BlameEvent::ShowCommit(id)),
+                PipelineEvent::Open(url) => {
+                    actions.push(Action::OpenUrl(url));
+                    None
+                }
+            })
+        }
         Some(Tool::Submodules(page)) => super::submodules::show(ui, shared, page)
             .and_then(|event| submodules_event(event, shared, actions)),
         Some(Tool::Stats(page)) => super::stats::show(ui, shared, &history.shown, page)
@@ -2601,6 +2601,24 @@ fn submodules_event(
     None
 }
 
+/// What the pull requests' page asked: the history view's part of it (closing it, showing a
+/// commit), or the application's (a task, a page, a sign-in, reading them again).
+fn pull_request_event(
+    asked: PullRequestEvent,
+    shared: &Shared<'_>,
+    actions: &mut Vec<Action>,
+) -> Option<BlameEvent> {
+    match asked {
+        PullRequestEvent::Close => return Some(BlameEvent::Close),
+        PullRequestEvent::ShowCommit(id) => return Some(BlameEvent::ShowCommit(id)),
+        PullRequestEvent::Task(task) => actions.push(Action::Task(shared.id, task)),
+        PullRequestEvent::Open(url) => actions.push(Action::OpenUrl(url)),
+        PullRequestEvent::SignIn(host) => actions.push(Action::SignIn(shared.id, host)),
+        PullRequestEvent::Refresh => actions.push(Action::RefreshPullRequests(shared.id)),
+    }
+    None
+}
+
 /// Does what a menu asked: starts its task, asks its dialog's question first, or opens the
 /// rebase editor.
 fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &mut Vec<Action>) {
@@ -2650,6 +2668,7 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
         Ask::Paste => view.show_patch(PatchSource::Pasted),
         Ask::Reflog(reference) => view.show_reflog(reference),
         Ask::PullRequest(selected) => view.show_pull_request(selected),
+        Ask::Pipeline(mark) => view.show_pipeline(*mark),
         Ask::CreatePullRequest {
             branch,
             remote,
@@ -2699,8 +2718,14 @@ fn widths_id() -> Id {
 }
 
 /// This frame's widths, graph, message, author, date, commit: the message's what the others
-/// leave of `room` (never under its least).
-fn column_widths(ui: &Ui, room: f32, widest: usize) -> [f32; 5] {
+/// leave of `room` (never under its least); the commit's wider than kept where commits have
+/// pipelines' `marks` (one beside each name), as drawn only.
+fn column_widths(ui: &Ui, room: f32, (widest, marks): (usize, bool)) -> [f32; 5] {
+    let marks = if marks {
+        pipeline::MARK_WIDTH + ui.spacing().item_spacing.x
+    } else {
+        0.0
+    };
     let kept: ColumnWidths = ui
         .ctx()
         .data_mut(|data| *data.get_persisted_mut_or_default::<ColumnWidths>(widths_id()));
@@ -2715,7 +2740,7 @@ fn column_widths(ui: &Ui, room: f32, widest: usize) -> [f32; 5] {
         MIN_MESSAGE_WIDTH,
         kept.author,
         kept.date,
-        kept.commit,
+        kept.commit + marks,
     ];
     // Too narrow for each at its width (a panel open beside): the others give way, as drawn
     // only (what is kept stays), the graph first (it pans), then the author, the date, and
@@ -3148,6 +3173,16 @@ impl TableDelegate for CommitRows<'_> {
             );
         }
         if cell.col_nr == 4 {
+            // Room for a pipeline's mark on every row while any commit has one.
+            let forge = self.shared.forge;
+            if forge.has_pipelines() {
+                let mark = forge.pipeline_of(&id);
+                match pipeline::mark(ui, mark, id, self.shared.palette) {
+                    Some(MarkEvent::Show(mark)) => self.asked = Some(Ask::Pipeline(Box::new(mark))),
+                    Some(MarkEvent::Open(url)) => self.asked = Some(Ask::Open(url)),
+                    None => {}
+                }
+            }
             let name = id.abbreviated(ID_DIGITS).to_string();
             ui.add(
                 Label::new(

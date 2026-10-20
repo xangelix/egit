@@ -3,7 +3,8 @@
 //! `egit.gitlabHost`), an account per host signed in with git's credentials, and their open pull
 //! requests (GitHub's) and merge requests (GitLab's), read in the background (a page at a time,
 //! shown as each lands) and read again when the remotes may have moved; the badges they put on
-//! their head commits; and how each forge names them.
+//! their head commits; GitLab's pipelines, a mark on each commit that ran one (`ci.rs`); and
+//! how each forge names them.
 //!
 //! A read again takes over only once complete, so the list never empties or jumps meanwhile.
 
@@ -18,6 +19,7 @@ use egit_git::{CancelToken, ConfigSnapshot, Git, ObjectId, Repository, remote_ur
 use egui_async::Bind;
 use parking_lot::{Mutex, MutexGuard};
 
+use crate::ci::{CiMark, Pipelines};
 use crate::jobs;
 use crate::problem::Problem;
 
@@ -163,6 +165,8 @@ pub(crate) struct RepoForge {
     pub(crate) sign_in_problem: Option<Problem>,
     /// Wakes the window as pages land.
     waker: egui::Context,
+    /// GitLab's pipelines: each commit's latest.
+    ci: Pipelines,
     /// For a repository on another computer, this computer's git: it is this computer that
     /// reaches the forge, so its helpers keep the sign-ins, under the user's configuration
     /// here (and its prompts are relayed to the window, which those there aren't).
@@ -189,6 +193,7 @@ impl RepoForge {
             signing: false,
             sign_in_problem: None,
             waker: waker.clone(),
+            ci: Pipelines::new(waker),
             here,
         }
     }
@@ -276,13 +281,15 @@ impl RepoForge {
         }
         self.signing = self.signing_in.is_pending();
         self.index();
+        self.ci.poll(&self.repositories, &self.accounts);
     }
 
-    /// Reads the pull requests again (after the one under way, if any).
+    /// Reads the pull requests and the pipelines again (after the reads under way, if any).
     pub(crate) fn refresh(&mut self) {
         if self.repositories.is_empty() {
             return;
         }
+        self.ci.refresh(&self.repositories, &self.accounts);
         let first_under_way = !self.shown.lock().done && self.generation == 0;
         if self.reading.is_some() || first_under_way {
             self.again = true;
@@ -333,6 +340,22 @@ impl RepoForge {
     /// Whether a read is under way.
     pub(crate) fn is_reading(&self) -> bool {
         self.reading.is_some() || !self.shown.lock().done
+    }
+
+    /// `commit`'s latest pipeline, if it ran one (GitLab's).
+    pub(crate) fn pipeline_of(&self, commit: &ObjectId) -> Option<&CiMark> {
+        self.ci.of(commit)
+    }
+
+    /// Reads the newest pipelines again at the next poll (tests: not waiting for it).
+    #[cfg(test)]
+    pub(crate) fn read_pipelines_now(&mut self) {
+        self.ci.read_newest_now();
+    }
+
+    /// Whether any commit ran a pipeline (the commit table keeps room for a mark on each row).
+    pub(crate) fn has_pipelines(&self) -> bool {
+        self.ci.any()
     }
 
     /// The badges of pull requests whose head is `commit`.
@@ -496,6 +519,7 @@ impl RepoForge {
         } else {
             self.start_read(Arc::clone(&self.shown));
         }
+        self.ci.reset(&self.repositories, &self.accounts);
     }
 
     /// Reads every repository's open pull requests into `into`, a page at a time.

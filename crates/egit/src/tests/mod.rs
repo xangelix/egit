@@ -22,6 +22,7 @@ mod patches;
 mod people;
 mod picked;
 mod pictures;
+mod pipelines;
 mod polish;
 mod remote;
 mod reveal;

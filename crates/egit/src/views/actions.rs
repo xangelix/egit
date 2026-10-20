@@ -50,6 +50,8 @@ pub(super) enum Ask {
     Preferences(crate::preferences::Preferences),
     /// The pull requests, one selected (its repository's place in the forge's, its number).
     PullRequest(Option<(usize, u32)>),
+    /// A commit's pipeline, in the commit table's place.
+    Pipeline(Box<crate::ci::CiMark>),
     /// This much of the history shown.
     Scope(Scope),
     /// A commit's patch saved, under a name asked for in the desktop's dialog (`name`, offered).

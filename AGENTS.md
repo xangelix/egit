@@ -41,6 +41,7 @@ it.
 | 27 | People's pictures, and hooks' output | done; awaiting the owner's review |
 | 28 | Agents (Claude), on this computer | done (a second UI pass, files, commands, images, code); awaiting the owner's review |
 | 29 | Repositories on other computers, over SSH | done; awaiting the owner's review |
+| 30 | GitLab's CI/CD pipelines: a mark on each commit, a pipeline's stages and jobs | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -767,10 +768,23 @@ writes paths), never `OsStrExt`.
     which counts as none. `Pictures::find` asks them in order; `fetch`: no credential, so
     redirects are followed, HTTPS only (but every source on the loopback address, for tests),
     1 MiB at most; `Fetched::Found` or `Missing` (404).
+  - `pipelines.rs` — GitLab's CI/CD pipelines through its GraphQL API (`has_pipelines`: GitLab
+    alone; GitHub's Actions are a pull request's checks): `pipelines` (a project's newest, 100 a
+    page, each page handed over as it lands, up to a limit; none for a project whose pipelines
+    can't be seen), `pipeline_details` (one by its `iid`: its stages in order, each one's jobs
+    (their latest runs), each job's page, a trigger job's its downstream pipeline's).
+    `Pipeline` (GitLab's number from its global id, `iid`, commit, `CiStatus`, warnings, ref,
+    made, page; `is_newer_than`), `PipelineDetails` (started, finished, duration, who, how,
+    `Stage`s of `Job`s: status, may fail, manual, duration, page). `CiStatus` (GitLab's every
+    status, read however it writes them: `RUNNING`, `running`, `waiting-for-resource`; `word`,
+    `is_moving`: under way or waiting for its time) and its `CiGroup`, the five egit colours:
+    passed, failed, under way, paused (waiting for someone or its time), cancelled or skipped.
   - `testing.rs` (feature `testing`) — `FakeForge`: either forge's API on the loopback address
-    (pages, details, repository, who is signed in, opening; the bearer token checked; a rate
-    limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each
-    call against it, signed in through a sandbox's `store` helper (and an askpass script).
+    (pages, details, repository, who is signed in, opening; GitLab's pipelines, `FakePipeline`
+    and `FakeJob`, a page or one whole; the bearer token checked; a rate limit to switch on;
+    requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
+    signed in through a sandbox's `store` helper (and an askpass script): pipelines a page at a
+    time and one whole (stages in order, jobs, pages), and none asked of GitHub.
 - `crates/egit-agents` — agents working in a repository beside egit: Claude Code, driven
   through Anthropic's Claude Agent SDK (TypeScript) by a small bridge under Node; no egui.
   - `bridge/claude/` — `bridge.mjs` (plain JavaScript: the SDK's `query` with streaming input,
@@ -1026,6 +1040,15 @@ writes paths), never `OsStrExt`.
     total). `HistoryState`: the history shown,
     and a re-read (`reload`) that takes over only once complete (`replaced`), so the table
     never empties or jumps meanwhile.
+  - `ci.rs` — a repository's GitLab pipelines, for the commit table's marks (`Pipelines`, its
+    forge's: `RepoForge::pipeline_of`, `has_pipelines`): each GitLab project's newest `LIMIT`
+    (500) read in a job when the remotes are known, and again whenever the requests are
+    (`RepoForge::refresh`: after a task reaching the remotes, each background fetch, a sign-in,
+    Refresh); while any shown may still change, the newest page read again every `EVERY`
+    (20 s) and merged in. `Marks`: each commit's latest (`CiMark`: its project's place and the
+    `Pipeline`), of any project, sorted by commit (a binary search a row); a read takes over
+    only once complete, one that fails keeping what is shown (a host needing a sign-in or rate
+    limited skipped for its other projects).
   - `stats.rs` — a history's statistics, for its Stats page: `read_stats` reads every row's
     commit once, through gitoxide on up to 8 threads a block of rows at a time (else one
     `cat-file`), each thread parsing headers into compact `Read`s (an author line's FNV-1a
@@ -1391,7 +1414,11 @@ writes paths), never `OsStrExt`.
     it); in the details too; painted 18 points tall, so badges in rows next to each other never touch; one that
     doesn't fit in its cell is counted, "+2", rather than cut at the column's edge; in the
     details they wrap); a signed commit's seal by its verdict (good, doubtful, bad, or
-    unchecked, its meaning on hover); a focusable area takes ↑ ↓ PgUp PgDn Home End. The
+    unchecked, its meaning on hover); in the commit's column, while any commit ran a GitLab
+    pipeline, room on every row for one's mark (`pipeline::mark`, 24 points, the column drawn
+    that much wider than kept: `column_widths`): the latest's status, by colour and icon alike
+    (`ci_look`), its number and status on hover and as its name ("Pipeline #9003: running"), a
+    click showing it (`Ask::Pipeline`), its menu opening it on GitLab; a focusable area takes ↑ ↓ PgUp PgDn Home End. The
     columns' widths are egit's own (`ColumnWidths`, kept with the settings; table-kit's
     columns fixed at them): the message fills what the others leave, and when that's under
     its least (a panel open beside) the others give way as drawn, the graph first, then the
@@ -1742,6 +1769,17 @@ writes paths), never `OsStrExt`.
     `app::reach`; `format::progress` and Cancel while it runs, `CancelClone`), then opens the
     repository where it was made (a `Location`); cancelled, it says git removed what it had
     made.
+    `views/pipeline.rs` — `PipelineView`, a GitLab pipeline in the commit table's place (from
+    its mark; Escape or History goes back): a bar (its number and status in words, Refresh,
+    Open on GitLab, a spinner while read), what it ran for, its commit (Show the commit), who
+    started it and how, how long it ran (or has so far); then its stages in order, each a header
+    (status, name, how many jobs) over its jobs (status, name, "may fail", "manual", status in
+    words, duration, the arrow of a page outside), drawn as far as they show (`show_rows`); a
+    job's click opens its page in the browser, egit's last step. Read when shown and again
+    every 5 s while it, or a job of it, may still change (`READ_AGAIN`), what was read shown
+    meanwhile. `ci_look` (each status's icon and colour: the theme's `ok`, `danger`, `running`,
+    `paused`, `muted`), `ci_words` ("passed with warnings", "waiting for someone to start a
+    job"), `duration` ("1 min 35 s").
     `views/pulls.rs` — `PullRequestView`, the pull (or merge) requests in the commit table's
     place, named their forge's way (a `Tool`, from the top bar's "N pull requests" or "N merge
     requests" button, or a badge): a bar (repositories,
@@ -1967,7 +2005,8 @@ writes paths), never `OsStrExt`.
     WCAG AA checked by tests, text over every line background too: diff
     lines and words, a conflict's sides and headers, resolved lines, rows a search found;
     a selected or found row under the pointer (`selected_hover`) too, and text on the danger
-    colour; Phosphor icons; one scale of text: `SMALL` 11.5, `BODY` 13, `CODE` 12.5, `HEADING`
+    colour, and pipelines' `running` (blue) and `paused` (orange); Phosphor icons; one scale of
+    text: `SMALL` 11.5, `BODY` 13, `CODE` 12.5, `HEADING`
     14, `TITLE` 18, and `CONTROL` (28), the height of buttons, fields, and menus' buttons;
     every control has an edge: `field` behind what is typed, `border_strong` under the
     pointer), `widgets/` (the pieces every view is built from, so each looks and answers
@@ -2144,6 +2183,11 @@ writes paths), never `OsStrExt`.
     edit, a plan, a question, at work, the panel at its narrowest); a slash command completed
     by Tab, an image attached from the paperclip and sent (the stand-in says its type), and a
     file Claude read opened from its line (unchanged: in its app; changed: its diff).
+    `src/tests/pipelines.rs` serves a fake GitLab's pipelines: each commit's latest marked (an
+    older one of the same commit not), the mark following its pipeline as it finishes (read
+    again at once: `read_pipelines_now`), its page (stages in order, jobs and their words, "may
+    fail"; rendered), a job opening its page (recorded), Show the commit selecting it, and
+    Escape closing the page.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,

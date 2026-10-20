@@ -57,6 +57,10 @@ pub(crate) struct Palette {
     pub(crate) danger: Color32,
     /// Text on the danger colour.
     pub(crate) on_danger: Color32,
+    /// A pipeline under way (blue).
+    pub(crate) running: Color32,
+    /// A pipeline waiting for someone, or for its time (orange).
+    pub(crate) paused: Color32,
     /// The commit graph's lanes, in turn.
     pub(crate) lanes: [Color32; 10],
     /// Behind people's initials, one each (by email), and the initials on them.
@@ -105,6 +109,8 @@ impl Palette {
         warn: Color32::from_rgb(0xE5, 0xB5, 0x46),
         danger: Color32::from_rgb(0xF5, 0x7A, 0x77),
         on_danger: Color32::from_rgb(0x2A, 0x08, 0x08),
+        running: Color32::from_rgb(0x5F, 0xA2, 0xF2),
+        paused: Color32::from_rgb(0xF0, 0x92, 0x45),
         lanes: [
             Color32::from_rgb(0x4F, 0xC3, 0xF7),
             Color32::from_rgb(0x81, 0xC7, 0x84),
@@ -164,6 +170,8 @@ impl Palette {
         warn: Color32::from_rgb(0x8F, 0x5B, 0x00),
         danger: Color32::from_rgb(0xC0, 0x2B, 0x26),
         on_danger: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+        running: Color32::from_rgb(0x1A, 0x5F, 0xC2),
+        paused: Color32::from_rgb(0xA8, 0x4B, 0x00),
         lanes: [
             Color32::from_rgb(0x02, 0x77, 0xBD),
             Color32::from_rgb(0x2E, 0x7D, 0x32),
@@ -480,6 +488,8 @@ mod tests {
                     ("ok", palette.ok),
                     ("warn", palette.warn),
                     ("danger", palette.danger),
+                    ("running", palette.running),
+                    ("paused", palette.paused),
                 ] {
                     let ratio = contrast(text, background);
                     assert!(ratio >= 4.5, "{name} on {background:?}: {ratio:.2}");
