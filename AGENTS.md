@@ -1914,7 +1914,8 @@ writes paths), never `OsStrExt`.
     `egit.githubHost` and `egit.gitlabHost`); credentials, pull and push, and every setting,
     each with its origin), `sign_in` (the sign-in dialog, the window's: for a host, what egit
     reads from it, then two steps: Create a token… (its page, the scope egit needs ticked:
-    `scope_of`) and the token pasted (a password field typed into at once; Enter signs in);
+    `scope_of`), or Copy the link beside it (for whichever browser one is signed in with;
+    "Copied" for a moment, as wide either way: `copy_link`), and the token pasted (a password field typed into at once; Enter signs in);
     Sign in, Cancel, or "Sign in through git's credential helper instead" (Git Credential
     Manager's browser sign-in, or git's questions); asking the host, a refusal said as one to
     act on; signed in, as whom, a warning where no helper keeps it, and Done), `repo` (the history, or a page: the overview (with a Hooks card: where git looks for them
@@ -2216,7 +2217,8 @@ writes paths), never `OsStrExt`.
     by Tab, an image attached from the paperclip and sent (the stand-in says its type), and a
     file Claude read opened from its line (unchanged: in its app; changed: its diff).
     `src/tests/sign_in.rs` meets a fake GitLab never signed in to: offered in the banner, the
-    top bar, and the sidebar (rendered); the dialog opening the token's page, refusing a
+    top bar, and the sidebar (rendered); the dialog opening the token's page (or copying its
+    link, the button keeping its place), refusing a
     mistyped token (the helper's file untouched), taking the right one (kept under its login),
     the merge requests read at once; Profile saying who (rendered) and signing out (forgotten,
     offered again); and Not now hiding the banner, the top bar's way staying.

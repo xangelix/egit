@@ -1,9 +1,12 @@
 //! The sign-in dialog, for a GitHub or GitLab host: why egit asks (pull or merge requests,
 //! pipelines), then in two steps what to do: create a personal access token on the host (its
-//! page opened with the scope egit needs ticked), and paste it. Checked with the host, which says
+//! page opened with the scope egit needs ticked, or its link copied, for whichever browser one
+//! is signed in with), and paste it. Checked with the host, which says
 //! whose it is, it is kept by git's credential helper, where git finds it for the host's HTTPS
 //! remotes too. Or, for those whose credential helper signs in itself (Git Credential Manager,
 //! in the browser), through it. Once signed in, who it is, and whether it lasts past this run.
+
+use std::time::{Duration, Instant};
 
 use egit_forge::{ForgeHost, ForgeKind};
 use egui::{Id, Key, Modal, RichText, Ui};
@@ -74,28 +77,7 @@ fn fill(ui: &mut Ui, dialog: &mut SignInDialog, actions: &mut Vec<Action>) -> bo
     );
     ui.add_space(12.0);
     let signing = dialog.signing.is_pending();
-    step(ui, "1", "Create a token", |ui| {
-        ui.add(
-            egui::Label::new(muted(
-                ui,
-                format!(
-                    "Its page opens with the {} scope ticked: name it, choose when it expires, \
-                     create it, and copy it.",
-                    scope_of(kind)
-                ),
-            ))
-            .wrap(),
-        );
-        if widgets::secondary(
-            ui,
-            true,
-            &format!("{}  Create a token…", icon::ARROW_SQUARE_OUT),
-        )
-        .clicked()
-        {
-            actions.push(Action::OpenUrl(host.new_token_url()));
-        }
-    });
+    create_step(ui, &host, actions);
     ui.add_space(8.0);
     let mut submitted = false;
     step(ui, "2", "Paste it here", |ui| {
@@ -152,6 +134,80 @@ fn fill(ui: &mut Ui, dialog: &mut SignInDialog, actions: &mut Vec<Action>) -> bo
         }
     });
     close
+}
+
+/// The first step: what the token's page asks, and the ways to it (here, or its link copied).
+fn create_step(ui: &mut Ui, host: &ForgeHost, actions: &mut Vec<Action>) {
+    let kind = host.kind();
+    step(ui, "1", "Create a token", |ui| {
+        ui.add(
+            egui::Label::new(muted(
+                ui,
+                format!(
+                    "Its page comes with the {} scope ticked: name it, choose when it expires, \
+                     create it, and copy it. Signed in to it in another browser? Copy the link \
+                     and open it there.",
+                    scope_of(kind)
+                ),
+            ))
+            .wrap(),
+        );
+        ui.horizontal(|ui| {
+            if widgets::secondary(
+                ui,
+                true,
+                &format!("{}  Create a token…", icon::ARROW_SQUARE_OUT),
+            )
+            .clicked()
+            {
+                actions.push(Action::OpenUrl(host.new_token_url()));
+            }
+            // For the browser one is signed in with, whichever it is.
+            copy_link(ui, &host.new_token_url());
+        });
+    });
+}
+
+/// How long "Copied" shows after the link is copied.
+const COPIED: Duration = Duration::from_millis(1500);
+
+/// Copy the link: the token's page's address to the clipboard (to paste into whichever
+/// browser one is signed in with), "Copied" for a moment after, the button as wide either way.
+fn copy_link(ui: &mut Ui, url: &str) {
+    let id = Id::new("sign-in-copied");
+    let copied_at: Option<Instant> = ui.data(|data| data.get_temp(id));
+    let copied = copied_at.is_some_and(|at| at.elapsed() < COPIED);
+    let words = if copied {
+        format!("{}  Copied", icon::CHECK)
+    } else {
+        format!("{}  Copy the link", icon::COPY)
+    };
+    // As wide as its longer words, whichever it says.
+    let widest = ui
+        .painter()
+        .layout_no_wrap(
+            format!("{}  Copy the link", icon::COPY),
+            egui::TextStyle::Button.resolve(ui.style()),
+            egui::Color32::PLACEHOLDER,
+        )
+        .size()
+        .x;
+    let width = 2.0f32.mul_add(ui.spacing().button_padding.x, widest);
+    let response = ui
+        .add(
+            egui::Button::new(words)
+                .wrap_mode(egui::TextWrapMode::Extend)
+                .min_size(egui::vec2(width, 0.0)),
+        )
+        .on_hover_text(url);
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Copy the link"));
+    crate::help::note(ui, response.rect, "Copy the link");
+    if response.clicked() {
+        ui.ctx().copy_text(url.to_owned());
+        ui.data_mut(|data| data.insert_temp(id, Instant::now()));
+        ui.ctx().request_repaint_after(COPIED);
+    }
 }
 
 /// A numbered step: its number in a circle, its title, and what `add` draws under it.

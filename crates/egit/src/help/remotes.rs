@@ -907,6 +907,7 @@ pub(super) const TOPICS: &[Topic] = &[
             "Sign in…",
             "Sign in to *",
             "Create a token…",
+            "Copy the link",
             "Token",
             "Sign in through git's credential helper instead",
             "Sign out",
@@ -931,6 +932,10 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "Not kept past this run?",
                 "No credential helper is set up: egit stays signed in until it quits. Set one up (Profile, Credentials: the system's keychain is best) and sign in again.",
+            ),
+            (
+                "Signed in to the host in another browser?",
+                "Copy the link, beside Create a token…, and paste it into that browser: the token's page, with the scope egit needs ticked.",
             ),
             (
                 "Git Credential Manager?",

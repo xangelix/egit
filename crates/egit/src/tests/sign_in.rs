@@ -1,6 +1,6 @@
 //! Signing in to GitHub or GitLab, as someone who never has: a repository on a fake GitLab with
 //! no credentials kept offers it in a banner, the top bar, and the sidebar; the dialog opens the
-//! token's page, refuses a mistyped token (the helper forgetting nothing), takes the right one
+//! token's page (or copies its link), refuses a mistyped token (the helper forgetting nothing), takes the right one
 //! (kept by the helper under its login), and the merge requests are read with it at once;
 //! Profile says who is signed in, and signs out (the helper forgets it, and the repository
 //! offers to sign in again). Not now hides the banner, the top bar's button staying.
@@ -41,6 +41,24 @@ fn wanting_sign_in(wanted: bool) -> impl Fn(&mut EgitApp) -> bool {
             !repo.forge.is_reading() && repo.forge.needs_sign_in().is_some() == wanted
         })
     }
+}
+
+/// Copy the link copies `link`, and says so.
+fn copies_the_link(harness: &mut egui_kittest::Harness<'_, EgitApp>, link: &str) {
+    let before = harness.get_by_label("Copy the link").rect();
+    harness.get_by_label("Copy the link").click();
+    harness.run_steps(1);
+    assert!(
+        harness
+            .output()
+            .platform_output
+            .commands
+            .iter()
+            .any(|command| *command == egui::OutputCommand::CopyText(link.to_owned()))
+    );
+    harness.run_steps(1);
+    // Saying "Copied", it keeps its place: nothing beside it moves.
+    assert_eq!(harness.get_by_label("Copy the link").rect(), before);
 }
 
 #[test]
@@ -95,6 +113,14 @@ fn signing_in_is_offered_wherever_it_counts_and_works_with_a_token() {
             "http://{}/-/user_settings/personal_access_tokens?name=egit&scopes=api",
             fake.address()
         )]
+    );
+    // Or its link copied, for whichever browser one is signed in with.
+    copies_the_link(
+        &mut harness,
+        &format!(
+            "http://{}/-/user_settings/personal_access_tokens?name=egit&scopes=api",
+            fake.address()
+        ),
     );
     render(&mut harness, "sign-in");
     type_into(&mut harness, Role::PasswordInput, "Token", "glpat-mistyped");
