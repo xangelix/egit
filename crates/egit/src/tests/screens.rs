@@ -2444,7 +2444,7 @@ fn the_tabs_open_at_the_last_close_come_back() {
 }
 
 /// A commit's name in `repo`.
-fn commit_of(sandbox: &Sandbox, repo: &Path, name: &str) -> String {
+pub(super) fn commit_of(sandbox: &Sandbox, repo: &Path, name: &str) -> String {
     let shown = sandbox.run(repo, "rev-parse", &[name]).unwrap();
     String::from_utf8(shown.stdout).unwrap().trim().to_owned()
 }
@@ -2453,7 +2453,7 @@ fn commit_of(sandbox: &Sandbox, repo: &Path, name: &str) -> String {
 /// `insteadOf`), signed in with `token` through a `store` helper: `main` (Start), `topic` (Add
 /// topic), and a fork's pull request kept as `refs/pull/7/head`. Returns the clone, `topic`'s
 /// commit, and the fork's.
-fn forge_clone(
+pub(super) fn forge_clone(
     sandbox: &Sandbox,
     fake: &FakeForge,
     path: &str,
@@ -2548,6 +2548,7 @@ fn serve_requests(fake: &FakeForge, path: &str, topic: &str, fork: &str) {
         id: 41,
         default_branch: "main".to_owned(),
         parent: None,
+        pipelines: Vec::new(),
         pulls: vec![
             FakePull {
                 number: 8,
@@ -2578,7 +2579,7 @@ fn serve_requests(fake: &FakeForge, path: &str, topic: &str, fork: &str) {
 }
 
 /// Whether the first repository's pull requests are read, `count` of them.
-fn pull_requests_read(count: usize) -> impl Fn(&mut EgitApp) -> bool {
+pub(super) fn pull_requests_read(count: usize) -> impl Fn(&mut EgitApp) -> bool {
     move |app| {
         app.state
             .repos

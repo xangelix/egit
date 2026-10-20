@@ -1,8 +1,9 @@
 //! A fake forge API on the loopback address, for tests: GitHub's or GitLab's.
 //!
 //! It answers the queries egit makes (a page of pull or merge requests, one's details, a
-//! repository, who is signed in) and opens requests, from what the test gave it; it checks the
-//! bearer token, can be rate limited, and records every request.
+//! repository, who is signed in; GitLab's pipelines, and one whole) and opens requests, from
+//! what the test gave it; it checks the bearer token, can be rate limited, and records every
+//! request.
 
 // A test fixture: it indexes and counts small known things, and never ships.
 #![allow(
@@ -57,6 +58,42 @@ pub struct FakePull {
     pub body: String,
 }
 
+/// A GitLab pipeline the fake serves.
+#[derive(Clone, Debug, Default)]
+pub struct FakePipeline {
+    /// GitLab's number for it.
+    pub id: u64,
+    /// Its number within its project.
+    pub iid: u64,
+    /// Its commit (hexadecimal).
+    pub sha: String,
+    /// Its branch or tag.
+    pub git_ref: String,
+    /// Its status, as GitLab's enum names it (`SUCCESS`, `RUNNING`, …).
+    pub status: String,
+    /// Whether it passed with warnings.
+    pub warnings: bool,
+    /// When it was made (`2024-05-01T10:20:30Z`).
+    pub created: String,
+    /// Its stages in order: each one's name, status (`success`, …), and jobs.
+    pub stages: Vec<(String, String, Vec<FakeJob>)>,
+}
+
+/// A job of a fake pipeline.
+#[derive(Clone, Debug, Default)]
+pub struct FakeJob {
+    /// Its name.
+    pub name: String,
+    /// Its status, as GitLab's enum names it.
+    pub status: String,
+    /// Whether it may fail.
+    pub allow_failure: bool,
+    /// Whether someone starts it by hand.
+    pub manual: bool,
+    /// How long it ran, in seconds.
+    pub duration: Option<u64>,
+}
+
 /// A repository (or GitLab project) the fake serves.
 #[derive(Clone, Debug, Default)]
 pub struct FakeRepository {
@@ -70,6 +107,8 @@ pub struct FakeRepository {
     pub parent: Option<String>,
     /// Its open requests, the most recently updated first.
     pub pulls: Vec<FakePull>,
+    /// Its pipelines (GitLab's), the newest first.
+    pub pipelines: Vec<FakePipeline>,
 }
 
 /// A request the fake received.
@@ -519,6 +558,9 @@ fn gitlab_graphql(request: &Recorded, state: &mut FakeState) -> Value {
     let Some(repository) = find(state, &path) else {
         return json!({ "data": { "project": null } });
     };
+    if query.starts_with("query Pipeline") {
+        return gitlab_pipelines(query, variables, repository, &login);
+    }
     if query.starts_with("query MergeRequests") {
         let (start, end) = page(repository.pulls.len(), variables);
         let nodes: Vec<Value> = repository.pulls[start..end]
@@ -562,6 +604,77 @@ fn gitlab_graphql(request: &Recorded, state: &mut FakeState) -> Value {
         } } } });
     }
     json!({ "errors": [{ "message": "unknown query" }] })
+}
+
+/// GitLab's pipelines of `repository`: a page of them, or one whole.
+fn gitlab_pipelines(
+    query: &str,
+    variables: &Value,
+    repository: &FakeRepository,
+    login: &str,
+) -> Value {
+    if query.starts_with("query Pipelines") {
+        let (start, end) = page(repository.pipelines.len(), variables);
+        let nodes: Vec<Value> = repository.pipelines[start..end]
+            .iter()
+            .map(|pipeline| gitlab_pipeline(repository, pipeline))
+            .collect();
+        return json!({ "data": { "project": { "pipelines": {
+            "pageInfo": { "hasNextPage": end < repository.pipelines.len(), "endCursor": end.to_string() },
+            "nodes": nodes,
+        } } } });
+    }
+    if query.starts_with("query Pipeline(") {
+        let iid = variables["iid"].as_str().unwrap_or_default();
+        let Some(pipeline) = repository
+            .pipelines
+            .iter()
+            .find(|pipeline| pipeline.iid.to_string() == iid)
+        else {
+            return json!({ "data": { "project": { "pipeline": null } } });
+        };
+        let mut node = gitlab_pipeline(repository, pipeline);
+        let stages: Vec<Value> = pipeline
+            .stages
+            .iter()
+            .map(|(name, status, jobs)| {
+                let jobs: Vec<Value> = jobs
+                    .iter()
+                    .map(|job| {
+                        json!({ "name": job.name, "status": job.status,
+                                "allowFailure": job.allow_failure, "manualJob": job.manual,
+                                "webPath": format!("/{}/-/jobs/{}", repository.path, job.name),
+                                "duration": job.duration, "startedAt": "2024-05-01T10:21:00Z",
+                                "downstreamPipeline": null })
+                    })
+                    .collect();
+                json!({ "name": name, "status": status, "jobs": { "nodes": jobs } })
+            })
+            .collect();
+        if let Some(fields) = node.as_object_mut() {
+            fields.insert("startedAt".to_owned(), json!("2024-05-01T10:21:00Z"));
+            fields.insert("finishedAt".to_owned(), Value::Null);
+            fields.insert("duration".to_owned(), json!(95));
+            fields.insert("source".to_owned(), json!("push"));
+            fields.insert("user".to_owned(), json!({ "username": login }));
+            fields.insert("stages".to_owned(), json!({ "nodes": stages }));
+        }
+        return json!({ "data": { "project": { "pipeline": node } } });
+    }
+    json!({ "errors": [{ "message": "unknown query" }] })
+}
+
+fn gitlab_pipeline(repository: &FakeRepository, pipeline: &FakePipeline) -> Value {
+    json!({
+        "id": format!("gid://gitlab/Ci::Pipeline/{}", pipeline.id),
+        "iid": pipeline.iid.to_string(),
+        "sha": pipeline.sha,
+        "ref": pipeline.git_ref,
+        "status": pipeline.status,
+        "warnings": pipeline.warnings,
+        "createdAt": if pipeline.created.is_empty() { "2024-05-01T10:20:30Z" } else { &pipeline.created },
+        "path": format!("/{}/-/pipelines/{}", repository.path, pipeline.id),
+    })
 }
 
 fn gitlab_node(repository: &FakeRepository, pull: &FakePull, login: &str) -> Value {

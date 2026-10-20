@@ -2,7 +2,8 @@
 //! helper: merge requests read a page at a time from a project in nested groups, details, the
 //! project and the one it was forked from, opening a merge request (in the project, and from a
 //! fork; a draft by its title) and its refusal, and refused credentials (forgotten), no
-//! credentials, rate limits, projects that aren't there, and signing in.
+//! credentials, rate limits, projects that aren't there, and signing in; pipelines a page at a
+//! time, and one whole (its stages in order, its jobs and their pages).
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
 #![allow(
@@ -13,11 +14,11 @@
     clippy::arithmetic_side_effects
 )]
 
-use egit_forge::testing::{FakeForge, FakePull, FakeRepository};
+use egit_forge::testing::{FakeForge, FakeJob, FakePipeline, FakePull, FakeRepository};
 use egit_forge::{
-    Account, CheckState, ForgeError, ForgeHost, ForgeKind, ForgeRepository, Mergeable,
-    NewPullRequest, ReviewDecision, ReviewState, create_pull_request, pull_request_details,
-    pull_requests, repository_info,
+    Account, CheckState, CiGroup, CiStatus, ForgeError, ForgeHost, ForgeKind, ForgeRepository,
+    Mergeable, NewPullRequest, ReviewDecision, ReviewState, create_pull_request, pipeline_details,
+    pipelines, pull_request_details, pull_requests, repository_info,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -34,6 +35,7 @@ fn setup(requests: u32, token: &str) -> (FakeForge, Sandbox, Account, ForgeRepos
             id: 41,
             default_branch: "main".to_owned(),
             parent: None,
+            pipelines: Vec::new(),
             pulls: (0..requests)
                 .rev()
                 .map(|number| FakePull {
@@ -54,6 +56,7 @@ fn setup(requests: u32, token: &str) -> (FakeForge, Sandbox, Account, ForgeRepos
             id: 42,
             default_branch: "main".to_owned(),
             parent: Some("team/sub/tool".to_owned()),
+            pipelines: Vec::new(),
             pulls: Vec::new(),
         },
     ]);
@@ -260,4 +263,138 @@ fn signing_in_says_who() {
         "ada"
     );
     assert_eq!(account.login().as_deref(), Some("ada"));
+}
+
+/// `count` pipelines, the newest first, by turns running, passed, failed, waiting for
+/// someone, and cancelled; each with a build, a test (one running, one failing as it may), and
+/// a manual deploy stage.
+fn fake_pipelines(count: u64) -> Vec<FakePipeline> {
+    let statuses = ["RUNNING", "SUCCESS", "FAILED", "MANUAL", "CANCELED"];
+    (0..count)
+        .rev()
+        .map(|number| FakePipeline {
+            id: 9_000 + number,
+            iid: number + 1,
+            sha: format!("{:040x}", number + 1),
+            git_ref: "main".to_owned(),
+            status: statuses[usize::try_from(number).unwrap() % statuses.len()].to_owned(),
+            stages: vec![
+                (
+                    "build".to_owned(),
+                    "success".to_owned(),
+                    vec![FakeJob {
+                        name: "compile".to_owned(),
+                        status: "SUCCESS".to_owned(),
+                        duration: Some(42),
+                        ..FakeJob::default()
+                    }],
+                ),
+                (
+                    "test".to_owned(),
+                    "running".to_owned(),
+                    vec![
+                        FakeJob {
+                            name: "unit".to_owned(),
+                            status: "RUNNING".to_owned(),
+                            ..FakeJob::default()
+                        },
+                        FakeJob {
+                            name: "lint".to_owned(),
+                            status: "FAILED".to_owned(),
+                            allow_failure: true,
+                            ..FakeJob::default()
+                        },
+                    ],
+                ),
+                (
+                    "deploy".to_owned(),
+                    "manual".to_owned(),
+                    vec![FakeJob {
+                        name: "production".to_owned(),
+                        status: "MANUAL".to_owned(),
+                        manual: true,
+                        ..FakeJob::default()
+                    }],
+                ),
+            ],
+            ..FakePipeline::default()
+        })
+        .collect()
+}
+
+#[test]
+fn pipelines_come_a_page_at_a_time_and_one_is_read_whole() {
+    let (fake, _sandbox, account, project) = setup(0, TOKEN);
+    fake.state().repositories[0].pipelines = fake_pipelines(150);
+
+    let mut pages = Vec::new();
+    pipelines(&account, &project, 1_000, &CancelToken::new(), |page| {
+        pages.push(page);
+    })
+    .unwrap();
+    let sizes: Vec<usize> = pages.iter().map(Vec::len).collect();
+    assert_eq!(sizes, [100, 50]);
+    let newest = &pages[0][0];
+    assert_eq!((newest.id, newest.iid), (9_149, 150));
+    assert_eq!(
+        newest.commit,
+        ObjectId::from_hex(format!("{:040x}", 150).as_bytes()).unwrap()
+    );
+    assert_eq!(newest.git_ref.as_deref(), Some("main"));
+    assert_eq!(
+        newest.url,
+        format!("http://{}/team/sub/tool/-/pipelines/9149", fake.address())
+    );
+    let groups: Vec<CiGroup> = pages[0][..5]
+        .iter()
+        .map(|found| found.status.group())
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            CiGroup::Canceled,
+            CiGroup::Paused,
+            CiGroup::Failed,
+            CiGroup::Success,
+            CiGroup::Running
+        ]
+    );
+    // A limit is kept to.
+    let mut count = 0;
+    pipelines(&account, &project, 30, &CancelToken::new(), |page| {
+        count += page.len();
+    })
+    .unwrap();
+    assert_eq!(count, 30);
+
+    let details = pipeline_details(&account, &project, 150, &CancelToken::new()).unwrap();
+    assert_eq!(details.pipeline, *newest);
+    assert_eq!(details.user.as_deref(), Some("ada"));
+    assert_eq!(details.duration, Some(95));
+    let stages: Vec<(&str, CiStatus, usize)> = details
+        .stages
+        .iter()
+        .map(|stage| (stage.name.as_str(), stage.status, stage.jobs.len()))
+        .collect();
+    assert_eq!(
+        stages,
+        [
+            ("build", CiStatus::Success, 1),
+            ("test", CiStatus::Running, 2),
+            ("deploy", CiStatus::Manual, 1)
+        ]
+    );
+    let lint = &details.stages[1].jobs[1];
+    assert_eq!((lint.status, lint.allow_failure), (CiStatus::Failed, true));
+    assert_eq!(details.stages[0].jobs[0].duration, Some(42));
+    assert!(details.stages[2].jobs[0].manual);
+    assert_eq!(
+        details.stages[0].jobs[0].url.as_deref(),
+        Some(format!("http://{}/team/sub/tool/-/jobs/compile", fake.address()).as_str())
+    );
+    // One that isn't there says so.
+    assert!(matches!(
+        pipeline_details(&account, &project, 999, &CancelToken::new()),
+        Err(ForgeError::NotFound { .. })
+    ));
 }

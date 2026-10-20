@@ -17,8 +17,8 @@ use std::sync::Arc;
 use egit_forge::testing::{FakeForge, FakePull, FakeRepository};
 use egit_forge::{
     Account, CheckState, ForgeError, ForgeHost, ForgeKind, ForgeRepository, NewPullRequest,
-    ReviewDecision, ReviewState, create_pull_request, pull_request_details, pull_requests,
-    repository_info,
+    ReviewDecision, ReviewState, create_pull_request, pipeline_details, pipelines,
+    pull_request_details, pull_requests, repository_info,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -34,6 +34,7 @@ fn setup(pulls: u32, token: &str) -> (FakeForge, Sandbox, Account, ForgeReposito
         id: 1,
         default_branch: "main".to_owned(),
         parent: Some("upstream/tool".to_owned()),
+        pipelines: Vec::new(),
         pulls: (0..pulls)
             .rev()
             .map(|number| FakePull {
@@ -274,4 +275,20 @@ fn signing_in_asks_the_user_and_has_the_helper_keep_what_worked() {
     );
     let kept = std::fs::read_to_string(sandbox.path("credentials")).unwrap();
     assert!(kept.contains("ada:t0ken@127.0.0.1"), "{kept}");
+}
+
+#[test]
+fn a_github_repository_has_no_pipelines_and_nothing_is_asked() {
+    let (fake, _sandbox, account, repository) = setup(0, TOKEN);
+    let mut pages = 0;
+    pipelines(&account, &repository, 500, &CancelToken::new(), |_| {
+        pages += 1;
+    })
+    .unwrap();
+    assert_eq!(pages, 0);
+    assert!(matches!(
+        pipeline_details(&account, &repository, 1, &CancelToken::new()),
+        Err(ForgeError::NotFound { .. })
+    ));
+    assert!(fake.state().requests.is_empty());
 }

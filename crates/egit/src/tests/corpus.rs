@@ -1053,6 +1053,7 @@ fn on_forge(sandbox: &Sandbox, fake: &FakeForge) -> std::path::PathBuf {
         id: 1,
         default_branch: "main".to_owned(),
         parent: None,
+        pipelines: Vec::new(),
         pulls,
     });
     repo
