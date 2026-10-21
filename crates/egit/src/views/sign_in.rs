@@ -4,15 +4,18 @@
 //! is signed in with), and paste it. Checked with the host, which says
 //! whose it is, it is kept by git's credential helper, where git finds it for the host's HTTPS
 //! remotes too. Or, for those whose credential helper signs in itself (Git Credential Manager,
-//! in the browser), through it. Once signed in, who it is, and whether it lasts past this run.
+//! in the browser), through it. Once signed in, who it is, and whether it lasts past this run:
+//! where no helper keeps it, the helpers installed to keep it with ([`keep_choices`], which
+//! Profile's credentials offer too).
 
 use std::time::{Duration, Instant};
 
 use egit_forge::{ForgeHost, ForgeKind};
-use egui::{Id, Key, Modal, RichText, Ui};
+use egit_git::Git;
+use egui::{Id, Key, Modal, RichText, Ui, UiBuilder};
 
 use crate::app::Action;
-use crate::sign_ins::{SignInDialog, SignIns};
+use crate::sign_ins::{Keeping, SignInDialog, SignIns};
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
@@ -32,8 +35,19 @@ pub(crate) const fn what_is_read(kind: ForgeKind) -> &'static str {
     }
 }
 
-/// The dialog, while it is open.
-pub(crate) fn show(ctx: &egui::Context, sign_ins: &mut SignIns, actions: &mut Vec<Action>) {
+/// The dialog, while it is open; `git`, the user's (for the helpers to keep a sign-in with).
+pub(crate) fn show(
+    ctx: &egui::Context,
+    sign_ins: &mut SignIns,
+    git: Option<&Git>,
+    actions: &mut Vec<Action>,
+) {
+    // Where nothing keeps the sign-in, the helpers that could (looked for only then).
+    let unkept = sign_ins
+        .dialog
+        .as_ref()
+        .is_some_and(|dialog| dialog.signed.as_ref().is_some_and(|(_, kept)| !kept));
+    let keeping = git.filter(|_| unkept).map(|git| sign_ins.keeping(git));
     let Some(dialog) = &mut sign_ins.dialog else {
         return;
     };
@@ -45,7 +59,7 @@ pub(crate) fn show(ctx: &egui::Context, sign_ins: &mut SignIns, actions: &mut Ve
         .inner_margin(egui::Margin::same(20));
     let shown = Modal::new(Id::new("sign-in")).frame(frame).show(ctx, |ui| {
         ui.set_width(520.0);
-        fill(ui, dialog, actions)
+        fill(ui, dialog, keeping.as_ref(), actions)
     });
     // Escape or a click outside closes it, but not while the host is being asked.
     let closing = shown.inner || (shown.should_close() && !dialog.signing.is_pending());
@@ -54,8 +68,14 @@ pub(crate) fn show(ctx: &egui::Context, sign_ins: &mut SignIns, actions: &mut Ve
     }
 }
 
-/// The dialog's contents; returns whether it should close.
-fn fill(ui: &mut Ui, dialog: &mut SignInDialog, actions: &mut Vec<Action>) -> bool {
+/// The dialog's contents (`keeping`: the helpers to keep a sign-in with, where none does);
+/// returns whether it should close.
+fn fill(
+    ui: &mut Ui,
+    dialog: &mut SignInDialog,
+    keeping: Option<&Keeping>,
+    actions: &mut Vec<Action>,
+) -> bool {
     let palette = Palette::of(ui.ctx());
     let host = dialog.host.clone();
     let kind = host.kind();
@@ -63,7 +83,7 @@ fn fill(ui: &mut Ui, dialog: &mut SignInDialog, actions: &mut Vec<Action>) -> bo
     ui.label(muted(ui, host.name()));
     ui.add_space(8.0);
     if let Some((login, kept)) = dialog.signed.clone() {
-        return signed(ui, palette, &host, (&login, kept));
+        return signed(ui, palette, &host, (&login, kept), keeping, actions);
     }
     ui.add(
         egui::Label::new(format!(
@@ -232,9 +252,16 @@ fn step(ui: &mut Ui, number: &str, title: &str, add: impl FnOnce(&mut Ui)) {
     });
 }
 
-/// Signed in: whose it is, whether it lasts past this run, and Done; returns whether Done was
-/// clicked.
-fn signed(ui: &mut Ui, palette: Palette, host: &ForgeHost, (login, kept): (&str, bool)) -> bool {
+/// Signed in: whose it is, whether it lasts past this run (the helpers to keep it with, where
+/// it doesn't), and Done; returns whether Done was clicked.
+fn signed(
+    ui: &mut Ui,
+    palette: Palette,
+    host: &ForgeHost,
+    (login, kept): (&str, bool),
+    keeping: Option<&Keeping>,
+    actions: &mut Vec<Action>,
+) -> bool {
     ui.label(
         RichText::new(format!(
             "{}  Signed in to {} as {login}.",
@@ -253,19 +280,107 @@ fn signed(ui: &mut Ui, palette: Palette, host: &ForgeHost, (login, kept): (&str,
         .wrap(),
     );
     if !kept {
-        ui.add_space(8.0);
-        ui.add(
-            egui::Label::new(
-                RichText::new(format!(
-                    "{}  No credential helper keeps it: egit is signed in until it quits. Set \
-                     one up (Profile, Credentials) to stay signed in.",
-                    icon::WARNING
-                ))
-                .color(palette.warn),
-            )
-            .wrap(),
-        );
+        let done = keeping.is_some_and(Keeping::went_well);
+        if !done {
+            ui.add_space(8.0);
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!(
+                        "{}  No credential helper keeps it: egit is signed in until it quits. \
+                         Keep it with one of these, and it stays signed in:",
+                        icon::WARNING
+                    ))
+                    .color(palette.warn),
+                )
+                .wrap(),
+            );
+        }
+        if let Some(keeping) = keeping {
+            ui.add_space(6.0);
+            keep_choices(ui, Id::new("sign-in-keep"), keeping, actions);
+        }
     }
     ui.add_space(12.0);
-    widgets::primary(ui, true, "Done").clicked()
+    let setting_up = keeping.is_some_and(|keeping| keeping.setting_up.is_some());
+    widgets::primary(ui, !setting_up, "Done").clicked()
+}
+
+/// Keeping sign-ins past this run, in a `Ui` of its own `id`: a button for each credential
+/// helper installed that egit can set up (the safest first, where each keeps them on hover),
+/// the one being set up, and how the last went (the buttons gone once it went well).
+pub(crate) fn keep_choices(ui: &mut Ui, id: Id, keeping: &Keeping, actions: &mut Vec<Action>) {
+    let palette = Palette::of(ui.ctx());
+    ui.scope_builder(UiBuilder::new().id(id), |ui| {
+        if let Some(words) = keeping.setting_up {
+            widgets::working(ui, &format!("Setting up {words}…"));
+            return;
+        }
+        match &keeping.kept {
+            Some((words, Ok((kept, of)))) => {
+                let (text, color) = if *of == 0 {
+                    (
+                        format!(
+                            "{}  {words} is set up: git keeps what you sign in with from now on.",
+                            icon::CHECK_CIRCLE
+                        ),
+                        palette.ok,
+                    )
+                } else if kept == of {
+                    (
+                        format!(
+                            "{}  {words} keeps {} now: egit stays signed in after it quits.",
+                            icon::CHECK_CIRCLE,
+                            if *of == 1 { "it" } else { "them" }
+                        ),
+                        palette.ok,
+                    )
+                } else {
+                    (
+                        format!(
+                            "{}  {words} is set up, but didn't give the token back: egit stays \
+                             signed in only until it quits.",
+                            icon::WARNING
+                        ),
+                        palette.warn,
+                    )
+                };
+                ui.add(egui::Label::new(RichText::new(text).color(color)).wrap());
+                if kept == of {
+                    return;
+                }
+                ui.add_space(6.0);
+            }
+            Some((_, Err(problem))) => {
+                widgets::problem_box(ui, problem, |_| {});
+                ui.add_space(6.0);
+            }
+            None => {}
+        }
+        let Some(keepers) = &keeping.keepers else {
+            widgets::working(ui, "Looking for credential helpers…");
+            return;
+        };
+        if keepers.is_empty() {
+            ui.add(
+                egui::Label::new(muted(
+                    ui,
+                    "None that egit can set up is installed. Git Credential Manager keeps \
+                     credentials encrypted on every system; your distribution's git may package \
+                     libsecret's helper apart.",
+                ))
+                .wrap(),
+            );
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            for keeper in keepers {
+                if widgets::secondary(ui, true, keeper.words)
+                    .on_hover_text(keeper.about)
+                    .clicked()
+                {
+                    actions.push(Action::KeepWith(*keeper));
+                }
+            }
+        });
+    });
 }

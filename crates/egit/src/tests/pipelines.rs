@@ -8,7 +8,7 @@ use egit_forge::ForgeKind;
 use egit_forge::testing::{FakeForge, FakeJob, FakePipeline};
 use egit_git::testing::Sandbox;
 use egui::accesskit::Role;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use super::screens::{
     commit_of, forge_clone, harness, history_of, open_path, profile_loaded, pull_requests_read,
@@ -163,4 +163,56 @@ fn each_commit_s_pipeline_is_marked_and_shown_down_to_its_jobs() {
     harness.key_press(egui::Key::Escape);
     harness.run_steps(2);
     assert!(!shows(&harness, "unit: failed"));
+}
+
+#[test]
+fn pipelines_that_can_t_be_read_say_why_until_they_can() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    let head = commit_of(&sandbox, &work, "HEAD");
+    fake.state().repositories[0].pipelines = vec![pipeline(9_001, &head, "SUCCESS", "SUCCESS")];
+    // GitLab's words when an account may not read them.
+    let refusal = "The resource that you are attempting to access does not exist or you don't \
+                   have permission to perform this action";
+    fake.state().pipelines_refused = Some(refusal.to_owned());
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    settle(&mut harness, "the merge requests", pull_requests_read(2));
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+    // Under the commit table: why.
+    settle(&mut harness, "the pipelines' problem", |app| {
+        app.state.repos[0].forge.pipelines_problem().is_some()
+    });
+    harness.run_steps(2);
+    let shown = "The pipelines couldn't be read";
+    let why = harness
+        .get_by_label_contains(shown)
+        .accesskit_node()
+        .value()
+        .unwrap_or_default();
+    assert!(why.contains("you don't have permission"), "{why}");
+    render(&mut harness, "pipelines-unread");
+
+    // Dismissed, it goes; read once it can be, the mark shows.
+    harness
+        .get_by_role_and_label(Role::Button, "Dismiss")
+        .click();
+    harness.run_steps(2);
+    assert!(harness.query_by_label_contains(shown).is_none());
+    fake.state().pipelines_refused = None;
+    harness.state_mut().state.repos[0]
+        .forge
+        .read_pipelines_now();
+    wait_for_label(&mut harness, "Pipeline #9001: passed");
+    assert!(
+        harness.state().state.repos[0]
+            .forge
+            .pipelines_problem()
+            .is_none()
+    );
 }

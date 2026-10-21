@@ -383,8 +383,11 @@ fn the_profile_shows_where_settings_come_from_and_saves_edits() {
         "the name and email should say where they're set"
     );
     harness.get_by_label(
-        "No credential helper: git asks for passwords each time, and egit relays the question.",
+        "No credential helper: git asks for passwords each time, and egit relays the question; \
+         a sign-in to GitHub or GitLab lasts until egit quits. Set one up to keep them:",
     );
+    // The helpers git has, offered to set up.
+    wait_for_label(&mut harness, "In a file, unencrypted (store)");
     render(&mut harness, "profile");
 
     let name = harness.get_all_by_role(Role::TextInput).next().unwrap();

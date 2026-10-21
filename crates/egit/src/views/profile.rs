@@ -220,7 +220,17 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
             &mut state.actions,
         );
         ui.add_space(12.0);
-        credentials_card(ui, &snapshot, home.as_deref());
+        // Where no helper is set up, the ones installed that could be.
+        let keeping = git
+            .as_ref()
+            .filter(|_| snapshot.profile().credential_helpers().is_empty())
+            .map(|git| state.sign_ins.keeping(git));
+        credentials_card(
+            ui,
+            (&snapshot, keeping.as_ref()),
+            home.as_deref(),
+            &mut state.actions,
+        );
         ui.add_space(12.0);
         pull_push_card(ui, &snapshot, home.as_deref());
         ui.add_space(12.0);
@@ -400,17 +410,36 @@ fn save_row(ui: &mut Ui, view: &mut ProfileView, actions: &mut Vec<Action>) {
     }
 }
 
-fn credentials_card(ui: &mut Ui, snapshot: &ConfigSnapshot, home: Option<&Path>) {
+/// The credential helpers git asks (`keeping`: where none is set up, those that could be).
+fn credentials_card(
+    ui: &mut Ui,
+    (snapshot, keeping): (&ConfigSnapshot, Option<&crate::sign_ins::Keeping>),
+    home: Option<&Path>,
+    actions: &mut Vec<Action>,
+) {
     let profile = snapshot.profile();
     widgets::card(ui, |ui| {
         widgets::heading(ui, "Credentials");
         let helpers = profile.credential_helpers();
         if helpers.is_empty() {
-            ui.label(muted(
-                ui,
-                "No credential helper: git asks for passwords each time, and egit relays the \
-                 question.",
-            ));
+            ui.add(
+                egui::Label::new(muted(
+                    ui,
+                    "No credential helper: git asks for passwords each time, and egit relays the \
+                     question; a sign-in to GitHub or GitLab lasts until egit quits. Set one up \
+                     to keep them:",
+                ))
+                .wrap(),
+            );
+            if let Some(keeping) = keeping {
+                ui.add_space(6.0);
+                crate::views::sign_in::keep_choices(
+                    ui,
+                    egui::Id::new("profile-keep"),
+                    keeping,
+                    actions,
+                );
+            }
         }
         Grid::new("profile-credentials")
             .num_columns(3)

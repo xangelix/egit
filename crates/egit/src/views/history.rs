@@ -210,6 +210,9 @@ pub(crate) struct HistoryView {
     dropped: Option<Dropped>,
     /// What the submodules' banner said when dismissed: it shows again when that changes.
     submodules_dismissed: Option<crate::submodules::OutOfStep>,
+    /// Why the pipelines couldn't be read, when that notice was dismissed: it shows again for
+    /// another reason.
+    pipelines_dismissed: Option<String>,
     /// Commits picked together, for what acts on several.
     picked: Picked,
     /// Two of them compared, in the details' place.
@@ -420,6 +423,7 @@ impl HistoryView {
             work_counts: WorkCounts::default(),
             dropped: None,
             submodules_dismissed: None,
+            pipelines_dismissed: None,
             picked: Picked::default(),
             compare: None,
             picked_asked: None,
@@ -1117,7 +1121,14 @@ fn notices_panel(
 ) {
     let outcome = tasks::has_outcome(&mut view.tasks, pane);
     let brought = tasks::has_brought(pane);
-    if !outcome && !brought {
+    // Not for wanting a sign-in, which the top bar and the banner offer.
+    let pipelines = shared
+        .forge
+        .pipelines_problem()
+        .filter(|_| shared.forge.needs_sign_in().is_none())
+        .map(ToString::to_string)
+        .filter(|why| view.pipelines_dismissed.as_ref() != Some(why));
+    if !outcome && !brought && pipelines.is_none() {
         return;
     }
     egui::Panel::bottom(Id::new(("history-notices", shared.id)))
@@ -1130,6 +1141,14 @@ fn notices_panel(
             }
             let event = tasks::brought(ui, pane);
             task_event(event, history, view);
+            if let Some(why) = pipelines {
+                if outcome || brought {
+                    ui.add_space(6.0);
+                }
+                if super::pipeline::unread(ui, shared.id, &why) {
+                    view.pipelines_dismissed = Some(why);
+                }
+            }
         });
 }
 

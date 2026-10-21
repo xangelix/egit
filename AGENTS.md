@@ -683,8 +683,11 @@ writes paths), never `OsStrExt`.
     A `Credential` is wiped when dropped; `Credential::given` makes one of a secret the user
     gave (a token pasted), as `fill` would. `store_credential` hands a secret of egit's (an
     agent's API key, under its account's name) to the helpers as approved, `erase_credential`
-    has them forget a place's. `tests/credential.rs` fills, rejects, and approves through a
-    sandbox's `store` helper, and stores two users' secrets for one host, erasing one.
+    has them forget a place's. `installed_helpers`: which of some helpers are installed
+    (`git-credential-<name>` in git's `--exec-path` or on `PATH`; `.exe` on Windows), for egit
+    to offer setting one up. `tests/credential.rs` fills, rejects, and approves through a
+    sandbox's `store` helper, stores two users' secrets for one host, erasing one, and finds
+    git's own helpers.
   - `reflog.rs` — `reflog`: a ref's moves (`HEAD`, or a full name; never an option), newest
     first, at most a limit (`log --walk-reflogs -z --date=unix`, so `%gd` carries the time):
     each `ReflogEntry`'s place, commit, time, what moved it (`%gs`), and subject; none when
@@ -759,7 +762,8 @@ writes paths), never `OsStrExt`.
     a fork's `head` repository, …). `answer.rs` — answers read alike: GraphQL data or errors,
     REST JSON, rate limits (by either forge's headers, or `RATE_LIMITED`) saying when they
     reset, `NOT_FOUND`, refusals with either forge's reasons (GitHub's validation messages,
-    GitLab's `message` as a sentence, list, or fields); `parse_time`.
+    GitLab's `message` as a sentence, list, or fields), a query's other errors as what the host
+    said (`ForgeError::Said`: GraphQL answers them with HTTP 200); `parse_time`.
   - `github.rs` — GitHub: GraphQL for pull requests, details (checks one by one, latest
     reviews), and the repository; REST for opening one (`owner:branch` from a fork).
     `gitlab.rs` — GitLab: GraphQL (`project(fullPath:)`) for merge requests (`state: opened,
@@ -792,8 +796,8 @@ writes paths), never `OsStrExt`.
     passed, failed, under way, paused (waiting for someone or its time), cancelled or skipped.
   - `testing.rs` (feature `testing`) — `FakeForge`: either forge's API on the loopback address
     (pages, details, repository, who is signed in, opening; GitLab's pipelines, `FakePipeline`
-    and `FakeJob`, a page or one whole; the bearer token checked; a rate limit to switch on;
-    requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
+    and `FakeJob`, a page or one whole, or refused with GitLab's words, `pipelines_refused`; the
+    bearer token checked; a rate limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
     signed in through a sandbox's `store` helper (and an askpass script): pipelines a page at a
     time and one whole (stages in order, jobs, pages), and none asked of GitHub.
 - `crates/egit-agents` — agents working in a repository beside egit: Claude Code, driven
@@ -1057,7 +1061,20 @@ writes paths), never `OsStrExt`.
     went), who is signed in to each host (`who`, asked once each in a job), signing out; `poll`
     hands what finished (`Landed`) to the window, which passes a sign-in to every open
     repository's account for the host (`RepoForge::signed_in`), or a sign-out
-    (`signed_out`). `Action::SignIn` (from a repository's banner, top bar, sidebar, or
+    (`signed_out`). A sign-in is kept for the run too (`SessionSignIns`, by host, shared with
+    every `RepoForge`), so a repository opened later, or whose remotes are worked out again,
+    adopts it into the account it makes for the host, whether or not a helper keeps it.
+    Keeping one past the run where no helper does: the helpers installed that egit can set up
+    (`KEEPERS`: libsecret, the macOS keychain, Git Credential Manager, Windows' Credential
+    Manager, `cache` for a day, `store` (unencrypted, said so); found once by
+    `installed_helpers`, `keeping`), one chosen (`Action::KeepWith`, `keep_with`) added to the
+    user's `credential.helper` under the user's `WriteLock`, the run's sign-ins approved to it
+    and filled back to count those it keeps; landed (`Landed::Kept`), the user's and every
+    repository's settings are read again. `views/sign_in.rs`'s `keep_choices` offers them, in
+    the dialog once signed in where nothing keeps it, and in Profile's Credentials where no
+    helper is set up: a button each (where it keeps them on hover), "Setting up …", then how it
+    went ("… keeps it now", set up but not giving the token back, or the problem).
+    `Action::SignIn` (from a repository's banner, top bar, sidebar, or
     requests' card: its account; from Profile: the user's) and `Action::SignOut`. The banner
     under a repository's top bar (`views/history.rs`'s `sign_in_banner`: what signing in shows,
     Sign in…, and Not now, which hides it for that host from then on, kept in egui's memory).
@@ -1069,7 +1086,11 @@ writes paths), never `OsStrExt`.
     (20 s) and merged in. `Marks`: each commit's latest (`CiMark`: its project's place and the
     `Pipeline`), of any project, sorted by commit (a binary search a row); a read takes over
     only once complete, one that fails keeping what is shown (a host needing a sign-in or rate
-    limited skipped for its other projects).
+    limited skipped for its other projects) and its reason (`problem`, until a read goes
+    through), which a notice under the commit table says (`views/pipeline.rs`'s `unread`: the
+    reason, cut to its line, whole on hover; Dismiss, until the reason changes; not while the
+    host wants a sign-in, which the top bar offers). A project whose pipelines the account
+    can't see, or with CI/CD off, has none: GitLab answers `pipelines: null`, no error.
   - `stats.rs` — a history's statistics, for its Stats page: `read_stats` reads every row's
     commit once, through gitoxide on up to 8 threads a block of rows at a time (else one
     `cat-file`), each thread parsing headers into compact `Read`s (an author line's FNV-1a
@@ -2221,12 +2242,16 @@ writes paths), never `OsStrExt`.
     link, the button keeping its place), refusing a
     mistyped token (the helper's file untouched), taking the right one (kept under its login),
     the merge requests read at once; Profile saying who (rendered) and signing out (forgotten,
-    offered again); and Not now hiding the banner, the top bar's way staying.
+    offered again); and Not now hiding the banner, the top bar's way staying; and with no
+    helper anywhere, signed in all the same (the helpers installed offered; rendered), a
+    repository opened after reading its merge requests with it, and `store` chosen in
+    Profile's Credentials: set up globally, the token kept in `~/.git-credentials`.
     `src/tests/pipelines.rs` serves a fake GitLab's pipelines: each commit's latest marked (an
     older one of the same commit not), the mark following its pipeline as it finishes (read
     again at once: `read_pipelines_now`), its page (stages in order, jobs and their words, "may
     fail"; rendered), a job opening its page (recorded), Show the commit selecting it, and
-    Escape closing the page.
+    Escape closing the page; and pipelines GitLab refuses: the notice under the commit table
+    with its words (rendered), dismissed, then the mark once they can be read.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,

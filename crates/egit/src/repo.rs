@@ -151,11 +151,13 @@ pub(crate) struct RepoTab {
 
 impl RepoTab {
     /// A tab for `repository`, read with `git` (`here`: this computer's, when that is another
-    /// computer's), starting to read its state and to watch it (waking `ctx` when it changes).
+    /// computer's; `session`, the sign-ins to forges made this run), starting to read its state
+    /// and to watch it (waking `ctx` when it changes).
     pub(crate) fn new(
         id: RepoId,
         repository: Repository,
         (git, here): (&Git, Option<&Git>),
+        session: crate::sign_ins::SessionSignIns,
         ctx: &egui::Context,
     ) -> Self {
         let name = repository.work_tree().file_name().map_or_else(
@@ -200,7 +202,7 @@ impl RepoTab {
             commit_cancel: CancelToken::new(),
             hooks: Bind::new(true),
             journal: Journal::default(),
-            forge: RepoForge::new(ctx, here.cloned()),
+            forge: RepoForge::new(ctx, here.cloned(), session),
             forge_config: None,
             forge_fetches: 0,
             panel: RepoPanel::History,

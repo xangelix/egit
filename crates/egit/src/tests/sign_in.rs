@@ -3,7 +3,9 @@
 //! token's page (or copies its link), refuses a mistyped token (the helper forgetting nothing), takes the right one
 //! (kept by the helper under its login), and the merge requests are read with it at once;
 //! Profile says who is signed in, and signs out (the helper forgets it, and the repository
-//! offers to sign in again). Not now hides the banner, the top bar's button staying.
+//! offers to sign in again). Not now hides the banner, the top bar's button staying. Where no
+//! helper keeps it, the sign-in holds for a repository opened after it too, and the helpers
+//! installed are offered: one chosen (from Profile's credentials) is set up and keeps it.
 
 use egit_forge::ForgeKind;
 use egit_forge::testing::FakeForge;
@@ -15,7 +17,8 @@ use super::screens::{
     forge_clone, harness, history_of, into_view, open_path, profile_loaded, pull_requests_read,
     render, settle, type_into, wait_for_label,
 };
-use crate::app::EgitApp;
+use crate::app::{Action, EgitApp};
+use crate::settings::Location;
 use crate::theme::icon;
 
 const TOKEN: &str = "glpat-t0ken";
@@ -188,4 +191,94 @@ fn not_now_hides_the_banner_and_leaves_the_top_bar_s_way() {
     // The top bar's way stays, and opens the dialog.
     harness.get_by_label("Sign in to GitLab").click();
     wait_for_label(&mut harness, "Paste it here");
+}
+
+#[test]
+fn a_sign_in_nothing_keeps_holds_everywhere_until_a_helper_is_set_up() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    // No credential helper anywhere: nothing keeps a sign-in.
+    sandbox
+        .run(&work, "config", &["--unset", "credential.helper"])
+        .unwrap();
+    // A second clone of the same project, opened later.
+    let second = sandbox.path("second");
+    sandbox
+        .run(
+            sandbox.home(),
+            "clone",
+            &["--quiet", work.to_str().unwrap(), second.to_str().unwrap()],
+        )
+        .unwrap();
+    let url = format!("http://{}/team/sub/tool.git", fake.address());
+    let bare = sandbox.path("origin.git");
+    let rewrite = format!("url.file://{}.insteadOf", bare.to_str().unwrap());
+    sandbox
+        .run(&second, "remote", &["set-url", "origin", &url])
+        .unwrap();
+    sandbox
+        .run(&second, "config", &[rewrite.as_str(), url.as_str()])
+        .unwrap();
+    sandbox
+        .run(&second, "config", &["egit.gitlabHost", &fake.host_entry()])
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    settle(&mut harness, "nobody signed in", wanting_sign_in(true));
+
+    // Signed in, but nothing keeps it: the helpers installed are offered.
+    harness.get_by_label("Sign in…").click();
+    wait_for_label(&mut harness, "Paste it here");
+    type_into(&mut harness, Role::PasswordInput, "Token", TOKEN);
+    click_lowest(&harness, "Sign in");
+    wait_for_label(&mut harness, "In a file, unencrypted (store)");
+    assert!(shows(&harness, "In memory, for a day (cache)"));
+    render(&mut harness, "sign-in-unkept");
+    harness.get_by_label("Done").click();
+    settle(&mut harness, "the merge requests", pull_requests_read(2));
+
+    // A repository opened after it reads with it too.
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(Action::Open(Location::here(second)));
+    settle(&mut harness, "the second's merge requests", |app| {
+        app.state.repos.get(1).is_some_and(|repo| {
+            !repo.forge.is_reading()
+                && repo.forge.needs_sign_in().is_none()
+                && repo.forge.found().pulls.len() == 2
+        })
+    });
+
+    // Profile's credentials offer the same: store set up, it keeps the sign-in.
+    harness.state_mut().state.actions.push(Action::ShowProfile);
+    wait_for_label(&mut harness, "In a file, unencrypted (store)");
+    into_view(&mut harness, "In a file, unencrypted (store)");
+    harness
+        .get_by_role_and_label(Role::Button, "In a file, unencrypted (store)")
+        .click();
+    wait_for_label(
+        &mut harness,
+        &format!(
+            "{}  In a file, unencrypted (store) keeps it now: egit stays signed in after it \
+             quits.",
+            icon::CHECK_CIRCLE
+        ),
+    );
+    let kept = std::fs::read_to_string(sandbox.home().join(".git-credentials")).unwrap();
+    assert!(kept.contains(&format!("ada:{TOKEN}@")), "{kept}");
+    let helpers = sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "--get-all", "credential.helper"],
+        )
+        .unwrap();
+    assert_eq!(String::from_utf8(helpers.stdout).unwrap().trim(), "store");
+    // Profile then lists it.
+    wait_for_label(&mut harness, "store");
 }

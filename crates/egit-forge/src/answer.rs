@@ -42,9 +42,8 @@ pub(crate) fn graphql<T: DeserializeOwned>(
                 host,
                 message: error.message.clone(),
             },
-            _ => ForgeError::Status {
+            _ => ForgeError::Said {
                 host,
-                status: 200,
                 message: error.message.clone(),
             },
         });

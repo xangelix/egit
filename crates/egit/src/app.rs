@@ -195,6 +195,9 @@ pub(crate) enum Action {
     },
     /// Sign out of a forge's host: git's helpers forget its credential.
     SignOut(egit_forge::ForgeHost),
+    /// Set a credential helper up in the user's configuration, and have it keep this run's
+    /// sign-ins.
+    KeepWith(crate::sign_ins::Keeper),
     /// Read a repository's pull requests again.
     RefreshPullRequests(RepoId),
     /// Open a web page in the user's browser.
@@ -463,6 +466,11 @@ impl EgitApp {
                     state.sign_ins.sign_out(&git, host);
                 }
             }
+            Action::KeepWith(keeper) => {
+                if let Some(git) = state.git() {
+                    state.sign_ins.keep_with(&git, &state.user_writes, keeper);
+                }
+            }
             Action::RefreshPullRequests(id) => {
                 if let Some(repo) = state.repo_mut(id) {
                     repo.forge.refresh();
@@ -522,7 +530,8 @@ impl EgitApp {
         state.next_repo = state.next_repo.wrapping_add(1);
         // On another computer, its forge's sign-ins are this computer's.
         let here = state.git.ok_ref().filter(|_| !git.host().is_local());
-        let mut tab = RepoTab::new(id, repository, (git, here), ctx);
+        let session = std::sync::Arc::clone(&state.sign_ins.session);
+        let mut tab = RepoTab::new(id, repository, (git, here), session, ctx);
         tab.prefer(state.settings.preferences, Instant::now());
         state.repos.push(tab);
         tabs::show(&mut self.tabs, Pane::Repo(id));
@@ -613,6 +622,16 @@ impl AppState {
             Some(crate::sign_ins::Landed::Out(host)) => {
                 for repo in &mut self.repos {
                     repo.forge.signed_out(&host);
+                }
+            }
+            // Profile shows the helper, and each repository's settings their new origin.
+            Some(crate::sign_ins::Landed::Kept) => {
+                if let Some(git) = self.git() {
+                    self.refresh_user_config(&git);
+                    for repo in &mut self.repos {
+                        let git = repo.git.clone();
+                        repo.refresh_config(&git);
+                    }
                 }
             }
             None => {}
@@ -966,7 +985,13 @@ impl eframe::App for EgitApp {
         if let Some(command) = palette::show(ui.ctx(), &mut self.state.palette) {
             self.run(command);
         }
-        crate::views::sign_in::show(ui.ctx(), &mut self.state.sign_ins, &mut self.state.actions);
+        let git = self.state.git();
+        crate::views::sign_in::show(
+            ui.ctx(),
+            &mut self.state.sign_ins,
+            git.as_ref(),
+            &mut self.state.actions,
+        );
         self.state.prompts.show(ui.ctx());
         crate::help::window(ui.ctx(), &mut self.state.help);
         self.apply_actions(ui.ctx());

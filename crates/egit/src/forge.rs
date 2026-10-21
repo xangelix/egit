@@ -161,6 +161,8 @@ pub(crate) struct RepoForge {
     waker: egui::Context,
     /// GitLab's pipelines: each commit's latest.
     ci: Pipelines,
+    /// The sign-ins made this run, which its accounts take as they are made.
+    session: crate::sign_ins::SessionSignIns,
     /// For a repository on another computer, this computer's git: it is this computer that
     /// reaches the forge, so its helpers keep the sign-ins, under the user's configuration
     /// here (and its prompts are relayed to the window, which those there aren't).
@@ -169,8 +171,12 @@ pub(crate) struct RepoForge {
 
 impl RepoForge {
     /// A repository's forge, nothing known yet; `here` is this computer's git for a repository
-    /// on another computer.
-    pub(crate) fn new(waker: &egui::Context, here: Option<Git>) -> Self {
+    /// on another computer; `session`, the sign-ins made this run.
+    pub(crate) fn new(
+        waker: &egui::Context,
+        here: Option<Git>,
+        session: crate::sign_ins::SessionSignIns,
+    ) -> Self {
         Self {
             resolving: Bind::new(true),
             remotes: Arc::from([]),
@@ -185,6 +191,7 @@ impl RepoForge {
             generation: 0,
             waker: waker.clone(),
             ci: Pipelines::new(waker),
+            session,
             here,
         }
     }
@@ -344,6 +351,11 @@ impl RepoForge {
         self.ci.read_newest_now();
     }
 
+    /// Why the pipelines couldn't be read, when the last read failed.
+    pub(crate) const fn pipelines_problem(&self) -> Option<&Problem> {
+        self.ci.problem()
+    }
+
     /// Whether any commit ran a pipeline (the commit table keeps room for a mark on each row).
     pub(crate) fn has_pipelines(&self) -> bool {
         self.ci.any()
@@ -487,10 +499,15 @@ impl RepoForge {
                 continue;
             }
             let account = self.account(host).unwrap_or_else(|| {
-                Arc::new(self.here.as_ref().map_or_else(
+                let account = Arc::new(self.here.as_ref().map_or_else(
                     || Account::new(git.clone(), Some(Arc::clone(repository)), host.clone()),
                     |here| Account::new(here.clone(), None, host.clone()),
-                ))
+                ));
+                // Signed in this run already: whether or not a helper keeps it.
+                if let Some((_, signed)) = self.session.lock().get(host.name()) {
+                    account.adopt(signed);
+                }
+                account
             });
             accounts.push(account);
         }

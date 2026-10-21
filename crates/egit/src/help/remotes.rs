@@ -760,6 +760,39 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "credential-keepers",
+        group: Group::Remotes,
+        title: "Keeping sign-ins",
+        on: &[
+            "The system keychain (libsecret)",
+            "The macOS keychain",
+            "Git Credential Manager",
+            "Windows' Credential Manager",
+            "In memory, for a day (cache)",
+            "In a file, unencrypted (store)",
+        ],
+        what: "Where no credential helper is set up, a sign-in to GitHub or GitLab lasts until \
+               egit quits, and git asks for HTTPS passwords every time. egit offers the helpers \
+               installed with git: the one chosen is added to your global configuration \
+               (credential.helper), and is handed the run's sign-ins at once, so egit stays \
+               signed in after it quits and git finds them for the hosts' HTTPS remotes too.",
+        git: "git config --global --add credential.helper <helper>; git credential approve",
+        cases: &[
+            (
+                "Which one?",
+                "A keychain (libsecret, the macOS keychain, Windows' Credential Manager, Git Credential Manager) keeps them encrypted, unlocked as you log in. cache holds them in memory for a day; store writes them as plain text to ~/.git-credentials.",
+            ),
+            (
+                "libsecret isn't offered?",
+                "Its helper comes with git on some distributions and apart on others (Debian and Ubuntu ship its source: build it from /usr/share/doc/git/contrib/credential/libsecret).",
+            ),
+            (
+                "Set up, but it didn't give the token back?",
+                "The helper took it and couldn't find it again (a keyring locked, or none running): egit stays signed in until it quits. Choose another.",
+            ),
+        ],
+    },
+    Topic {
         id: "prompt-user",
         group: Group::Remotes,
         title: "A user name is needed",
@@ -931,7 +964,11 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "Not kept past this run?",
-                "No credential helper is set up: egit stays signed in until it quits. Set one up (Profile, Credentials: the system's keychain is best) and sign in again.",
+                "No credential helper is set up: egit stays signed in until it quits, in every repository open meanwhile. The dialog offers the helpers installed (Profile's Credentials too): choose one, and it keeps the token from then on.",
+            ),
+            (
+                "My GitLab (or GitHub Enterprise) is on our own server?",
+                "List its host in Profile, under GitHub and GitLab: only github.com, gitlab.com, and the hosts listed are asked for requests and pipelines.",
             ),
             (
                 "Signed in to the host in another browser?",
@@ -1143,7 +1180,11 @@ pub(super) const TOPICS: &[Topic] = &[
         cases: &[
             (
                 "A commit without a mark?",
-                "No pipeline ran for it among each project's newest 500, or its project isn't a remote here, or you aren't signed in to its GitLab (the merge requests' page offers to).",
+                "No pipeline ran for it among each project's newest 500, or its project isn't a remote here, or you aren't signed in to its GitLab (the top bar offers to). A GitLab on your own server is asked only once Profile lists its host.",
+            ),
+            (
+                "The pipelines couldn't be read?",
+                "The top bar says so where GitLab answered with a problem (a token without the api or read_api scope, CI/CD turned off for the project, GitLab out of reach); the reason shows under the pointer.",
             ),
             (
                 "Several pipelines for one commit?",

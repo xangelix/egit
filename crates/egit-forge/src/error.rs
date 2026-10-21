@@ -53,6 +53,14 @@ pub enum ForgeError {
         /// The host's reason.
         message: String,
     },
+    /// The host's API answered its query with an error (GraphQL's), saying why.
+    #[error("{host} said: {message}")]
+    Said {
+        /// The host.
+        host: String,
+        /// The host's reason.
+        message: String,
+    },
     /// The host couldn't be reached (no network, a proxy, a certificate, a timeout).
     #[error("{host} couldn't be reached: {message}")]
     Network {

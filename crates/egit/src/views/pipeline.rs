@@ -4,6 +4,8 @@
 //! goes: a job opens its page on GitLab, in the browser, for its log and the rest. Read again
 //! every few seconds while it may still change by itself.
 //!
+//! Where the pipelines couldn't be read, a notice under the commit table says why ([`unread`]).
+//!
 //! Every status shows as one of five, by colour and by icon alike (for those who don't tell
 //! the colours apart): passed green, failed red, under way blue, waiting for someone (or for its
 //! time) orange, cancelled or skipped grey.
@@ -13,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use egit_forge::{CiGroup, CiStatus, Job, PipelineDetails, Stage, pipeline_details};
 use egit_git::{CancelToken, ObjectId};
-use egui::{Color32, Frame, Id, Key, Margin, Modifiers, RichText, Sense, Ui};
+use egui::{Align, Color32, Frame, Id, Key, Layout, Margin, Modifiers, RichText, Sense, Ui};
 use egui_async::Bind;
 
 use super::history::Shared;
@@ -589,6 +591,38 @@ fn chip(ui: &mut Ui, text: &str, color: Color32) {
         .show(ui, |ui| {
             ui.add(egui::Label::new(RichText::new(text).size(11.0).color(color)).selectable(false));
         });
+}
+
+/// The notice under the commit table where the pipelines couldn't be read: `why` (cut to its
+/// line, whole on hover), and Dismiss; returns whether it was dismissed.
+pub(super) fn unread(ui: &mut Ui, repo: crate::repo::RepoId, why: &str) -> bool {
+    let palette = Palette::of(ui.ctx());
+    let mut dismissed = false;
+    ui.scope_builder(
+        egui::UiBuilder::new().id(Id::new(("pipelines-unread", repo))),
+        |ui| {
+            Frame::new()
+                .fill(palette.warn.gamma_multiply(0.10))
+                .stroke(egui::Stroke::new(1.0, palette.warn.gamma_multiply(0.6)))
+                .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
+                .inner_margin(Margin::symmetric(12, 2))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    crate::help::note_topic(ui, ui.max_rect(), "pipeline-mark");
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        dismissed = widgets::icon_tool(ui, true, icon::X, "Dismiss").clicked();
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.label(
+                                RichText::new(format!("{}  ", icon::WARNING)).color(palette.warn),
+                            );
+                            ui.add(egui::Label::new(muted(ui, why)).truncate())
+                                .on_hover_text(why);
+                        });
+                    });
+                });
+        },
+    );
+    dismissed
 }
 
 #[cfg(test)]

@@ -94,7 +94,7 @@ pub use conflict::{
 };
 pub use credential::{
     Asking, Credential, CredentialPlace, approve_credential, erase_credential, fill_credential,
-    reject_credential, store_credential,
+    installed_helpers, reject_credential, store_credential,
 };
 pub use diff::{
     DiffLine, DiffLineKind, DiffOptions, FileDiff, Uncommitted, WHOLE_FILE, file_diff,

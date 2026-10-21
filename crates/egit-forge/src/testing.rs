@@ -135,6 +135,9 @@ pub struct FakeState {
     pub repositories: Vec<FakeRepository>,
     /// Whether every request is refused for the rate limit (resetting at 1,700,000,000).
     pub rate_limited: bool,
+    /// The error GitLab gives for a project's pipelines, when it gives one (CI/CD turned off,
+    /// say).
+    pub pipelines_refused: Option<String>,
     /// The requests it received.
     pub requests: Vec<Recorded>,
 }
@@ -554,6 +557,11 @@ fn gitlab_graphql(request: &Recorded, state: &mut FakeState) -> Value {
     }
     let path = variables["path"].as_str().unwrap_or_default().to_owned();
     let login = state.login.clone();
+    if query.starts_with("query Pipeline")
+        && let Some(message) = &state.pipelines_refused
+    {
+        return json!({ "errors": [{ "message": message }], "data": { "project": null } });
+    }
     // GitLab says a project it can't show by giving none.
     let Some(repository) = find(state, &path) else {
         return json!({ "data": { "project": null } });

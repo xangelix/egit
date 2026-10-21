@@ -102,6 +102,8 @@ impl Marks {
 pub(crate) struct Pipelines {
     shown: Arc<Marks>,
     reading: Bind<Arc<Marks>, Problem>,
+    /// Why the last read failed (none of the projects could be read), until one goes through.
+    problem: Option<Problem>,
     /// Whether to read them all again once the read under way ends.
     again: bool,
     /// When the newest are read again (while one shown is under way).
@@ -127,6 +129,7 @@ impl Pipelines {
         Self {
             shown: Arc::default(),
             reading: Bind::new(true),
+            problem: None,
             again: false,
             next: None,
             cancel: CancelToken::new(),
@@ -142,6 +145,11 @@ impl Pipelines {
     /// Whether any commit has one (the commit table then keeps room for a mark on every row).
     pub(crate) fn any(&self) -> bool {
         self.shown.len() > 0
+    }
+
+    /// Why the pipelines couldn't be read, when the last read failed.
+    pub(crate) const fn problem(&self) -> Option<&Problem> {
+        self.problem.as_ref()
     }
 
     /// Reads the newest again at the next poll, as it would every [`EVERY`] while one shown is
@@ -161,6 +169,7 @@ impl Pipelines {
         self.cancel = CancelToken::new();
         self.reading = Bind::new(true);
         self.shown = Arc::default();
+        self.problem = None;
         self.again = false;
         self.next = None;
         self.start(repositories, accounts, false);
@@ -188,9 +197,13 @@ impl Pipelines {
         let now = Instant::now();
         if self.reading.is_finished() {
             match self.reading.take() {
-                Some(Ok(marks)) => self.shown = marks,
+                Some(Ok(marks)) => {
+                    self.shown = marks;
+                    self.problem = None;
+                }
                 Some(Err(problem)) => {
                     tracing::debug!(%problem, "pipelines unread");
+                    self.problem = Some(problem);
                 }
                 None => {}
             }

@@ -218,6 +218,37 @@ pub fn approve_credential(
         .map(drop)
 }
 
+/// Which of the credential helpers `names` (`libsecret`, `manager`, …) are installed where
+/// `git` runs: those whose program (`git-credential-<name>`) is in git's exec path, or, here,
+/// on `PATH`; in `names`' order.
+///
+/// # Errors
+///
+/// When git can't say where its exec path is.
+pub fn installed_helpers<'n>(git: &Git, names: &[&'n str]) -> Result<Vec<&'n str>, GitError> {
+    let said = git.read("--exec-path").output()?;
+    let exec_path = said.stdout.trim_ascii_end().to_path_lossy().into_owned();
+    let mut folders = vec![exec_path];
+    // Another computer's `PATH` is its login shell's, which egit doesn't read.
+    if matches!(git.host(), crate::Host::Local) {
+        folders.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+    }
+    let suffix = if cfg!(windows) { ".exe" } else { "" };
+    let files = git.files();
+    Ok(names
+        .iter()
+        .copied()
+        .filter(|name| {
+            let program = format!("git-credential-{name}{suffix}");
+            folders
+                .iter()
+                .any(|folder| files.is_file(&folder.join(&program)))
+        })
+        .collect())
+}
+
 /// Has git's credential helpers forget `credential`: it was refused.
 ///
 /// # Errors

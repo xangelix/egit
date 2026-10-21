@@ -16,7 +16,7 @@ use std::path::Path;
 use egit_git::testing::Sandbox;
 use egit_git::{
     Asking, CancelToken, Credential, CredentialPlace, Repository, approve_credential,
-    erase_credential, fill_credential, reject_credential, store_credential,
+    erase_credential, fill_credential, installed_helpers, reject_credential, store_credential,
 };
 
 const fn place(host: &str) -> CredentialPlace<'_> {
@@ -129,4 +129,12 @@ fn a_secret_is_stored_for_a_user_and_erased() {
     assert_eq!(kept("home").unwrap().password(), "sk-home");
     // Nothing that would inject attributes is stored.
     assert!(store_credential(sandbox.git(), None, key("work"), "a\nb").is_err());
+}
+
+#[test]
+fn installed_helpers_are_found_in_git_s_exec_path() {
+    let sandbox = Sandbox::new().unwrap();
+    // `store` comes with every git; a name no helper has, nowhere.
+    let found = installed_helpers(sandbox.git(), &["no-such-helper", "store"]).unwrap();
+    assert_eq!(found, ["store"]);
 }
