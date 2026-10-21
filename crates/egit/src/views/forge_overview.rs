@@ -1,6 +1,8 @@
 //! A repository's side on GitHub and GitLab, on its Overview: the hosts egit knows, then each
 //! remote's address and what egit took it for (a forge's repository, or nothing: its host isn't
-//! one egit knows), the account it is read with, its open pull or merge requests, and, on
+//! one egit knows; an ssh host of none of them offered as the ssh host of each listed one,
+//! which a self-managed GitLab's often is), the account it is read with, its open pull or
+//! merge requests, and, on
 //! GitLab, its pipelines (how many were read and the newest; or why none: GitLab lists none to
 //! the account, refused, out of reach); last, how many of the commits they ran for this
 //! history shows. Where a request or a pipeline's mark doesn't show, this says why.
@@ -8,13 +10,13 @@
 use std::fmt::Write as _;
 
 use bstr::ByteSlice as _;
-use egit_forge::{ForgeKind, ForgeRepository};
+use egit_forge::{ForgeHost, ForgeKind, ForgeRepository};
 use egui::{Label, RichText, Ui};
 
 use super::pipeline::ci_words;
-use crate::app::Action;
+use crate::app::{Action, ConfigChange};
 use crate::ci::{CiSeen, LIMIT};
-use crate::forge::{RepoForge, Resolved, SeenRemote};
+use crate::forge::{RepoForge, Resolved, SeenRemote, ssh_host_key};
 use crate::format;
 use crate::history::History;
 use crate::repo::RepoId;
@@ -68,7 +70,7 @@ pub(super) fn card(
         }
         for seen in resolved.seen.iter() {
             ui.add_space(10.0);
-            remote(ui, (forge, seen), id, actions);
+            remote(ui, (forge, seen, &resolved.hosts), id, actions);
         }
         on_history(ui, forge, history);
     });
@@ -94,38 +96,31 @@ fn hosts(ui: &mut Ui, resolved: &Resolved) {
     );
 }
 
-/// A remote: its address, what egit took it for, and what was read from it.
+/// A remote: its address, what egit took it for, and what was read from it; `hosts`, those
+/// egit knew.
 fn remote(
     ui: &mut Ui,
-    (forge, seen): (&mut RepoForge, &SeenRemote),
+    (forge, seen, hosts): (&mut RepoForge, &SeenRemote, &[ForgeHost]),
     id: RepoId,
     actions: &mut Vec<Action>,
 ) {
-    let palette = Palette::of(ui.ctx());
     let width = widgets::FACT_LABEL;
     ui.label(RichText::new(seen.remote.to_str_lossy()).semibold());
     widgets::fact_top_of(ui, width, ("Address", TOPIC), |ui| {
-        ui.add(Label::new(seen.url.to_str_lossy()).wrap());
-    });
-    let Some(repository) = &seen.repository else {
-        widgets::fact_top_of(ui, width, ("Recognized as", TOPIC), |ui| {
+        let written = seen.written.as_ref().unwrap_or(&seen.url);
+        ui.add(Label::new(written.to_str_lossy()).wrap());
+        if seen.written.is_some() {
             ui.add(
-                Label::new(
-                    RichText::new(format!(
-                        "{}  Nothing: its host isn't one egit knows. A GitHub Enterprise or \
-                         self-managed GitLab host is listed in Profile, under GitHub and GitLab \
-                         (the host its web pages are on; an ssh remote's host must be the same, \
-                         or an ssh alias of it).",
-                        icon::WARNING
-                    ))
-                    .color(palette.warn),
-                )
+                Label::new(muted(
+                    ui,
+                    format!("git reaches it as {}", seen.url.to_str_lossy()),
+                ))
                 .wrap(),
             );
-            if widgets::secondary(ui, true, "Open Profile").clicked() {
-                actions.push(Action::ShowProfile);
-            }
-        });
+        }
+    });
+    let Some(repository) = &seen.repository else {
+        unknown(ui, seen, hosts, actions);
         return;
     };
     let kind = repository.host().kind();
@@ -149,6 +144,78 @@ fn remote(
     if kind == ForgeKind::GitLab {
         pipelines(ui, forge, index);
     }
+}
+
+/// A remote on no host egit knows: why, and what to do. An ssh host is offered as the ssh
+/// host of each host Profile lists (the likeliest first: the most of its name's end shared), as
+/// a self-managed GitLab's ssh is often on a name of its own (`gitlab_shell_ssh_host`).
+fn unknown(ui: &mut Ui, seen: &SeenRemote, hosts: &[ForgeHost], actions: &mut Vec<Action>) {
+    let palette = Palette::of(ui.ctx());
+    let ssh = seen.ssh_host();
+    let mut listed: Vec<&ForgeHost> = hosts.iter().filter(|host| !host.is_public()).collect();
+    if let Some(ssh) = &ssh {
+        listed.sort_by_key(|host| std::cmp::Reverse(shared_end(ssh, host.name())));
+    }
+    widgets::fact_top_of(ui, widgets::FACT_LABEL, ("Recognized as", TOPIC), |ui| {
+        let words = match (&ssh, listed.is_empty()) {
+            (Some(ssh), false) => format!(
+                "{}  Nothing: {ssh} isn't a host egit knows. If it is the ssh host of a \
+                 GitLab or GitHub Enterprise host Profile lists (its web pages on another \
+                 name), say which:",
+                icon::WARNING
+            ),
+            (Some(ssh), true) => format!(
+                "{}  Nothing: {ssh} isn't a host egit knows. List your GitLab or GitHub \
+                 Enterprise host in Profile (the name its web pages are on); then, if its ssh \
+                 is on another name, as this one may be, say so here.",
+                icon::WARNING
+            ),
+            (None, _) => format!(
+                "{}  Nothing: its host isn't one egit knows. A GitHub Enterprise or \
+                 self-managed GitLab host is listed in Profile, under GitHub and GitLab.",
+                icon::WARNING
+            ),
+        };
+        ui.add(Label::new(RichText::new(words).color(palette.warn)).wrap());
+        match ssh {
+            Some(ssh) if !listed.is_empty() => {
+                ui.horizontal_wrapped(|ui| {
+                    for host in listed.iter().take(4) {
+                        let words = format!("The ssh host of {}", host.name());
+                        if widgets::secondary(ui, true, &words)
+                            .on_hover_text(format!(
+                                "Read {ssh}'s repositories from {} (egit.{}.sshHost in your \
+                                 git settings)",
+                                host.name(),
+                                host.name()
+                            ))
+                            .clicked()
+                        {
+                            actions.push(Action::SaveProfile(vec![ConfigChange::Add {
+                                key: ssh_host_key(host.name()).into(),
+                                value: ssh.clone(),
+                            }]));
+                        }
+                    }
+                });
+            }
+            _ => {
+                if widgets::secondary(ui, true, "Open Profile").clicked() {
+                    actions.push(Action::ShowProfile);
+                }
+            }
+        }
+    });
+}
+
+/// How many of their names' last labels two hosts share (`git-ssh.example.org` and
+/// `git.example.org:8443`: two).
+fn shared_end(ssh: &str, host: &str) -> usize {
+    let host = host.rsplit_once(':').map_or(host, |(name, _)| name);
+    ssh.rsplit('.')
+        .zip(host.rsplit('.'))
+        .take_while(|(a, b)| a.eq_ignore_ascii_case(b))
+        .count()
 }
 
 /// Who it is read as: signed in, not (and Sign in…), or the credential git's helper keeps.

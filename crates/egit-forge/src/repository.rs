@@ -178,6 +178,36 @@ pub fn forge_repository(
     ForgeRepository::new(host, path)
 }
 
+/// The host name a remote URL reaches over ssh (an `ssh://` URL's, or a scp-like one's), in
+/// lowercase; none for another kind of URL.
+#[must_use]
+pub fn ssh_host_of(url: &str) -> Option<String> {
+    let url = url.trim();
+    let hostname = if let Some((scheme, rest)) = url.split_once("://") {
+        if !matches!(
+            scheme.to_ascii_lowercase().as_str(),
+            "ssh" | "git+ssh" | "ssh+git"
+        ) {
+            return None;
+        }
+        let authority = rest.split('/').next()?;
+        let address = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, address)| address);
+        ssh_hostname(address)
+    } else {
+        let (authority, _) = url.split_once(':')?;
+        // A drive's letter (`C:/repo`) is a path, as git reads it.
+        if authority.len() < 2 || authority.contains('/') {
+            return None;
+        }
+        authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host)
+    };
+    (!hostname.is_empty()).then(|| hostname.to_ascii_lowercase())
+}
+
 /// The forge host an ssh URL's host name is, directly or as an alias of one.
 fn ssh_host(
     hosts: &ForgeHosts,
@@ -434,6 +464,44 @@ mod tests {
             "https://gitlab.com/a/b/c/-/merge_requests/7"
         );
         assert_eq!((project.owner(), project.name()), ("a/b", "c"));
+    }
+
+    #[test]
+    fn a_gitlab_s_own_ssh_host_names_its_projects() {
+        let hosts = ForgeHosts::with_listed([], ["git.example.org"])
+            .with_ssh_hosts([("git.example.org", "git-ssh.example.org")]);
+        let named = |url: &str| {
+            forge_repository(url, &hosts, |_| None)
+                .map(|repository| format!("{} {}", repository.host().name(), repository.path()))
+        };
+        assert_eq!(
+            named("ssh://git@git-ssh.example.org:2222/team/sub/tool.git").as_deref(),
+            Some("git.example.org team/sub/tool")
+        );
+        assert_eq!(
+            named("git@git-ssh.example.org:team/tool.git").as_deref(),
+            Some("git.example.org team/tool")
+        );
+        assert!(named("https://git-ssh.example.org/team/tool.git").is_none());
+    }
+
+    #[test]
+    fn an_ssh_url_s_host_is_read() {
+        for (url, host) in [
+            (
+                "ssh://git@git-ssh.example.org:2222/team/tool.git",
+                Some("git-ssh.example.org"),
+            ),
+            ("git@Git.Example.org:team/tool.git", Some("git.example.org")),
+            ("ssh://[::1]:22/tool", Some("::1")),
+            ("git+ssh://host/tool", Some("host")),
+            ("https://git.example.org/team/tool.git", None),
+            ("C:/repo", None),
+            ("/srv/repo", None),
+            ("./repo:x", None),
+        ] {
+            assert_eq!(ssh_host_of(url).as_deref(), host, "{url}");
+        }
     }
 
     #[test]

@@ -27,6 +27,37 @@ use crate::problem::Problem;
 pub(crate) const GITHUB_HOSTS_KEY: &str = "egit.githubHost";
 pub(crate) const GITLAB_HOSTS_KEY: &str = "egit.gitlabHost";
 
+/// The key naming a listed host's ssh host, where its ssh isn't on its own name (several
+/// values): `egit.<host>.sshHost`, the host as listed.
+pub(crate) fn ssh_host_key(listed: &str) -> String {
+    format!("egit.{listed}.sshHost")
+}
+
+/// Each listed host's ssh hosts the configuration names (`egit.<host>.sshHost`): the host as
+/// written, and the ssh host.
+pub(crate) fn ssh_hosts(config: &ConfigSnapshot) -> Vec<(String, String)> {
+    ssh_host_entries(config)
+        .map(|(listed, ssh, _)| (listed, ssh))
+        .collect()
+}
+
+/// The same, with each one's entry (where it is set).
+pub(crate) fn ssh_host_entries(
+    config: &ConfigSnapshot,
+) -> impl Iterator<Item = (String, String, egit_git::ConfigEntry<'_>)> {
+    config.entries().filter_map(|entry| {
+        // git writes the section and the name in lowercase, the host as it was given.
+        let listed = entry
+            .key
+            .strip_prefix(b"egit.")?
+            .strip_suffix(b".sshhost")?
+            .to_str()
+            .ok()?;
+        let ssh = entry.text().to_str().ok()?;
+        Some((listed.to_owned(), ssh.to_owned(), entry))
+    })
+}
+
 /// What `kind` calls what it merges: "pull request" or "merge request".
 pub(crate) const fn request_noun(kind: ForgeKind) -> &'static str {
     match kind {
@@ -66,13 +97,25 @@ pub(crate) struct ForgeRemote {
     pub(crate) repository: ForgeRepository,
 }
 
-/// A remote, and what egit took it for: its address as git reaches it, and the forge's
-/// repository it is, if any (`None`: not on a host egit knows).
+/// A remote, and what egit took it for: its address as git reaches it, as the configuration
+/// writes it where that differs (`insteadOf`), and the forge's repository it is, if any (`None`:
+/// not on a host egit knows).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SeenRemote {
     pub(crate) remote: BString,
     pub(crate) url: BString,
+    pub(crate) written: Option<BString>,
     pub(crate) repository: Option<ForgeRepository>,
+}
+
+impl SeenRemote {
+    /// The host it reaches over ssh, as either of its addresses names it.
+    pub(crate) fn ssh_host(&self) -> Option<String> {
+        [Some(&self.url), self.written.as_ref()]
+            .into_iter()
+            .flatten()
+            .find_map(|url| egit_forge::ssh_host_of(url.to_str().ok()?))
+    }
 }
 
 /// The remotes as worked out: every one as seen, and the hosts egit knew then.
@@ -232,7 +275,12 @@ impl RepoForge {
                 .get_all(key)
                 .filter_map(|entry| entry.text().to_str().ok())
         };
-        let hosts = ForgeHosts::with_listed(listed(GITHUB_HOSTS_KEY), listed(GITLAB_HOSTS_KEY));
+        let ssh = ssh_hosts(config);
+        let hosts = ForgeHosts::with_listed(listed(GITHUB_HOSTS_KEY), listed(GITLAB_HOSTS_KEY))
+            .with_ssh_hosts(
+                ssh.iter()
+                    .map(|(listed, ssh)| (listed.as_str(), ssh.as_str())),
+            );
         let written = written_urls(config);
         let (git, repository) = (git.clone(), Arc::clone(repository));
         self.resolving.request(jobs::blocking(move || {
@@ -247,12 +295,13 @@ impl RepoForge {
                         .to_str()
                         .ok()
                         .and_then(|url| forge_repository(url, &hosts, alias));
+                    let written = written
+                        .iter()
+                        .find(|(name, _)| *name == remote)
+                        .map(|(_, written)| written.clone())
+                        .filter(|written| *written != url);
                     let repository = resolved.or_else(|| {
-                        let written = written
-                            .iter()
-                            .find(|(name, _)| *name == remote)
-                            .and_then(|(_, url)| url.to_str().ok())?;
-                        forge_repository(written, &hosts, alias)
+                        forge_repository(written.as_ref()?.to_str().ok()?, &hosts, alias)
                     });
                     if let Some(found) = &repository {
                         tracing::debug!(
@@ -266,12 +315,15 @@ impl RepoForge {
                         tracing::debug!(
                             remote = %remote,
                             url = %url,
-                            "a remote on no host egit knows"
+                            written = ?written,
+                            "a remote on no host egit knows (an ssh host on a name of its own is \
+                             named in egit.<host>.sshHost)"
                         );
                     }
                     SeenRemote {
                         remote,
                         url,
+                        written,
                         repository,
                     }
                 })

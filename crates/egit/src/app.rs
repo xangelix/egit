@@ -4,6 +4,7 @@
 //! after the frame's views are drawn. Background results arrive through `Bind`s polled at the
 //! start of each frame ([`AppState::poll`]), which turns finished jobs into actions too.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -109,13 +110,19 @@ pub(crate) struct SshSettings {
 pub(crate) enum ConfigChange {
     /// `key` set to `value`, every value it had replaced; `None` removes it.
     Set {
-        key: &'static str,
+        key: Cow<'static, str>,
         value: Option<String>,
     },
     /// `value` added to the values of `key` (one that may have several), unless it has it.
-    Add { key: &'static str, value: String },
+    Add {
+        key: Cow<'static, str>,
+        value: String,
+    },
     /// `value` removed from the values of `key`, its others kept.
-    Remove { key: &'static str, value: String },
+    Remove {
+        key: Cow<'static, str>,
+        value: String,
+    },
 }
 
 /// What is asked of a repository's output.

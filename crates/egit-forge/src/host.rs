@@ -146,16 +146,20 @@ impl ForgeHost {
     }
 }
 
-/// The forges' hosts known: github.com, gitlab.com, then those listed.
+/// The forges' hosts known: github.com, gitlab.com, then those listed; and the ssh hosts of
+/// those whose ssh isn't on their own name (a self-managed GitLab's `gitlab_shell_ssh_host`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForgeHosts {
     hosts: Vec<ForgeHost>,
+    /// An ssh host name (lowercase), and the host (its place in `hosts`) it is the ssh of.
+    ssh: Vec<(String, usize)>,
 }
 
 impl Default for ForgeHosts {
     fn default() -> Self {
         Self {
             hosts: vec![ForgeHost::github_com(), ForgeHost::gitlab_com()],
+            ssh: Vec::new(),
         }
     }
 }
@@ -186,10 +190,46 @@ impl ForgeHosts {
         hosts
     }
 
+    /// The hosts with these ssh hosts too: each pair a host as listed (its `host[:port]`, as
+    /// [`ForgeHost::parse`] reads it) and the name an ssh URL to its repositories gives
+    /// (`git-ssh.example.com`: the port is ssh's). A pair naming a host not known, or an ssh
+    /// host that isn't a host name, is skipped.
+    #[must_use]
+    pub fn with_ssh_hosts<'a>(
+        mut self,
+        pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
+    ) -> Self {
+        for (listed, ssh) in pairs {
+            let ssh = ssh.trim().to_ascii_lowercase();
+            let usable = !ssh.is_empty()
+                && ssh
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte))
+                && !ssh.starts_with(['-', '.']);
+            let place = self.hosts.iter().position(|host| {
+                ForgeHost::parse(host.kind(), listed).is_some_and(|parsed| parsed.name == host.name)
+            });
+            if let Some(place) = place
+                && usable
+                && !self.ssh.iter().any(|(known, _)| *known == ssh)
+            {
+                self.ssh.push((ssh, place));
+            }
+        }
+        self
+    }
+
     /// The hosts, github.com and gitlab.com first.
     #[must_use]
     pub fn hosts(&self) -> &[ForgeHost] {
         &self.hosts
+    }
+
+    /// The ssh hosts known apart from the hosts' own names, each with its host.
+    pub fn ssh_hosts(&self) -> impl Iterator<Item = (&str, &ForgeHost)> {
+        self.ssh
+            .iter()
+            .filter_map(|(ssh, place)| Some((ssh.as_str(), self.hosts.get(*place)?)))
     }
 
     /// The host an `http(s)://` URL's address (`host[:port]`) names.
@@ -208,7 +248,13 @@ impl ForgeHosts {
             "altssh.gitlab.com" => GITLAB_COM,
             other => other,
         };
-        self.hosts.iter().find(|host| host.hostname() == hostname)
+        self.hosts
+            .iter()
+            .find(|host| host.hostname() == hostname)
+            .or_else(|| {
+                let (_, place) = self.ssh.iter().find(|(ssh, _)| *ssh == hostname)?;
+                self.hosts.get(*place)
+            })
     }
 }
 
@@ -376,5 +422,31 @@ mod tests {
             "ghe.example.com:8443"
         );
         assert!(hosts.for_ssh("bitbucket.org").is_none());
+    }
+
+    #[test]
+    fn a_host_s_ssh_may_be_another_name() {
+        let hosts =
+            ForgeHosts::with_listed([], ["git.example.org", "https://code.example.net:8443"])
+                .with_ssh_hosts([
+                    ("git.example.org", "Git-SSH.example.org"),
+                    ("code.example.net:8443", "ssh.example.net"),
+                    ("unlisted.example.com", "ssh.unlisted.example.com"),
+                    ("git.example.org", "-oProxyCommand=x"),
+                ]);
+        assert_eq!(
+            hosts.for_ssh("git-ssh.example.org").unwrap().name(),
+            "git.example.org"
+        );
+        assert_eq!(
+            hosts.for_ssh("ssh.example.net").unwrap().name(),
+            "code.example.net:8443"
+        );
+        // Its own name still works; an ssh host of a host not listed, or not a name, doesn't.
+        assert!(hosts.for_ssh("git.example.org").is_some());
+        assert!(hosts.for_ssh("ssh.unlisted.example.com").is_none());
+        assert_eq!(hosts.ssh_hosts().count(), 2);
+        // Never the web: an https address on the ssh host isn't the forge's.
+        assert!(hosts.for_web("git-ssh.example.org", true).is_none());
     }
 }

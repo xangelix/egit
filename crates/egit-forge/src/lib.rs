@@ -37,4 +37,6 @@ pub use pipelines::{
     CiGroup, CiStatus, Job, Pipeline, PipelineDetails, PipelineListing, Stage, has_pipelines,
     pipeline_details, pipelines,
 };
-pub use repository::{ForgeRepository, forge_repository, resolve_ssh_alias, resolve_ssh_alias_on};
+pub use repository::{
+    ForgeRepository, forge_repository, resolve_ssh_alias, resolve_ssh_alias_on, ssh_host_of,
+};

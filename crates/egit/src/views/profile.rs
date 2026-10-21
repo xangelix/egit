@@ -112,37 +112,37 @@ impl Form {
         };
         if self.name.trim() != saved.name.trim() {
             changes.push(ConfigChange::Set {
-                key: "user.name",
+                key: "user.name".into(),
                 value: text(&self.name),
             });
         }
         if self.email.trim() != saved.email.trim() {
             changes.push(ConfigChange::Set {
-                key: "user.email",
+                key: "user.email".into(),
                 value: text(&self.email),
             });
         }
         if self.format != saved.format {
             changes.push(ConfigChange::Set {
-                key: "gpg.format",
+                key: "gpg.format".into(),
                 value: Some(self.format.name().to_owned()),
             });
         }
         if self.key.trim() != saved.key.trim() {
             changes.push(ConfigChange::Set {
-                key: "user.signingKey",
+                key: "user.signingKey".into(),
                 value: text(&self.key),
             });
         }
         if self.sign_commits != saved.sign_commits {
             changes.push(ConfigChange::Set {
-                key: "commit.gpgSign",
+                key: "commit.gpgSign".into(),
                 value: Some(self.sign_commits.to_string()),
             });
         }
         if self.sign_tags != saved.sign_tags {
             changes.push(ConfigChange::Set {
-                key: "tag.gpgSign",
+                key: "tag.gpgSign".into(),
                 value: Some(self.sign_tags.to_string()),
             });
         }
@@ -605,6 +605,34 @@ struct HostList<'a> {
 }
 
 impl HostList<'_> {
+    /// Remove, for `entry` (saying what stops) where it is the user's own to change.
+    fn remove(
+        &self,
+        ui: &mut Ui,
+        (entry, what): (&egit_git::ConfigEntry<'_>, &str),
+        (key, value): (std::borrow::Cow<'static, str>, &str),
+        actions: &mut Vec<Action>,
+    ) {
+        if entry.scope == ConfigScope::Global {
+            let hover = if key == self.key {
+                format!("Stop reading {what}'s requests")
+            } else {
+                format!("Stop taking {what} for this host's ssh")
+            };
+            if widgets::secondary(ui, !self.saving, "Remove")
+                .on_hover_text(hover)
+                .clicked()
+            {
+                actions.push(Action::SaveProfile(vec![ConfigChange::Remove {
+                    key,
+                    value: value.to_owned(),
+                }]));
+            }
+        } else {
+            ui.label(muted(ui, "Set outside your global settings"));
+        }
+    }
+
     fn show(
         self,
         ui: &mut Ui,
@@ -626,20 +654,23 @@ impl HostList<'_> {
                     let host = entry.text().to_string();
                     ui.label(&host);
                     widgets::origin(ui, Some(entry), self.home);
-                    if entry.scope == ConfigScope::Global {
-                        if widgets::secondary(ui, !self.saving, "Remove")
-                            .on_hover_text(format!("Stop reading {host}'s requests"))
-                            .clicked()
-                        {
-                            actions.push(Action::SaveProfile(vec![ConfigChange::Remove {
-                                key: self.key,
-                                value: host.clone(),
-                            }]));
-                        }
-                    } else {
-                        ui.label(muted(ui, "Set outside your global settings"));
-                    }
+                    self.remove(ui, (&entry, &host), (self.key.into(), &host), actions);
                     ui.end_row();
+                    // Its ssh on names of its own (a self-managed GitLab's often is).
+                    let name =
+                        ForgeHost::parse(self.kind, &host).map(|parsed| parsed.name().to_owned());
+                    for (listed, ssh, set) in crate::forge::ssh_host_entries(snapshot) {
+                        let same = ForgeHost::parse(self.kind, &listed)
+                            .is_some_and(|parsed| Some(parsed.name()) == name.as_deref());
+                        if !same {
+                            continue;
+                        }
+                        ui.label(muted(ui, format!("    its ssh: {ssh}")));
+                        widgets::origin(ui, Some(set), self.home);
+                        let key = crate::forge::ssh_host_key(&listed);
+                        self.remove(ui, (&set, &ssh), (key.into(), &ssh), actions);
+                        ui.end_row();
+                    }
                 }
             });
         ui.horizontal(|ui| {
@@ -654,7 +685,7 @@ impl HostList<'_> {
             let add = widgets::secondary(ui, host.is_some() && !self.saving, "Add");
             if (add.clicked() || entered) && host.is_some() {
                 actions.push(Action::SaveProfile(vec![ConfigChange::Add {
-                    key: self.key,
+                    key: self.key.into(),
                     value: entry,
                 }]));
                 typed.clear();
@@ -809,19 +840,19 @@ mod tests {
             edited.changes(&form()),
             [
                 ConfigChange::Set {
-                    key: "user.name",
+                    key: "user.name".into(),
                     value: Some("Someone Else".to_owned())
                 },
                 ConfigChange::Set {
-                    key: "user.email",
+                    key: "user.email".into(),
                     value: None
                 },
                 ConfigChange::Set {
-                    key: "gpg.format",
+                    key: "gpg.format".into(),
                     value: Some("ssh".to_owned())
                 },
                 ConfigChange::Set {
-                    key: "commit.gpgSign",
+                    key: "commit.gpgSign".into(),
                     value: Some("true".to_owned())
                 },
             ]

@@ -279,3 +279,81 @@ fn the_overview_says_what_each_remote_is_and_what_was_read() {
         ),
     );
 }
+
+#[test]
+fn an_ssh_host_on_a_name_of_its_own_is_tied_to_its_gitlab_in_a_click() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    let head = commit_of(&sandbox, &work, "HEAD");
+    fake.state().repositories[0].pipelines = vec![pipeline(9_001, &head, "SUCCESS", "SUCCESS")];
+    // Its ssh on a name and port of its own, as a self-managed GitLab's often is (reached here
+    // through the bare repository).
+    let ssh = "ssh://git@git-ssh.example.invalid:2222/team/sub/tool.git";
+    sandbox
+        .run(&work, "remote", &["set-url", "origin", ssh])
+        .unwrap();
+    let bare = sandbox.path("origin.git");
+    let rewrite = format!("url.file://{}.insteadOf", bare.to_str().unwrap());
+    sandbox
+        .run(&work, "config", &["--add", &rewrite, ssh])
+        .unwrap();
+    sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "egit.gitlabHost", &fake.host_entry()],
+        )
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+
+    // Not on a host egit knows: offered as the ssh host of the GitLab Profile lists.
+    show_panel(&mut harness, "Overview");
+    wait_for_label(&mut harness, ssh);
+    harness.get_by_label_contains("Nothing: git-ssh.example.invalid isn't a host egit knows");
+    harness.get_by_label_contains("git reaches it as file://");
+    let tie = format!("The ssh host of {}", fake.address());
+    into_view(&mut harness, &tie);
+    render(&mut harness, "overview-ssh-host");
+    harness.get_by_role_and_label(Role::Button, &tie).click();
+
+    // Kept in the user's settings, the project is read: its merge requests and pipelines.
+    let project = format!("GitLab project team/sub/tool on {}", fake.address());
+    wait_for_label(&mut harness, &project);
+    settle(&mut harness, "the pipeline", |app| {
+        app.state.repos[0]
+            .forge
+            .pipeline_of(&egit_git::ObjectId::from_hex(head.as_bytes()).unwrap())
+            .is_some()
+    });
+    harness.get_by_label("2 open");
+    let kept = sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &[
+                "--global",
+                "--get-all",
+                &format!("egit.{}.sshHost", fake.address()),
+            ],
+        )
+        .unwrap();
+    assert_eq!(
+        String::from_utf8(kept.stdout).unwrap().trim(),
+        "git-ssh.example.invalid"
+    );
+
+    // Profile lists it under its host.
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(crate::app::Action::ShowProfile);
+    wait_for_label(&mut harness, "    its ssh: git-ssh.example.invalid");
+}

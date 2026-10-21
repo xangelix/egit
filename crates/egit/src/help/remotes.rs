@@ -917,6 +917,7 @@ pub(super) const TOPICS: &[Topic] = &[
             "In this history",
             "Read again",
             "Open Profile",
+            "The ssh host of *",
         ],
         what: "The repository's Overview says what egit made of each remote: its address as git \
                reaches it (insteadOf applied), the GitHub repository or GitLab project it is, or \
@@ -929,7 +930,11 @@ pub(super) const TOPICS: &[Topic] = &[
         cases: &[
             (
                 "Recognized as nothing?",
-                "Its host isn't one egit knows: list your GitHub Enterprise or GitLab host in Profile. An ssh remote must name the same host as the web pages (or an ssh alias of it): a separate ssh host isn't recognized.",
+                "Its host isn't one egit knows: list your GitHub Enterprise or GitLab host in Profile (the name its web pages are on).",
+            ),
+            (
+                "An ssh remote on another name (git-ssh.example.com:2222)?",
+                "A self-managed GitLab's ssh is often on a name of its own (its gitlab_shell_ssh_host). The Overview offers it as the ssh host of each host Profile lists: choose the one whose web pages hold the project. It is kept as egit.<host>.sshHost in your git settings; Profile lists it under its host, and removes it.",
             ),
             (
                 "Pipelines read, but no marks?",

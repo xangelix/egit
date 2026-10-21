@@ -725,16 +725,19 @@ writes paths), never `OsStrExt`.
     GitLab's (`/api/graphql`, `/api/v4`); `parse` reads a listed entry (`host[:port]`,
     `https://`; `http://` only for the loopback address); `is_public` (github.com, gitlab.com);
     `new_token_url` (the forge's page making a token with what egit needs). `ForgeHosts`:
-    github.com, gitlab.com, and the listed (`with_listed`: each kind's); `for_web` by
+    github.com, gitlab.com, and the listed (`with_listed`: each kind's), and ssh hosts on names
+    of their own (`with_ssh_hosts`: a listed host and the name its ssh is on, a self-managed
+    GitLab's `gitlab_shell_ssh_host`; never for the web); `for_web` by
     `host[:port]` (no default port), `for_ssh` by host name (`ssh.github.com`,
-    `altssh.gitlab.com` are their forges').
+    `altssh.gitlab.com` are their forges', then those ssh hosts).
   - `repository.rs` — `ForgeRepository` (a host and a path: GitHub's `owner/name`, GitLab's
     `group/…/project`; `owner`, `name`, `is`, web pages of it, a request (`/pull/12`,
     `/-/merge_requests/12`), a commit, a branch, its name escaped). `forge_repository`: a
     remote URL of any form (https, ssh, scp-like, `git://`) to its repository; an ssh host
     alias through `resolve_ssh_alias` (`ssh -G -- <alias>`'s `hostname`, 2 s at most; never an
     option), or `resolve_ssh_alias_on` a git's computer (a repository there names its remotes
-    by that computer's ssh configuration).
+    by that computer's ssh configuration). `ssh_host_of`: the host name an ssh or scp-like URL
+    reaches (none for others, or a drive's letter).
   - `http.rs` — `Http`, a ureq agent per host: rustls on aws-lc-rs (`deny.toml` bans `ring`
     and `webpki-roots`), certificates checked by the platform verifier (the system's trust
     store), the environment's proxy (none for the loopback address), no redirects, 10 s to
@@ -951,7 +954,8 @@ writes paths), never `OsStrExt`.
     repository, kept as `RepoTab::git` (every repository action runs with its tab's git:
     `with_repo`), and trusting (`safe.directory`) runs there too. The tabs open at the last
     close (`Settings::open`, `OpenTab`: a path, or a host and a path) come back. Profile edits are `ConfigChange`s
-    (set or unset a key, add or remove one of its values) written under the user's
+    (set or unset a key, add or remove one of its values; a key may be named at run time, as
+    `egit.<host>.sshHost` is: a `Cow`) written under the user's
     `WriteLock`, then the user's and every repository's settings are read again. Web pages go
     through `AppState::opener` (`desktop.rs`'s `Opener`: the browser, or for tests a list,
     `recorded`; `Action::OpenUrl`).
@@ -1386,8 +1390,10 @@ writes paths), never `OsStrExt`.
     list grows or is replaced (`badges_at`, a binary search). `pull_request_for` (a branch's
     open one), `remote_of`, `repository_of`, `needs_sign_in` (the host whose requests want a
     sign-in, and whether it refused), `signed_in` and `signed_out` (a sign-in made or undone
-    elsewhere taken by the host's account, and everything read again); every remote as worked
-    out (`Resolved`: each `SeenRemote`'s address as git reaches it and the repository it is, or
+    elsewhere taken by the host's account, and everything read again); a listed host's ssh
+    hosts read from `egit.<host>.sshHost` (`ssh_hosts`, `ssh_host_entries`, `ssh_host_key`);
+    every remote as worked out (`Resolved`: each `SeenRemote`'s address as git reaches it, as
+    written where `insteadOf` rewrote it, its `ssh_host`, and the repository it is, or
     none, and the hosts known then; logged at debug level; the first working out applied even
     where no remote is a forge's), and why they couldn't be (`resolve_problem`, kept, not
     dropped); `index_of`, `pipelines` (the `Pipelines`, for the Overview); `kind`, `kind_of`,
@@ -1841,7 +1847,9 @@ writes paths), never `OsStrExt`.
     job"), `duration` ("1 min 35 s").
     `views/forge_overview.rs` — the repository's Overview's "GitHub and GitLab" card: the hosts
     egit knows, then each remote (its address, "Recognized as" a GitHub repository or GitLab
-    project, or nothing: its host isn't one egit knows, "Open Profile"; the account it is read
+    project, or nothing: its host isn't one egit knows, "Open Profile"; an ssh host egit doesn't
+    know offered as the ssh host of each host Profile lists, the most of its name's end shared
+    first, "The ssh host of <host>" adding `egit.<host>.sshHost`; the account it is read
     with: signed in as, not (Sign in…), or the credential git's helper keeps; its pull or merge
     requests open, or why none were read; on GitLab its pipelines: how many read and the newest,
     or hidden by GitLab, skipped, failed), and how many of the commits the pipelines ran for
@@ -1953,7 +1961,8 @@ writes paths), never `OsStrExt`.
     GitHub and GitLab: its accounts (github.com, gitlab.com, and the hosts listed: who is
     signed in to each, asked once with what git's helpers keep, `SignIns::who`; Sign in… or
     Sign out), and the GitHub Enterprise and self-managed GitLab hosts (added and removed as
-    `egit.githubHost` and `egit.gitlabHost`); credentials, pull and push, and every setting,
+    `egit.githubHost` and `egit.gitlabHost`, each with its ssh hosts on names of their own:
+    "its ssh: …", removed there); credentials, pull and push, and every setting,
     each with its origin), `sign_in` (the sign-in dialog, the window's: for a host, what egit
     reads from it, then two steps: Create a token… (its page, the scope egit needs ticked:
     `scope_of`), or Copy the link beside it (for whichever browser one is signed in with;
@@ -2275,7 +2284,10 @@ writes paths), never `OsStrExt`.
     with its words (rendered), dismissed, then the mark once they can be read; and the
     Overview's card (rendered): a remote on a host egit doesn't know, the project, the
     credential, 2 open, 3 pipelines read and the newest, 2 of their 3 commits in this history
-    (the fork's isn't fetched), then GitLab listing none to the account, read again.
+    (the fork's isn't fetched), then GitLab listing none to the account, read again; and a
+    remote on `ssh://git@git-ssh.example.invalid:2222/…` (fetched through `insteadOf`): not
+    known (rendered), tied by "The ssh host of <host>" (kept in the global settings), then the
+    project read, its pipeline marked, and Profile listing the ssh host under its host.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,
