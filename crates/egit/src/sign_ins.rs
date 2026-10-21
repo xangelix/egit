@@ -217,6 +217,12 @@ impl SignIns {
         keepers.ok_ref().map(Vec::as_slice)
     }
 
+    /// Whether a helper was set up (or tried) since the dialog last opened: how it went still
+    /// shows.
+    pub(crate) const fn has_kept(&self) -> bool {
+        self.kept.is_some()
+    }
+
     /// Keeping sign-ins past this run, as it stands (the helpers looked for once, through
     /// `git`).
     pub(crate) fn keeping(&mut self, git: &Git) -> Keeping {

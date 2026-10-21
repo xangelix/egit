@@ -220,10 +220,13 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
             &mut state.actions,
         );
         ui.add_space(12.0);
-        // Where no helper is set up, the ones installed that could be.
+        // Where no helper is set up, the ones installed that could be; and how setting one up
+        // went, which stays once it is.
         let keeping = git
             .as_ref()
-            .filter(|_| snapshot.profile().credential_helpers().is_empty())
+            .filter(|_| {
+                snapshot.profile().credential_helpers().is_empty() || state.sign_ins.has_kept()
+            })
             .map(|git| state.sign_ins.keeping(git));
         credentials_card(
             ui,
@@ -446,7 +449,7 @@ fn credentials_card(
             .min_col_width(widgets::FACT_LABEL)
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
-                for helper in helpers {
+                for &helper in &helpers {
                     ui.label("Helper");
                     ui.label(helper.text().to_string());
                     widgets::origin(ui, Some(helper), home);
@@ -465,6 +468,18 @@ fn credentials_card(
                     ui.end_row();
                 }
             });
+        // One just set up: how it went.
+        if !helpers.is_empty()
+            && let Some(keeping) = keeping.filter(|keeping| keeping.kept.is_some())
+        {
+            ui.add_space(6.0);
+            crate::views::sign_in::keep_choices(
+                ui,
+                egui::Id::new("profile-keep"),
+                keeping,
+                actions,
+            );
+        }
     });
 }
 
