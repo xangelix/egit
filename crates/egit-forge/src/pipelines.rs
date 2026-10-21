@@ -197,6 +197,8 @@ pub struct Stage {
 /// A job of a stage.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
+    /// Its number, for its log (none for a trigger job, which runs another pipeline).
+    pub id: Option<u64>,
     /// Its name.
     pub name: String,
     /// Where it stands.
@@ -345,7 +347,7 @@ const PIPELINES: &str = "query Pipelines($path: ID!, $first: Int!, $after: Strin
 
 const PIPELINE: &str = "query Pipeline($path: ID!, $iid: ID!) { project(fullPath: $path) { \
     pipeline(iid: $iid) { id iid sha ref status warnings createdAt startedAt finishedAt \
-    duration path source user { username } stages { nodes { name status jobs { nodes { name \
+    duration path source user { username } stages { nodes { name status jobs { nodes { id name \
     status allowFailure manualJob webPath duration startedAt downstreamPipeline { path } } } } \
     } } } }";
 
@@ -473,6 +475,7 @@ struct StageNode {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct JobNode {
+    id: Option<String>,
     name: Option<String>,
     status: Option<String>,
     #[serde(default)]
@@ -514,6 +517,12 @@ impl DetailsNode {
                     .into_iter()
                     .flatten()
                     .map(|job| Job {
+                        // `gid://gitlab/Ci::Build/123` (a trigger's is a `Ci::Bridge`).
+                        id: job
+                            .id
+                            .as_deref()
+                            .and_then(|id| id.strip_prefix("gid://gitlab/Ci::Build/"))
+                            .and_then(|id| id.parse().ok()),
                         name: job.name.unwrap_or_default(),
                         status: job
                             .status

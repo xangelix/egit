@@ -82,6 +82,10 @@ pub struct FakePipeline {
 /// A job of a fake pipeline.
 #[derive(Clone, Debug, Default)]
 pub struct FakeJob {
+    /// Its number (0: one made up from its pipeline's and its place).
+    pub id: u64,
+    /// Its log, as a runner wrote it.
+    pub log: String,
     /// Its name.
     pub name: String,
     /// Its status, as GitLab's enum names it.
@@ -122,6 +126,8 @@ pub struct Recorded {
     pub authorization: Option<String>,
     /// Its body, as JSON (null when it isn't).
     pub body: Value,
+    /// Its `Range` header.
+    pub range: Option<String>,
 }
 
 /// What the fake knows and has seen.
@@ -144,6 +150,8 @@ pub struct FakeState {
     /// The name GitLab's ssh is on, where not the fake's own (its projects' ssh addresses are
     /// then `ssh://git@<it>:2222/…`).
     pub ssh_host: Option<String>,
+    /// Whether a job's log is sent from where a `Range` asks (else whole, as GitLab does).
+    pub ranges: bool,
     /// The requests it received.
     pub requests: Vec<Recorded>,
 }
@@ -268,6 +276,7 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Option<Recorded> {
     let mut length = 0_usize;
     let mut chunked = false;
     let mut authorization = None;
+    let mut range = None;
     loop {
         let mut header = String::new();
         reader.read_line(&mut header).ok()?;
@@ -281,6 +290,7 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Option<Recorded> {
             "content-length" => length = value.parse().ok()?,
             "transfer-encoding" => chunked = value.eq_ignore_ascii_case("chunked"),
             "authorization" => authorization = Some(value.to_owned()),
+            "range" => range = Some(value.to_owned()),
             _ => {}
         }
     }
@@ -306,6 +316,7 @@ fn read_request(reader: &mut BufReader<TcpStream>) -> Option<Recorded> {
         path,
         authorization,
         body: serde_json::from_slice(&body).unwrap_or(Value::Null),
+        range,
     })
 }
 
@@ -673,9 +684,11 @@ fn gitlab_pipelines(
                 let jobs: Vec<Value> = jobs
                     .iter()
                     .map(|job| {
-                        json!({ "name": job.name, "status": job.status,
+                        let id = job_id(pipeline, job);
+                        json!({ "id": format!("gid://gitlab/Ci::Build/{id}"), "name": job.name,
+                                "status": job.status,
                                 "allowFailure": job.allow_failure, "manualJob": job.manual,
-                                "webPath": format!("/{}/-/jobs/{}", repository.path, job.name),
+                                "webPath": format!("/{}/-/jobs/{id}", repository.path),
                                 "duration": job.duration, "startedAt": "2024-05-01T10:21:00Z",
                                 "downstreamPipeline": null })
                     })
@@ -694,6 +707,84 @@ fn gitlab_pipelines(
         return json!({ "data": { "project": { "pipeline": node } } });
     }
     json!({ "errors": [{ "message": "unknown query" }] })
+}
+
+/// A job's number: its own, or one made up from its pipeline's and its place in it.
+fn job_id(pipeline: &FakePipeline, job: &FakeJob) -> u64 {
+    if job.id != 0 {
+        return job.id;
+    }
+    let place = pipeline
+        .stages
+        .iter()
+        .flat_map(|(_, _, jobs)| jobs)
+        .position(|other| std::ptr::eq(other, job))
+        .unwrap_or(0);
+    pipeline.id * 100 + u64::try_from(place).unwrap_or(0)
+}
+
+/// A job of `project` (`<id>`) as GitLab's REST API gives it, or its log (`<id>/trace`): whole,
+/// or from where a `Range` asks when the fake answers ranges.
+fn gitlab_job(project: &str, asked: &str, request: &Recorded, state: &FakeState) -> Option<Answer> {
+    let (id, trace) = asked
+        .strip_suffix("/trace")
+        .map_or((asked, false), |id| (id, true));
+    let id: u64 = id.parse().ok()?;
+    let repository = state
+        .repositories
+        .iter()
+        .find(|repository| repository.path.eq_ignore_ascii_case(project))?;
+    let (pipeline, stage_name, job) = repository.pipelines.iter().find_map(|pipeline| {
+        pipeline.stages.iter().find_map(|(name, _, jobs)| {
+            jobs.iter()
+                .find(|job| job_id(pipeline, job) == id)
+                .map(|job| (pipeline, name, job))
+        })
+    })?;
+    if !trace {
+        let status = job.status.to_ascii_lowercase();
+        let finished = !matches!(
+            status.as_str(),
+            "created" | "pending" | "running" | "manual" | "scheduled" | "preparing"
+        );
+        let job = json!({
+            "id": id, "name": job.name, "stage": stage_name, "status": status,
+            "started_at": "2024-05-01T10:21:00Z",
+            "finished_at": finished.then_some("2024-05-01T10:22:35Z"),
+            "duration": job.duration,
+            "failure_reason": (status == "failed").then_some("script_failure"),
+            "web_url": format!("http://127.0.0.1/{}/-/jobs/{id}", repository.path),
+            "pipeline": { "id": pipeline.id },
+        });
+        return Some((200, Vec::new(), job.to_string()));
+    }
+    if job.log.is_empty() {
+        return Some((
+            404,
+            Vec::new(),
+            json!({ "message": "404 Not Found" }).to_string(),
+        ));
+    }
+    let from = request
+        .range
+        .as_deref()
+        .and_then(|range| range.strip_prefix("bytes="))
+        .and_then(|range| range.strip_suffix('-'))
+        .and_then(|from| from.parse::<usize>().ok())
+        .filter(|_| state.ranges);
+    let log = job.log.as_bytes();
+    Some(match from {
+        Some(from) if from >= log.len() => (416, Vec::new(), String::new()),
+        Some(from) => (
+            206,
+            vec![(
+                "content-range",
+                format!("bytes {from}-{}/{}", log.len() - 1, log.len()),
+            )],
+            String::from_utf8_lossy(&log[from..]).into_owned(),
+        ),
+        None => (200, Vec::new(), job.log.clone()),
+    })
 }
 
 fn gitlab_pipeline(repository: &FakeRepository, pipeline: &FakePipeline) -> Value {
@@ -744,6 +835,11 @@ fn gitlab_rest(request: &Recorded, state: &mut FakeState) -> Answer {
         return not_found();
     };
     let decoded = |encoded: &str| encoded.replace("%2F", "/").replace("%2f", "/");
+    if request.method == "GET"
+        && let Some((project, job)) = rest.split_once("/jobs/")
+    {
+        return gitlab_job(&decoded(project), job, request, state).unwrap_or_else(not_found);
+    }
     if request.method == "GET" {
         return gitlab_project(&decoded(rest), state).unwrap_or_else(not_found);
     }

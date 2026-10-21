@@ -293,10 +293,11 @@ fn parse(kind: LineKind, bytes: &[u8], mut style: Style) -> (Line, Style) {
     (Line { kind, text, spans }, style)
 }
 
-/// An escape sequence at the start of `bytes`: how many bytes it takes, and an SGR's
-/// parameters (`ESC [ … m`). Other CSI and OSC sequences are skipped whole; a lone `ESC`, one
-/// byte.
-fn escape_sequence(bytes: &[u8]) -> (usize, Option<&[u8]>) {
+/// An escape sequence at the start of `bytes` (which starts with `ESC`): how many bytes it
+/// takes, and an SGR's parameters (`ESC [ … m`). Other CSI and OSC sequences are skipped whole;
+/// a lone `ESC`, one byte.
+#[must_use]
+pub fn escape_sequence(bytes: &[u8]) -> (usize, Option<&[u8]>) {
     match bytes.get(1) {
         Some(b'[') => {
             // Parameters and intermediates, then a final byte in `@`…`~`.
@@ -325,7 +326,8 @@ fn escape_sequence(bytes: &[u8]) -> (usize, Option<&[u8]>) {
 }
 
 /// `style` after an SGR with `parameters` (`1;31`, `38;5;208`, `38;2;255;128;0`, `0`).
-fn apply_sgr(mut style: Style, parameters: &[u8]) -> Style {
+#[must_use]
+pub fn apply_sgr(mut style: Style, parameters: &[u8]) -> Style {
     let mut numbers = parameters
         .split(|byte| *byte == b';' || *byte == b':')
         .map(|number| {

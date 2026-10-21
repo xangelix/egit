@@ -172,7 +172,10 @@ pub use submodule::{
     submodule_commits, submodule_details, submodule_status, submodules, update_submodules,
     update_submodules_to,
 };
-pub use transcript::{Color, Line, LineKind, Log, MAX_LINE, MAX_LINES, Span, Style, Transcript};
+pub use transcript::{
+    Color, Line, LineKind, Log, MAX_LINE, MAX_LINES, Span, Style, Transcript, apply_sgr,
+    escape_sequence,
+};
 pub use tree::{git_path, ignored_paths, tree_entry, tree_files, tree_folders};
 pub use version::{GitVersion, VersionParseError};
 pub use worktree::{

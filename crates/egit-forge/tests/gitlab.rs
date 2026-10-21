@@ -17,8 +17,9 @@
 use egit_forge::testing::{FakeForge, FakeJob, FakePipeline, FakePull, FakeRepository};
 use egit_forge::{
     Account, CheckState, CiGroup, CiStatus, ForgeError, ForgeHost, ForgeKind, ForgeRepository,
-    Mergeable, NewPullRequest, PipelineListing, ReviewDecision, ReviewState, create_pull_request,
-    pipeline_details, pipelines, pull_request_details, pull_requests, repository_info, ssh_host,
+    JobLog, LogRead, Mergeable, NewPullRequest, PipelineListing, ReviewDecision, ReviewState,
+    create_pull_request, job, pipeline_details, pipelines, pull_request_details, pull_requests,
+    read_log, repository_info, ssh_host,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -399,8 +400,9 @@ fn pipelines_come_a_page_at_a_time_and_one_is_read_whole() {
     assert!(details.stages[2].jobs[0].manual);
     assert_eq!(
         details.stages[0].jobs[0].url.as_deref(),
-        Some(format!("http://{}/team/sub/tool/-/jobs/compile", fake.address()).as_str())
+        Some(format!("http://{}/team/sub/tool/-/jobs/914900", fake.address()).as_str())
     );
+    assert_eq!(details.stages[0].jobs[0].id, Some(914_900));
     // One that isn't there says so.
     assert!(matches!(
         pipeline_details(&account, &project, 999, &CancelToken::new()),
@@ -425,4 +427,103 @@ fn a_gitlab_says_the_name_its_ssh_is_on() {
     // Showing the account no project, it can't say.
     fake.state().repositories.clear();
     assert_eq!(ssh_host(&account, &CancelToken::new()).unwrap(), None);
+}
+
+#[test]
+fn a_job_s_log_is_read_as_it_grows_from_where_it_was() {
+    let (fake, _sandbox, account, project) = setup(0, TOKEN);
+    let mut pipelines = fake_pipelines(1);
+    let unit = &mut pipelines[0].stages[1].2[0];
+    unit.id = 777;
+    unit.log = "\x1b[0Ksection_start:1700000000:step_script\r\x1b[0KExecuting\nfirst\n".to_owned();
+    fake.state().repositories[0].pipelines = pipelines;
+
+    // Its number comes with its pipeline; how it stands, from the job itself.
+    let details = pipeline_details(&account, &project, 1, &CancelToken::new()).unwrap();
+    assert_eq!(details.stages[1].jobs[0].id, Some(777));
+    let unit = job(&account, &project, 777, &CancelToken::new()).unwrap();
+    assert_eq!(
+        (unit.name.as_str(), unit.stage.as_deref(), unit.status),
+        ("unit", Some("test"), CiStatus::Running)
+    );
+
+    // Read whole, then the rest as it grows: a host sending it all, then one answering ranges.
+    for ranges in [false, true] {
+        fake.state().ranges = ranges;
+        fake.state().repositories[0].pipelines[0].stages[1].2[0].log =
+            "\x1b[0Ksection_start:1700000000:step_script\r\x1b[0KExecuting\nfirst\n".to_owned();
+        let mut log = JobLog::new();
+        let mut read = 0_u64;
+        let take = |from: u64, log: &mut JobLog| {
+            let mut sink = |bytes: &[u8]| log.feed(bytes);
+            read_log(
+                &account,
+                &project,
+                (777, from, true),
+                &CancelToken::new(),
+                &mut sink,
+            )
+            .unwrap()
+        };
+        let first = take(read, &mut log);
+        let LogRead::Read { new, .. } = first else {
+            panic!("{first:?}");
+        };
+        read += new;
+        fake.state().repositories[0].pipelines[0].stages[1].2[0]
+            .log
+            .push_str("second\n\x1b[32mpassed\x1b[0m\n");
+        let more = take(read, &mut log);
+        assert_eq!(
+            more,
+            LogRead::Read {
+                new: 23,
+                ranged: ranges
+            }
+        );
+        read += 23;
+        // Nothing new.
+        let LogRead::Read { new: 0, .. } = take(read, &mut log) else {
+            panic!("more than there was");
+        };
+        let parts = log.parts();
+        assert_eq!(
+            std::str::from_utf8(&parts.text).unwrap(),
+            "Executing\nfirst\nsecond\npassed\n"
+        );
+        assert_eq!(parts.sections[0].name, "step_script");
+        // The log begun again (shorter than read): read from the start.
+        fake.state().repositories[0].pipelines[0].stages[1].2[0].log = "again\n".to_owned();
+        let shorter = take(read, &mut log);
+        assert!(
+            matches!(shorter, LogRead::Shorter | LogRead::Read { new: 0, .. }),
+            "{shorter:?}"
+        );
+    }
+    // A job without a log yet.
+    fake.state().repositories[0].pipelines[0].stages[1].2[0]
+        .log
+        .clear();
+    let mut sink = |_: &[u8]| {};
+    assert_eq!(
+        read_log(
+            &account,
+            &project,
+            (777, 0, true),
+            &CancelToken::new(),
+            &mut sink
+        )
+        .unwrap(),
+        LogRead::Missing
+    );
+    // Ranges asked only after the first read, and only where wanted.
+    let ranged = fake
+        .state()
+        .requests
+        .iter()
+        .filter(|request| request.path.ends_with("/trace"))
+        .map(|request| request.range.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(ranged[0], None);
+    assert_eq!(ranged[1].as_deref(), Some("bytes=61-"));
 }

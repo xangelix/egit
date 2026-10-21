@@ -17,6 +17,7 @@ mod github;
 mod gitlab;
 mod host;
 mod http;
+mod job_log;
 mod model;
 mod pictures;
 mod pipelines;
@@ -30,6 +31,7 @@ pub use api::{
 };
 pub use error::ForgeError;
 pub use host::{ForgeHost, ForgeHosts, ForgeKind};
+pub use job_log::{JobLog, JobRun, LogParts, LogRead, MOST_TEXT, Run, Section, job, read_log};
 pub use model::{
     Check, CheckState, Mergeable, NewPullRequest, Opened, PullRequest, PullRequestDetails,
     PullRequestPage, RepositoryInfo, Review, ReviewDecision, ReviewState,

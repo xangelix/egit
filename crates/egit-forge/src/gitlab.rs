@@ -201,7 +201,7 @@ fn project(
 
 /// A project's path as one REST path segment: its slashes encoded (its parts hold nothing else
 /// that needs it).
-fn encoded(path: &str) -> String {
+pub(crate) fn encoded(path: &str) -> String {
     path.replace('/', "%2F")
 }
 

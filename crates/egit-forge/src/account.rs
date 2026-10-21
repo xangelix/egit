@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 
 use crate::error::ForgeError;
 use crate::host::ForgeHost;
-use crate::http::{Answer, Http};
+use crate::http::{Answer, Http, Sink, Streamed};
 
 /// One host's sign-in, under one repository's configuration (a repository may name credential
 /// helpers of its own).
@@ -208,6 +208,32 @@ impl Account {
         body: Option<&[u8]>,
         cancel: &CancelToken,
     ) -> Result<Answer, ForgeError> {
+        let credential = self.credential(cancel)?;
+        let answer = self.http.send(url, body, credential.password())?;
+        self.answered(&credential, answer.status)?;
+        Ok(answer)
+    }
+
+    /// GETs `url` with the credential as [`Self::send`] does, its body handed to `sink` a part
+    /// at a time as it comes, with its status and `Content-Range` (`from`: a range of it;
+    /// `limit`: the most read).
+    pub(crate) fn stream(
+        &self,
+        url: &str,
+        (from, limit): (Option<u64>, u64),
+        sink: &mut Sink<'_>,
+        cancel: &CancelToken,
+    ) -> Result<Streamed, ForgeError> {
+        let credential = self.credential(cancel)?;
+        let streamed = self
+            .http
+            .stream(url, credential.password(), (from, limit), sink)?;
+        self.answered(&credential, streamed.status)?;
+        Ok(streamed)
+    }
+
+    /// The credential to send: the one known, else filled without asking.
+    fn credential(&self, cancel: &CancelToken) -> Result<Arc<Credential>, ForgeError> {
         let known = self.state.lock().credential.clone();
         let credential = if let Some(credential) = known {
             credential
@@ -227,17 +253,21 @@ impl Account {
         if cancel.is_cancelled() {
             return Err(ForgeError::Cancelled);
         }
-        let answer = self.http.send(url, body, credential.password())?;
-        if answer.status == 401 {
-            self.forget(&credential);
+        Ok(credential)
+    }
+
+    /// Takes in how the host answered `credential`: refused, it is forgotten; accepted, kept.
+    fn answered(&self, credential: &Arc<Credential>, status: u16) -> Result<(), ForgeError> {
+        if status == 401 {
+            self.forget(credential);
             return Err(ForgeError::Refused {
                 host: self.host().name().to_owned(),
             });
         }
-        if (200..300).contains(&answer.status) {
-            self.keep(&credential);
+        if (200..300).contains(&status) {
+            self.keep(credential);
         }
-        Ok(answer)
+        Ok(())
     }
 
     /// Notes who the credential is, from an answer that said so.

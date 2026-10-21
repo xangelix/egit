@@ -34,6 +34,28 @@ pub(crate) struct Answer {
     pub(crate) retry_after: Option<i64>,
 }
 
+/// What takes a streamed answer's body a part at a time, with its status and `Content-Range`.
+pub(crate) type Sink<'a> = dyn FnMut(u16, Option<&str>, &[u8]) + 'a;
+
+/// How a streamed answer went: its status, and what a refusal said (its body, 64 KiB at most).
+#[derive(Debug)]
+pub(crate) struct Streamed {
+    pub(crate) status: u16,
+    pub(crate) said: Vec<u8>,
+}
+
+/// One of an answer's headers: the first of `names` it has.
+fn header_of(response: &ureq::http::Response<ureq::Body>, names: [&str; 2]) -> Option<String> {
+    names.iter().find_map(|name| {
+        response
+            .headers()
+            .get(*name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .map(str::to_owned)
+    })
+}
+
 /// A host's API client.
 #[derive(Clone, Debug)]
 pub(crate) struct Http {
@@ -81,62 +103,10 @@ impl Http {
         body: Option<&[u8]>,
         token: &str,
     ) -> Result<Answer, ForgeError> {
-        if !self.host.is_safe_for_credentials() {
-            return Err(ForgeError::Insecure {
-                host: self.host.name().to_owned(),
-            });
-        }
-        let authorization = Zeroizing::new(format!("Bearer {token}"));
-        let mut authorization =
-            HeaderValue::from_str(&authorization).map_err(|_| ForgeError::Refused {
-                host: self.host.name().to_owned(),
-            })?;
-        authorization.set_sensitive(true);
-        // GitHub's media type and API version; GitLab needs neither.
-        let github = self.host.kind() == ForgeKind::GitHub;
-        let accept = if github {
-            "application/vnd.github+json"
-        } else {
-            "application/json"
-        };
         let started = std::time::Instant::now();
         let method = if body.is_some() { "POST" } else { "GET" };
-        let sent = if let Some(body) = body {
-            let mut request = self
-                .agent
-                .post(url)
-                .header("Authorization", authorization)
-                .header("Accept", accept)
-                .header("Content-Type", "application/json");
-            if github {
-                request = request.header("X-GitHub-Api-Version", GITHUB_API_VERSION);
-            }
-            request.send(body)
-        } else {
-            let mut request = self
-                .agent
-                .get(url)
-                .header("Authorization", authorization)
-                .header("Accept", accept);
-            if github {
-                request = request.header("X-GitHub-Api-Version", GITHUB_API_VERSION);
-            }
-            request.call()
-        };
-        let mut response = sent.map_err(|error| {
-            tracing::debug!(host = self.host.name(), method, url, %error, "the forge couldn't be reached");
-            self.network(&error)
-        })?;
-        let header = |names: [&str; 2]| {
-            names.iter().find_map(|name| {
-                response
-                    .headers()
-                    .get(*name)
-                    .and_then(|value| value.to_str().ok())
-                    .map(str::trim)
-                    .map(str::to_owned)
-            })
-        };
+        let mut response = self.request(url, body, token, None)?;
+        let header = |names: [&str; 2]| header_of(&response, names);
         // GitHub's names, then GitLab's.
         let remaining = header(["x-ratelimit-remaining", "ratelimit-remaining"])
             .and_then(|value| value.parse().ok());
@@ -168,6 +138,128 @@ impl Http {
             reset,
             retry_after,
         })
+    }
+
+    /// GETs `url` (a log, say) with `token`, handing a successful answer's body to `sink` a
+    /// part at a time as it comes, with its status and `Content-Range` (never more than `limit`
+    /// bytes, nor all of it at once); from byte `from` on (`Range`, the bytes as stored: nothing
+    /// compressed) where given. A refusal's body (its reason) is kept instead.
+    pub(crate) fn stream(
+        &self,
+        url: &str,
+        token: &str,
+        (from, limit): (Option<u64>, u64),
+        sink: &mut Sink<'_>,
+    ) -> Result<Streamed, ForgeError> {
+        use std::io::Read as _;
+        let started = std::time::Instant::now();
+        let mut response = self.request(url, None, token, from)?;
+        let status = response.status().as_u16();
+        let content_range = header_of(&response, ["content-range", "content-range"]);
+        let reader = response.body_mut().with_config().limit(limit);
+        let mut reader = reader.reader();
+        let (mut given, mut said) = (0_u64, Vec::new());
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|error| self.network_io(&error))?;
+            let Some(part) = buffer.get(..read).filter(|part| !part.is_empty()) else {
+                break;
+            };
+            if (200..300).contains(&status) {
+                sink(status, content_range.as_deref(), part);
+                given = given.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+            } else if said.len() < 64 * 1024 {
+                said.extend_from_slice(part);
+            }
+        }
+        tracing::debug!(
+            host = self.host.name(),
+            url,
+            from,
+            status,
+            content_range,
+            bytes = given,
+            ms = started.elapsed().as_millis(),
+            "the forge streamed"
+        );
+        Ok(Streamed { status, said })
+    }
+
+    /// Sends a request to `url` with `token` (and `body`, JSON, as a POST; `from`, a `Range` of
+    /// the bytes as stored), and gives its answer's head, its body still to read.
+    fn request(
+        &self,
+        url: &str,
+        body: Option<&[u8]>,
+        token: &str,
+        from: Option<u64>,
+    ) -> Result<ureq::http::Response<ureq::Body>, ForgeError> {
+        if !self.host.is_safe_for_credentials() {
+            return Err(ForgeError::Insecure {
+                host: self.host.name().to_owned(),
+            });
+        }
+        let authorization = Zeroizing::new(format!("Bearer {token}"));
+        let mut authorization =
+            HeaderValue::from_str(&authorization).map_err(|_| ForgeError::Refused {
+                host: self.host.name().to_owned(),
+            })?;
+        authorization.set_sensitive(true);
+        // GitHub's media type and API version; GitLab needs neither.
+        let github = self.host.kind() == ForgeKind::GitHub;
+        let accept = if github {
+            "application/vnd.github+json"
+        } else {
+            "application/json"
+        };
+        let sent = if let Some(body) = body {
+            let mut request = self
+                .agent
+                .post(url)
+                .header("Authorization", authorization)
+                .header("Accept", accept)
+                .header("Content-Type", "application/json");
+            if github {
+                request = request.header("X-GitHub-Api-Version", GITHUB_API_VERSION);
+            }
+            request.send(body)
+        } else {
+            let mut request = self
+                .agent
+                .get(url)
+                .header("Authorization", authorization)
+                .header("Accept", accept);
+            if github {
+                request = request.header("X-GitHub-Api-Version", GITHUB_API_VERSION);
+            }
+            if let Some(from) = from {
+                // A range of the bytes as stored: compressed, they'd be another's.
+                request = request
+                    .header("Range", format!("bytes={from}-"))
+                    .header("Accept-Encoding", "identity");
+            }
+            request.call()
+        };
+        sent.map_err(|error| {
+            tracing::debug!(host = self.host.name(), url, %error, "the forge couldn't be reached");
+            self.network(&error)
+        })
+    }
+
+    /// A failure reading an answer as it comes, in words.
+    fn network_io(&self, error: &std::io::Error) -> ForgeError {
+        if error.kind() == std::io::ErrorKind::Other
+            && let Some(inner) = error.get_ref()
+            && let Some(error) = inner.downcast_ref::<ureq::Error>()
+        {
+            return self.network(error);
+        }
+        ForgeError::Network {
+            host: self.host.name().to_owned(),
+            message: error.to_string(),
+        }
     }
 
     /// A failure to reach the host, in words.
