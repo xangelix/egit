@@ -383,6 +383,19 @@ pub(crate) fn fact_top<R>(
     .inner
 }
 
+/// A fact whose value may take several lines ([`fact_top`]), which help topic `topic`
+/// explains.
+pub(crate) fn fact_top_of<R>(
+    ui: &mut Ui,
+    width: f32,
+    (label, topic): (&str, &'static str),
+    add_value: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let shown = ui.scope(|ui| fact_top(ui, width, label, add_value));
+    crate::help::note_topic(ui, shown.response.rect, topic);
+    shown.inner
+}
+
 /// A form's row: its label in a column `width` wide, centred on the field `add_field` adds
 /// (filling the rest), which the label names.
 pub(crate) fn form_row(

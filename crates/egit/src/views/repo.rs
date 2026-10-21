@@ -96,7 +96,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         lfs: &mut repo.lfs,
         submodule_states: &mut repo.submodule_states,
         writing_commit_graph: &mut repo.writing_commit_graph,
-        forge: &repo.forge,
+        forge: &mut repo.forge,
         // `~` is the home folder of the computer the repository is on.
         home: if repo.git.host().is_local() {
             home_dir.as_deref()
@@ -181,7 +181,7 @@ struct Panels<'a> {
     lfs: &'a mut Bind<Arc<crate::lfs::LfsState>, Problem>,
     submodule_states: &'a mut Bind<Arc<crate::submodules::Standing>, Problem>,
     writing_commit_graph: &'a mut Bind<(), Problem>,
-    forge: &'a RepoForge,
+    forge: &'a mut RepoForge,
     home: Option<&'a Path>,
     /// The other computer it is on, as ssh reaches it, and how changes made there are
     /// followed, in words (none here; the second while they aren't followed at all).
@@ -228,7 +228,7 @@ fn history(ui: &mut Ui, panels: &mut Panels<'_>) {
             stashes: stashes
                 .and_then(Result::ok)
                 .map_or(&[], |stashes| &**stashes),
-            forge: panels.forge,
+            forge: &*panels.forge,
             home: panels.home,
             journal: panels.journal,
             agents_shown: panels.agents_shown,
@@ -283,6 +283,13 @@ fn overview(ui: &mut Ui, panels: &mut Panels<'_>) {
         identity_card(ui, panels);
         ui.add_space(12.0);
         location_card(ui, panels.repository, panels.home, panels.there);
+        ui.add_space(12.0);
+        super::forge_overview::card(
+            ui,
+            (&mut *panels.forge, &panels.history.shown),
+            panels.id,
+            panels.actions,
+        );
         ui.add_space(12.0);
         hooks_card(ui, panels.hooks, panels.home);
     });

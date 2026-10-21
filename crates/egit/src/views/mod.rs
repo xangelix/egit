@@ -7,6 +7,7 @@ pub(crate) mod clone;
 mod dialogs;
 mod file;
 mod file_history;
+mod forge_overview;
 pub(crate) mod history;
 pub(crate) mod home;
 mod lfs;

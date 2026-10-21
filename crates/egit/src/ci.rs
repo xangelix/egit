@@ -6,17 +6,23 @@
 //! its pipeline does.
 //!
 //! A read takes over only once complete, so marks never blink out meanwhile; one that fails
-//! keeps what is shown (a project whose pipelines can't be read has none to show).
+//! keeps what is shown (a project whose pipelines can't be read has none to show). Each full
+//! read says how each project went ([`CiSeen`]: how many, hidden by GitLab, failed and why),
+//! and how many of the commits they ran for a history shows is counted in a job when asked
+//! ([`Pipelines::on_history`]), so the repository's Overview can say why no mark shows.
 
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use egit_forge::{Account, ForgeError, ForgeRepository, Pipeline, has_pipelines, pipelines};
+use egit_forge::{
+    Account, ForgeError, ForgeRepository, Pipeline, PipelineListing, has_pipelines, pipelines,
+};
 use egit_git::{CancelToken, ObjectId};
 use egui_async::Bind;
 
+use crate::history::History;
 use crate::jobs;
 use crate::problem::Problem;
 
@@ -98,12 +104,50 @@ impl Marks {
     }
 }
 
+/// How reading a project's pipelines went, last.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CiSeen {
+    /// Not read: the forge has none (GitHub's checks are a pull request's).
+    NotRead,
+    /// Read: how many (each project's newest [`LIMIT`] at most), and the newest.
+    Read {
+        count: usize,
+        newest: Option<Box<Pipeline>>,
+    },
+    /// GitLab lists none to this account: CI/CD turned off for the project, or a role that
+    /// may not see them.
+    Hidden,
+    /// Not asked: its host failed for another project first (a sign-in, the rate limit).
+    Skipped,
+    /// Couldn't be read: why.
+    Failed(String),
+}
+
+/// What a read found.
+#[derive(Debug)]
+struct Read {
+    /// The marks: those shown before (a live read's) with what was found taken in.
+    marks: Marks,
+    /// How each project went: a full read's (a live one reads only the newest page).
+    seen: Option<Vec<CiSeen>>,
+    /// Why nothing could be read, when nothing could.
+    problem: Option<Problem>,
+}
+
+/// The history and the marks a count of commits was made for: the history's identity, and
+/// where the marks are.
+type Counted = ((u64, usize), usize);
+
 /// A repository's pipelines: the marks shown, and the read under way.
 pub(crate) struct Pipelines {
     shown: Arc<Marks>,
-    reading: Bind<Arc<Marks>, Problem>,
+    reading: Bind<Read, Problem>,
     /// Why the last read failed (none of the projects could be read), until one goes through.
     problem: Option<Problem>,
+    /// How each project went in the last full read, by its place in the forge's.
+    seen: Arc<[CiSeen]>,
+    /// How many of the marks' commits a history shows, counted for one history and marks.
+    counting: Option<(Counted, Bind<usize, Problem>)>,
     /// Whether to read them all again once the read under way ends.
     again: bool,
     /// When the newest are read again (while one shown is under way).
@@ -130,6 +174,8 @@ impl Pipelines {
             shown: Arc::default(),
             reading: Bind::new(true),
             problem: None,
+            seen: Arc::from([]),
+            counting: None,
             again: false,
             next: None,
             cancel: CancelToken::new(),
@@ -152,6 +198,57 @@ impl Pipelines {
         self.problem.as_ref()
     }
 
+    /// How each project went in the last full read, by its place in the forge's (none yet).
+    pub(crate) fn seen(&self) -> &[CiSeen] {
+        &self.seen
+    }
+
+    /// Whether a read is under way.
+    pub(crate) fn is_reading(&mut self) -> bool {
+        self.reading.is_pending()
+    }
+
+    /// How many commits have a pipeline among those read.
+    pub(crate) fn commits(&self) -> usize {
+        self.shown.len()
+    }
+
+    /// How many of the commits with a pipeline `history` shows: counted in a job the first
+    /// time it is asked for this history and these marks (`None` until it lands).
+    pub(crate) fn on_history(&mut self, history: &History) -> Option<usize> {
+        let key: Counted = (
+            history.identity(),
+            Arc::as_ptr(&self.shown).cast::<u8>().addr(),
+        );
+        if self
+            .counting
+            .as_ref()
+            .is_none_or(|(counted, _)| *counted != key)
+        {
+            let (names, marks) = (history.names(), Arc::clone(&self.shown));
+            let mut counting = Bind::new(true);
+            counting.request(jobs::blocking(move || {
+                let mut commits: Vec<&[u8]> = marks
+                    .by_commit
+                    .iter()
+                    .map(|(id, _)| id.as_bytes())
+                    .collect();
+                commits.sort_unstable();
+                let width = names.width();
+                let shown = names
+                    .chunks()
+                    .flat_map(|(_, chunk)| chunk.chunks_exact(width))
+                    .filter(|name| commits.binary_search(name).is_ok())
+                    .count();
+                Ok(shown)
+            }));
+            self.counting = Some((key, counting));
+        }
+        self.counting
+            .as_mut()
+            .and_then(|(_, counting)| counting.ok_ref().copied())
+    }
+
     /// Reads the newest again at the next poll, as it would every [`EVERY`] while one shown is
     /// under way (tests: not waiting that long).
     #[cfg(test)]
@@ -170,6 +267,7 @@ impl Pipelines {
         self.reading = Bind::new(true);
         self.shown = Arc::default();
         self.problem = None;
+        self.seen = Arc::from([]);
         self.again = false;
         self.next = None;
         self.start(repositories, accounts, false);
@@ -197,14 +295,19 @@ impl Pipelines {
         let now = Instant::now();
         if self.reading.is_finished() {
             match self.reading.take() {
-                Some(Ok(marks)) => {
-                    self.shown = marks;
-                    self.problem = None;
+                Some(Ok(read)) => {
+                    if let Some(seen) = read.seen {
+                        self.seen = seen.into();
+                    }
+                    if let Some(problem) = read.problem {
+                        tracing::debug!(%problem, "pipelines unread");
+                        self.problem = Some(problem);
+                    } else {
+                        self.shown = Arc::new(read.marks);
+                        self.problem = None;
+                    }
                 }
-                Some(Err(problem)) => {
-                    tracing::debug!(%problem, "pipelines unread");
-                    self.problem = Some(problem);
-                }
+                Some(Err(problem)) => tracing::debug!(%problem, "pipelines unread"),
                 None => {}
             }
             // Under way, read again soon; a read that failed too, while some are.
@@ -257,10 +360,9 @@ impl Pipelines {
                 &repositories,
                 &accounts,
                 previous.as_deref(),
-                limit,
+                (limit, live),
                 &cancel,
             )
-            .map(Arc::new)
         }));
     }
 }
@@ -271,51 +373,75 @@ impl Drop for Pipelines {
     }
 }
 
-/// Reads each project's newest `limit` pipelines, merged into `previous`'s marks (none: from
-/// nothing). Fails only when no project could be read.
+/// Reads each project's newest `limit` pipelines (`live`: the newest page, merged into
+/// `previous`'s marks), saying how each project went (a full read). Fails only when cancelled;
+/// a read in which no project could be read says why.
 fn read(
     repositories: &[ForgeRepository],
     accounts: &[Arc<Account>],
     previous: Option<&Marks>,
-    limit: u32,
+    (limit, live): (u32, bool),
     cancel: &CancelToken,
-) -> Result<Marks, Problem> {
+) -> Result<Read, Problem> {
     let mut found = Vec::new();
+    let mut seen = vec![CiSeen::NotRead; repositories.len()];
     let mut failed = None;
     let mut read_any = false;
     // A host that needs signing in fails the same way for each of its projects.
     let mut failed_hosts = Vec::new();
-    for (index, repository) in repositories.iter().enumerate() {
+    for ((index, repository), went) in repositories.iter().enumerate().zip(&mut seen) {
         let host = repository.host();
-        if !has_pipelines(host.kind()) || failed_hosts.contains(&host) {
+        if !has_pipelines(host.kind()) {
+            continue;
+        }
+        if failed_hosts.contains(&host) {
+            *went = CiSeen::Skipped;
             continue;
         }
         let Some(account) = accounts.iter().find(|account| account.host() == host) else {
             continue;
         };
+        let before = found.len();
         let pages = pipelines(account, repository, limit, cancel, |page| {
             found.extend(page.into_iter().map(|pipeline| (index, pipeline)));
         });
+        let project = repository.full_name();
         match pages {
-            Ok(()) => read_any = true,
+            Ok(listing) => {
+                read_any = true;
+                let count = found.len().saturating_sub(before);
+                tracing::debug!(%project, count, ?listing, "pipelines read");
+                *went = match listing {
+                    PipelineListing::Hidden => CiSeen::Hidden,
+                    PipelineListing::Listed => CiSeen::Read {
+                        count,
+                        newest: found
+                            .get(before)
+                            .map(|(_, pipeline)| Box::new(pipeline.clone())),
+                    },
+                };
+            }
             Err(ForgeError::Cancelled) => {
                 return Err(Problem::new("Reading the pipelines stopped", String::new()));
             }
             Err(error) => {
+                tracing::debug!(%project, %error, "pipelines unread");
                 if error.needs_sign_in() || matches!(error, ForgeError::RateLimited { .. }) {
                     failed_hosts.push(host);
                 }
+                *went = CiSeen::Failed(error.to_string());
                 failed = Some(error);
             }
         }
     }
-    if !read_any && let Some(error) = failed {
-        return Err(Problem::new(
-            "The pipelines couldn't be read",
-            error.to_string(),
-        ));
-    }
-    Ok(Marks::merged(previous, found))
+    let problem = failed
+        .filter(|_| !read_any)
+        .map(|error| Problem::new("The pipelines couldn't be read", error.to_string()));
+    Ok(Read {
+        marks: Marks::merged(previous, found),
+        seen: (!live).then_some(seen),
+        problem,
+    })
 }
 
 #[cfg(test)]

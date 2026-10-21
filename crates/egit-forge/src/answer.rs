@@ -27,6 +27,23 @@ pub(crate) fn graphql<T: DeserializeOwned>(
     let answer = account.send(&url, Some(body.as_bytes()), cancel)?;
     let (remaining, reset) = (answer.remaining, answer.reset);
     let reply: GraphQlReply<T> = read_answer(account, &answer, what)?;
+    // The query's name ("query Pipelines(…"), for the log.
+    let operation = query
+        .strip_prefix("query ")
+        .and_then(|rest| rest.split(['(', ' ', '{']).next())
+        .unwrap_or("query");
+    for error in &reply.errors {
+        tracing::debug!(
+            operation,
+            what,
+            kind = error.kind.as_deref().unwrap_or(""),
+            message = %error.message,
+            "the forge answered with an error"
+        );
+    }
+    if reply.data.is_none() && reply.errors.is_empty() {
+        tracing::debug!(operation, what, "the forge answered without data");
+    }
     if let Some(error) = reply.errors.first() {
         let host = account.host().name().to_owned();
         return Err(match error.kind.as_deref() {

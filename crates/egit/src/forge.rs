@@ -66,6 +66,22 @@ pub(crate) struct ForgeRemote {
     pub(crate) repository: ForgeRepository,
 }
 
+/// A remote, and what egit took it for: its address as git reaches it, and the forge's
+/// repository it is, if any (`None`: not on a host egit knows).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SeenRemote {
+    pub(crate) remote: BString,
+    pub(crate) url: BString,
+    pub(crate) repository: Option<ForgeRepository>,
+}
+
+/// The remotes as worked out: every one as seen, and the hosts egit knew then.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Resolved {
+    pub(crate) seen: Arc<[SeenRemote]>,
+    pub(crate) hosts: Arc<[ForgeHost]>,
+}
+
 /// A pull request, and which of the forge's repositories it is in.
 #[derive(Clone, Debug)]
 pub(crate) struct Listed {
@@ -136,9 +152,13 @@ pub(crate) struct Badge {
 /// A repository's forge.
 #[derive(Debug)]
 pub(crate) struct RepoForge {
-    /// The remotes that are forges' repositories, being worked out.
-    resolving: Bind<Arc<[ForgeRemote]>, Problem>,
-    /// What they were worked out as, last.
+    /// The remotes, being worked out.
+    resolving: Bind<Resolved, Problem>,
+    /// Every remote as last worked out, and the hosts known then (none until they are).
+    resolved: Option<Resolved>,
+    /// Why the remotes couldn't be worked out, last time.
+    resolve_problem: Option<Problem>,
+    /// The remotes that are forges' repositories, as last worked out.
     pub(crate) remotes: Arc<[ForgeRemote]>,
     /// The distinct repositories among them, in the remotes' order.
     pub(crate) repositories: Arc<[ForgeRepository]>,
@@ -179,6 +199,8 @@ impl RepoForge {
     ) -> Self {
         Self {
             resolving: Bind::new(true),
+            resolved: None,
+            resolve_problem: None,
             remotes: Arc::from([]),
             repositories: Arc::from([]),
             accounts: Vec::new(),
@@ -218,9 +240,9 @@ impl RepoForge {
                 .map_err(|error| Problem::git("The remotes couldn't be read", &error))?;
             // An ssh alias as the computer the repository is on resolves it.
             let alias = |alias: &str| resolve_ssh_alias_on(&git, alias);
-            Ok(urls
+            let seen: Arc<[SeenRemote]> = urls
                 .into_iter()
-                .filter_map(|(remote, url)| {
+                .map(|(remote, url)| {
                     let resolved = url
                         .to_str()
                         .ok()
@@ -231,21 +253,66 @@ impl RepoForge {
                             .find(|(name, _)| *name == remote)
                             .and_then(|(_, url)| url.to_str().ok())?;
                         forge_repository(written, &hosts, alias)
-                    })?;
-                    Some(ForgeRemote { remote, repository })
+                    });
+                    if let Some(found) = &repository {
+                        tracing::debug!(
+                            remote = %remote,
+                            url = %url,
+                            repository = %found.full_name(),
+                            host = found.host().name(),
+                            "a remote on a forge"
+                        );
+                    } else {
+                        tracing::debug!(
+                            remote = %remote,
+                            url = %url,
+                            "a remote on no host egit knows"
+                        );
+                    }
+                    SeenRemote {
+                        remote,
+                        url,
+                        repository,
+                    }
                 })
-                .collect())
+                .collect();
+            Ok(Resolved {
+                seen,
+                hosts: hosts.hosts().into(),
+            })
         }));
     }
 
     /// Takes in what its jobs finished: remotes worked out (pull requests read when they
     /// changed), a read again complete, a sign-in; and keeps the badges current.
     pub(crate) fn poll(&mut self, git: &Git, repository: &Arc<Repository>) {
-        if self.resolving.is_finished()
-            && let Some(Ok(remotes)) = self.resolving.take()
-            && remotes != self.remotes
-        {
-            self.set_remotes(git, repository, remotes);
+        if self.resolving.is_finished() {
+            match self.resolving.take() {
+                Some(Ok(resolved)) => {
+                    let remotes: Arc<[ForgeRemote]> = resolved
+                        .seen
+                        .iter()
+                        .filter_map(|seen| {
+                            Some(ForgeRemote {
+                                remote: seen.remote.clone(),
+                                repository: seen.repository.clone()?,
+                            })
+                        })
+                        .collect();
+                    // The first time even when none is a forge's: nothing is being read then.
+                    let first = self.resolved.is_none();
+                    self.resolved = Some(resolved);
+                    self.resolve_problem = None;
+                    if first || remotes != self.remotes {
+                        self.set_remotes(git, repository, remotes);
+                    }
+                }
+                Some(Err(problem)) => {
+                    tracing::warn!(%problem, "the remotes couldn't be worked out");
+                    self.resolve_problem = Some(problem);
+                }
+                None => {}
+            }
         }
         let finished = self
             .reading
@@ -453,6 +520,29 @@ impl RepoForge {
             .iter()
             .find(|account| account.host() == host)
             .cloned()
+    }
+
+    /// Every remote as last worked out, and the hosts egit knew then (none until they are).
+    pub(crate) const fn resolved(&self) -> Option<&Resolved> {
+        self.resolved.as_ref()
+    }
+
+    /// Why the remotes couldn't be worked out, last time.
+    pub(crate) const fn resolve_problem(&self) -> Option<&Problem> {
+        self.resolve_problem.as_ref()
+    }
+
+    /// Where `repository` is among the forge's.
+    pub(crate) fn index_of(&self, repository: &ForgeRepository) -> Option<usize> {
+        self.repositories
+            .iter()
+            .position(|known| known.is(repository))
+    }
+
+    /// The pipelines: how each project went, the read under way, how many of their commits a
+    /// history shows.
+    pub(crate) const fn pipelines(&mut self) -> &mut Pipelines {
+        &mut self.ci
     }
 
     /// The first remote that is repository `index`.

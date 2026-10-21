@@ -17,8 +17,8 @@
 use egit_forge::testing::{FakeForge, FakeJob, FakePipeline, FakePull, FakeRepository};
 use egit_forge::{
     Account, CheckState, CiGroup, CiStatus, ForgeError, ForgeHost, ForgeKind, ForgeRepository,
-    Mergeable, NewPullRequest, ReviewDecision, ReviewState, create_pull_request, pipeline_details,
-    pipelines, pull_request_details, pull_requests, repository_info,
+    Mergeable, NewPullRequest, PipelineListing, ReviewDecision, ReviewState, create_pull_request,
+    pipeline_details, pipelines, pull_request_details, pull_requests, repository_info,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -331,10 +331,11 @@ fn pipelines_come_a_page_at_a_time_and_one_is_read_whole() {
     fake.state().repositories[0].pipelines = fake_pipelines(150);
 
     let mut pages = Vec::new();
-    pipelines(&account, &project, 1_000, &CancelToken::new(), |page| {
+    let listing = pipelines(&account, &project, 1_000, &CancelToken::new(), |page| {
         pages.push(page);
     })
     .unwrap();
+    assert_eq!(listing, PipelineListing::Listed);
     let sizes: Vec<usize> = pages.iter().map(Vec::len).collect();
     assert_eq!(sizes, [100, 50]);
     let newest = &pages[0][0];
@@ -369,6 +370,11 @@ fn pipelines_come_a_page_at_a_time_and_one_is_read_whole() {
     })
     .unwrap();
     assert_eq!(count, 30);
+    // A project whose CI/CD is off lists none: hidden, said so, not an error.
+    fake.state().pipelines_hidden = true;
+    let listing = pipelines(&account, &project, 30, &CancelToken::new(), |_| {}).unwrap();
+    assert_eq!(listing, PipelineListing::Hidden);
+    fake.state().pipelines_hidden = false;
 
     let details = pipeline_details(&account, &project, 150, &CancelToken::new()).unwrap();
     assert_eq!(details.pipeline, *newest);

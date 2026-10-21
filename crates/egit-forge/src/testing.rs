@@ -138,6 +138,9 @@ pub struct FakeState {
     /// The error GitLab gives for a project's pipelines, when it gives one (CI/CD turned off,
     /// say).
     pub pipelines_refused: Option<String>,
+    /// Whether GitLab lists no pipelines (`pipelines: null`), as for a project whose CI/CD is
+    /// turned off.
+    pub pipelines_hidden: bool,
     /// The requests it received.
     pub requests: Vec<Recorded>,
 }
@@ -561,6 +564,9 @@ fn gitlab_graphql(request: &Recorded, state: &mut FakeState) -> Value {
         && let Some(message) = &state.pipelines_refused
     {
         return json!({ "errors": [{ "message": message }], "data": { "project": null } });
+    }
+    if query.starts_with("query Pipelines(") && state.pipelines_hidden {
+        return json!({ "data": { "project": { "pipelines": null } } });
     }
     // GitLab says a project it can't show by giving none.
     let Some(repository) = find(state, &path) else {

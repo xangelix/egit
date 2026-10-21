@@ -2,7 +2,10 @@
 //! pipeline marked beside its name (the newest of several; none for a commit without one), the
 //! mark following its pipeline as it finishes; a mark's click showing the pipeline (its stages
 //! in order, their jobs), a job opening its page in the browser, Show the commit going back to
-//! the history with it selected, and Escape closing the page.
+//! the history with it selected, and Escape closing the page. Pipelines GitLab refuses say
+//! why under the commit table. The Overview says what each remote was taken for (a project, or
+//! nothing: a host egit doesn't know), what was read, and how many of the commits the
+//! pipelines ran for the history shows; and when GitLab lists none to the account.
 
 use egit_forge::ForgeKind;
 use egit_forge::testing::{FakeForge, FakeJob, FakePipeline};
@@ -11,8 +14,8 @@ use egui::accesskit::Role;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use super::screens::{
-    commit_of, forge_clone, harness, history_of, open_path, profile_loaded, pull_requests_read,
-    render, settle, wait_for_label,
+    commit_of, forge_clone, harness, history_of, into_view, open_path, profile_loaded,
+    pull_requests_read, render, settle, show_panel, wait_for_label,
 };
 use crate::app::EgitApp;
 
@@ -214,5 +217,65 @@ fn pipelines_that_can_t_be_read_say_why_until_they_can() {
             .forge
             .pipelines_problem()
             .is_none()
+    );
+}
+
+#[test]
+fn the_overview_says_what_each_remote_is_and_what_was_read() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    let (work, topic, fork) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    let head = commit_of(&sandbox, &work, "HEAD");
+    // The fork's commit isn't fetched here: its pipeline marks nothing.
+    fake.state().repositories[0].pipelines = vec![
+        pipeline(9_003, &head, "SUCCESS", "SUCCESS"),
+        pipeline(9_002, &fork, "FAILED", "FAILED"),
+        pipeline(9_001, &topic, "SUCCESS", "SUCCESS"),
+    ];
+    // A remote on a host egit doesn't know.
+    sandbox
+        .run(
+            &work,
+            "remote",
+            &["add", "mirror", "https://git.example.invalid/team/tool.git"],
+        )
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    settle(&mut harness, "the merge requests", pull_requests_read(2));
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+    wait_for_label(&mut harness, "Pipeline #9003: passed");
+
+    show_panel(&mut harness, "Overview");
+    let project = format!("GitLab project team/sub/tool on {}", fake.address());
+    wait_for_label(&mut harness, &project);
+    harness.get_by_label_contains("Nothing: its host isn't one egit knows");
+    harness.get_by_label("https://git.example.invalid/team/tool.git");
+    harness.get_by_label("Signed in with the credential git's helper keeps");
+    harness.get_by_label("2 open");
+    harness.get_by_label_contains("3 read; the newest, #3, ran for main");
+    wait_for_label(
+        &mut harness,
+        "2 of the 3 commits the pipelines ran for: each marked beside its name.",
+    );
+    into_view(&mut harness, &project);
+    render(&mut harness, "overview-forge");
+
+    // GitLab listing none to the account (CI/CD off): said so, once read again.
+    fake.state().pipelines_hidden = true;
+    let again = format!("{}  Read again", crate::theme::icon::ARROWS_CLOCKWISE);
+    into_view(&mut harness, &again);
+    harness.get_by_role_and_label(Role::Button, &again).click();
+    wait_for_label(
+        &mut harness,
+        &format!(
+            "{}  GitLab lists none to this account: CI/CD may be turned off for the project, or \
+             your role in it may not see its pipelines.",
+            crate::theme::icon::WARNING
+        ),
     );
 }

@@ -315,7 +315,7 @@ fn empty(
 }
 
 /// A problem, in words.
-fn said(problem: &ForgeProblem) -> String {
+pub(super) fn said(problem: &ForgeProblem) -> String {
     match problem {
         ForgeProblem::SignIn {
             host,

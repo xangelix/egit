@@ -81,7 +81,9 @@ Opens egit, with the repositories around each PATH in tabs.
   -h, --help       print this
   -V, --version    print egit's version
 
-EGIT_LOG sets what egit logs to stderr (\"warn\" by default; \"debug\" for every git command).
+EGIT_LOG sets what egit logs to stderr (\"warn\" by default; \"debug\" for every git command;
+\"egit_forge=debug,egit_app=debug\" for each request to GitHub or GitLab and what each remote
+was taken for).
 ";
 
 /// Runs egit with the command line's arguments (after the program's name) and returns how the

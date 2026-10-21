@@ -741,6 +741,8 @@ writes paths), never `OsStrExt`.
     connect and 60 s in all, answers of 32 MiB at most; the token a sensitive bearer header,
     built in a zeroizing string, and refused without HTTPS (but to the loopback address);
     GitHub's media type and API version only to GitHub; either forge's rate-limit headers.
+    Each request logged at debug level (method, address, status, size, time; never the token),
+    and each GraphQL error with the query's name (`answer.rs`): `EGIT_LOG=egit_forge=debug`.
   - `account.rs` — `Account`: a host's sign-in under a repository's configuration: the
     credential filled without asking on first use; `sign_in` asks (labelled) and checks it
     (who it is); a 401 rejects and forgets it (`Refused`; finding none after that is still
@@ -786,7 +788,9 @@ writes paths), never `OsStrExt`.
   - `pipelines.rs` — GitLab's CI/CD pipelines through its GraphQL API (`has_pipelines`: GitLab
     alone; GitHub's Actions are a pull request's checks): `pipelines` (a project's newest, 100 a
     page, each page handed over as it lands, up to a limit; none for a project whose pipelines
-    can't be seen), `pipeline_details` (one by its `iid`: its stages in order, each one's jobs
+    can't be seen: `PipelineListing::Hidden`, GitLab's `pipelines: null`, said, not an error;
+    nodes without a number or commit left out, logged), `pipeline_details` (one by its `iid`:
+    its stages in order, each one's jobs
     (their latest runs), each job's page, a trigger job's its downstream pipeline's).
     `Pipeline` (GitLab's number from its global id, `iid`, commit, `CiStatus`, warnings, ref,
     made, page; `is_newer_than`), `PipelineDetails` (started, finished, duration, who, how,
@@ -796,7 +800,8 @@ writes paths), never `OsStrExt`.
     passed, failed, under way, paused (waiting for someone or its time), cancelled or skipped.
   - `testing.rs` (feature `testing`) — `FakeForge`: either forge's API on the loopback address
     (pages, details, repository, who is signed in, opening; GitLab's pipelines, `FakePipeline`
-    and `FakeJob`, a page or one whole, or refused with GitLab's words, `pipelines_refused`; the
+    and `FakeJob`, a page or one whole, or refused with GitLab's words, `pipelines_refused`, or
+    listed to nobody, `pipelines_hidden`; the
     bearer token checked; a rate limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
     signed in through a sandbox's `store` helper (and an askpass script): pipelines a page at a
     time and one whole (stages in order, jobs, pages), and none asked of GitHub.
@@ -1090,7 +1095,11 @@ writes paths), never `OsStrExt`.
     through), which a notice under the commit table says (`views/pipeline.rs`'s `unread`: the
     reason, cut to its line, whole on hover; Dismiss, until the reason changes; not while the
     host wants a sign-in, which the top bar offers). A project whose pipelines the account
-    can't see, or with CI/CD off, has none: GitLab answers `pipelines: null`, no error.
+    can't see, or with CI/CD off, has none: GitLab answers `pipelines: null`, no error. Each
+    full read says how each project went (`CiSeen`: how many and the newest, hidden by GitLab,
+    skipped, failed and why: `seen`); `on_history` counts in a job how many of the commits with
+    a pipeline a history shows (its names scanned once against the marks' sorted commits),
+    again only for another history or other marks.
   - `stats.rs` — a history's statistics, for its Stats page: `read_stats` reads every row's
     commit once, through gitoxide on up to 8 threads a block of rows at a time (else one
     `cat-file`), each thread parsing headers into compact `Read`s (an author line's FNV-1a
@@ -1377,7 +1386,11 @@ writes paths), never `OsStrExt`.
     list grows or is replaced (`badges_at`, a binary search). `pull_request_for` (a branch's
     open one), `remote_of`, `repository_of`, `needs_sign_in` (the host whose requests want a
     sign-in, and whether it refused), `signed_in` and `signed_out` (a sign-in made or undone
-    elsewhere taken by the host's account, and everything read again); `kind`, `kind_of`,
+    elsewhere taken by the host's account, and everything read again); every remote as worked
+    out (`Resolved`: each `SeenRemote`'s address as git reaches it and the repository it is, or
+    none, and the hosts known then; logged at debug level; the first working out applied even
+    where no remote is a forge's), and why they couldn't be (`resolve_problem`, kept, not
+    dropped); `index_of`, `pipelines` (the `Pipelines`, for the Overview); `kind`, `kind_of`,
     `nouns`. Each forge's words:
     `request_noun` ("pull request", "merge request"), `request_number` (`#12`, `!12`), and
     `fork_head` (`refs/pull/12/head` into `pr/12`, `refs/merge-requests/12/head` into
@@ -1826,6 +1839,14 @@ writes paths), never `OsStrExt`.
     meanwhile. `ci_look` (each status's icon and colour: the theme's `ok`, `danger`, `running`,
     `paused`, `muted`), `ci_words` ("passed with warnings", "waiting for someone to start a
     job"), `duration` ("1 min 35 s").
+    `views/forge_overview.rs` — the repository's Overview's "GitHub and GitLab" card: the hosts
+    egit knows, then each remote (its address, "Recognized as" a GitHub repository or GitLab
+    project, or nothing: its host isn't one egit knows, "Open Profile"; the account it is read
+    with: signed in as, not (Sign in…), or the credential git's helper keeps; its pull or merge
+    requests open, or why none were read; on GitLab its pipelines: how many read and the newest,
+    or hidden by GitLab, skipped, failed), and how many of the commits the pipelines ran for
+    this history shows ("In this history"); Read again. So a request or a mark that doesn't
+    show says why.
     `views/pulls.rs` — `PullRequestView`, the pull (or merge) requests in the commit table's
     place, named their forge's way (a `Tool`, from the top bar's "N pull requests" or "N merge
     requests" button, or a badge): a bar (repositories,
@@ -2251,7 +2272,10 @@ writes paths), never `OsStrExt`.
     again at once: `read_pipelines_now`), its page (stages in order, jobs and their words, "may
     fail"; rendered), a job opening its page (recorded), Show the commit selecting it, and
     Escape closing the page; and pipelines GitLab refuses: the notice under the commit table
-    with its words (rendered), dismissed, then the mark once they can be read.
+    with its words (rendered), dismissed, then the mark once they can be read; and the
+    Overview's card (rendered): a remote on a host egit doesn't know, the project, the
+    credential, 2 open, 3 pipelines read and the newest, 2 of their 3 commits in this history
+    (the fork's isn't fetched), then GitLab listing none to the account, read again.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,

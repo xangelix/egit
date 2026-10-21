@@ -99,6 +99,8 @@ impl Http {
         } else {
             "application/json"
         };
+        let started = std::time::Instant::now();
+        let method = if body.is_some() { "POST" } else { "GET" };
         let sent = if let Some(body) = body {
             let mut request = self
                 .agent
@@ -121,7 +123,10 @@ impl Http {
             }
             request.call()
         };
-        let mut response = sent.map_err(|error| self.network(&error))?;
+        let mut response = sent.map_err(|error| {
+            tracing::debug!(host = self.host.name(), method, url, %error, "the forge couldn't be reached");
+            self.network(&error)
+        })?;
         let header = |names: [&str; 2]| {
             names.iter().find_map(|name| {
                 response
@@ -146,6 +151,16 @@ impl Http {
             .limit(ANSWER_LIMIT)
             .read_to_vec()
             .map_err(|error| self.network(&error))?;
+        // What was asked and how it went; never the token.
+        tracing::debug!(
+            host = self.host.name(),
+            method,
+            url,
+            status,
+            bytes = body.len(),
+            ms = started.elapsed().as_millis(),
+            "the forge answered"
+        );
         Ok(Answer {
             status,
             body,

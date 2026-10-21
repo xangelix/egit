@@ -219,8 +219,20 @@ pub const fn has_pipelines(kind: ForgeKind) -> bool {
     matches!(kind, ForgeKind::GitLab)
 }
 
-/// Reads `repository`'s latest pipelines, the newest first, a page at a time (each handed to
-/// `found` as it lands), up to `limit` of them. Nothing on a forge without pipelines.
+/// Whether GitLab listed a project's pipelines to the account.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PipelineListing {
+    /// Listed (none, perhaps: the project has run none).
+    Listed,
+    /// Hidden: GitLab gives no list (CI/CD turned off for the project, or the account's role
+    /// may not see its pipelines), or the forge has none (GitHub).
+    Hidden,
+}
+
+/// Reads `repository`'s latest pipelines, and says whether GitLab listed them at all.
+///
+/// The newest first, a page at a time (each handed to `found` as it lands), up to `limit` of
+/// them. Nothing on a forge without pipelines.
 ///
 /// # Errors
 ///
@@ -231,9 +243,9 @@ pub fn pipelines(
     limit: u32,
     cancel: &CancelToken,
     mut found: impl FnMut(Vec<Pipeline>),
-) -> Result<(), ForgeError> {
+) -> Result<PipelineListing, ForgeError> {
     if !has_pipelines(repository.host().kind()) {
-        return Ok(());
+        return Ok(PipelineListing::Hidden);
     }
     let mut after: Option<String> = None;
     let mut read = 0_u32;
@@ -243,7 +255,7 @@ pub fn pipelines(
         }
         let first = PAGE.min(limit.saturating_sub(read));
         if first == 0 {
-            return Ok(());
+            return Ok(PipelineListing::Listed);
         }
         let data: PipelinesData = graphql(
             account,
@@ -258,15 +270,26 @@ pub fn pipelines(
             .ok_or_else(|| not_found(account, repository.full_name()))?
             .pipelines
         else {
-            return Ok(());
+            tracing::debug!(
+                project = %repository.full_name(),
+                "GitLab lists no pipelines to this account"
+            );
+            return Ok(PipelineListing::Hidden);
         };
         let host = repository.host();
-        let page: Vec<Pipeline> = connection
-            .nodes
+        let nodes: Vec<PipelineNode> = connection.nodes.into_iter().flatten().collect();
+        let given = nodes.len();
+        let page: Vec<Pipeline> = nodes
             .into_iter()
-            .flatten()
             .filter_map(|node| node.into_pipeline(host, repository))
             .collect();
+        if page.len() < given {
+            tracing::debug!(
+                project = %repository.full_name(),
+                unread = given.saturating_sub(page.len()),
+                "pipelines without a number or a commit left out"
+            );
+        }
         read = read.saturating_add(u32::try_from(page.len()).unwrap_or(u32::MAX));
         let next = connection
             .page_info
@@ -278,7 +301,7 @@ pub fn pipelines(
         after.clone_from(&next);
         found(page);
         if !more {
-            return Ok(());
+            return Ok(PipelineListing::Listed);
         }
     }
 }

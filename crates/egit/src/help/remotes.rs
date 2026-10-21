@@ -907,6 +907,45 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "forge-overview",
+        group: Group::Remotes,
+        title: "A repository on GitHub or GitLab",
+        on: &[
+            "Recognized as",
+            "Account",
+            "Pipelines",
+            "In this history",
+            "Read again",
+            "Open Profile",
+        ],
+        what: "The repository's Overview says what egit made of each remote: its address as git \
+               reaches it (insteadOf applied), the GitHub repository or GitLab project it is, or \
+               nothing when its host isn't github.com, gitlab.com, or one Profile lists; the \
+               account the requests are read with; how many are open, or why none could be \
+               read; and on GitLab the pipelines read (each project's newest 500), the newest \
+               of them, and how many of the commits they ran for this history shows. Read again \
+               reads the requests and pipelines again.",
+        git: "git ls-remote --get-url <remote>; GitLab's GraphQL API: project { pipelines }",
+        cases: &[
+            (
+                "Recognized as nothing?",
+                "Its host isn't one egit knows: list your GitHub Enterprise or GitLab host in Profile. An ssh remote must name the same host as the web pages (or an ssh alias of it): a separate ssh host isn't recognized.",
+            ),
+            (
+                "Pipelines read, but no marks?",
+                "In this history says how many of their commits the history shows: none means they ran for commits not fetched here, or for commits GitLab made itself (a merge request's merged results).",
+            ),
+            (
+                "GitLab lists none to this account?",
+                "GitLab gives no pipelines at all when CI/CD is turned off for the project, or when your role in it may not see them (a Guest on a private project).",
+            ),
+            (
+                "More detail?",
+                "Start egit with EGIT_LOG=egit_forge=debug,egit_app=debug: every request to the forge (its address, status, size, time; never the token) and what each remote was taken for is logged to standard error.",
+            ),
+        ],
+    },
+    Topic {
         id: "forge-hosts",
         group: Group::Remotes,
         title: "GitHub and GitLab hosts",
