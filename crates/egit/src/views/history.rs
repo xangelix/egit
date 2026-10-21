@@ -284,6 +284,8 @@ enum Tool {
     FileHistory(FileHistoryView),
     PullRequests(PullRequestView),
     Pipeline(Box<PipelineView>),
+    /// A job's log, in its pipeline's page's place (kept, to go back to).
+    Job(Box<super::job::JobView>),
     Patch(PatchView),
     Reflog(Box<ReflogView>),
     Lfs(Box<super::lfs::LfsView>),
@@ -651,6 +653,16 @@ impl HistoryView {
     }
 
     /// Shows `mark`'s pipeline in the commit table's place.
+    /// The job's log shown in the commit table's place, as text, and whether it follows its
+    /// end.
+    #[cfg(test)]
+    pub(crate) fn job_log(&self) -> Option<(String, bool)> {
+        match &self.tool {
+            Some(Tool::Job(view)) => view.shown(),
+            _ => None,
+        }
+    }
+
     fn show_pipeline(&mut self, mark: crate::ci::CiMark) {
         self.file = None;
         self.tool = Some(Tool::Pipeline(Box::new(PipelineView::new(mark))));
@@ -1470,41 +1482,45 @@ fn panels(
         hooks,
     } = work;
     side_panel(ui, shared, history, view, lists, actions);
+    // A job's log takes the details' room too: its lines are wide, and nothing is selected.
+    let details_shown = !matches!(view.tool, Some(Tool::Job(_)));
     // Never so wide the commit table (or a file) is left without room, where there is room.
     let widest = (ui.available_width() - CENTRAL_LEAST).clamp(260.0, 900.0);
-    egui::Panel::right(Id::new(("history-details", shared.id)))
-        .resizable(true)
-        .default_size(380.0_f32.min(widest))
-        .size_range(260.0..=widest)
-        // Its first row the window's head band, from the top.
-        .frame(chrome(shared).inner_margin(Margin {
-            left: 12,
-            right: 12,
-            top: 0,
-            bottom: 12,
-        }))
-        .show(ui, |ui| {
-            if view.work_selected {
-                let commit = CommitSide {
-                    committing,
-                    commits_made,
-                    sign_by_default,
-                    run: commit_run,
-                    hooks,
-                    head: shared.head.commit,
-                    git: shared.git,
-                    repository: shared.repository,
-                    objects: &history.objects,
-                    me: shared
-                        .config
-                        .and_then(|config| config.get("user.email"))
-                        .and_then(|entry| entry.value),
-                };
-                work_details(ui, shared, view, staging, commit, actions);
-            } else {
-                details(ui, shared, history, view);
-            }
-        });
+    if details_shown {
+        egui::Panel::right(Id::new(("history-details", shared.id)))
+            .resizable(true)
+            .default_size(380.0_f32.min(widest))
+            .size_range(260.0..=widest)
+            // Its first row the window's head band, from the top.
+            .frame(chrome(shared).inner_margin(Margin {
+                left: 12,
+                right: 12,
+                top: 0,
+                bottom: 12,
+            }))
+            .show(ui, |ui| {
+                if view.work_selected {
+                    let commit = CommitSide {
+                        committing,
+                        commits_made,
+                        sign_by_default,
+                        run: commit_run,
+                        hooks,
+                        head: shared.head.commit,
+                        git: shared.git,
+                        repository: shared.repository,
+                        objects: &history.objects,
+                        me: shared
+                            .config
+                            .and_then(|config| config.get("user.email"))
+                            .and_then(|entry| entry.value),
+                    };
+                    work_details(ui, shared, view, staging, commit, actions);
+                } else {
+                    details(ui, shared, history, view);
+                }
+            });
+    }
     if let Some(asked) = view.asked.take() {
         carry_out(asked, shared, view, actions);
     }
@@ -2627,6 +2643,45 @@ fn split_line(ui: &mut Ui, height: f32, top: f32) {
     }
 }
 
+/// A job's log in the commit table's place; returns whether it went back to its pipeline.
+fn job_log(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    log: &mut super::job::JobView,
+    actions: &mut Vec<Action>,
+) -> bool {
+    match super::job::show(ui, shared, log) {
+        Some(super::job::JobEvent::Back) => true,
+        Some(super::job::JobEvent::Open(url)) => {
+            actions.push(Action::OpenUrl(url));
+            false
+        }
+        None => false,
+    }
+}
+
+/// Opens a job's log in its pipeline's page's place (`opened`), or goes back to that page
+/// (`left`).
+fn switch_job_tool(
+    ui: &Ui,
+    shared: &Shared<'_>,
+    view: &mut HistoryView,
+    (opened, left): (Option<Box<egit_forge::Job>>, bool),
+) {
+    if let Some(job) = opened
+        && let Some(Tool::Pipeline(page)) = view.tool.take()
+    {
+        view.tool = Some(Tool::Job(Box::new(super::job::JobView::new(
+            page,
+            *job,
+            shared.forge,
+            ui.ctx(),
+        ))));
+    } else if left && let Some(Tool::Job(log)) = view.tool.take() {
+        view.tool = Some(Tool::Pipeline(log.pipeline));
+    }
+}
+
 /// The tool in the commit table's place, and what it asks.
 fn tool(
     ui: &mut Ui,
@@ -2636,6 +2691,8 @@ fn tool(
     actions: &mut Vec<Action>,
 ) {
     let (mut menu, mut wanted_file) = (None, None);
+    // A job's log opened from its pipeline's page, or that page gone back to.
+    let (mut job_opened, mut job_left) = (None, false);
     let asked = match &mut view.tool {
         Some(Tool::Rebase(rebase)) => match rebase::show(ui, shared, rebase) {
             Some(RebaseEvent::Start(task)) => {
@@ -2665,7 +2722,15 @@ fn tool(
                     actions.push(Action::OpenUrl(url));
                     None
                 }
+                PipelineEvent::Job(job) => {
+                    job_opened = Some(job);
+                    None
+                }
             })
+        }
+        Some(Tool::Job(log)) => {
+            job_left = job_log(ui, shared, log, actions);
+            None
         }
         Some(Tool::Submodules(page)) => super::submodules::show(ui, shared, page)
             .and_then(|event| submodules_event(event, shared, actions)),
@@ -2697,6 +2762,7 @@ fn tool(
         }
         None => None,
     };
+    switch_job_tool(ui, shared, view, (job_opened, job_left));
     if let Some(asked) = menu {
         carry_out(asked, shared, view, actions);
     }

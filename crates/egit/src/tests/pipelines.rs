@@ -18,6 +18,7 @@ use super::screens::{
     pull_requests_read, render, settle, show_panel, wait_for_label,
 };
 use crate::app::EgitApp;
+use crate::theme::icon;
 
 const TOKEN: &str = "glpat-t0ken";
 
@@ -134,18 +135,27 @@ fn each_commit_s_pipeline_is_marked_and_shown_down_to_its_jobs() {
     harness.get_by_label("may fail");
     render(&mut harness, "pipeline");
 
-    // A job opens its page on GitLab.
+    // A job shows its log (none, here), its page on GitLab a button away; Escape goes back.
     harness
         .get_by_role_and_label(Role::Button, "lint: failed")
+        .click();
+    wait_for_label(
+        &mut harness,
+        "This job has no log (it may have been erased).",
+    );
+    harness
+        .get_by_label(&format!("{}  Open on GitLab", icon::ARROW_SQUARE_OUT))
         .click();
     harness.run_steps(2);
     assert_eq!(
         harness.state().state.opener.recorded(),
         [format!(
-            "http://{}/team/sub/tool/-/jobs/lint",
+            "http://{}/team/sub/tool/-/jobs/900302",
             fake.address()
         )]
     );
+    harness.key_press(egui::Key::Escape);
+    wait_for_label(&mut harness, "compile: passed");
 
     // Show the commit: back in the history, it selected.
     harness.get_by_label("Show the commit").click();
@@ -385,7 +395,7 @@ fn an_ssh_host_on_a_name_of_its_own_is_tied_to_its_gitlab_in_a_click() {
             .pipeline_of(&egit_git::ObjectId::from_hex(head.as_bytes()).unwrap())
             .is_some()
     });
-    harness.get_by_label("2 open");
+    wait_for_label(&mut harness, "2 open");
     let kept = sandbox
         .run(
             sandbox.home(),
@@ -409,4 +419,102 @@ fn an_ssh_host_on_a_name_of_its_own_is_tied_to_its_gitlab_in_a_click() {
         .actions
         .push(crate::app::Action::ShowProfile);
     wait_for_label(&mut harness, "    its ssh: git-ssh.example.invalid");
+}
+
+/// A runner's line: its timestamp (a second after 10:21:00), then `text`.
+fn runner(second: u32, text: &str) -> String {
+    format!("2024-05-01T10:21:{second:02}.000000Z 00O {text}\n")
+}
+
+/// Whether the job's log shown holds `text`.
+fn log_holds(text: &'static str) -> impl Fn(&mut EgitApp) -> bool {
+    move |app| {
+        app.state.repos[0]
+            .history_view
+            .job_log()
+            .is_some_and(|(log, _)| log.contains(text))
+    }
+}
+
+#[test]
+fn a_job_s_log_shows_and_follows_it_as_it_runs() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    let head = commit_of(&sandbox, &work, "HEAD");
+    let mut running = pipeline(9_004, &head, "RUNNING", "RUNNING");
+    let unit = &mut running.stages[1].2[0];
+    unit.id = 4_321;
+    unit.log = [
+        runner(
+            0,
+            "\u{1b}[0Ksection_start:1714558860:prepare_executor\r\u{1b}[0K\u{1b}[36;1mPreparing the docker executor\u{1b}[0;m",
+        ),
+        runner(1, "Using docker image rust:1.99"),
+        runner(
+            4,
+            "\u{1b}[0Ksection_end:1714558864:prepare_executor\r\u{1b}[0K\u{1b}[0Ksection_start:1714558864:step_script\r\u{1b}[0K\u{1b}[36;1mExecuting \"step_script\" stage of the job script\u{1b}[0;m",
+        ),
+        runner(5, "\u{1b}[32;1m$ cargo test\u{1b}[0;m"),
+        runner(9, "running 3 tests"),
+    ]
+    .concat();
+    fake.state().repositories[0].pipelines = vec![running];
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+    wait_for_label(&mut harness, "Pipeline #9004: running");
+    harness
+        .get_by_role_and_label(Role::Button, "Pipeline #9004: running")
+        .click();
+
+    // A job's click shows its log: its sections' markers and the runner's timestamps out.
+    wait_for_label(&mut harness, "unit: running");
+    harness
+        .get_by_role_and_label(Role::Button, "unit: running")
+        .click();
+    settle(&mut harness, "the log", log_holds("running 3 tests"));
+    let (log, following) = harness.state().state.repos[0]
+        .history_view
+        .job_log()
+        .unwrap();
+    assert_eq!(
+        log,
+        "Preparing the docker executor\nUsing docker image rust:1.99\nExecuting \"step_script\" \
+         stage of the job script\n$ cargo test\nrunning 3 tests\n"
+    );
+    assert!(following);
+    harness.get_by_label_contains("Sections");
+    render(&mut harness, "job-log");
+
+    // As it runs, what it writes comes; once it ends, it says so and stops.
+    fake.state().repositories[0].pipelines[0].stages[1].2[0]
+        .log
+        .push_str(&runner(12, "test parse ... ok"));
+    settle(
+        &mut harness,
+        "the next line",
+        log_holds("test parse ... ok"),
+    );
+    fake.state().repositories[0].pipelines[0].stages[1].2[0]
+        .log
+        .push_str(&runner(14, "\u{1b}[32;1mJob succeeded\u{1b}[0;m"));
+    fake.state().repositories[0].pipelines[0].stages[1].2[0].status = "SUCCESS".to_owned();
+    settle(&mut harness, "the job's end", log_holds("Job succeeded"));
+    wait_for_label(&mut harness, &format!("{}  unit", icon::CHECK_CIRCLE));
+
+    // Escape goes back to the pipeline.
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
+    wait_for_label(&mut harness, "compile: passed");
+    assert!(
+        harness.state().state.repos[0]
+            .history_view
+            .job_log()
+            .is_none()
+    );
 }

@@ -1258,7 +1258,7 @@ pub(super) const TOPICS: &[Topic] = &[
         cases: &[
             (
                 "Its logs?",
-                "A job opens its page on GitLab, in your browser: its log, artifacts, retrying it, and the rest stay GitLab's.",
+                "A job's click shows its log here, following it while it runs; its artifacts, retrying it, and the rest stay GitLab's (Open on GitLab).",
             ),
             (
                 "A job run again?",
@@ -1270,10 +1270,11 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "pipeline-job",
         group: Group::Remotes,
         title: "A pipeline's jobs",
-        on: &[],
+        on: &["Show its log"],
         what: "A job of a pipeline's stage: its status (as the marks colour them), its name, \
                whether it may fail without failing the pipeline or waits to be started by hand, \
-               and how long it ran. A click opens its page on GitLab, in your browser.",
+               and how long it ran. A click shows its log; its menu opens its page on GitLab, in \
+               your browser.",
         git: "",
         cases: &[
             (
@@ -1282,7 +1283,39 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "A trigger job?",
-                "It starts another pipeline (a child's, or another project's): a click opens that one.",
+                "It starts another pipeline (a child's, or another project's): it has no log, and a click opens that pipeline on GitLab.",
+            ),
+        ],
+    },
+    Topic {
+        id: "job-log",
+        group: Group::Remotes,
+        title: "A job's log",
+        on: &["Pipeline #*"],
+        what: "A job's log as GitLab shows it, in the pipeline's place: its colours, each line's \
+               time beside its number (where the runner writes them), progress lines as their \
+               last state, and its sections' headers marked; Sections jumps to one and says how \
+               long it took. While the job runs, egit asks how it stands and reads what its log \
+               gained every two seconds, the view following its end while it rests there: \
+               scrolled up, it stays put; back at the end, it follows again. ⌘F (Ctrl+F) finds in \
+               it, a drag selects and ⌘C (Ctrl+C) copies. Escape, or the pipeline's button, goes back.",
+        git: "GitLab's REST API: GET /projects/:id/jobs/:job_id, and …/trace (a Range from what was read)",
+        cases: &[
+            (
+                "Only part of a long log?",
+                "egit keeps its first 128 MiB (GitLab's own limit is 100 MiB by default); the rest is on GitLab.",
+            ),
+            (
+                "Large logs and the network?",
+                "GitLab's API sends a log whole: egit asks only for what is new, and where the server sends it all anyway, reads it compressed and less often as it grows (up to every 15 seconds).",
+            ),
+            (
+                "Waiting for a runner?",
+                "A job that is pending has no log yet: it shows as soon as a runner takes it up and writes.",
+            ),
+            (
+                "Retry or cancel it?",
+                "On GitLab (Open on GitLab): egit reads, never changes, a pipeline.",
             ),
         ],
     },

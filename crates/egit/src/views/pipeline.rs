@@ -170,6 +170,8 @@ pub(super) enum PipelineEvent {
     Close,
     ShowCommit(ObjectId),
     Open(String),
+    /// A job's log.
+    Job(Box<Job>),
 }
 
 impl PipelineView {
@@ -183,6 +185,16 @@ impl PipelineView {
             landed: false,
             cancel: CancelToken::new(),
         }
+    }
+
+    /// Its repository's place among the forge's.
+    pub(super) const fn repository(&self) -> usize {
+        self.mark.repository
+    }
+
+    /// Its number, as its page names it.
+    pub(super) const fn number(&self) -> u64 {
+        self.mark.pipeline.id
     }
 
     /// Reads it (again) when due; schedules the next read while it may still change.
@@ -478,8 +490,8 @@ fn stages(ui: &mut Ui, palette: Palette, details: &PipelineDetails) -> Option<Pi
                 match row {
                     Row::Stage(stage) => stage_row(ui, palette, stage),
                     Row::Job(job) => {
-                        if let Some(url) = job_row(ui, palette, job, place) {
-                            event = Some(PipelineEvent::Open(url));
+                        if let Some(asked) = job_row(ui, palette, job, place) {
+                            event = Some(asked);
                         }
                     }
                 }
@@ -513,11 +525,13 @@ fn stage_row(ui: &mut Ui, palette: Palette, stage: &Stage) {
 }
 
 /// A job's row, stepped in under its stage: its status, name, what is special about it, and
-/// how long it ran; a click opens its page. Returns that page when clicked.
-fn job_row(ui: &mut Ui, palette: Palette, job: &Job, place: usize) -> Option<String> {
+/// how long it ran; a click shows its log (a trigger job's, its downstream pipeline's page on
+/// GitLab), its menu opens its page. Returns what was asked.
+fn job_row(ui: &mut Ui, palette: Palette, job: &Job, place: usize) -> Option<PipelineEvent> {
     let (rect, _) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
-    let sense = if job.url.is_some() {
+    let opens = job.id.is_some() || job.url.is_some();
+    let sense = if opens {
         Sense::click()
     } else {
         Sense::hover()
@@ -527,7 +541,7 @@ fn job_row(ui: &mut Ui, palette: Palette, job: &Job, place: usize) -> Option<Str
     response.widget_info(|| {
         egui::WidgetInfo::labeled(
             egui::WidgetType::Button,
-            job.url.is_some(),
+            opens,
             format!("{}: {words}", job.name),
         )
     });
@@ -548,7 +562,9 @@ fn job_row(ui: &mut Ui, palette: Palette, job: &Job, place: usize) -> Option<Str
     let (glyph, color) = ci_look(job.status, palette);
     row.label(RichText::new(glyph).color(color));
     row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if job.url.is_some() {
+        if job.id.is_some() {
+            ui.label(muted(ui, icon::TERMINAL_WINDOW));
+        } else if job.url.is_some() {
             ui.label(muted(ui, icon::ARROW_SQUARE_OUT));
         }
         let took = job.duration.map(duration).unwrap_or_default();
@@ -574,12 +590,35 @@ fn job_row(ui: &mut Ui, palette: Palette, job: &Job, place: usize) -> Option<Str
             }
         });
     });
-    let response = response.on_hover_text(if job.url.is_some() {
-        "Open the job's page on GitLab: its log, artifacts, and the rest"
+    let response = response.on_hover_text(if job.id.is_some() {
+        "Show its log, as it runs"
+    } else if job.url.is_some() {
+        "Open the pipeline it runs on GitLab"
     } else {
         "GitLab gives no page for it"
     });
-    response.clicked().then(|| job.url.clone()).flatten()
+    let mut asked = None;
+    if let Some(url) = &job.url {
+        response.context_menu(|ui| {
+            super::actions::menu_rows(ui);
+            if job.id.is_some()
+                && super::actions::item(ui, (icon::TERMINAL_WINDOW, "Show its log"), Ok(()))
+            {
+                asked = Some(PipelineEvent::Job(Box::new(job.clone())));
+            }
+            if super::actions::item(ui, (icon::ARROW_SQUARE_OUT, "Open on GitLab"), Ok(())) {
+                asked = Some(PipelineEvent::Open(url.clone()));
+            }
+        });
+    }
+    if response.clicked() {
+        asked = if job.id.is_some() {
+            Some(PipelineEvent::Job(Box::new(job.clone())))
+        } else {
+            job.url.clone().map(PipelineEvent::Open)
+        };
+    }
+    asked
 }
 
 /// A small label in a frame.

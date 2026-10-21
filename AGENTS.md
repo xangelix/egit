@@ -43,6 +43,7 @@ it.
 | 29 | Repositories on other computers, over SSH | done; awaiting the owner's review |
 | 30 | GitLab's CI/CD pipelines: a mark on each commit, a pipeline's stages and jobs | done; awaiting the owner's review |
 | 31 | Signing in to GitHub and GitLab, offered wherever it counts, with a token | done; awaiting the owner's review |
+| 32 | A GitLab job's log in egit, followed as it runs | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -238,7 +239,8 @@ writes paths), never `OsStrExt`.
   - `transcript.rs` — `Transcript`: lines (`LineKind`: command, out, err (hooks' output: git
     sends it there), ended), a `\r` rewriting the line under way as a terminal does (shown live),
     SGR colours turned into `Span`s (`Style`: 16, 256, or exact colours, bold, faint; a colour
-    lasting across lines until reset), other escapes dropped; at most 20,000 lines (the oldest
+    lasting across lines until reset; `escape_sequence` and `apply_sgr` public, a job's log
+    parsed by them too), other escapes dropped; at most 20,000 lines (the oldest
     dropped) of 16 KiB; `read` lends the `Log` (only the lines shown are touched).
   - `hooks.rs` — `installed_hooks`: the folder git runs hooks from (`rev-parse --git-path
     hooks`, which follows `core.hooksPath`) and those of `KNOWN` there that it would run
@@ -743,6 +745,8 @@ writes paths), never `OsStrExt`.
     store), the environment's proxy (none for the loopback address), no redirects, 10 s to
     connect and 60 s in all, answers of 32 MiB at most; the token a sensitive bearer header,
     built in a zeroizing string, and refused without HTTPS (but to the loopback address);
+    `stream`: a GET's body handed over a part at a time with its status and `Content-Range`
+    (a `Range` asked of the bytes as stored: `Accept-Encoding: identity`), never held whole;
     GitHub's media type and API version only to GitHub; either forge's rate-limit headers.
     Each request logged at debug level (method, address, status, size, time; never the token),
     and each GraphQL error with the query's name (`answer.rs`): `EGIT_LOG=egit_forge=debug`.
@@ -790,6 +794,17 @@ writes paths), never `OsStrExt`.
     which counts as none. `Pictures::find` asks them in order; `fetch`: no credential, so
     redirects are followed, HTTPS only (but every source on the loopback address, for tests),
     1 MiB at most; `Fetched::Found` or `Missing` (404).
+  - `job_log.rs` — a GitLab job's log: `job` (how it stands, REST: status, stage, started,
+    finished, duration, why it failed, its page), `read_log` (its trace after the bytes read:
+    asked as a range where wanted, a 206 from elsewhere refused; a whole answer skipped as far
+    as read, as it streams; `LogRead`: read (how many new, ranged or not), shorter (erased or
+    begun again: from the start), missing). `JobLog`, the parser fed as it comes: a runner's
+    timestamp prefix (`2024-05-14T11:19:20.000000Z 00O `, `+` continuing the line before:
+    joined) taken off and kept a line, SGR colours as `Run`s (a style from a byte on), other
+    escapes dropped, a `\r` rewriting the line under way (the rest's colours still taking
+    effect), sections' markers noted (`Section`: name, header line, start and end time and
+    line, collapsed, depth; a line holding only markers isn't one) and out of the text; at
+    most `MOST_TEXT` (128 MiB) kept; `parts` (the line under way as ended) for drawing.
   - `pipelines.rs` — GitLab's CI/CD pipelines through its GraphQL API (`has_pipelines`: GitLab
     alone; GitHub's Actions are a pull request's checks): `pipelines` (a project's newest, 100 a
     page, each page handed over as it lands, up to a limit; none for a project whose pipelines
@@ -806,7 +821,8 @@ writes paths), never `OsStrExt`.
   - `testing.rs` (feature `testing`) — `FakeForge`: either forge's API on the loopback address
     (pages, details, repository, who is signed in, opening; GitLab's pipelines, `FakePipeline`
     and `FakeJob`, a page or one whole, or refused with GitLab's words, `pipelines_refused`, or
-    listed to nobody, `pipelines_hidden`; the
+    listed to nobody, `pipelines_hidden`; a job's number (made up when 0) and log, served by
+    REST, its state and its trace (whole, or from a `Range` when `ranges`); the
     bearer token checked; a rate limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
     signed in through a sandbox's `store` helper (and an askpass script): pipelines a page at a
     time and one whole (stages in order, jobs, pages), and none asked of GitHub.
@@ -1089,6 +1105,15 @@ writes paths), never `OsStrExt`.
     requests' card: its account; from Profile: the user's) and `Action::SignOut`. The banner
     under a repository's top bar (`views/history.rs`'s `sign_in_banner`: what signing in shows,
     Sign in…, and Not now, which hides it for that host from then on, kept in egui's memory).
+  - `job_log.rs` — a GitLab job's log followed: `JobFollower` (a thread of its own, stopped
+    when dropped) asks how the job stands and reads what the log gained (a range while the
+    host answers them, else whole, compressed, skipped as far as read) every `EVERY` (2 s; a
+    second more for each MiB sent whole or 4 MiB laid out, at most `LONGEST`, 15 s), a log
+    begun again read from the start, a failure tried again after 10 s; each read laid out
+    (`LogSource`: its text measured, colours by `views::terminal_color`, faint ones nearer the
+    background, section headers on the surface's tone, each line's time beside its number in
+    the viewer's zone) and handed over (`Following`: the job, the log, its version, missing,
+    the problem, done) until the job has ended and its log is whole.
   - `ci.rs` — a repository's GitLab pipelines, for the commit table's marks (`Pipelines`, its
     forge's: `RepoForge::pipeline_of`, `has_pipelines`): each GitLab project's newest `LIMIT`
     (500) read in a job when the remotes are known, and again whenever the requests are
@@ -1842,13 +1867,22 @@ writes paths), never `OsStrExt`.
     `app::reach`; `format::progress` and Cancel while it runs, `CancelClone`), then opens the
     repository where it was made (a `Location`); cancelled, it says git removed what it had
     made.
+    `views/job.rs` — `JobView`, a job's log in its pipeline's page's place (`Tool::Job`, the page
+    kept to go back to; the details panel left out, so the log has its room): a bar (back,
+    "Pipeline #9004"; the job's status and name, how long it has run, why it failed; Open on
+    GitLab, Wrap lines, Sections: each section stepped in by depth with how long it took, a
+    click scrolling to its header; a spinner while followed), then the log in the text grid
+    (find, select, copy), following its end while it rests there (`TextGrid::is_at_end`,
+    `scroll_to_end`): scrolled up it stays, back at the end it follows; before there is a log,
+    why (waiting for a runner, manual, scheduled, skipped, cancelled); Escape goes back.
     `views/pipeline.rs` — `PipelineView`, a GitLab pipeline in the commit table's place (from
     its mark; Escape or History goes back): a bar (its number and status in words, Refresh,
     Open on GitLab, a spinner while read), what it ran for, its commit (Show the commit), who
     started it and how, how long it ran (or has so far); then its stages in order, each a header
     (status, name, how many jobs) over its jobs (status, name, "may fail", "manual", status in
-    words, duration, the arrow of a page outside), drawn as far as they show (`show_rows`); a
-    job's click opens its page in the browser, egit's last step. Read when shown and again
+    words, duration, a log's icon, or the arrow of a page outside), drawn as far as they show
+    (`show_rows`); a job's click shows its log (`PipelineEvent::Job`), a trigger job's opens the
+    pipeline it runs in the browser; its menu: Show its log, Open on GitLab. Read when shown and again
     every 5 s while it, or a job of it, may still change (`READ_AGAIN`), what was read shown
     meanwhile. `ci_look` (each status's icon and colour: the theme's `ok`, `danger`, `running`,
     `paused`, `muted`), `ci_words` ("passed with warnings", "waiting for someone to start a
@@ -2293,7 +2327,10 @@ writes paths), never `OsStrExt`.
     with its words (rendered), dismissed, then the mark once they can be read; and the
     Overview's card (rendered): a remote on a host egit doesn't know, the project, the
     credential, 2 open, 3 pipelines read and the newest, 2 of their 3 commits in this history
-    (the fork's isn't fetched), then GitLab listing none to the account, read again; and a
+    (the fork's isn't fetched), then GitLab listing none to the account, read again; a running
+    job's log (rendered): its sections' markers and the runner's timestamps out, lines it writes
+    coming as it runs, its end said and the following stopped, Escape back to the pipeline;
+    and a
     remote on `ssh://git@git-ssh.example.invalid:2222/…` (fetched through `insteadOf`): signed
     in, the fake GitLab says its ssh is there and the project is read unasked (its merge
     requests, its pipeline's mark, "its ssh on …"; nothing written to the settings); not signed

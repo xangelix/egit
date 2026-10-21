@@ -189,6 +189,8 @@ pub(crate) struct TextGrid {
     drawn_texts: Vec<Rect>,
     /// Last frame's cell width and row height.
     drawn_size: (f32, f32),
+    /// Whether the view rested at the text's end last frame (all of it fitting, too).
+    at_end: bool,
     find: Find,
 }
 
@@ -256,6 +258,7 @@ impl TextGrid {
             drawn: Vec::new(),
             drawn_texts: Vec::new(),
             drawn_size: (0.0, 0.0),
+            at_end: true,
             find: Find::default(),
         }
     }
@@ -362,6 +365,20 @@ impl TextGrid {
         self.offset = 0.0;
     }
 
+    /// Scrolls to the end: the last row resting on the bottom edge (next frame).
+    pub(crate) const fn scroll_to_end(&mut self) {
+        self.top = Position {
+            line: u32::MAX,
+            cell: u32::MAX,
+        };
+        self.offset = 0.0;
+    }
+
+    /// Whether the view rested at the text's end when last drawn (or all of it fit).
+    pub(crate) const fn is_at_end(&self) -> bool {
+        self.at_end
+    }
+
     /// Draws `source` in the space left in `ui`.
     pub(crate) fn show(&mut self, ui: &mut Ui, source: &dyn GridSource) -> Response {
         self.show_panes(ui, &[source])
@@ -419,6 +436,10 @@ impl TextGrid {
         self.top.cell = wrap.row_start(self.top.cell.min(measure.cells(self.top.line)));
 
         self.input(ui, &response, panes, &frame);
+        self.at_end = self.rows.as_ref().is_none_or(|(rows, _)| {
+            let at = rows.row_of(measure, self.top);
+            at > self.end.0 || (at == self.end.0 && self.offset >= self.end.1 - 0.5)
+        });
 
         let painter = ui.painter_at(outer);
         // Text on the content's background, its gutter on the chrome's.

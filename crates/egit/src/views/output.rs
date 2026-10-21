@@ -278,7 +278,7 @@ fn layout(line: &Line, font: &FontId, palette: Palette) -> LayoutJob {
 
 /// A terminal's colour on egit's palette: the sixteen as the theme draws them (readable on its
 /// background), the 256's cube and greys and exact colours as they are.
-fn terminal_color(color: Color, palette: Palette) -> Color32 {
+pub(crate) fn terminal_color(color: Color, palette: Palette) -> Color32 {
     match color {
         Color::Indexed(index @ 0..=15) => {
             let base = index & 7;

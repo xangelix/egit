@@ -1155,6 +1155,7 @@ dependencies = [
 name = "egit-forge"
 version = "0.1.0"
 dependencies = [
+ "bstr",
  "egit-forge",
  "egit-git",
  "parking_lot",

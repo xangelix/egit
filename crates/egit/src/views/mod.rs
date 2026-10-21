@@ -10,6 +10,7 @@ mod file_history;
 mod forge_overview;
 pub(crate) mod history;
 pub(crate) mod home;
+mod job;
 mod lfs;
 mod merge;
 mod output;
@@ -34,6 +35,7 @@ mod submodules;
 mod tasks;
 mod work;
 
+pub(crate) use output::terminal_color;
 pub(crate) use tasks::{OUTCOME_LASTS, set_outcome_lasts};
 
 use egui::{ScrollArea, Ui};

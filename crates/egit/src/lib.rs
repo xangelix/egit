@@ -36,6 +36,7 @@ mod grid;
 mod help;
 mod history;
 mod ignoring;
+mod job_log;
 mod jobs;
 mod lfs;
 mod markdown;
