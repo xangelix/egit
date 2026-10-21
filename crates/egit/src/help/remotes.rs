@@ -934,7 +934,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "An ssh remote on another name (git-ssh.example.com:2222)?",
-                "A self-managed GitLab's ssh is often on a name of its own (its gitlab_shell_ssh_host). The Overview offers it as the ssh host of each host Profile lists: choose the one whose web pages hold the project. It is kept as egit.<host>.sshHost in your git settings; Profile lists it under its host, and removes it.",
+                "A self-managed GitLab's ssh is often on a name of its own (its gitlab_shell_ssh_host). egit asks each GitLab Profile lists, once a run and signed in, where its ssh is (its projects' ssh addresses say), and takes remotes on that name for its projects by itself. Where it can't ask (not signed in), the Overview offers the name as the ssh host of each host Profile lists: that is kept as egit.<host>.sshHost in your git settings, which Profile lists under its host and removes.",
             ),
             (
                 "Pipelines read, but no marks?",

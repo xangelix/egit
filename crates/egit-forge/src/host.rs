@@ -141,7 +141,8 @@ impl ForgeHost {
     }
 
     /// The name without its port: what an ssh URL to it names.
-    fn hostname(&self) -> &str {
+    #[must_use]
+    pub fn hostname(&self) -> &str {
         hostname_of(&self.name)
     }
 }

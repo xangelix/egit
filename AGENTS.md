@@ -762,7 +762,9 @@ writes paths), never `OsStrExt`.
   - `api.rs` — the calls, each sent to its repository's forge: `pull_requests` (open, most
     recently updated first, 100 a page, each handed over as it lands, up to a limit),
     `pull_request_details`, `repository_info` (default branch, the repository it was forked
-    from), `create_pull_request`. `model.rs` — what they give, alike for both forges
+    from), `create_pull_request`, `ssh_host` (the name a GitLab's ssh is on, from its projects'
+    `sshUrlToRepo`: one of the account's, else any it sees; none for GitHub). `model.rs` — what
+    they give, alike for both forges
     (`PullRequest`, `PullRequestDetails`, `CheckState`, `ReviewDecision`, `NewPullRequest`:
     a fork's `head` repository, …). `answer.rs` — answers read alike: GraphQL data or errors,
     REST JSON, rate limits (by either forge's headers, or `RATE_LIMITED`) saying when they
@@ -1391,7 +1393,13 @@ writes paths), never `OsStrExt`.
     open one), `remote_of`, `repository_of`, `needs_sign_in` (the host whose requests want a
     sign-in, and whether it refused), `signed_in` and `signed_out` (a sign-in made or undone
     elsewhere taken by the host's account, and everything read again); a listed host's ssh
-    hosts read from `egit.<host>.sshHost` (`ssh_hosts`, `ssh_host_entries`, `ssh_host_key`);
+    hosts read from `egit.<host>.sshHost` (`ssh_hosts`, `ssh_host_entries`, `ssh_host_key`),
+    and those learned this run (`ForgeRun`, what the run shares with every tab's forge: the
+    sign-ins made and an `SshLearning`: each listed GitLab its remotes were worked out with
+    asked once where its ssh is, `learn_ssh_host` in a job through this computer's git and the
+    run's sign-in, again after a sign-in to it or Read again while a remote is unknown; what
+    it says, where not its own name, makes every tab work its remotes out again,
+    `learned_more`; nothing written to the settings);
     every remote as worked out (`Resolved`: each `SeenRemote`'s address as git reaches it, as
     written where `insteadOf` rewrote it, its `ssh_host`, and the repository it is, or
     none, and the hosts known then; logged at debug level; the first working out applied even
@@ -1847,7 +1855,8 @@ writes paths), never `OsStrExt`.
     job"), `duration` ("1 min 35 s").
     `views/forge_overview.rs` — the repository's Overview's "GitHub and GitLab" card: the hosts
     egit knows, then each remote (its address, "Recognized as" a GitHub repository or GitLab
-    project, or nothing: its host isn't one egit knows, "Open Profile"; an ssh host egit doesn't
+    project, or nothing: its host isn't one egit knows, "Open Profile"; reached over ssh on a
+    name of its host's own, "its ssh on …"; an ssh host egit doesn't
     know offered as the ssh host of each host Profile lists, the most of its name's end shared
     first, "The ssh host of <host>" adding `egit.<host>.sshHost`; the account it is read
     with: signed in as, not (Sign in…), or the credential git's helper keeps; its pull or merge
@@ -2285,9 +2294,11 @@ writes paths), never `OsStrExt`.
     Overview's card (rendered): a remote on a host egit doesn't know, the project, the
     credential, 2 open, 3 pipelines read and the newest, 2 of their 3 commits in this history
     (the fork's isn't fetched), then GitLab listing none to the account, read again; and a
-    remote on `ssh://git@git-ssh.example.invalid:2222/…` (fetched through `insteadOf`): not
-    known (rendered), tied by "The ssh host of <host>" (kept in the global settings), then the
-    project read, its pipeline marked, and Profile listing the ssh host under its host.
+    remote on `ssh://git@git-ssh.example.invalid:2222/…` (fetched through `insteadOf`): signed
+    in, the fake GitLab says its ssh is there and the project is read unasked (its merge
+    requests, its pipeline's mark, "its ssh on …"; nothing written to the settings); not signed
+    in, not known (rendered), tied by "The ssh host of <host>" (kept in the global settings),
+    then the project read, its pipeline marked, and Profile listing the ssh host under its host.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,

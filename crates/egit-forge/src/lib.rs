@@ -25,7 +25,9 @@ mod repository;
 pub mod testing;
 
 pub use account::{Account, SignedIn};
-pub use api::{create_pull_request, pull_request_details, pull_requests, repository_info};
+pub use api::{
+    create_pull_request, pull_request_details, pull_requests, repository_info, ssh_host,
+};
 pub use error::ForgeError;
 pub use host::{ForgeHost, ForgeHosts, ForgeKind};
 pub use model::{

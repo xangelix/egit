@@ -137,6 +137,11 @@ fn remote(
             ))
             .wrap(),
         );
+        // Reached over ssh on a name of its host's own (as the host said, or the settings).
+        let own = repository.host().hostname();
+        if let Some(ssh) = seen.ssh_host().filter(|ssh| !ssh.eq_ignore_ascii_case(own)) {
+            ui.add(Label::new(muted(ui, format!("its ssh on {ssh}"))).wrap());
+        }
     });
     let index = forge.index_of(repository);
     account(ui, (forge, repository, index), id, actions);
@@ -159,9 +164,9 @@ fn unknown(ui: &mut Ui, seen: &SeenRemote, hosts: &[ForgeHost], actions: &mut Ve
     widgets::fact_top_of(ui, widgets::FACT_LABEL, ("Recognized as", TOPIC), |ui| {
         let words = match (&ssh, listed.is_empty()) {
             (Some(ssh), false) => format!(
-                "{}  Nothing: {ssh} isn't a host egit knows. If it is the ssh host of a \
-                 GitLab or GitHub Enterprise host Profile lists (its web pages on another \
-                 name), say which:",
+                "{}  Nothing: {ssh} isn't a host egit knows. A GitLab Profile lists says where \
+                 its ssh is once you are signed in to it; or, if {ssh} is the ssh host of one, \
+                 say which:",
                 icon::WARNING
             ),
             (Some(ssh), true) => format!(

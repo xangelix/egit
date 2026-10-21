@@ -97,6 +97,124 @@ pub(crate) struct ForgeRemote {
     pub(crate) repository: ForgeRepository,
 }
 
+/// What a run shares with every repository's forge: the sign-ins made, and the names listed
+/// GitLab hosts' ssh is on, as they said.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ForgeRun {
+    pub(crate) session: crate::sign_ins::SessionSignIns,
+    pub(crate) learning: SshLearning,
+}
+
+/// The names the listed GitLab hosts' ssh is on, learned this run by asking each once (its
+/// projects' ssh addresses give it: its `gitlab_shell_ssh_host`, which a self-managed
+/// GitLab's often is), so remotes on those names are taken for its projects unasked.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SshLearning(Arc<Mutex<Learning>>);
+
+#[derive(Debug, Default)]
+struct Learning {
+    /// Hosts to ask, not asked yet.
+    wanted: Vec<ForgeHost>,
+    /// The names of those asked, or being.
+    asked: Vec<String>,
+    /// What each said: its name, and the name its ssh is on.
+    learned: Vec<(String, String)>,
+    /// Bumped with each learned.
+    generation: u64,
+}
+
+impl SshLearning {
+    /// Asks for the self-managed GitLab hosts among `hosts` to be asked, those not asked yet.
+    pub(crate) fn want<'a>(&self, hosts: impl IntoIterator<Item = &'a ForgeHost>) {
+        let mut learning = self.0.lock();
+        for host in hosts {
+            let gitlab = host.kind() == ForgeKind::GitLab && !host.is_public();
+            if gitlab && !learning.asked.iter().any(|asked| asked == host.name()) {
+                learning.asked.push(host.name().to_owned());
+                learning.wanted.push(host.clone());
+            }
+        }
+    }
+
+    /// Asks `host` again unless it said already (signed in to it since, or asked to read
+    /// again: it may say now).
+    pub(crate) fn ask_again(&self, host: &ForgeHost) {
+        {
+            let mut learning = self.0.lock();
+            if learning
+                .learned
+                .iter()
+                .any(|(learned, _)| learned == host.name())
+            {
+                return;
+            }
+            learning.asked.retain(|asked| asked != host.name());
+        }
+        self.want([host]);
+    }
+
+    /// The hosts to ask now.
+    pub(crate) fn take_wanted(&self) -> Vec<ForgeHost> {
+        std::mem::take(&mut self.0.lock().wanted)
+    }
+
+    /// Notes that `host`'s ssh is on `ssh`.
+    pub(crate) fn learn(&self, host: &ForgeHost, ssh: String) {
+        let mut learning = self.0.lock();
+        let pair = (host.name().to_owned(), ssh);
+        if !learning.learned.contains(&pair) {
+            learning.learned.push(pair);
+            learning.generation = learning.generation.wrapping_add(1);
+        }
+    }
+
+    /// What was learned: each host's name, and the name its ssh is on; and how much has been.
+    pub(crate) fn learned(&self) -> (Vec<(String, String)>, u64) {
+        let learning = self.0.lock();
+        (learning.learned.clone(), learning.generation)
+    }
+
+    /// How much has been learned (bumped with each).
+    pub(crate) fn generation(&self) -> u64 {
+        self.0.lock().generation
+    }
+}
+
+/// Asks `host`, through `git`'s credential helpers or the sign-in made this run, the name its
+/// ssh is on, and notes it in `learning` (where it isn't the host's own); wakes `waker`.
+pub(crate) fn learn_ssh_host(git: Git, host: ForgeHost, run: &ForgeRun, waker: egui::Context) {
+    let learning = run.learning.clone();
+    let signed = run
+        .session
+        .lock()
+        .get(host.name())
+        .map(|(_, signed)| signed.clone());
+    jobs::detached(move || {
+        let account = Account::new(git, None, host.clone());
+        if let Some(signed) = &signed {
+            account.adopt(signed);
+        }
+        match egit_forge::ssh_host(&account, &CancelToken::new()) {
+            Ok(Some(ssh)) => {
+                tracing::debug!(host = host.name(), ssh, "the name a GitLab's ssh is on");
+                if !ssh.eq_ignore_ascii_case(host.hostname()) {
+                    learning.learn(&host, ssh);
+                    waker.request_repaint();
+                }
+            }
+            Ok(None) => tracing::debug!(
+                host = host.name(),
+                "the GitLab shows no project to say where its ssh is"
+            ),
+            Err(error) => tracing::debug!(
+                host = host.name(),
+                %error,
+                "the GitLab couldn't say where its ssh is"
+            ),
+        }
+    });
+}
+
 /// A remote, and what egit took it for: its address as git reaches it, as the configuration
 /// writes it where that differs (`insteadOf`), and the forge's repository it is, if any (`None`:
 /// not on a host egit knows).
@@ -224,8 +342,11 @@ pub(crate) struct RepoForge {
     waker: egui::Context,
     /// GitLab's pipelines: each commit's latest.
     ci: Pipelines,
-    /// The sign-ins made this run, which its accounts take as they are made.
-    session: crate::sign_ins::SessionSignIns,
+    /// What the run shares: the sign-ins made, which its accounts take as they are made; and
+    /// the names listed GitLab hosts' ssh is on.
+    run: ForgeRun,
+    /// How much of `run`'s ssh hosts its remotes were last worked out with.
+    learned_at: u64,
     /// For a repository on another computer, this computer's git: it is this computer that
     /// reaches the forge, so its helpers keep the sign-ins, under the user's configuration
     /// here (and its prompts are relayed to the window, which those there aren't).
@@ -234,12 +355,8 @@ pub(crate) struct RepoForge {
 
 impl RepoForge {
     /// A repository's forge, nothing known yet; `here` is this computer's git for a repository
-    /// on another computer; `session`, the sign-ins made this run.
-    pub(crate) fn new(
-        waker: &egui::Context,
-        here: Option<Git>,
-        session: crate::sign_ins::SessionSignIns,
-    ) -> Self {
+    /// on another computer; `run`, what the run shares (sign-ins, ssh hosts learned).
+    pub(crate) fn new(waker: &egui::Context, here: Option<Git>, run: ForgeRun) -> Self {
         Self {
             resolving: Bind::new(true),
             resolved: None,
@@ -256,7 +373,8 @@ impl RepoForge {
             generation: 0,
             waker: waker.clone(),
             ci: Pipelines::new(waker),
-            session,
+            run,
+            learned_at: 0,
             here,
         }
     }
@@ -275,12 +393,18 @@ impl RepoForge {
                 .get_all(key)
                 .filter_map(|entry| entry.text().to_str().ok())
         };
+        let hosts = ForgeHosts::with_listed(listed(GITHUB_HOSTS_KEY), listed(GITLAB_HOSTS_KEY));
+        // The listed GitLab hosts are asked where their ssh is (once a run); what they said, and what
+        // the configuration says, names their ssh hosts.
+        self.run.learning.want(hosts.hosts());
+        let (learned, generation) = self.run.learning.learned();
+        self.learned_at = generation;
         let ssh = ssh_hosts(config);
-        let hosts = ForgeHosts::with_listed(listed(GITHUB_HOSTS_KEY), listed(GITLAB_HOSTS_KEY))
-            .with_ssh_hosts(
-                ssh.iter()
-                    .map(|(listed, ssh)| (listed.as_str(), ssh.as_str())),
-            );
+        let hosts = hosts.with_ssh_hosts(
+            ssh.iter()
+                .chain(&learned)
+                .map(|(listed, ssh)| (listed.as_str(), ssh.as_str())),
+        );
         let written = written_urls(config);
         let (git, repository) = (git.clone(), Arc::clone(repository));
         self.resolving.request(jobs::blocking(move || {
@@ -574,6 +698,11 @@ impl RepoForge {
             .cloned()
     }
 
+    /// Whether more ssh hosts were learned since its remotes were worked out.
+    pub(crate) fn learned_more(&self) -> bool {
+        self.run.learning.generation() != self.learned_at
+    }
+
     /// Every remote as last worked out, and the hosts egit knew then (none until they are).
     pub(crate) const fn resolved(&self) -> Option<&Resolved> {
         self.resolved.as_ref()
@@ -646,7 +775,7 @@ impl RepoForge {
                     |here| Account::new(here.clone(), None, host.clone()),
                 ));
                 // Signed in this run already: whether or not a helper keeps it.
-                if let Some((_, signed)) = self.session.lock().get(host.name()) {
+                if let Some((_, signed)) = self.run.session.lock().get(host.name()) {
                     account.adopt(signed);
                 }
                 account

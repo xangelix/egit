@@ -18,7 +18,7 @@ use egit_forge::testing::{FakeForge, FakeJob, FakePipeline, FakePull, FakeReposi
 use egit_forge::{
     Account, CheckState, CiGroup, CiStatus, ForgeError, ForgeHost, ForgeKind, ForgeRepository,
     Mergeable, NewPullRequest, PipelineListing, ReviewDecision, ReviewState, create_pull_request,
-    pipeline_details, pipelines, pull_request_details, pull_requests, repository_info,
+    pipeline_details, pipelines, pull_request_details, pull_requests, repository_info, ssh_host,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -406,4 +406,23 @@ fn pipelines_come_a_page_at_a_time_and_one_is_read_whole() {
         pipeline_details(&account, &project, 999, &CancelToken::new()),
         Err(ForgeError::NotFound { .. })
     ));
+}
+
+#[test]
+fn a_gitlab_says_the_name_its_ssh_is_on() {
+    let (fake, _sandbox, account, _project) = setup(0, TOKEN);
+    // On its own name: the fake's.
+    assert_eq!(
+        ssh_host(&account, &CancelToken::new()).unwrap().as_deref(),
+        Some("127.0.0.1")
+    );
+    // On a name of its own, as its projects' ssh addresses give it.
+    fake.state().ssh_host = Some("git-ssh.example.org".to_owned());
+    assert_eq!(
+        ssh_host(&account, &CancelToken::new()).unwrap().as_deref(),
+        Some("git-ssh.example.org")
+    );
+    // Showing the account no project, it can't say.
+    fake.state().repositories.clear();
+    assert_eq!(ssh_host(&account, &CancelToken::new()).unwrap(), None);
 }

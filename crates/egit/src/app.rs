@@ -83,6 +83,8 @@ pub(crate) struct AppState {
     pub(crate) palette: PaletteView,
     /// Signing in to GitHub and GitLab hosts: the dialog, and who is signed in where.
     pub(crate) sign_ins: crate::sign_ins::SignIns,
+    /// The names listed GitLab hosts' ssh is on, learned this run.
+    ssh_learning: crate::forge::SshLearning,
     /// The help window, while open.
     pub(crate) help: crate::help::HelpWindow,
     /// Claude's setup for the agents: Node, the SDK, who is signed in; here, and on each
@@ -344,6 +346,7 @@ impl EgitApp {
             files: FileDialogs::default(),
             palette: PaletteView::default(),
             sign_ins: crate::sign_ins::SignIns::default(),
+            ssh_learning: crate::forge::SshLearning::default(),
             help: crate::help::HelpWindow::default(),
             fonts: Fallbacks::default(),
             agents_there: std::collections::HashMap::new(),
@@ -478,11 +481,7 @@ impl EgitApp {
                     state.sign_ins.keep_with(&git, &state.user_writes, keeper);
                 }
             }
-            Action::RefreshPullRequests(id) => {
-                if let Some(repo) = state.repo_mut(id) {
-                    repo.forge.refresh();
-                }
-            }
+            Action::RefreshPullRequests(id) => state.read_forge_again(id),
             Action::OpenUrl(url) => state.opener.open(url),
             Action::Reveal(path, how) => state.opener.reveal(path, how),
             Action::Scope(id, scope) => state.with_repo(id, |git, repo| repo.set_scope(git, scope)),
@@ -535,10 +534,10 @@ impl EgitApp {
         }
         let id = state.next_repo;
         state.next_repo = state.next_repo.wrapping_add(1);
+        let run = state.forge_run();
         // On another computer, its forge's sign-ins are this computer's.
         let here = state.git.ok_ref().filter(|_| !git.host().is_local());
-        let session = std::sync::Arc::clone(&state.sign_ins.session);
-        let mut tab = RepoTab::new(id, repository, (git, here), session, ctx);
+        let mut tab = RepoTab::new(id, repository, (git, here), run, ctx);
         tab.prefer(state.settings.preferences, Instant::now());
         state.repos.push(tab);
         tabs::show(&mut self.tabs, Pane::Repo(id));
@@ -564,6 +563,33 @@ impl AppState {
     fn show_panel(&mut self, id: RepoId, panel: RepoPanel) {
         if let Some(repo) = self.repos.iter_mut().find(|repo| repo.id == id) {
             repo.panel = panel;
+        }
+    }
+
+    /// Reads repository `id`'s requests and pipelines again; while a remote is on no host egit
+    /// knows, the GitLab hosts that couldn't say where their ssh is are asked again too.
+    fn read_forge_again(&mut self, id: RepoId) {
+        let Some(repo) = self.repo_mut(id) else {
+            return;
+        };
+        repo.forge.refresh();
+        let unrecognized = repo.forge.resolved().and_then(|resolved| {
+            resolved
+                .seen
+                .iter()
+                .any(|seen| seen.repository.is_none())
+                .then(|| Arc::clone(&resolved.hosts))
+        });
+        for host in unrecognized.iter().flat_map(|hosts| hosts.iter()) {
+            self.ssh_learning.ask_again(host);
+        }
+    }
+
+    /// What the run shares with every repository's forge.
+    fn forge_run(&self) -> crate::forge::ForgeRun {
+        crate::forge::ForgeRun {
+            session: Arc::clone(&self.sign_ins.session),
+            learning: self.ssh_learning.clone(),
         }
     }
 
@@ -616,15 +642,16 @@ impl AppState {
         }));
     }
 
-    /// Advances the jobs and the watchers: what finished or changed becomes state or actions.
-    fn poll(&mut self, ctx: &egui::Context) {
-        self.prompts.poll();
-        // A sign-in (or out) made once is every open repository's of that host.
+    /// Takes in a sign-in, sign-out, or helper set up that finished: a sign-in (or out) made
+    /// once is every open repository's of that host.
+    fn take_sign_ins(&mut self) {
         match self.sign_ins.poll() {
             Some(crate::sign_ins::Landed::In(host, signed)) => {
                 for repo in &mut self.repos {
                     repo.forge.signed_in(&host, &signed);
                 }
+                // Signed in, a GitLab may say where its ssh is now.
+                self.ssh_learning.ask_again(&host);
             }
             Some(crate::sign_ins::Landed::Out(host)) => {
                 for repo in &mut self.repos {
@@ -643,6 +670,12 @@ impl AppState {
             }
             None => {}
         }
+    }
+
+    /// Advances the jobs and the watchers: what finished or changed becomes state or actions.
+    fn poll(&mut self, ctx: &egui::Context) {
+        self.prompts.poll();
+        self.take_sign_ins();
         self.agents.poll();
         for setup in self.agents_there.values_mut() {
             setup.poll();
@@ -659,6 +692,14 @@ impl AppState {
             }
         }
         if let Some(git) = self.git() {
+            // The listed GitLab hosts the repositories' remotes asked about, asked where their ssh is.
+            let wanted = self.ssh_learning.take_wanted();
+            if !wanted.is_empty() {
+                let run = self.forge_run();
+                for host in wanted {
+                    crate::forge::learn_ssh_host(git.clone(), host, &run, ctx.clone());
+                }
+            }
             // Back from a terminal, a hook may have been added.
             if regained {
                 for repo in &mut self.repos {

@@ -280,23 +280,19 @@ fn the_overview_says_what_each_remote_is_and_what_was_read() {
     );
 }
 
-#[test]
-fn an_ssh_host_on_a_name_of_its_own_is_tied_to_its_gitlab_in_a_click() {
-    let sandbox = Sandbox::new().unwrap();
-    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
-    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
-    let head = commit_of(&sandbox, &work, "HEAD");
-    fake.state().repositories[0].pipelines = vec![pipeline(9_001, &head, "SUCCESS", "SUCCESS")];
-    // Its ssh on a name and port of its own, as a self-managed GitLab's often is (reached here
-    // through the bare repository).
-    let ssh = "ssh://git@git-ssh.example.invalid:2222/team/sub/tool.git";
+/// The address of `work`'s origin moved to ssh on a name and port of its own, as a
+/// self-managed GitLab's often is (`gitlab_shell_ssh_host`; reached here through the bare
+/// repository), the fake listed in the user's settings.
+const ON_ITS_OWN: &str = "ssh://git@git-ssh.example.invalid:2222/team/sub/tool.git";
+
+fn ssh_on_a_name_of_its_own(sandbox: &Sandbox, fake: &FakeForge, work: &std::path::Path) {
     sandbox
-        .run(&work, "remote", &["set-url", "origin", ssh])
+        .run(work, "remote", &["set-url", "origin", ON_ITS_OWN])
         .unwrap();
     let bare = sandbox.path("origin.git");
     let rewrite = format!("url.file://{}.insteadOf", bare.to_str().unwrap());
     sandbox
-        .run(&work, "config", &["--add", &rewrite, ssh])
+        .run(work, "config", &["--add", &rewrite, ON_ITS_OWN])
         .unwrap();
     sandbox
         .run(
@@ -305,6 +301,63 @@ fn an_ssh_host_on_a_name_of_its_own_is_tied_to_its_gitlab_in_a_click() {
             &["--global", "egit.gitlabHost", &fake.host_entry()],
         )
         .unwrap();
+}
+
+#[test]
+fn a_gitlab_s_ssh_on_a_name_of_its_own_is_learned_from_it_unasked() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    fake.state().ssh_host = Some("git-ssh.example.invalid".to_owned());
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    let head = commit_of(&sandbox, &work, "HEAD");
+    fake.state().repositories[0].pipelines = vec![pipeline(9_001, &head, "SUCCESS", "SUCCESS")];
+    ssh_on_a_name_of_its_own(&sandbox, &fake, &work);
+    // Signed in to it as the user (a helper keeping the token everywhere).
+    let store = sandbox.path("credentials");
+    let helper = format!(
+        "store --file={}",
+        store.display().to_string().replace('\\', "/")
+    );
+    sandbox
+        .run(
+            sandbox.home(),
+            "config",
+            &["--global", "credential.helper", &helper],
+        )
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+    // Nothing asked of anyone: the GitLab said where its ssh is, and the project is read.
+    settle(&mut harness, "the merge requests", pull_requests_read(2));
+    wait_for_label(&mut harness, "Pipeline #9001: passed");
+    show_panel(&mut harness, "Overview");
+    wait_for_label(&mut harness, "its ssh on git-ssh.example.invalid");
+    // Learned for this run, nothing written to the settings.
+    let written = sandbox
+        .run(sandbox.home(), "config", &["--global", "--list"])
+        .unwrap();
+    assert!(
+        !String::from_utf8(written.stdout)
+            .unwrap()
+            .contains("sshhost")
+    );
+}
+
+#[test]
+fn an_ssh_host_on_a_name_of_its_own_is_tied_to_its_gitlab_in_a_click() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    let head = commit_of(&sandbox, &work, "HEAD");
+    fake.state().repositories[0].pipelines = vec![pipeline(9_001, &head, "SUCCESS", "SUCCESS")];
+    // Not signed in as the user: the GitLab can't be asked, so the user says.
+    ssh_on_a_name_of_its_own(&sandbox, &fake, &work);
+    let ssh = ON_ITS_OWN;
     let mut harness = harness(&sandbox);
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &work);

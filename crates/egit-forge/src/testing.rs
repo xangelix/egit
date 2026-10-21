@@ -141,6 +141,9 @@ pub struct FakeState {
     /// Whether GitLab lists no pipelines (`pipelines: null`), as for a project whose CI/CD is
     /// turned off.
     pub pipelines_hidden: bool,
+    /// The name GitLab's ssh is on, where not the fake's own (its projects' ssh addresses are
+    /// then `ssh://git@<it>:2222/…`).
+    pub ssh_host: Option<String>,
     /// The requests it received.
     pub requests: Vec<Recorded>,
 }
@@ -557,6 +560,21 @@ fn gitlab_graphql(request: &Recorded, state: &mut FakeState) -> Value {
     let variables = &request.body["variables"];
     if query.starts_with("query CurrentUser") {
         return json!({ "data": { "currentUser": { "username": state.login } } });
+    }
+    if query.starts_with("query SshHost") {
+        let address = |path: &str| {
+            state.ssh_host.as_ref().map_or_else(
+                || format!("git@127.0.0.1:{path}.git"),
+                |ssh| format!("ssh://git@{ssh}:2222/{path}.git"),
+            )
+        };
+        let nodes: Vec<Value> = state
+            .repositories
+            .first()
+            .map(|repository| json!({ "sshUrlToRepo": address(&repository.path) }))
+            .into_iter()
+            .collect();
+        return json!({ "data": { "mine": { "nodes": nodes }, "any": { "nodes": nodes } } });
     }
     let path = variables["path"].as_str().unwrap_or_default().to_owned();
     let login = state.login.clone();

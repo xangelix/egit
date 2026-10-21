@@ -80,6 +80,22 @@ pub fn create_pull_request(
     }
 }
 
+/// The name the host's ssh is on, as the host says: its projects' ssh addresses give it.
+///
+/// It may not be the name its web pages are on (a self-managed GitLab's
+/// `gitlab_shell_ssh_host`). `None` for GitHub (its ssh is on its own name), or a GitLab that
+/// shows the account no project.
+///
+/// # Errors
+///
+/// Any of [`ForgeError`]'s.
+pub fn ssh_host(account: &Account, cancel: &CancelToken) -> Result<Option<String>, ForgeError> {
+    match account.host().kind() {
+        ForgeKind::GitHub => Ok(None),
+        ForgeKind::GitLab => gitlab::ssh_host(account, cancel),
+    }
+}
+
 /// Who the account's credential is, as its host says (which checks the host accepts it).
 pub(crate) fn viewer(account: &Account, cancel: &CancelToken) -> Result<String, ForgeError> {
     match account.host().kind() {

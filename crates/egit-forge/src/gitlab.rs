@@ -169,6 +169,23 @@ pub(crate) fn current_user(account: &Account, cancel: &CancelToken) -> Result<St
     Ok(user.username)
 }
 
+/// The name the GitLab's ssh is on, as its projects' ssh addresses give it (one of the
+/// account's own projects, else any it may see): its `gitlab_shell_ssh_host`, which may not be
+/// its web pages' name. `None` when it shows the account no project.
+pub(crate) fn ssh_host(
+    account: &Account,
+    cancel: &CancelToken,
+) -> Result<Option<String>, ForgeError> {
+    let data: SshHostData = graphql(account, SSH_HOST, &json!({}), "a project", cancel)?;
+    let address = [data.mine, data.any]
+        .into_iter()
+        .flatten()
+        .flat_map(|projects| projects.nodes)
+        .flatten()
+        .find_map(|project| project.ssh_url_to_repo);
+    Ok(address.and_then(|address| crate::repository::ssh_host_of(&address)))
+}
+
 /// A project, read through REST.
 fn project(
     account: &Account,
@@ -228,6 +245,9 @@ const MERGE_REQUEST: &str = "query MergeRequest($path: ID!, $iid: String!) { pro
     allowFailure webPath } } } } } }";
 
 const CURRENT_USER: &str = "query CurrentUser { currentUser { username } }";
+
+const SSH_HOST: &str = "query SshHost { mine: projects(first: 1, membership: true) { nodes { \
+    sshUrlToRepo } } any: projects(first: 1) { nodes { sshUrlToRepo } } }";
 
 #[derive(Deserialize)]
 struct Nodes<T> {
@@ -451,6 +471,18 @@ impl DetailsNode {
                 .collect(),
         }
     }
+}
+
+#[derive(Deserialize)]
+struct SshHostData {
+    mine: Option<Nodes<SshAddress>>,
+    any: Option<Nodes<SshAddress>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SshAddress {
+    ssh_url_to_repo: Option<String>,
 }
 
 #[derive(Deserialize)]
