@@ -34,5 +34,6 @@ mod sidebar;
 mod sign_in;
 mod stats;
 mod submodules;
+mod suggested;
 mod tree;
 mod undo;

@@ -718,7 +718,9 @@ writes paths), never `OsStrExt`.
     a process (`/tmp/egit-ts-<pid>`: keys of its own, `-F /dev/null`, `BatchMode`,
     `ControlPersist=5`), kept by a shell that stops it and removes its folder when the test
     process's end closes its input; tests of what only this computer does (the askpass, git's
-    own ssh) skip then. `set_mode` (a script's permission bits, where files have them).
+    own ssh) skip then. `set_mode` (a script's permission bits, where files have them). The
+    environment's identity and dates are taken away, unless a test names its own
+    (`git_with`: a commit at a set date).
 - `crates/egit-forge` — forges' web APIs: GitHub's (github.com, Enterprise Server) and GitLab's
   (gitlab.com, self-managed), and people's pictures; no egui. egit's only network connections
   of its own (git makes every other).
@@ -1105,6 +1107,13 @@ writes paths), never `OsStrExt`.
     requests' card: its account; from Profile: the user's) and `Action::SignOut`. The banner
     under a repository's top bar (`views/history.rs`'s `sign_in_banner`: what signing in shows,
     Sign in…, and Not now, which hides it for that host from then on, kept in egui's memory).
+  - `suggested.rs` — repositories suggested on Home: `shared_folders` (the folders holding two
+    or more repositories egit knows: open in a tab, or recent, on this computer), `suggest` (each
+    such folder's other repositories, its folders holding a `.git`, 500 entries looked at
+    each; when each was last active, asked on 8 threads at once: its `HEAD` reflog's newest
+    entry, `log -g -1 --date=unix --format=%gd`, else its last commit's time; at most 300 asked,
+    the most recently changed `.git`s first beyond; the most recently active first, at most
+    `MOST`, 20).
   - `job_log.rs` — a GitLab job's log followed: `JobFollower` (a thread of its own, stopped
     when dropped) asks how the job stands and reads what the log gained (a range while the
     host answers them, else whole, compressed, skipped as far as read) every `EVERY` (2 s; a
@@ -2000,7 +2009,10 @@ writes paths), never `OsStrExt`.
     typed path, or on another computer over SSH (its computer and the folder there, `~` and a
     relative path its home folder's (`folder_there`); "Open there"; not on Windows, whose
     OpenSSH shares no connection and whose paths join with `\`), the problem and its remedy, recent repositories in egui-table-kit (another
-    computer's said before their folder), and cloning), `profile` (identity and signing editable;
+    computer's said before their folder), the repositories suggested under them (where two known
+    sit in one folder: `suggested.rs`, worked out in a job when the repositories known change
+    or every ten minutes while Home shows; a table of name, folder, and when last active;
+    nothing while there are none), and cloning), `profile` (identity and signing editable;
     GitHub and GitLab: its accounts (github.com, gitlab.com, and the hosts listed: who is
     signed in to each, asked once with what git's helpers keep, `SignIns::who`; Sign in… or
     Sign out), and the GitHub Enterprise and self-managed GitLab hosts (added and removed as
@@ -2336,6 +2348,10 @@ writes paths), never `OsStrExt`.
     requests, its pipeline's mark, "its ssh on …"; nothing written to the settings); not signed
     in, not known (rendered), tied by "The ssh host of <host>" (kept in the global settings),
     then the project read, its pipeline marked, and Profile listing the ssh host under its host.
+    `src/tests/suggested.rs` opens two repositories of a folder (and one of another): the
+    folder's others suggested by their reflogs' dates (commits at set times), one without a
+    commit last, a plain folder and a file left out, nothing from the other folder (rendered);
+    one opened with a double click.
     `src/tests/pictures.rs` shows an image's change: a commit's (both sides' sizes) and the
     work tree's.
     `src/tests/tree.rs` drives the folder tree: chosen in a list's header, folded and unfolded,

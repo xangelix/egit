@@ -1,7 +1,9 @@
-//! The Home tab: open a repository, clone one, reopen a recent one, and see who you are to
-//! git.
+//! The Home tab: open a repository, clone one, reopen a recent one or one suggested (beside two
+//! you've opened: `crate::suggested`), and see who you are to git.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use egui::{Key, RichText, Ui};
 use egui_async::Bind;
@@ -15,7 +17,8 @@ use crate::app::{Action, AppState};
 use crate::format::now;
 use crate::problem::{OpenProblem, Problem};
 use crate::settings::{Location, StoredPath};
-use crate::tables::RecentRows;
+use crate::suggested::{Suggestion, suggest};
+use crate::tables::{RecentRows, SuggestedRows};
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
@@ -39,6 +42,33 @@ pub(crate) struct HomeView {
     /// Cloning a repository.
     pub(crate) clone: CloneView,
     recent: RecentTable,
+    suggested: Suggested,
+}
+
+/// How long the repositories suggested stand before they are worked out again (while Home
+/// shows): which was last active changes as one works.
+const SUGGESTED_LASTS: Duration = Duration::from_secs(600);
+
+/// The repositories suggested: worked out (in a job) from the repositories known then, when,
+/// and their table's state (starting over with each list).
+struct Suggested {
+    known: Vec<PathBuf>,
+    found: Bind<Arc<[Suggestion]>, Problem>,
+    at: Option<Instant>,
+    shown: usize,
+    state: TableState,
+}
+
+impl Default for Suggested {
+    fn default() -> Self {
+        Self {
+            known: Vec::new(),
+            found: Bind::new(true),
+            at: None,
+            shown: 0,
+            state: TableState::new("home-suggested", 0),
+        }
+    }
 }
 
 /// The recent repositories' table; its state starts over when the list changes.
@@ -73,7 +103,21 @@ impl HomeView {
             trusting: Bind::new(true),
             clone: CloneView::new(clone_folder, home, host),
             recent: RecentTable::default(),
+            suggested: Suggested::default(),
         }
+    }
+
+    /// The repositories suggested, by name, once worked out.
+    #[cfg(test)]
+    pub(crate) fn suggested_names(&mut self) -> Option<Vec<String>> {
+        let found = self.suggested.found.ok_ref()?;
+        Some(
+            found
+                .iter()
+                .filter_map(|suggestion| suggestion.path.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect(),
+        )
     }
 
     /// Opens the desktop's folder dialog.
@@ -104,6 +148,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         open_card(ui, state);
         ui.add_space(12.0);
         recent_card(ui, state);
+        suggested_card(ui, state);
         ui.add_space(12.0);
         let ready = state.git.is_ok();
         clone::card(
@@ -330,6 +375,134 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
                 && let Some(location) = selected
             {
                 state.actions.push(Action::Forget(location));
+            }
+            ui.label(muted(ui, "Double-click a repository to open it.").small());
+        });
+    });
+}
+
+/// The repositories suggested, under the recent ones: those beside two egit knows (open, or
+/// recent), the most recently active first; nothing while there are none.
+fn suggested_card(ui: &mut Ui, state: &mut AppState) {
+    let Some(found) = follow_suggested(state).filter(|found| !found.is_empty()) else {
+        return;
+    };
+    let identity = Arc::as_ptr(&found).cast::<u8>().addr();
+    if state.home.suggested.shown != identity {
+        state.home.suggested.shown = identity;
+        state.home.suggested.state = TableState::new("home-suggested", found.len());
+    }
+    let home = state.home_dir.clone();
+    let ready = state.git.is_ok();
+    let suggested = &mut state.home.suggested;
+    let actions = &mut state.actions;
+    suggested_table(ui, (&found, home.as_deref(), ready), suggested, actions);
+}
+
+/// The repositories suggested as last worked out, working them out again (in a job) when the
+/// repositories known (open, or recent, on this computer) changed, or a while has passed.
+fn follow_suggested(state: &mut AppState) -> Option<Arc<[Suggestion]>> {
+    let mut known: Vec<PathBuf> = state
+        .settings
+        .recent
+        .iter()
+        .filter(|recent| recent.host.is_none())
+        .map(|recent| recent.path.to_path())
+        .chain(
+            state
+                .repos
+                .iter()
+                .filter(|repo| repo.git.host().is_local())
+                .map(|repo| repo.repository.work_tree().to_owned()),
+        )
+        .collect();
+    known.sort();
+    known.dedup();
+    let git = state.git();
+    let suggested = &mut state.home.suggested;
+    let due = suggested.at.is_none_or(|at| at.elapsed() > SUGGESTED_LASTS);
+    if (suggested.known != known || due)
+        && !suggested.found.is_pending()
+        && let Some(git) = git
+    {
+        let asked = known.clone();
+        suggested.found.request(crate::jobs::blocking(move || {
+            Ok(Arc::from(suggest(&git, &asked)))
+        }));
+        suggested.known = known;
+        suggested.at = Some(Instant::now());
+    }
+    suggested
+        .found
+        .read_as_ref()
+        .and_then(|read| read.ok().map(Arc::clone))
+}
+
+/// The table of `found` (`home`: the home folder, for `~`; `ready`: git is), Open, and how to.
+fn suggested_table(
+    ui: &mut Ui,
+    (found, home, ready): (&Arc<[Suggestion]>, Option<&Path>, bool),
+    suggested: &mut Suggested,
+    actions: &mut Vec<Action>,
+) {
+    ui.add_space(12.0);
+    widgets::card(ui, |ui| {
+        widgets::heading(ui, "Suggested repositories");
+        ui.label(muted(
+            ui,
+            "Beside repositories you've opened, in the same folders: the most recently active \
+             first.",
+        ));
+        ui.add_space(4.0);
+        let provider = SuggestedRows::new(found, home, now());
+        let rows = found.len().min(10);
+        let height = ROW_HEIGHT * (f32::from(u8::try_from(rows).unwrap_or(10)) + 1.0) + 4.0;
+        let (name, active) = (200.0, 140.0);
+        let location = (ui.available_width() - name - active).max(160.0);
+        // Its own ids: the recent table's are taken.
+        let output = ui
+            .push_id("home-suggested", |ui| {
+                let table_kit = TableKit::new("home-suggested", &provider, &mut suggested.state);
+                crate::tables::styled(table_kit, ui)
+                    .with_columns(vec![
+                        Column::new(name).range(120.0..=400.0),
+                        Column::new(location)
+                            .range(120.0..=f32::INFINITY)
+                            .remainder(true),
+                        Column::new(active).range(80.0..=240.0),
+                    ])
+                    .with_row_height(ROW_HEIGHT)
+                    .with_max_height(Some(height))
+                    .show_with_output(ui, |_, _, _, _| None)
+            })
+            .inner;
+        let Ok(output) = output else {
+            return;
+        };
+        for event in &output.events {
+            if event.kind == RowEventKind::Activated
+                && let Some(chosen) = found.get(event.row_index)
+            {
+                actions.push(Action::Open(Location::here(chosen.path.clone())));
+            }
+        }
+        let selected = suggested
+            .state
+            .selected_rows
+            .min()
+            .and_then(|index| usize::try_from(index).ok())
+            .and_then(|index| found.get(index));
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if widgets::secondary(
+                ui,
+                ready && selected.is_some(),
+                &format!("{}  Open", icon::FOLDER_OPEN),
+            )
+            .clicked()
+                && let Some(chosen) = selected
+            {
+                actions.push(Action::Open(Location::here(chosen.path.clone())));
             }
             ui.label(muted(ui, "Double-click a repository to open it.").small());
         });

@@ -53,6 +53,7 @@ mod stack;
 mod staging;
 mod stats;
 mod submodules;
+mod suggested;
 mod syntax;
 mod tables;
 mod tabs;

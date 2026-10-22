@@ -165,6 +165,128 @@ impl TableProvider for ConfigRows<'_> {
     }
 }
 
+/// The repositories suggested: name, location, and when each was last active.
+pub(crate) struct SuggestedRows<'a> {
+    suggested: &'a [crate::suggested::Suggestion],
+    home: Option<&'a Path>,
+    now: u64,
+}
+
+impl<'a> SuggestedRows<'a> {
+    pub(crate) const fn new(
+        suggested: &'a [crate::suggested::Suggestion],
+        home: Option<&'a Path>,
+        now: u64,
+    ) -> Self {
+        Self {
+            suggested,
+            home,
+            now,
+        }
+    }
+
+    fn row(&self, at: usize) -> Option<SuggestedRow<'_>> {
+        self.suggested.get(at).map(|suggestion| SuggestedRow {
+            suggestion,
+            home: self.home,
+            now: self.now,
+        })
+    }
+}
+
+/// The columns of [`SuggestedRows`].
+const SUGGESTED_HEADERS: [&str; 3] = ["Repository", "Location", "Active"];
+
+struct SuggestedRow<'a> {
+    suggestion: &'a crate::suggested::Suggestion,
+    home: Option<&'a Path>,
+    now: u64,
+}
+
+impl SuggestedRow<'_> {
+    fn text(&self, col_index: usize) -> Option<String> {
+        let path = &self.suggestion.path;
+        Some(match col_index {
+            0 => path.file_name().map_or_else(
+                || path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            1 => path
+                .parent()
+                .map_or_else(String::new, |parent| display_path(parent, self.home)),
+            2 => self
+                .suggestion
+                .active
+                .and_then(|active| u64::try_from(active).ok())
+                .map_or_else(|| "never".to_owned(), |active| ago(active, self.now)),
+            _ => return None,
+        })
+    }
+}
+
+impl Row for SuggestedRow<'_> {
+    fn cell(&self, col_index: usize) -> Option<TableCell<'_>> {
+        self.text(col_index).map(|text| (Cow::Owned(text), None))
+    }
+
+    fn column_count(&self) -> usize {
+        SUGGESTED_HEADERS.len()
+    }
+}
+
+impl TableProvider for SuggestedRows<'_> {
+    fn column_count(&self) -> usize {
+        SUGGESTED_HEADERS.len()
+    }
+
+    fn header(&self, index: usize) -> Option<Cow<'_, str>> {
+        SUGGESTED_HEADERS
+            .get(index)
+            .map(|&name| Cow::Borrowed(name))
+    }
+
+    fn headers(&self) -> HeaderIter<'_> {
+        HeaderIter::new(self)
+    }
+
+    fn row_count(&self) -> usize {
+        self.suggested.len()
+    }
+
+    fn cell_at(
+        &self,
+        row_index: usize,
+        col_index: usize,
+    ) -> Result<Option<TableCell<'_>>, TableError> {
+        Ok(self
+            .row(row_index)
+            .and_then(|row| row.text(col_index))
+            .map(|text| (Cow::Owned(text), None)))
+    }
+
+    fn for_row_at(&self, index: usize, f: &mut RowCallback<'_>) -> Result<(), TableError> {
+        self.row(index).map_or(Ok(()), |row| f(&row))
+    }
+
+    fn for_selected_rows(
+        &self,
+        state: &TableState,
+        f: &mut RowCallback<'_>,
+    ) -> Result<(), TableError> {
+        for index in &state.selected_rows {
+            self.for_row_at(usize::try_from(index).unwrap_or(usize::MAX), f)?;
+        }
+        Ok(())
+    }
+
+    fn for_all_rows(&self, f: &mut RowCallback<'_>) -> Result<(), TableError> {
+        for index in 0..self.suggested.len() {
+            self.for_row_at(index, f)?;
+        }
+        Ok(())
+    }
+}
+
 /// The recent repositories: name, location, and when each was last opened.
 pub(crate) struct RecentRows<'a> {
     recent: &'a [Recent],

@@ -162,14 +162,12 @@ impl Sandbox {
         GitOptions {
             host: Host::Local,
             program: std::env::var_os("EGIT_TEST_GIT").map(PathBuf::from),
-            // The ssh command's, unless a test names its own.
+            // The environment's identity and ssh command, unless a test names its own (a commit's
+            // date, say).
             unset: IDENTITY_VARIABLES
                 .iter()
-                .chain(
-                    SSH_VARIABLES
-                        .iter()
-                        .filter(|name| !env.iter().any(|(key, _)| key == **name)),
-                )
+                .chain(SSH_VARIABLES.iter())
+                .filter(|name| !env.iter().any(|(key, _)| key == **name))
                 .map(OsString::from)
                 .collect(),
             env,

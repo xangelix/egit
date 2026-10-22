@@ -1362,14 +1362,41 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "home-recent",
         group: Group::Egit,
         title: "Recent repositories",
-        on: &["Recent repositories"],
+        on: &["Recent repositories", "Remove from list"],
         what: "Repositories you opened, kept in egit's settings on this machine; a double click \
-               opens one. The tabs open when egit closed come back by themselves.",
+               opens one, Remove from list forgets one (its folder stays). The tabs open when \
+               egit closed come back by themselves.",
         git: "",
         cases: &[(
             "One moved or was deleted?",
             "Opening it says it's not a repository there: open it from its new folder.",
         )],
+    },
+    Topic {
+        id: "home-suggested",
+        group: Group::Egit,
+        title: "Suggested repositories",
+        on: &["Suggested repositories"],
+        what: "Where two repositories you've opened (open now, or recent) sit side by side in one \
+               folder, the other repositories in that folder (its folders holding a .git) are \
+               suggested, the most recently active first: when git last moved each one's HEAD \
+               (a commit, a switch, a pull: its reflog's newest entry), else its last commit's \
+               time. Twenty at most; a double click opens one.",
+        git: "git log -g -1 --date=unix --format=%gd HEAD (else git log -1 --format=%ct)",
+        cases: &[
+            (
+                "None shown?",
+                "Open a second repository from the same folder as one you've opened: one alone doesn't make a folder of repositories.",
+            ),
+            (
+                "Repositories on another computer?",
+                "Only this computer's folders are looked in.",
+            ),
+            (
+                "Never active?",
+                "git keeps no reflog for it and it has no commit yet.",
+            ),
+        ],
     },
     Topic {
         id: "home-git",
