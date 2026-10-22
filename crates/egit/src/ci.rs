@@ -250,8 +250,7 @@ impl Pipelines {
     }
 
     /// Reads the newest again at the next poll, as it would every [`EVERY`] while one shown is
-    /// under way (tests: not waiting that long).
-    #[cfg(test)]
+    /// under way (after something asked of GitLab; tests: not waiting that long).
     pub(crate) fn read_newest_now(&mut self) {
         self.next = Some(Instant::now());
     }

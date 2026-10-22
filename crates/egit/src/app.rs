@@ -209,6 +209,8 @@ pub(crate) enum Action {
     KeepWith(crate::sign_ins::Keeper),
     /// Read a repository's pull requests again.
     RefreshPullRequests(RepoId),
+    /// Read a repository's newest pipelines again (one retried, cancelled, or started).
+    ReadPipelines(RepoId),
     /// Open a web page in the user's browser.
     OpenUrl(String),
     /// Open a file or folder of the user's in its app, or show it in its folder.
@@ -482,6 +484,11 @@ impl EgitApp {
                 }
             }
             Action::RefreshPullRequests(id) => state.read_forge_again(id),
+            Action::ReadPipelines(id) => {
+                if let Some(repo) = state.repo_mut(id) {
+                    repo.forge.read_pipelines_now();
+                }
+            }
             Action::OpenUrl(url) => state.opener.open(url),
             Action::Reveal(path, how) => state.opener.reveal(path, how),
             Action::Scope(id, scope) => state.with_repo(id, |git, repo| repo.set_scope(git, scope)),

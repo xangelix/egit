@@ -44,6 +44,7 @@ it.
 | 30 | GitLab's CI/CD pipelines: a mark on each commit, a pipeline's stages and jobs | done; awaiting the owner's review |
 | 31 | Signing in to GitHub and GitLab, offered wherever it counts, with a token | done; awaiting the owner's review |
 | 32 | A GitLab job's log in egit, followed as it runs | done; awaiting the owner's review |
+| 33 | Pipelines acted on (retry, cancel, start), a job's earlier runs, the jobs as a graph; repositories suggested on Home | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -813,21 +814,31 @@ writes paths), never `OsStrExt`.
     can't be seen: `PipelineListing::Hidden`, GitLab's `pipelines: null`, said, not an error;
     nodes without a number or commit left out, logged), `pipeline_details` (one by its `iid`:
     its stages in order, each one's jobs
-    (their latest runs), each job's page, a trigger job's its downstream pipeline's).
+    (their latest runs), each job's page, a trigger job's its downstream pipeline's; the runs a
+    retry replaced, `jobs(retried: true)`, each under its job by stage and name).
     `Pipeline` (GitLab's number from its global id, `iid`, commit, `CiStatus`, warnings, ref,
     made, page; `is_newer_than`), `PipelineDetails` (started, finished, duration, who, how,
-    `Stage`s of `Job`s: status, may fail, manual, duration, page). `CiStatus` (GitLab's every
+    whether it can be retried or cancelled and the account may (`updatePipeline`),
+    `Stage`s of `Job`s: number, status, may fail, manual, duration, started, page, `needs` by
+    name (none where it is scheduled by stage), `JobActions` (retry, cancel, play: GitLab's
+    say), whether the account may (`updateBuild`), its `EarlierRun`s, the newest first).
+    `ci_act`: a `CiAction` asked of GitLab by REST (`POST …/pipelines/:id/retry` or `cancel`,
+    `…/jobs/:id/retry`, `cancel`, `play`), returning the run a job's retry made. `CiStatus` (GitLab's every
     status, read however it writes them: `RUNNING`, `running`, `waiting-for-resource`; `word`,
     `is_moving`: under way or waiting for its time) and its `CiGroup`, the five egit colours:
     passed, failed, under way, paused (waiting for someone or its time), cancelled or skipped.
   - `testing.rs` (feature `testing`) — `FakeForge`: either forge's API on the loopback address
     (pages, details, repository, who is signed in, opening; GitLab's pipelines, `FakePipeline`
     and `FakeJob`, a page or one whole, or refused with GitLab's words, `pipelines_refused`, or
-    listed to nobody, `pipelines_hidden`; a job's number (made up when 0) and log, served by
-    REST, its state and its trace (whole, or from a `Range` when `ranges`); the
+    listed to nobody, `pipelines_hidden`; a job's number (made up when 0), `needs`, earlier
+    runs, and log, served by REST, its state and its trace (whole, or from a `Range` when
+    `ranges`; an earlier run's too); pipelines and jobs retried, cancelled, and started as
+    GitLab would (a retried job's run kept as an earlier one, numbered from `next_job`), or
+    refused (`read_only`: 403, and no permission said); the
     bearer token checked; a rate limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
     signed in through a sandbox's `store` helper (and an askpass script): pipelines a page at a
-    time and one whole (stages in order, jobs, pages), and none asked of GitHub.
+    time and one whole (stages in order, jobs, pages, needs, earlier runs), retried, cancelled,
+    and started, and none asked of GitHub.
 - `crates/egit-agents` — agents working in a repository beside egit: Claude Code, driven
   through Anthropic's Claude Agent SDK (TypeScript) by a small bridge under Node; no egui.
   - `bridge/claude/` — `bridge.mjs` (plain JavaScript: the SDK's `query` with streaming input,
@@ -1128,11 +1139,12 @@ writes paths), never `OsStrExt`.
     (500) read in a job when the remotes are known, and again whenever the requests are
     (`RepoForge::refresh`: after a task reaching the remotes, each background fetch, a sign-in,
     Refresh); while any shown may still change, the newest page read again every `EVERY`
-    (20 s) and merged in. `Marks`: each commit's latest (`CiMark`: its project's place and the
+    (20 s) and merged in, or at once after something asked of GitLab (`read_newest_now`,
+    `Action::ReadPipelines`). `Marks`: each commit's latest (`CiMark`: its project's place and the
     `Pipeline`), of any project, sorted by commit (a binary search a row); a read takes over
     only once complete, one that fails keeping what is shown (a host needing a sign-in or rate
     limited skipped for its other projects) and its reason (`problem`, until a read goes
-    through), which a notice under the commit table says (`views/pipeline.rs`'s `unread`: the
+    through), which a notice under the commit table says (`views/pipeline/`'s `unread`: the
     reason, cut to its line, whole on hover; Dismiss, until the reason changes; not while the
     host wants a sign-in, which the top bar offers). A project whose pipelines the account
     can't see, or with CI/CD off, has none: GitLab answers `pipelines: null`, no error. Each
@@ -1876,26 +1888,52 @@ writes paths), never `OsStrExt`.
     `app::reach`; `format::progress` and Cancel while it runs, `CancelClone`), then opens the
     repository where it was made (a `Location`); cancelled, it says git removed what it had
     made.
-    `views/job.rs` — `JobView`, a job's log in its pipeline's page's place (`Tool::Job`, the page
-    kept to go back to; the details panel left out, so the log has its room): a bar (back,
-    "Pipeline #9004"; the job's status and name, how long it has run, why it failed; Open on
-    GitLab, Wrap lines, Sections: each section stepped in by depth with how long it took, a
-    click scrolling to its header; a spinner while followed), then the log in the text grid
-    (find, select, copy), following its end while it rests there (`TextGrid::is_at_end`,
-    `scroll_to_end`): scrolled up it stays, back at the end it follows; before there is a log,
-    why (waiting for a runner, manual, scheduled, skipped, cancelled); Escape goes back.
-    `views/pipeline.rs` — `PipelineView`, a GitLab pipeline in the commit table's place (from
-    its mark; Escape or History goes back): a bar (its number and status in words, Refresh,
-    Open on GitLab, a spinner while read), what it ran for, its commit (Show the commit), who
-    started it and how, how long it ran (or has so far); then its stages in order, each a header
-    (status, name, how many jobs) over its jobs (status, name, "may fail", "manual", status in
-    words, duration, a log's icon, or the arrow of a page outside), drawn as far as they show
-    (`show_rows`); a job's click shows its log (`PipelineEvent::Job`), a trigger job's opens the
-    pipeline it runs in the browser; its menu: Show its log, Open on GitLab. Read when shown and again
-    every 5 s while it, or a job of it, may still change (`READ_AGAIN`), what was read shown
-    meanwhile. `ci_look` (each status's icon and colour: the theme's `ok`, `danger`, `running`,
-    `paused`, `muted`), `ci_words` ("passed with warnings", "waiting for someone to start a
-    job"), `duration` ("1 min 35 s").
+    `views/job.rs` — `JobView`, a job's run's log in its pipeline's page's place (`Tool::Job`,
+    the page kept to go back to, read again once back; the details panel left out, so the log
+    has its room): a bar (back, "Pipeline #9004"; the job's status and name, how long it has
+    run, why it failed; Open on GitLab, Wrap lines; then, on a row of its own where it doesn't
+    fit (`widgets::room_for`): "Run 2 of 3", a menu of the job's runs, the latest and those
+    retried before it, each with how it ended, how long it took, and when, a click following
+    its log instead (`show_run`); for the latest, Retry the job, Cancel the job, or Start the
+    job as its status as last read allows (GitLab's own say while that is as the page read it)
+    and the account may, a retry's new run becoming the latest, shown as it starts
+    (`JobEvent::Acted`: the marks read again); Sections: each section stepped in by depth with
+    how long it took, a click scrolling to its header; a spinner while followed, or what is
+    asked of GitLab while it is), then GitLab's refusal (a problem box, Dismiss), then the log in
+    the text grid (find, select, copy), following its end while it rests there
+    (`TextGrid::is_at_end`, `scroll_to_end`): scrolled up it stays, back at the end it follows;
+    before there is a log, why (waiting for a runner, manual, scheduled, skipped, cancelled);
+    Escape goes back.
+    `views/pipeline/` — `PipelineView` (`mod.rs`), a GitLab pipeline in the commit table's place
+    (from its mark; the details panel left out; Escape or History goes back): a bar (its number
+    and status in words, Refresh, Open on GitLab; then, as GitLab allows and the account may,
+    Retry failed jobs and Cancel the pipeline, asked first in place ("Cancel the pipeline?",
+    Cancel it, Keep it running), on a row of their own where they don't fit; a spinner while
+    read, or what is asked of GitLab), GitLab's refusal (`Acting`, the page's and the log's:
+    the action asked in a job, its refusal said with what to do, `refusal`), what it ran for,
+    its commit (Show the commit), who started it and how, how long it ran (or has so far); then
+    its jobs laid out as chosen (`JobsLayout`, a segmented control kept in egui's memory: List,
+    Stages, Dependencies). `list.rs`: each stage a card (a band: its status, name, how many
+    jobs; its jobs' rows touching under it, the last's corners rounded) drawn as far as they
+    show (`show_rows`); a job's row: status, name, "may fail", "manual", "3 runs", and at its
+    right Start, Cancel, or Retry as an icon (named "Retry unit"), status in words, duration, a
+    log's icon or the arrow of a page outside. `graph.rs`: the jobs as cards (status, name,
+    duration) in columns, by stage (each titled) or by what each waits for (`Wait`: its needs
+    by name, else every job of the stage before, kept as the stage; a column after the
+    furthest, a round of waits broken), lines from what a job needs to it (curves; a stage's
+    waits only while lit), the pointer resting on a card lighting what it waits for and what
+    waits for it, all the way along, the rest dimmed; in a scroll area both ways, only what is in
+    view drawn; laid out once a read and layout (`Graph`, the page's), lit once the pointer
+    rests on another card. Either way a job's click shows its
+    latest run's log (`PipelineEvent::Job`, with the run), a trigger job's opens the pipeline
+    it runs in the browser; its menu (`job_menu`): Show its log, Earlier runs (each run's log),
+    Retry the job, Cancel the job, Start the job (disabled, saying why, where the account may
+    not), Open on GitLab. Read when shown and again every 5 s while it, or a job of it, may
+    still change (`READ_AGAIN`), and at once after GitLab did what was asked
+    (`PipelineEvent::Acted`: the marks too), what was read shown meanwhile. `ci_look` (each
+    status's icon and colour: the theme's `ok`, `danger`, `running`, `paused`, `muted`),
+    `ci_words` ("passed with warnings", "waiting for someone to start a job"), `duration` ("1
+    min 35 s").
     `views/forge_overview.rs` — the repository's Overview's "GitHub and GitLab" card: the hosts
     egit knows, then each remote (its address, "Recognized as" a GitHub repository or GitLab
     project, or nothing: its host isn't one egit knows, "Open Profile"; reached over ssh on a
@@ -2156,7 +2194,8 @@ writes paths), never `OsStrExt`.
     words never wrap inside a button; `quiet` draws frameless buttons without an inactive
     edge, which egui leaves out of their size but takes out of their padding, so they don't
     grow under the pointer; `tool_width`, how wide a tool would draw, for choosing a look
-    before drawing), `toolbar_separator`, `section_title` (small capitals, muted, its count in
+    before drawing, and `button_width` a button; `room_for`, a row wrapped before a part in a
+    `Ui` of its own that doesn't fit; `icon_tool_of`, an icon tool a help topic explains), `toolbar_separator`, `section_title` (small capitals, muted, its count in
     a pill; named in sentence case) and `section_header` (one, its buttons at the right),
     `text_box` (a long text apart: a commit's description) and `list_box` (a list's rows in a
     border, their corners rounded to follow its), `bar` (a view's bar: the chrome's tone, its
@@ -2342,7 +2381,11 @@ writes paths), never `OsStrExt`.
     (the fork's isn't fetched), then GitLab listing none to the account, read again; a running
     job's log (rendered): its sections' markers and the runner's timestamps out, lines it writes
     coming as it runs, its end said and the following stopped, Escape back to the pipeline;
-    and a
+    jobs laid out by what they wait for and by stage (columns checked; both rendered), an
+    earlier run's log from a job's menu and the latest's from the runs' menu, a retry GitLab
+    refuses (said; rendered), then one it doesn't (its new run shown), back on the page a job
+    cancelled and one started from their rows, the pipeline cancelled (asked first) and its
+    failed jobs retried, its mark running again; and a
     remote on `ssh://git@git-ssh.example.invalid:2222/…` (fetched through `insteadOf`): signed
     in, the fake GitLab says its ssh is there and the project is read unasked (its merge
     requests, its pipeline's mark, "its ssh on …"; nothing written to the settings); not signed

@@ -588,8 +588,8 @@ impl RepoForge {
         self.ci.of(commit)
     }
 
-    /// Reads the newest pipelines again at the next poll (tests: not waiting for it).
-    #[cfg(test)]
+    /// Reads the newest pipelines again at the next poll (one retried or cancelled; tests: not
+    /// waiting for it).
     pub(crate) fn read_pipelines_now(&mut self) {
         self.ci.read_newest_now();
     }

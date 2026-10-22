@@ -1,8 +1,11 @@
 //! A GitLab pipeline in the commit table's place, from the mark on its commit's row: how it
-//! stands (its status, branch or tag, commit, who started it and how, when, for how long), then
-//! its stages in the order they run, each a list of its jobs with theirs. That is as far as egit
-//! goes: a job opens its page on GitLab, in the browser, for its log and the rest. Read again
-//! every few seconds while it may still change by itself.
+//! stands (its status, branch or tag, commit, who started it and how, when, for how long), what
+//! can be done to it as GitLab allows the account (its failed jobs retried, the pipeline
+//! cancelled once asked), then its jobs laid out one of three ways (`JobsLayout`): a card per
+//! stage listing its jobs ([`list`]), or a graph of them by stage or by what each waits for
+//! ([`graph`]). A job's click shows its log (`super::job`), its menu its earlier runs' logs,
+//! retrying, cancelling, or starting it, and its page. Read again every few seconds while it may
+//! still change by itself, and at once after anything asked of GitLab.
 //!
 //! Where the pipelines couldn't be read, a notice under the commit table says why ([`unread`]).
 //!
@@ -13,10 +16,13 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use egit_forge::{CiGroup, CiStatus, Job, PipelineDetails, Stage, pipeline_details};
+use egit_forge::{CiAction, CiGroup, CiStatus, Job, PipelineDetails, ci_act, pipeline_details};
 use egit_git::{CancelToken, ObjectId};
 use egui::{Align, Color32, Frame, Id, Key, Layout, Margin, Modifiers, RichText, Sense, Ui};
 use egui_async::Bind;
+
+mod graph;
+mod list;
 
 use super::history::Shared;
 use crate::ci::CiMark;
@@ -27,9 +33,6 @@ use crate::problem::Problem;
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
-
-/// A row's height in the list of stages and jobs.
-const ROW_HEIGHT: f32 = 28.0;
 
 /// How soon a pipeline that may still change is read again.
 const READ_AGAIN: Duration = Duration::from_secs(5);
@@ -144,6 +147,41 @@ pub(super) fn mark(
     event
 }
 
+/// How the page lays a pipeline's jobs out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(super) enum JobsLayout {
+    /// Each stage a card of its jobs, in the order they run.
+    #[default]
+    List,
+    /// Each stage a column of its jobs, lines drawn to what each needs.
+    Stages,
+    /// Columns by what each job waits for (its `needs`, else the stages before it), as
+    /// GitLab's "Job dependencies" view lays them out.
+    Dependencies,
+}
+
+impl JobsLayout {
+    /// The one chosen last (kept with egui's memory, for every pipeline).
+    fn chosen(ctx: &egui::Context) -> Self {
+        ctx.data_mut(|data| data.get_persisted(Id::new("pipeline-layout")))
+            .unwrap_or_default()
+    }
+
+    fn choose(self, ctx: &egui::Context) {
+        ctx.data_mut(|data| data.insert_persisted(Id::new("pipeline-layout"), self));
+    }
+}
+
+/// What a job's row, card, or menu asked.
+pub(super) enum JobAsk {
+    /// Its log: of its latest run, or of an earlier one (its number).
+    Log(Job, u64),
+    /// Something of GitLab: run it again, cancel it, start it.
+    Act(CiAction),
+    /// Its page on GitLab.
+    Open(String),
+}
+
 /// The pipeline page's state.
 #[derive(Debug)]
 pub(super) struct PipelineView {
@@ -152,11 +190,17 @@ pub(super) struct PipelineView {
     details: Bind<Arc<PipelineDetails>, Problem>,
     /// When it is read again (while it may still change).
     next: Option<Instant>,
-    /// Whether a read is due at once (the first, or Refresh).
+    /// Whether a read is due at once (the first, Refresh, or after an action).
     due: bool,
     /// Whether the last read's end was taken in (when the next is due worked out).
     landed: bool,
     cancel: CancelToken,
+    /// What was last asked of GitLab, and how it went.
+    acting: Acting,
+    /// Whether cancelling the pipeline is asked first.
+    confirming: bool,
+    /// The jobs' graph, as last laid out, and what the pointer lights in it.
+    graph: graph::Graph,
 }
 
 impl Drop for PipelineView {
@@ -170,8 +214,10 @@ pub(super) enum PipelineEvent {
     Close,
     ShowCommit(ObjectId),
     Open(String),
-    /// A job's log.
-    Job(Box<Job>),
+    /// A job's log: of its latest run, or of an earlier one (its number).
+    Job(Box<Job>, u64),
+    /// GitLab did what was asked: the commits' marks read again.
+    Acted,
 }
 
 impl PipelineView {
@@ -184,12 +230,10 @@ impl PipelineView {
             due: true,
             landed: false,
             cancel: CancelToken::new(),
+            acting: Acting::new(),
+            confirming: false,
+            graph: graph::Graph::default(),
         }
-    }
-
-    /// Its repository's place among the forge's.
-    pub(super) const fn repository(&self) -> usize {
-        self.mark.repository
     }
 
     /// Its number, as its page names it.
@@ -197,11 +241,19 @@ impl PipelineView {
         self.mark.pipeline.id
     }
 
-    /// Reads it (again) when due; schedules the next read while it may still change.
-    fn follow(&mut self, ui: &Ui, forge: &RepoForge) {
+    /// Reads it again at once (back from a job's log, say).
+    pub(super) const fn read_again(&mut self) {
+        self.due = true;
+    }
+
+    /// Reads it (again) when due; schedules the next read while it may still change. Returns
+    /// whether an action asked of GitLab went through, just now.
+    fn follow(&mut self, ui: &Ui, forge: &RepoForge) -> bool {
+        let acted = self.acting.landed().is_some();
+        self.due = self.due || acted;
         let now = Instant::now();
         if self.details.is_pending() {
-            return;
+            return acted;
         }
         if !self.landed
             && let Some(read) = self.details.read_as_ref()
@@ -226,16 +278,20 @@ impl PipelineView {
             ui.ctx()
                 .request_repaint_after(next.saturating_duration_since(now));
         }
+        acted
+    }
+
+    /// Its repository and the account it is read with, where they are still there.
+    pub(super) fn reached(&self, forge: &RepoForge) -> Option<Reach> {
+        let repository = forge.repositories.get(self.mark.repository).cloned()?;
+        let account = forge.account(repository.host())?;
+        Some((account, repository))
     }
 
     /// Starts reading it.
     fn read(&mut self, forge: &RepoForge) {
         self.landed = false;
-        let repository = forge.repositories.get(self.mark.repository).cloned();
-        let account = repository
-            .as_ref()
-            .and_then(|repository| forge.account(repository.host()));
-        let (Some(repository), Some(account)) = (repository, account) else {
+        let Some((account, repository)) = self.reached(forge) else {
             self.details.fill(Err(Problem::new(
                 "The pipeline couldn't be read",
                 "Its project is no longer among the remotes.",
@@ -252,13 +308,130 @@ impl PipelineView {
                 .map_err(|error| Problem::new("The pipeline couldn't be read", error.to_string()))
         }));
     }
+
+    /// Asks `action` of GitLab (in a job); the pipeline is read again once it went through.
+    fn act(&mut self, forge: &RepoForge, action: CiAction) {
+        self.confirming = false;
+        let reach = self.reached(forge);
+        self.acting.ask(reach, action);
+    }
 }
 
-/// A row of the list: a stage's header, or one of its jobs.
-#[derive(Clone, Copy)]
-enum Row<'a> {
-    Stage(&'a Stage),
-    Job(&'a Job),
+/// A GitLab project and the account it is reached with.
+pub(super) type Reach = (Arc<egit_forge::Account>, egit_forge::ForgeRepository);
+
+/// What was last asked of GitLab (retrying, cancelling, starting), and how it went: the
+/// pipeline's page's and a job's log's alike.
+#[derive(Debug)]
+pub(super) struct Acting {
+    action: Option<CiAction>,
+    /// GitLab's answer: the run a job's retry made, or the job asked of.
+    answer: Bind<Option<u64>, Problem>,
+    /// Whether the answer was taken in.
+    taken: bool,
+}
+
+impl Acting {
+    /// Nothing asked yet.
+    pub(super) const fn new() -> Self {
+        Self {
+            action: None,
+            answer: Bind::new(true),
+            taken: true,
+        }
+    }
+
+    /// Asks `action` of the project `reach` names, in a job (or says it can't be, none).
+    pub(super) fn ask(&mut self, reach: Option<Reach>, action: CiAction) {
+        self.action = Some(action);
+        self.taken = false;
+        let Some((account, repository)) = reach else {
+            self.answer.fill(Err(Problem::new(
+                "GitLab couldn't be asked",
+                "The project is no longer among the remotes.",
+            )));
+            return;
+        };
+        self.answer.request(jobs::blocking(move || {
+            ci_act(&account, &repository, action, &CancelToken::new())
+                .map_err(|error| refusal(action, &error))
+        }));
+    }
+
+    /// Whether GitLab is being asked.
+    pub(super) fn is_pending(&mut self) -> bool {
+        self.answer.is_pending()
+    }
+
+    /// What is being done, while it is: "Retrying the job".
+    pub(super) fn doing(&mut self) -> Option<&'static str> {
+        let action = self.action?;
+        self.is_pending().then(|| doing(action))
+    }
+
+    /// Once, as GitLab's answer lands, when it did what was asked: the action, and the run a
+    /// job's retry made.
+    pub(super) fn landed(&mut self) -> Option<(CiAction, Option<u64>)> {
+        if self.taken || !self.answer.is_finished() {
+            return None;
+        }
+        self.taken = true;
+        let made = *self.answer.read_as_ref()?.ok()?;
+        Some((self.action?, made))
+    }
+
+    /// Whether GitLab didn't do what was last asked (and that wasn't dismissed).
+    pub(super) fn failed(&mut self) -> bool {
+        matches!(self.answer.read_as_ref(), Some(Err(_)))
+    }
+
+    /// Why GitLab didn't, in a problem box with Dismiss, where it didn't.
+    pub(super) fn problem(&mut self, ui: &mut Ui) {
+        let Some(Err(problem)) = self.answer.read_as_ref() else {
+            return;
+        };
+        let problem = problem.clone();
+        let mut dismissed = false;
+        widgets::problem_box(ui, &problem, |ui| {
+            dismissed = widgets::secondary(ui, true, "Dismiss").clicked();
+        });
+        ui.add_space(8.0);
+        if dismissed {
+            self.answer = Bind::new(true);
+        }
+    }
+}
+
+/// What `action` does, in words: "Retrying the failed jobs".
+const fn doing(action: CiAction) -> &'static str {
+    match action {
+        CiAction::RetryPipeline(_) => "Retrying the failed jobs",
+        CiAction::CancelPipeline(_) => "Cancelling the pipeline",
+        CiAction::RetryJob(_) => "Retrying the job",
+        CiAction::CancelJob(_) => "Cancelling the job",
+        CiAction::PlayJob(_) => "Starting the job",
+    }
+}
+
+/// Why GitLab didn't do `action`, in words to act on.
+fn refusal(action: CiAction, error: &egit_forge::ForgeError) -> Problem {
+    let title = match action {
+        CiAction::RetryPipeline(_) => "The failed jobs couldn't be retried",
+        CiAction::CancelPipeline(_) => "The pipeline couldn't be cancelled",
+        CiAction::RetryJob(_) => "The job couldn't be retried",
+        CiAction::CancelJob(_) => "The job couldn't be cancelled",
+        CiAction::PlayJob(_) => "The job couldn't be started",
+    };
+    match error {
+        egit_forge::ForgeError::Forbidden { message, .. } => Problem::new(
+            title,
+            format!(
+                "GitLab refused ({message}): your role on the project may not run its \
+                 pipelines (Developer and above may), or your token lacks the api scope."
+            ),
+        ),
+        other => Problem::new(title, other.to_string()),
+    }
 }
 
 /// Draws the pipeline's page; returns what it asks of the history view.
@@ -269,9 +442,12 @@ pub(super) fn show(
 ) -> Option<PipelineEvent> {
     let escape = !ui.ctx().text_edit_focused()
         && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
-    let mut event = escape.then_some(PipelineEvent::Close);
-    view.follow(ui, shared.forge);
-    let reading = view.details.is_pending();
+    let acted = view.follow(ui, shared.forge);
+    let mut event = if acted {
+        Some(PipelineEvent::Acted)
+    } else {
+        escape.then_some(PipelineEvent::Close)
+    };
     let details = view
         .details
         .read_as_ref()
@@ -283,26 +459,33 @@ pub(super) fn show(
     };
     let pipeline = details
         .as_ref()
-        .map_or(&view.mark.pipeline, |details| &details.pipeline);
-    match bar(ui, shared, pipeline, reading) {
+        .map_or(&view.mark.pipeline, |details| &details.pipeline)
+        .clone();
+    match bar(ui, shared, &pipeline, details.as_deref(), view) {
         Some(BarAsk::Refresh) => view.due = true,
         Some(BarAsk::Close) => event = Some(PipelineEvent::Close),
         Some(BarAsk::Open(url)) => event = Some(PipelineEvent::Open(url)),
+        Some(BarAsk::Act(action)) => view.act(shared.forge, action),
         None => {}
     }
     let palette = shared.palette;
+    let mut asked = None;
     egui::CentralPanel::default()
         .frame(Frame::new().inner_margin(Margin::same(16)))
         .show(ui, |ui| {
-            if let Some(asked) = summary(ui, palette, pipeline, details.as_deref()) {
-                event = Some(asked);
+            view.acting.problem(ui);
+            if let Some(summary) = summary(ui, palette, &pipeline, details.as_deref()) {
+                event = Some(summary);
             }
             ui.add_space(12.0);
             match (&details, &problem) {
                 (Some(details), _) => {
-                    if let Some(asked) = stages(ui, palette, details) {
-                        event = Some(asked);
-                    }
+                    let layout = layout_choice(ui);
+                    ui.add_space(8.0);
+                    asked = match layout {
+                        JobsLayout::List => list::stages(ui, palette, details),
+                        by => graph::graph(ui, palette, details, (by, &mut view.graph)),
+                    };
                 }
                 (None, Some(problem)) => {
                     widgets::problem_box(ui, problem, |ui| {
@@ -315,7 +498,41 @@ pub(super) fn show(
                 (None, None) => widgets::working(ui, "Reading its stages and jobs…"),
             }
         });
+    match asked {
+        Some(JobAsk::Log(job, run)) => event = Some(PipelineEvent::Job(Box::new(job), run)),
+        Some(JobAsk::Act(action)) => view.act(shared.forge, action),
+        Some(JobAsk::Open(url)) => event = Some(PipelineEvent::Open(url)),
+        None => {}
+    }
     event
+}
+
+/// The jobs' layout chosen: a list of stages, or a graph by stage or by dependency.
+fn layout_choice(ui: &mut Ui) -> JobsLayout {
+    let chosen = JobsLayout::chosen(ui.ctx());
+    let choices = [
+        (JobsLayout::List, "List"),
+        (JobsLayout::Stages, "Stages"),
+        (JobsLayout::Dependencies, "Dependencies"),
+    ];
+    let mut picked = chosen;
+    ui.horizontal(|ui| {
+        widgets::segmented(ui, &mut picked, &choices);
+        ui.label(muted(
+            ui,
+            match picked {
+                JobsLayout::List => "Each stage's jobs, in the order they run.",
+                JobsLayout::Stages => "Each stage a column; lines to what each job needs.",
+                JobsLayout::Dependencies => {
+                    "Columns by what each job waits for: its needs, else the stages before it."
+                }
+            },
+        ));
+    });
+    if picked != chosen {
+        picked.choose(ui.ctx());
+    }
+    picked
 }
 
 /// What the bar asked.
@@ -323,17 +540,22 @@ enum BarAsk {
     Close,
     Refresh,
     Open(String),
+    Act(CiAction),
 }
 
-/// The bar: back, the pipeline's number and status, Refresh (a spinner while reading), and its
-/// page on GitLab.
+/// The bar: back, the pipeline's number and status, Refresh (a spinner while reading), its
+/// page on GitLab; then, as GitLab allows, retrying its failed jobs and cancelling it (asked
+/// first, in place), or what is under way.
 fn bar(
     ui: &mut Ui,
     shared: &Shared<'_>,
     pipeline: &egit_forge::Pipeline,
-    reading: bool,
+    details: Option<&PipelineDetails>,
+    view: &mut PipelineView,
 ) -> Option<BarAsk> {
     let palette = shared.palette;
+    let reading = view.details.is_pending();
+    let acting = view.acting.is_pending();
     let mut event = None;
     widgets::bar(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
@@ -362,11 +584,22 @@ fn bar(
             {
                 event = Some(BarAsk::Open(pipeline.url.clone()));
             }
-            // What comes and goes follows the buttons.
+            // What comes and goes follows the buttons, on a row of its own where it doesn't fit.
+            let widths = action_widths(ui, details, view);
+            widgets::room_for(ui, &widths);
             ui.scope_builder(
-                egui::UiBuilder::new().id(Id::new("pipeline-reading")),
+                egui::UiBuilder::new()
+                    .id(Id::new("pipeline-actions"))
+                    .layout(Layout::left_to_right(Align::Center)),
                 |ui| {
-                    if reading {
+                    if let Some(details) = details
+                        && let Some(asked) = pipeline_actions(ui, details, view, acting)
+                    {
+                        event = Some(asked);
+                    }
+                    if let Some(doing) = view.acting.doing() {
+                        widgets::working(ui, &format!("{doing}…"));
+                    } else if reading {
                         ui.spinner();
                     }
                 },
@@ -374,6 +607,86 @@ fn bar(
         });
     });
     event
+}
+
+/// How wide the bar's actions draw, side by side (and what is being done, beside them).
+fn action_widths(ui: &Ui, details: Option<&PipelineDetails>, view: &mut PipelineView) -> Vec<f32> {
+    let mut texts: Vec<String> = Vec::new();
+    if view.confirming {
+        texts.extend(["Cancel the pipeline?", "Cancel it", "Keep it running"].map(str::to_owned));
+    } else if let Some(details) = details {
+        if details.retryable {
+            texts.push(format!("{}  Retry failed jobs", icon::ARROW_CLOCKWISE));
+        }
+        if details.cancelable {
+            texts.push(format!("{}  Cancel the pipeline", icon::PROHIBIT));
+        }
+    }
+    if let Some(doing) = view.acting.doing() {
+        texts.push(format!("{doing}…  "));
+    }
+    texts
+        .iter()
+        .map(|text| widgets::button_width(ui, text))
+        .collect()
+}
+
+/// Retrying the failed jobs and cancelling the pipeline (asked first), where GitLab allows them;
+/// disabled, saying why, where the account may not.
+fn pipeline_actions(
+    ui: &mut Ui,
+    details: &PipelineDetails,
+    view: &mut PipelineView,
+    acting: bool,
+) -> Option<BarAsk> {
+    let id = details.pipeline.id;
+    let why_not = (!details.can_update)
+        .then_some("Your role on this project may not run its pipelines (Developer and above may)");
+    let mut asked = None;
+    if view.confirming {
+        ui.label(RichText::new("Cancel the pipeline?").semibold());
+        if widgets::danger(ui, !acting, "Cancel it").clicked() {
+            asked = Some(BarAsk::Act(CiAction::CancelPipeline(id)));
+        }
+        if widgets::secondary(ui, true, "Keep it running").clicked() {
+            view.confirming = false;
+        }
+        return asked;
+    }
+    if details.retryable {
+        let retry = widgets::secondary(
+            ui,
+            why_not.is_none() && !acting,
+            &format!("{}  Retry failed jobs", icon::ARROW_CLOCKWISE),
+        )
+        .on_hover_text(
+            "Runs again every job that failed or was cancelled; those after them run as the \
+             pipeline goes on",
+        );
+        let retry = match why_not {
+            Some(why) => retry.on_disabled_hover_text(why),
+            None => retry,
+        };
+        if retry.clicked() {
+            asked = Some(BarAsk::Act(CiAction::RetryPipeline(id)));
+        }
+    }
+    if details.cancelable {
+        let cancel = widgets::secondary(
+            ui,
+            why_not.is_none() && !acting,
+            &format!("{}  Cancel the pipeline", icon::PROHIBIT),
+        )
+        .on_hover_text("Cancels every job under way or waiting");
+        let cancel = match why_not {
+            Some(why) => cancel.on_disabled_hover_text(why),
+            None => cancel,
+        };
+        if cancel.clicked() {
+            view.confirming = true;
+        }
+    }
+    asked
 }
 
 /// How it stands: its branch or tag, its commit (and the way to it in the history), who
@@ -461,175 +774,6 @@ pub(super) fn duration(seconds: u64) -> String {
         (0, _) => format!("{minutes} min {rest} s"),
         _ => format!("{hours} h {minutes} min"),
     }
-}
-
-/// The stages in the order they run, each a header over its jobs, drawn as far as they show;
-/// a job opens its page on GitLab.
-fn stages(ui: &mut Ui, palette: Palette, details: &PipelineDetails) -> Option<PipelineEvent> {
-    let rows: Vec<Row<'_>> = details
-        .stages
-        .iter()
-        .flat_map(|stage| std::iter::once(Row::Stage(stage)).chain(stage.jobs.iter().map(Row::Job)))
-        .collect();
-    if rows.is_empty() {
-        ui.label(muted(ui, "It has no jobs."));
-        return None;
-    }
-    let mut event = None;
-    egui::ScrollArea::vertical()
-        .id_salt("pipeline-jobs")
-        .auto_shrink([false, false])
-        .show_rows(ui, ROW_HEIGHT, rows.len(), |ui, visible| {
-            for (at, row) in rows
-                .get(visible.clone())
-                .unwrap_or_default()
-                .iter()
-                .enumerate()
-            {
-                let place = visible.start.saturating_add(at);
-                match row {
-                    Row::Stage(stage) => stage_row(ui, palette, stage),
-                    Row::Job(job) => {
-                        if let Some(asked) = job_row(ui, palette, job, place) {
-                            event = Some(asked);
-                        }
-                    }
-                }
-            }
-        });
-    event
-}
-
-/// A stage's header: its status and name, and how many jobs it has.
-fn stage_row(ui: &mut Ui, palette: Palette, stage: &Stage) {
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
-    crate::help::note_topic(ui, rect, TOPIC);
-    let mut row = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    let (glyph, color) = ci_look(stage.status, palette);
-    row.label(RichText::new(glyph).color(color));
-    row.add(
-        egui::Label::new(RichText::new(&stage.name).semibold())
-            .selectable(false)
-            .truncate(),
-    );
-    let jobs = stage.jobs.len();
-    row.label(muted(
-        &row,
-        format!("{jobs} job{}", if jobs == 1 { "" } else { "s" }),
-    ));
-}
-
-/// A job's row, stepped in under its stage: its status, name, what is special about it, and
-/// how long it ran; a click shows its log (a trigger job's, its downstream pipeline's page on
-/// GitLab), its menu opens its page. Returns what was asked.
-fn job_row(ui: &mut Ui, palette: Palette, job: &Job, place: usize) -> Option<PipelineEvent> {
-    let (rect, _) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_HEIGHT), Sense::hover());
-    let opens = job.id.is_some() || job.url.is_some();
-    let sense = if opens {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(rect, Id::new(("pipeline-job", place)), sense);
-    let words = job.status.word();
-    response.widget_info(|| {
-        egui::WidgetInfo::labeled(
-            egui::WidgetType::Button,
-            opens,
-            format!("{}: {words}", job.name),
-        )
-    });
-    crate::help::note_topic(ui, rect, "pipeline-job");
-    widgets::row_fill(
-        ui,
-        rect,
-        f32::from(crate::theme::RADIUS_INNER),
-        false,
-        response.hovered(),
-    );
-    let mut row = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(8.0, 0.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    row.add_space(24.0);
-    let (glyph, color) = ci_look(job.status, palette);
-    row.label(RichText::new(glyph).color(color));
-    row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-        if job.id.is_some() {
-            ui.label(muted(ui, icon::TERMINAL_WINDOW));
-        } else if job.url.is_some() {
-            ui.label(muted(ui, icon::ARROW_SQUARE_OUT));
-        }
-        let took = job.duration.map(duration).unwrap_or_default();
-        ui.add_sized(
-            [80.0, ROW_HEIGHT],
-            egui::Label::new(muted(ui, took)).selectable(false),
-        );
-        ui.add_sized(
-            [120.0, ROW_HEIGHT],
-            egui::Label::new(RichText::new(words).color(color)).selectable(false),
-        );
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            ui.add(
-                egui::Label::new(RichText::new(&job.name).color(palette.text))
-                    .selectable(false)
-                    .truncate(),
-            );
-            if job.allow_failure {
-                chip(ui, "may fail", palette.muted);
-            }
-            if job.manual {
-                chip(ui, "manual", palette.muted);
-            }
-        });
-    });
-    let response = response.on_hover_text(if job.id.is_some() {
-        "Show its log, as it runs"
-    } else if job.url.is_some() {
-        "Open the pipeline it runs on GitLab"
-    } else {
-        "GitLab gives no page for it"
-    });
-    let mut asked = None;
-    if let Some(url) = &job.url {
-        response.context_menu(|ui| {
-            super::actions::menu_rows(ui);
-            if job.id.is_some()
-                && super::actions::item(ui, (icon::TERMINAL_WINDOW, "Show its log"), Ok(()))
-            {
-                asked = Some(PipelineEvent::Job(Box::new(job.clone())));
-            }
-            if super::actions::item(ui, (icon::ARROW_SQUARE_OUT, "Open on GitLab"), Ok(())) {
-                asked = Some(PipelineEvent::Open(url.clone()));
-            }
-        });
-    }
-    if response.clicked() {
-        asked = if job.id.is_some() {
-            Some(PipelineEvent::Job(Box::new(job.clone())))
-        } else {
-            job.url.clone().map(PipelineEvent::Open)
-        };
-    }
-    asked
-}
-
-/// A small label in a frame.
-fn chip(ui: &mut Ui, text: &str, color: Color32) {
-    Frame::new()
-        .stroke(egui::Stroke::new(1.0, color))
-        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_INNER))
-        .inner_margin(Margin::symmetric(4, 0))
-        .show(ui, |ui| {
-            ui.add(egui::Label::new(RichText::new(text).size(11.0).color(color)).selectable(false));
-        });
 }
 
 /// The notice under the commit table where the pipelines couldn't be read: `why` (cut to its

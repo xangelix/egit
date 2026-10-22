@@ -652,7 +652,6 @@ impl HistoryView {
         self.tool = Some(Tool::PullRequests(PullRequestView::new(selected)));
     }
 
-    /// Shows `mark`'s pipeline in the commit table's place.
     /// The job's log shown in the commit table's place, as text, and whether it follows its
     /// end.
     #[cfg(test)]
@@ -663,6 +662,16 @@ impl HistoryView {
         }
     }
 
+    /// The number of the job's run whose log shows.
+    #[cfg(test)]
+    pub(crate) fn job_run(&self) -> Option<u64> {
+        match &self.tool {
+            Some(Tool::Job(view)) => Some(view.run_shown()),
+            _ => None,
+        }
+    }
+
+    /// Shows `mark`'s pipeline in the commit table's place.
     fn show_pipeline(&mut self, mark: crate::ci::CiMark) {
         self.file = None;
         self.tool = Some(Tool::Pipeline(Box::new(PipelineView::new(mark))));
@@ -1482,8 +1491,9 @@ fn panels(
         hooks,
     } = work;
     side_panel(ui, shared, history, view, lists, actions);
-    // A job's log takes the details' room too: its lines are wide, and nothing is selected.
-    let details_shown = !matches!(view.tool, Some(Tool::Job(_)));
+    // A pipeline's page and a job's log take the details' room too: its graph and lines are
+    // wide, and nothing is selected.
+    let details_shown = !matches!(view.tool, Some(Tool::Job(_) | Tool::Pipeline(_)));
     // Never so wide the commit table (or a file) is left without room, where there is room.
     let widest = (ui.available_width() - CENTRAL_LEAST).clamp(260.0, 900.0);
     if details_shown {
@@ -2656,29 +2666,35 @@ fn job_log(
             actions.push(Action::OpenUrl(url));
             false
         }
+        Some(super::job::JobEvent::Acted) => {
+            actions.push(Action::ReadPipelines(shared.id));
+            false
+        }
         None => false,
     }
 }
 
-/// Opens a job's log in its pipeline's page's place (`opened`), or goes back to that page
-/// (`left`).
+/// Opens a job's run's log in its pipeline's page's place (`opened`), or goes back to that
+/// page (`left`), read again: the job may have moved on meanwhile.
 fn switch_job_tool(
     ui: &Ui,
     shared: &Shared<'_>,
     view: &mut HistoryView,
-    (opened, left): (Option<Box<egit_forge::Job>>, bool),
+    (opened, left): (Option<(Box<egit_forge::Job>, u64)>, bool),
 ) {
-    if let Some(job) = opened
+    if let Some((job, run)) = opened
         && let Some(Tool::Pipeline(page)) = view.tool.take()
     {
         view.tool = Some(Tool::Job(Box::new(super::job::JobView::new(
             page,
-            *job,
+            (*job, run),
             shared.forge,
             ui.ctx(),
         ))));
     } else if left && let Some(Tool::Job(log)) = view.tool.take() {
-        view.tool = Some(Tool::Pipeline(log.pipeline));
+        let mut page = log.pipeline;
+        page.read_again();
+        view.tool = Some(Tool::Pipeline(page));
     }
 }
 
@@ -2722,8 +2738,12 @@ fn tool(
                     actions.push(Action::OpenUrl(url));
                     None
                 }
-                PipelineEvent::Job(job) => {
-                    job_opened = Some(job);
+                PipelineEvent::Job(job, run) => {
+                    job_opened = Some((job, run));
+                    None
+                }
+                PipelineEvent::Acted => {
+                    actions.push(Action::ReadPipelines(shared.id));
                     None
                 }
             })

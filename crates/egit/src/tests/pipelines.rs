@@ -5,7 +5,10 @@
 //! the history with it selected, and Escape closing the page. Pipelines GitLab refuses say
 //! why under the commit table. The Overview says what each remote was taken for (a project, or
 //! nothing: a host egit doesn't know), what was read, and how many of the commits the
-//! pipelines ran for the history shows; and when GitLab lists none to the account.
+//! pipelines ran for the history shows; and when GitLab lists none to the account. Jobs laid out
+//! by stage and by what they wait for; a job's earlier run's log; a job retried (refused, then
+//! not: its new run shown), cancelled, and started; the pipeline cancelled and its failed jobs
+//! retried, its mark following.
 
 use egit_forge::ForgeKind;
 use egit_forge::testing::{FakeForge, FakeJob, FakePipeline};
@@ -14,8 +17,8 @@ use egui::accesskit::Role;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use super::screens::{
-    commit_of, forge_clone, harness, history_of, into_view, open_path, profile_loaded,
-    pull_requests_read, render, settle, show_panel, wait_for_label,
+    click_when_enabled, commit_of, forge_clone, harness, history_of, into_view, open_path,
+    profile_loaded, pull_requests_read, render, settle, show_panel, wait_for_label,
 };
 use crate::app::EgitApp;
 use crate::theme::icon;
@@ -517,4 +520,184 @@ fn a_job_s_log_shows_and_follows_it_as_it_runs() {
             .job_log()
             .is_none()
     );
+}
+
+/// A job of `stage` numbered `id`, as `status` says, waiting for `needs` (none: its stages).
+fn job(id: u64, name: &str, status: &str, needs: Option<&[&str]>) -> FakeJob {
+    FakeJob {
+        id,
+        name: name.to_owned(),
+        status: status.to_owned(),
+        needs: needs.map(|needs| needs.iter().map(|&need| need.to_owned()).collect()),
+        duration: Some(30),
+        ..FakeJob::default()
+    }
+}
+
+/// The left edge of the card or row named `label`.
+fn left_of(harness: &egui_kittest::Harness<'_, EgitApp>, label: &str) -> f32 {
+    harness
+        .get_by_role_and_label(Role::Button, label)
+        .rect()
+        .left()
+}
+
+/// Steps until the job's run whose log shows is `run`.
+fn run_shown(run: u64) -> impl Fn(&mut EgitApp) -> bool {
+    move |app| app.state.repos[0].history_view.job_run() == Some(run)
+}
+
+/// A failed pipeline of `head`: unit ran twice (the first run kept), docs needs nothing,
+/// production waits for unit alone.
+fn ran_twice(head: &str) -> FakePipeline {
+    let mut unit = job(601, "unit", "FAILED", Some(&["compile"]));
+    unit.log = "second try failed\n".to_owned();
+    let mut first = job(501, "unit", "FAILED", Some(&["compile"]));
+    first.log = "first try failed\n".to_owned();
+    unit.earlier = vec![first];
+    let mut failed = pipeline(9_006, head, "FAILED", "FAILED");
+    failed.stages = vec![
+        (
+            "build".to_owned(),
+            "success".to_owned(),
+            vec![job(600, "compile", "SUCCESS", None)],
+        ),
+        (
+            "test".to_owned(),
+            "failed".to_owned(),
+            vec![
+                unit,
+                job(602, "e2e", "RUNNING", None),
+                job(604, "docs", "SUCCESS", Some(&[])),
+            ],
+        ),
+        (
+            "deploy".to_owned(),
+            "manual".to_owned(),
+            vec![job(603, "production", "MANUAL", Some(&["unit"]))],
+        ),
+    ];
+    failed
+}
+
+/// Each layout of its jobs: by what each waits for (docs needs nothing: the first column;
+/// production one after unit), then by stage (docs in its own stage's column), then the list.
+fn laid_out(harness: &mut egui_kittest::Harness<'_, EgitApp>) {
+    harness.get_by_label("Dependencies").click();
+    harness.run_steps(2);
+    assert_eq!(
+        left_of(harness, "docs: passed"),
+        left_of(harness, "compile: passed")
+    );
+    assert_eq!(
+        left_of(harness, "e2e: running"),
+        left_of(harness, "unit: failed")
+    );
+    assert!(left_of(harness, "compile: passed") < left_of(harness, "unit: failed"));
+    assert!(left_of(harness, "unit: failed") < left_of(harness, "production: manual"));
+    render(harness, "pipeline-dependencies");
+    // By stage: docs in its own stage's column.
+    harness.get_by_label("Stages").click();
+    harness.run_steps(2);
+    assert_eq!(
+        left_of(harness, "docs: passed"),
+        left_of(harness, "unit: failed")
+    );
+    harness
+        .get_by_role_and_label(Role::Button, "unit: failed")
+        .hover();
+    harness.run_steps(2);
+    render(harness, "pipeline-stages");
+    harness.get_by_label("List").click();
+    harness.run_steps(2);
+}
+
+#[test]
+fn jobs_are_laid_out_by_what_they_wait_for_and_retried_cancelled_and_started() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    let head = commit_of(&sandbox, &work, "HEAD");
+    fake.state().repositories[0].pipelines = vec![ran_twice(&head)];
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+    wait_for_label(&mut harness, "Pipeline #9006: failed");
+    harness
+        .get_by_role_and_label(Role::Button, "Pipeline #9006: failed")
+        .click();
+    wait_for_label(&mut harness, "unit: failed");
+    harness.get_by_label("2 runs");
+
+    laid_out(&mut harness);
+
+    // An earlier run's log, from the job's menu; then the latest's, from the runs' menu.
+    harness
+        .get_by_role_and_label(Role::Button, "unit: failed")
+        .click_secondary();
+    wait_for_label(&mut harness, "Earlier runs");
+    harness.get_by_label("Earlier runs").hover();
+    harness.run_steps(2);
+    harness.get_by_label_contains("Run #501 · failed").click();
+    settle(&mut harness, "the first run", run_shown(501));
+    settle(&mut harness, "its log", log_holds("first try failed"));
+    harness.get_by_label_contains("Run 1 of 2").click();
+    harness.run_steps(2);
+    harness.get_by_label_contains("Latest #601").click();
+    settle(
+        &mut harness,
+        "the latest's log",
+        log_holds("second try failed"),
+    );
+
+    // Retried where GitLab refuses: said; then where it doesn't: the new run shows.
+    let retry = format!("{}  Retry the job", icon::ARROW_CLOCKWISE);
+    fake.state().read_only = true;
+    click_when_enabled(&mut harness, &retry);
+    wait_for_label(&mut harness, "Dismiss");
+    harness.get_by_label_contains("The job couldn't be retried");
+    harness.get_by_label_contains("Developer and above");
+    render(&mut harness, "job-log-refused");
+    harness.get_by_label("Dismiss").click();
+    fake.state().read_only = false;
+    click_when_enabled(&mut harness, &retry);
+    settle(&mut harness, "the new run", run_shown(990_001));
+    harness.get_by_label_contains("Run 3 of 3");
+
+    // Back on the pipeline, read again: the job pending, three runs.
+    harness.key_press(egui::Key::Escape);
+    wait_for_label(&mut harness, "unit: pending");
+    harness.get_by_label("3 runs");
+
+    // A job cancelled and another started from their rows.
+    click_when_enabled(&mut harness, "Cancel e2e");
+    wait_for_label(&mut harness, "e2e: canceled");
+    click_when_enabled(&mut harness, "Start production");
+    wait_for_label(&mut harness, "production: pending");
+
+    // The pipeline cancelled (asked first), then its failed and cancelled jobs retried.
+    click_when_enabled(
+        &mut harness,
+        &format!("{}  Cancel the pipeline", icon::PROHIBIT),
+    );
+    wait_for_label(&mut harness, "Cancel it");
+    harness.get_by_label("Cancel it").click();
+    wait_for_label(&mut harness, "unit: canceled");
+    wait_for_label(&mut harness, "production: canceled");
+    click_when_enabled(
+        &mut harness,
+        &format!("{}  Retry failed jobs", icon::ARROW_CLOCKWISE),
+    );
+    wait_for_label(&mut harness, "unit: pending");
+    wait_for_label(&mut harness, "4 runs");
+    assert!(shows(&harness, "e2e: pending"));
+    assert!(shows(&harness, "compile: passed"));
+
+    // Its mark follows: running again.
+    harness.key_press(egui::Key::Escape);
+    wait_for_label(&mut harness, "Pipeline #9006: running");
 }

@@ -1251,18 +1251,87 @@ pub(super) const TOPICS: &[Topic] = &[
         on: &["Ran for", "Started", "Ran"],
         what: "A pipeline in the history's place: how it stands, the branch or tag it ran for, \
                its commit (Show the commit selects it in the history), who started it and how, \
-               and how long it ran; then its stages in the order they run, each with its jobs. \
-               It is read again every few seconds while it is under way. Escape, or History, \
-               goes back.",
+               and how long it ran; what can be done to it (Retry failed jobs, Cancel the \
+               pipeline); then its jobs, laid out as you choose: List, each stage a card of its \
+               jobs in the order they run, or a graph, by Stages or by Dependencies. It is read \
+               again every few seconds while it is under way, and at once after anything asked \
+               of GitLab. Escape, or History, goes back.",
         git: "GitLab's GraphQL API: project { pipeline(iid) { stages { jobs } } }",
         cases: &[
             (
                 "Its logs?",
-                "A job's click shows its log here, following it while it runs; its artifacts, retrying it, and the rest stay GitLab's (Open on GitLab).",
+                "A job's click shows its log here, following it while it runs; its artifacts and the rest stay GitLab's (Open on GitLab).",
             ),
             (
                 "A job run again?",
-                "Each job shows its latest run; the runs before it are on its page on GitLab.",
+                "Each job shows its latest run, and how many times it ran; its menu's Earlier runs lists the runs before it, each opening its own log.",
+            ),
+        ],
+    },
+    Topic {
+        id: "pipeline-graph",
+        group: Group::Remotes,
+        title: "A pipeline's graph",
+        on: &["List", "Stages", "Dependencies"],
+        what: "How the pipeline page lays its jobs out. List: each stage a card of its jobs. \
+               Stages: each stage a column, as GitLab's pipeline graph draws it, with a line \
+               from each job a job needs by name to it. Dependencies: columns by what each job \
+               waits for, as GitLab's \"Job dependencies\" view lays them out: a job with needs \
+               starts as soon as those have passed, so it stands one column after the last of \
+               them, however late its stage; one without waits for every job of the stages \
+               before it. The pointer resting on a job lights what it waits for and what waits \
+               for it, all the way along, and dims the rest. The choice is kept for every \
+               pipeline.",
+        git: "GitLab's GraphQL API: each job's needs { name } and schedulingType",
+        cases: &[
+            (
+                "Why is a late stage's job in an early column?",
+                "It has needs (needs: in .gitlab-ci.yml): it starts as soon as the jobs it names have passed, without waiting for the stages before its own.",
+            ),
+            (
+                "needs: [] ?",
+                "A job needing nothing starts at once: it stands in the first column.",
+            ),
+            (
+                "A job of another pipeline?",
+                "needs: that name a job of another project or pipeline (needs:project, needs:pipeline) have no card here: only this pipeline's jobs are drawn.",
+            ),
+        ],
+    },
+    Topic {
+        id: "pipeline-actions",
+        group: Group::Remotes,
+        title: "Retrying and cancelling",
+        on: &[
+            "Retry failed jobs",
+            "Cancel the pipeline",
+            "Cancel it",
+            "Keep it running",
+            "Retry the job",
+            "Cancel the job",
+            "Start the job",
+        ],
+        what: "Asks GitLab to run jobs again, stop them, or start them. Retry failed jobs runs \
+               again every job of the pipeline that failed or was cancelled (those that passed, \
+               and those under way or waiting, are left as they are); the jobs after them run \
+               as the pipeline goes on. Cancel the pipeline (asked first) stops every job under \
+               way or waiting. A job's own: Retry the job makes a new run of it in its place \
+               (the one before is kept among its runs, its log too), Cancel the job stops it, \
+               Start the job starts a manual one. Each is on the job's row (at its right), its \
+               menu, and its log's bar.",
+        git: "GitLab's REST API: POST /projects/:id/pipelines/:pipeline_id/retry or …/cancel; POST /projects/:id/jobs/:job_id/retry, …/cancel, or …/play",
+        cases: &[
+            (
+                "GitLab refused?",
+                "Running a project's pipelines takes the Developer role or above there, and a token with the api scope (read_api reads, but can't change anything): make a token with api (Profile, Sign in…) or ask the project's maintainers.",
+            ),
+            (
+                "The buttons are missing?",
+                "GitLab offers each only where it applies: retrying a job that ended, cancelling one that hasn't, starting a manual one waiting. Where your role on the project can't run pipelines, the row has none and the menu says why.",
+            ),
+            (
+                "Retried, but the mark didn't change?",
+                "The mark follows the pipeline's own status: it moves as soon as GitLab has queued the jobs again, read at once and every 20 seconds while it is under way.",
             ),
         ],
     },
@@ -1270,16 +1339,22 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "pipeline-job",
         group: Group::Remotes,
         title: "A pipeline's jobs",
-        on: &["Show its log"],
+        on: &["Show its log", "Earlier runs", "Their logs"],
         what: "A job of a pipeline's stage: its status (as the marks colour them), its name, \
                whether it may fail without failing the pipeline or waits to be started by hand, \
-               and how long it ran. A click shows its log; its menu opens its page on GitLab, in \
-               your browser.",
-        git: "",
+               how many times it ran, and how long it ran. A click shows its log; its menu \
+               lists its earlier runs (each with how it ended, how long it took, and when; each \
+               opening its log), retries, cancels, or starts it, and opens its page on GitLab, \
+               in your browser.",
+        git: "GitLab's GraphQL API: a pipeline's jobs(retried: true), the runs a retry replaced",
         cases: &[
             (
                 "Start a manual job?",
-                "From its page on GitLab: egit only shows that it waits.",
+                "Start (its row's play button, its menu, or its log's bar): GitLab runs it as if started on its page.",
+            ),
+            (
+                "Which runs are listed?",
+                "Every run of the job in this pipeline that a retry replaced, newest first; a job of the same name in another pipeline is that pipeline's.",
             ),
             (
                 "A trigger job?",
@@ -1291,11 +1366,12 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "job-log",
         group: Group::Remotes,
         title: "A job's log",
-        on: &["Pipeline #*"],
+        on: &["Pipeline #*", "Run #* · *", "Latest #* · *"],
         what: "A job's log as GitLab shows it, in the pipeline's place: its colours, each line's \
                time beside its number (where the runner writes them), progress lines as their \
                last state, and its sections' headers marked; Sections jumps to one and says how \
-               long it took. While the job runs, egit asks how it stands and reads what its log \
+               long it took; where the job ran more than once, Run 2 of 3 switches between its \
+               runs' logs. While the job runs, egit asks how it stands and reads what its log \
                gained every two seconds, the view following its end while it rests there: \
                scrolled up, it stays put; back at the end, it follows again. ⌘F (Ctrl+F) finds in \
                it, a drag selects and ⌘C (Ctrl+C) copies. Escape, or the pipeline's button, goes back.",
@@ -1315,7 +1391,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "Retry or cancel it?",
-                "On GitLab (Open on GitLab): egit reads, never changes, a pipeline.",
+                "Retry the job, Cancel the job, or Start the job on the bar, as GitLab allows: a retry shows the new run as it starts, the one before kept among its runs.",
             ),
         ],
     },

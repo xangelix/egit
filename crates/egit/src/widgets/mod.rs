@@ -537,6 +537,27 @@ pub(crate) fn tool(ui: &mut Ui, icon: &str, text: &str, selected: bool, look: Lo
     }
 }
 
+/// How wide a button showing `text` draws ([`secondary`], [`primary`], [`danger`]).
+pub(crate) fn button_width(ui: &Ui, text: &str) -> f32 {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let words = ui
+        .painter()
+        .layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER)
+        .size()
+        .x;
+    2.0f32.mul_add(ui.spacing().button_padding.x, words)
+}
+
+/// In a wrapping row, starts the next row unless `widths` (side by side, spaced) fit in what is
+/// left of this one: for a part drawn in a `Ui` of its own, which can't wrap inside the row.
+pub(crate) fn room_for(ui: &mut Ui, widths: &[f32]) {
+    let spacing = ui.spacing().item_spacing.x;
+    let needed: f32 = widths.iter().map(|width| width + spacing).sum();
+    if ui.available_size_before_wrap().x < needed {
+        ui.end_row();
+    }
+}
+
 /// How wide [`tool`] (or, for a `menu`, [`tool_menu`]) draws its button as `look` says: its
 /// words and padding, at least its least width. For a bar choosing its look before drawing.
 pub(crate) fn tool_width(ui: &Ui, (icon, text): (&str, &str), look: Look, menu: bool) -> f32 {
@@ -629,6 +650,24 @@ pub(crate) fn icon_tool(ui: &mut Ui, enabled: bool, glyph: &str, name: &str) -> 
     });
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
     crate::help::note(ui, response.rect, name);
+    response
+}
+
+/// An [`icon_tool`] named with someone's words (a job's name), explained by help topic `topic`.
+pub(crate) fn icon_tool_of(
+    ui: &mut Ui,
+    (glyph, name): (&str, &str),
+    topic: &'static str,
+) -> Response {
+    let response = quiet(ui, |ui| {
+        ui.add(
+            Button::new(glyph)
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(CONTROL, CONTROL)),
+        )
+    });
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    crate::help::note_topic(ui, response.rect, topic);
     response
 }
 
