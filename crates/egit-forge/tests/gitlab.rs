@@ -539,7 +539,7 @@ fn a_pipeline_s_jobs_are_retried_cancelled_and_started_their_earlier_runs_kept()
     let act = |action| ci_act(&account, &project, action, &CancelToken::new());
 
     let details = read();
-    assert!(details.retryable && details.cancelable && details.can_update);
+    assert!(details.actions.retry && details.actions.cancel && details.can_update);
     let (compile, unit, lint, production) = (
         &details.stages[0].jobs[0],
         &details.stages[1].jobs[0],
@@ -583,7 +583,7 @@ fn a_pipeline_s_jobs_are_retried_cancelled_and_started_their_earlier_runs_kept()
     assert_eq!(details.stages[2].jobs[0].status, CiStatus::Pending);
     // The pipeline cancelled: what waits, cancelled.
     act(CiAction::CancelPipeline(9_000)).unwrap();
-    assert!(!read().cancelable);
+    assert!(!read().actions.cancel);
 
     // An account that may only read: refused, and said so beforehand.
     fake.state().read_only = true;

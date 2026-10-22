@@ -3,12 +3,13 @@
 //! row: its status, name, what is special about it (may fail, manual, how many runs), and at
 //! its right what can be done to it (retry, cancel, start), its status in words, how long it
 //! ran, and the mark of a log; a click shows its log (a trigger job's: the pipeline it runs, on
-//! GitLab), its menu the rest ([`job_menu`], the graph's cards' too).
+//! GitLab), its menu the rest ([`job_menu`], the graph's cards' too). A GitHub run's stages are its
+//! workflow's jobs, each with its matrix's beside it.
 
 use egit_forge::{CiAction, Job, PipelineDetails, Stage};
 use egui::{Align, Color32, CornerRadius, Frame, Id, Layout, Margin, RichText, Sense, Stroke, Ui};
 
-use super::{JobAsk, ci_look, duration};
+use super::{CiWords, JobAsk, ci_look, duration};
 use crate::format;
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, RADIUS_BOX, icon};
@@ -33,7 +34,11 @@ enum Row<'a> {
 }
 
 /// The stages in the order they run, each a card of its jobs; returns what a job asked.
-pub(super) fn stages(ui: &mut Ui, palette: Palette, details: &PipelineDetails) -> Option<JobAsk> {
+pub(super) fn stages(
+    ui: &mut Ui,
+    (palette, said): (Palette, CiWords),
+    details: &PipelineDetails,
+) -> Option<JobAsk> {
     let rows: Vec<Row<'_>> = details
         .stages
         .iter()
@@ -69,7 +74,7 @@ pub(super) fn stages(ui: &mut Ui, palette: Palette, details: &PipelineDetails) -
                 match row {
                     Row::Stage(stage) => stage_band(ui, palette, stage),
                     Row::Job(job, last) => {
-                        if let Some(job_asked) = job_row(ui, palette, (job, *last), place) {
+                        if let Some(job_asked) = job_row(ui, (palette, said), (job, *last), place) {
                             asked = Some(job_asked);
                         }
                     }
@@ -122,7 +127,7 @@ fn stage_band(ui: &mut Ui, palette: Palette, stage: &Stage) {
 /// mark; returns what it asked.
 fn job_row(
     ui: &mut Ui,
-    palette: Palette,
+    (palette, said): (Palette, CiWords),
     (job, last): (&Job, bool),
     place: usize,
 ) -> Option<JobAsk> {
@@ -169,16 +174,16 @@ fn job_row(
         Stroke::new(1.0, palette.border),
         egui::StrokeKind::Inside,
     );
-    let mut asked = row_contents(ui, palette, (job, rect), place).map(JobAsk::Act);
+    let mut asked = row_contents(ui, (palette, said), (job, rect), place).map(JobAsk::Act);
     let response = response.on_hover_text(if job.id.is_some() {
         "Show its log, as it runs"
     } else if job.url.is_some() {
         "Open the pipeline it runs on GitLab"
     } else {
-        "GitLab gives no page for it"
+        "Its forge gives no page for it"
     });
     response.context_menu(|ui| {
-        if let Some(menu_asked) = job_menu(ui, job) {
+        if let Some(menu_asked) = job_menu(ui, job, said) {
             asked = Some(menu_asked);
         }
     });
@@ -192,7 +197,7 @@ fn job_row(
 /// actions, status in words, duration, and a log's mark; returns the action asked.
 fn row_contents(
     ui: &mut Ui,
-    palette: Palette,
+    (palette, said): (Palette, CiWords),
     (job, rect): (&Job, egui::Rect),
     place: usize,
 ) -> Option<CiAction> {
@@ -225,7 +230,7 @@ fn row_contents(
             egui::UiBuilder::new()
                 .id(Id::new(("pipeline-job-actions", place)))
                 .layout(Layout::right_to_left(Align::Center)),
-            |ui| asked = quick_actions(ui, job),
+            |ui| asked = quick_actions(ui, job, said),
         );
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.add(
@@ -277,7 +282,7 @@ fn chip(ui: &mut Ui, text: &str, color: Color32) {
 
 /// The buttons doing what can be done to a job (laid right to left): start a manual one,
 /// cancel one under way, retry one that ended; none where the account may not.
-pub(super) fn quick_actions(ui: &mut Ui, job: &Job) -> Option<CiAction> {
+pub(super) fn quick_actions(ui: &mut Ui, job: &Job, said: CiWords) -> Option<CiAction> {
     let id = job.id?;
     if !job.can_update {
         return None;
@@ -307,7 +312,7 @@ pub(super) fn quick_actions(ui: &mut Ui, job: &Job) -> Option<CiAction> {
     let retry = button(
         job.actions.retry,
         icon::ARROW_CLOCKWISE,
-        "Retry",
+        said.retry_verb,
         "Run this job again: a new run in its place, this one kept",
     );
     [
@@ -320,8 +325,8 @@ pub(super) fn quick_actions(ui: &mut Ui, job: &Job) -> Option<CiAction> {
 }
 
 /// A job's menu: its log, its earlier runs' logs, retrying, cancelling, or starting it, and its
-/// page on GitLab.
-pub(super) fn job_menu(ui: &mut Ui, job: &Job) -> Option<JobAsk> {
+/// page on its forge (in `said`'s words).
+pub(super) fn job_menu(ui: &mut Ui, job: &Job, said: CiWords) -> Option<JobAsk> {
     use super::super::actions::{item, menu_header, menu_rows, submenu};
     menu_rows(ui);
     let mut asked = job
@@ -358,9 +363,9 @@ pub(super) fn job_menu(ui: &mut Ui, job: &Job) -> Option<JobAsk> {
         let why_not = if job.can_update {
             Ok(())
         } else {
-            Err("Your role on this project may not run its pipelines")
+            Err("Your role in the repository may not run its pipelines")
         };
-        if job.actions.retry && item(ui, (icon::ARROW_CLOCKWISE, "Retry the job"), why_not) {
+        if job.actions.retry && item(ui, (icon::ARROW_CLOCKWISE, said.retry_job), why_not) {
             asked = Some(JobAsk::Act(CiAction::RetryJob(id)));
         }
         if job.actions.cancel && item(ui, (icon::PROHIBIT, "Cancel the job"), why_not) {
@@ -371,7 +376,11 @@ pub(super) fn job_menu(ui: &mut Ui, job: &Job) -> Option<JobAsk> {
         }
     }
     if let Some(url) = &job.url
-        && item(ui, (icon::ARROW_SQUARE_OUT, "Open on GitLab"), Ok(()))
+        && item(
+            ui,
+            (icon::ARROW_SQUARE_OUT, &format!("Open on {}", said.forge)),
+            Ok(()),
+        )
     {
         asked = Some(JobAsk::Open(url.clone()));
     }

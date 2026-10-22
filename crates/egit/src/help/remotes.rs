@@ -914,6 +914,7 @@ pub(super) const TOPICS: &[Topic] = &[
             "Recognized as",
             "Account",
             "Pipelines",
+            "Workflow runs",
             "In this history",
             "Read again",
             "Open Profile",
@@ -923,10 +924,10 @@ pub(super) const TOPICS: &[Topic] = &[
                reaches it (insteadOf applied), the GitHub repository or GitLab project it is, or \
                nothing when its host isn't github.com, gitlab.com, or one Profile lists; the \
                account the requests are read with; how many are open, or why none could be \
-               read; and on GitLab the pipelines read (each project's newest 500), the newest \
-               of them, and how many of the commits they ran for this history shows. Read again \
-               reads the requests and pipelines again.",
-        git: "git ls-remote --get-url <remote>; GitLab's GraphQL API: project { pipelines }",
+               read; the pipelines read (a GitLab project's newest 500, a GitHub repository's \
+               newest 500 workflow runs), the newest of them, and how many of the commits they \
+               ran for this history shows. Read again reads the requests and pipelines again.",
+        git: "git ls-remote --get-url <remote>; GitLab's GraphQL API: project { pipelines }; GitHub's REST API: GET /repos/:owner/:name/actions/runs",
         cases: &[
             (
                 "Recognized as nothing?",
@@ -943,6 +944,10 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "GitLab lists none to this account?",
                 "GitLab gives no pipelines at all when CI/CD is turned off for the project, or when your role in it may not see them (a Guest on a private project).",
+            ),
+            (
+                "GitHub shows no Actions here?",
+                "GitHub answers as if there were none when Actions are turned off for the repository, or a fine-grained token lacks the Actions: read permission (a classic token's repo scope reads them).",
             ),
             (
                 "More detail?",
@@ -1212,19 +1217,22 @@ pub(super) const TOPICS: &[Topic] = &[
         group: Group::Remotes,
         title: "Pipeline marks",
         on: &["Show the pipeline"],
-        what: "Beside a commit's name, the status of the latest GitLab CI/CD pipeline that ran \
-               for it, by colour and by icon: green passed, red failed, blue under way (queued \
-               or running), orange waiting for someone to start a manual job or for a delayed \
-               one's time, grey cancelled or skipped. Its number and status show under the \
-               pointer; a click shows its stages and jobs, its menu opens it on GitLab. egit \
-               reads each GitLab project's newest 500 pipelines with your GitLab sign-in, again \
+        what: "Beside a commit's name, how the CI/CD that ran for it stands (a GitLab \
+               pipeline, GitHub Actions' workflow runs), by colour and by icon: green passed, \
+               red failed, blue under way (queued or running), orange waiting for someone (a \
+               manual job, a deployment's approval) or for a delayed one's time, grey cancelled \
+               or skipped. A commit GitHub ran several workflows for shows the most telling: a \
+               failure first, then one under way; each is listed under the pointer. A click \
+               shows its jobs, its menu opens it on its forge. egit reads each GitLab project's \
+               newest 500 pipelines (each GitHub repository's newest 500 workflow runs) with \
+               your sign-in, again \
                after every fetch, pull, and push, and every 20 seconds while one shown is under \
                way.",
-        git: "GitLab's GraphQL API: project { pipelines { sha status } } (nothing of git's own)",
+        git: "GitLab's GraphQL API: project { pipelines { sha status } }; GitHub's REST API: GET /repos/:owner/:name/actions/runs (nothing of git's own)",
         cases: &[
             (
                 "A commit without a mark?",
-                "No pipeline ran for it among each project's newest 500, or its project isn't a remote here, or you aren't signed in to its GitLab (the top bar offers to). A GitLab on your own server is asked only once Profile lists its host.",
+                "No pipeline ran for it among each project's newest 500, or its project isn't a remote here, or you aren't signed in to its GitLab or GitHub (the top bar offers to). A host on your own server is asked only once Profile lists it.",
             ),
             (
                 "The pipelines couldn't be read?",
@@ -1232,11 +1240,11 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "Several pipelines for one commit?",
-                "The mark is the latest one's: a branch pipeline and a merge request's for the same commit, or one run again, show as the newest of them.",
+                "On GitLab the mark is the latest one's: a branch pipeline and a merge request's for the same commit, or one run again, show as the newest of them. On GitHub each workflow stands on its own (its newest run): the mark shows the most telling, the page a menu of the others (\"2 more workflow runs for this commit\").",
             ),
             (
-                "GitHub?",
-                "GitHub's Actions show as a pull request's checks, on its badge: egit reads pipelines from GitLab alone.",
+                "GitHub's checks from other apps?",
+                "The marks are GitHub Actions' workflow runs. Checks other apps report (CircleCI, a commit status) show on a pull request's badge and page.",
             ),
             (
                 "Passed with warnings?",
@@ -1248,19 +1256,26 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "pipeline-page",
         group: Group::Remotes,
         title: "A pipeline",
-        on: &["Ran for", "Started", "Ran"],
-        what: "A pipeline in the history's place: how it stands, the branch or tag it ran for, \
-               its commit (Show the commit selects it in the history), who started it and how, \
-               and how long it ran; what can be done to it (Retry failed jobs, Cancel the \
-               pipeline); then its jobs, laid out as you choose: List, each stage a card of its \
-               jobs in the order they run, or a graph, by Stages or by Dependencies. It is read \
-               again every few seconds while it is under way, and at once after anything asked \
-               of GitLab. Escape, or History, goes back.",
-        git: "GitLab's GraphQL API: project { pipeline(iid) { stages { jobs } } }",
+        on: &["Ran for", "Started", "Ran", "Attempt", "* #*: *"],
+        what: "A pipeline in the history's place (a GitLab pipeline, \"Pipeline #9003\"; a \
+               GitHub Actions workflow's run, \"CI #57\"): how it stands, the branch or tag it \
+               ran for, its commit (Show the commit selects it in the history), who started it \
+               and how, how long it ran, and which attempt it is (GitHub runs a workflow again \
+               in place); the commit's other runs (another GitHub workflow's), a menu away; what \
+               can be done to it, in its forge's words; then its jobs, laid out as you choose: \
+               List, each stage a card of its jobs (a GitHub workflow's jobs, each with its \
+               matrix's), or a graph, by Stages (GitLab's) or by Dependencies. It is read again \
+               every few seconds while it is under way, and at once after anything asked of the \
+               forge. Escape, or History, goes back.",
+        git: "GitLab's GraphQL API: project { pipeline(iid) { stages { jobs } } }; GitHub's REST API: GET /repos/:owner/:name/actions/runs/:id and …/jobs?filter=all",
         cases: &[
             (
                 "Its logs?",
-                "A job's click shows its log here, following it while it runs; its artifacts and the rest stay GitLab's (Open on GitLab).",
+                "A job's click shows its log here, following it while it runs; its artifacts and the rest stay the forge's (Open on GitLab, Open on GitHub).",
+            ),
+            (
+                "Several workflows for one commit?",
+                "GitHub runs each workflow on its own: the page shows one run, and \"2 more workflow runs for this commit\" lists the others, each a click away.",
             ),
             (
                 "A job run again?",
@@ -1274,15 +1289,17 @@ pub(super) const TOPICS: &[Topic] = &[
         title: "A pipeline's graph",
         on: &["List", "Stages", "Dependencies"],
         what: "How the pipeline page lays its jobs out. List: each stage a card of its jobs. \
-               Stages: each stage a column, as GitLab's pipeline graph draws it, with a line \
-               from each job a job needs by name to it. Dependencies: columns by what each job \
-               waits for, as GitLab's \"Job dependencies\" view lays them out: a job with needs \
-               starts as soon as those have passed, so it stands one column after the last of \
-               them, however late its stage; one without waits for every job of the stages \
-               before it. The pointer resting on a job lights what it waits for and what waits \
-               for it, all the way along, and dims the rest. The choice is kept for every \
-               pipeline.",
-        git: "GitLab's GraphQL API: each job's needs { name } and schedulingType",
+               Stages (GitLab's): each stage a column, as GitLab's pipeline graph draws it, with \
+               a line from each job a job needs by name to it. Dependencies: columns by what \
+               each job waits for, as GitLab's \"Job dependencies\" view and GitHub's run graph \
+               lay them out: a job with needs starts as soon as those have passed, so it stands \
+               one column after the last of them, however late its stage; a GitLab job without \
+               needs waits for every job of the stages before it, a GitHub one for none. A \
+               GitHub run's needs are its workflow's file's word, read at the run's commit here \
+               (a matrix's every job, a reusable workflow's jobs, under the job that names \
+               them). The pointer resting on a job lights what it waits for and what waits for \
+               it, all the way along, and dims the rest. The choice is kept for every pipeline.",
+        git: "GitLab's GraphQL API: each job's needs { name } and schedulingType; a GitHub run's workflow: git cat-file blob <commit>:.github/workflows/<file>",
         cases: &[
             (
                 "Why is a late stage's job in an early column?",
@@ -1295,6 +1312,10 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "A job of another pipeline?",
                 "needs: that name a job of another project or pipeline (needs:project, needs:pipeline) have no card here: only this pipeline's jobs are drawn.",
+            ),
+            (
+                "A GitHub run without lines?",
+                "Its workflow's file couldn't be read at its commit (the commit isn't fetched here: a fork's pull request), or its needs come through YAML anchors egit doesn't follow: the jobs stand in one column.",
             ),
         ],
     },
@@ -1310,24 +1331,35 @@ pub(super) const TOPICS: &[Topic] = &[
             "Retry the job",
             "Cancel the job",
             "Start the job",
+            "Re-run failed jobs",
+            "Re-run all jobs",
+            "Cancel workflow",
+            "Re-run this job",
         ],
-        what: "Asks GitLab to run jobs again, stop them, or start them. Retry failed jobs runs \
-               again every job of the pipeline that failed or was cancelled (those that passed, \
-               and those under way or waiting, are left as they are); the jobs after them run \
-               as the pipeline goes on. Cancel the pipeline (asked first) stops every job under \
-               way or waiting. A job's own: Retry the job makes a new run of it in its place \
-               (the one before is kept among its runs, its log too), Cancel the job stops it, \
-               Start the job starts a manual one. Each is on the job's row (at its right), its \
-               menu, and its log's bar.",
-        git: "GitLab's REST API: POST /projects/:id/pipelines/:pipeline_id/retry or …/cancel; POST /projects/:id/jobs/:job_id/retry, …/cancel, or …/play",
+        what: "Asks the forge to run jobs again, stop them, or start them, in its words. \
+               GitLab: Retry failed jobs runs again every job of the pipeline that failed or \
+               was cancelled (those that passed, and those under way or waiting, are left as \
+               they are); the jobs after them run as the pipeline goes on. Cancel the pipeline \
+               (asked first) stops every job under way or waiting. A job's own: Retry the job \
+               makes a new run of it in its place (the one before is kept among its runs, its \
+               log too), Cancel the job stops it, Start the job starts a manual one. GitHub: \
+               once a run has ended, Re-run failed jobs or Re-run all jobs makes a new attempt \
+               of it (the jobs that need them run again too), and Re-run this job one job's; \
+               Cancel workflow (asked first) stops a run under way. Each is on the job's row \
+               (at its right), its menu, and its log's bar.",
+        git: "GitLab's REST API: POST /projects/:id/pipelines/:pipeline_id/retry or …/cancel; POST /projects/:id/jobs/:job_id/retry, …/cancel, or …/play. GitHub's: POST /repos/:owner/:name/actions/runs/:id/rerun-failed-jobs, …/rerun, …/cancel; POST …/actions/jobs/:id/rerun",
         cases: &[
             (
                 "GitLab refused?",
                 "Running a project's pipelines takes the Developer role or above there, and a token with the api scope (read_api reads, but can't change anything): make a token with api (Profile, Sign in…) or ask the project's maintainers.",
             ),
             (
+                "GitHub refused?",
+                "Re-running and cancelling workflows takes write access to the repository, and a token that may write Actions: a classic token's repo scope, or a fine-grained one's Actions: read and write.",
+            ),
+            (
                 "The buttons are missing?",
-                "GitLab offers each only where it applies: retrying a job that ended, cancelling one that hasn't, starting a manual one waiting. Where your role on the project can't run pipelines, the row has none and the menu says why.",
+                "The forge offers each only where it applies: retrying a job that ended, cancelling one that hasn't, starting a manual one waiting (GitLab's); re-running once the whole run has ended, cancelling one under way (GitHub's, which cancels no single job and has no manual one). Where your role can't run them, the row has none and the menu says why.",
             ),
             (
                 "Retried, but the mark didn't change?",
@@ -1341,12 +1373,12 @@ pub(super) const TOPICS: &[Topic] = &[
         title: "A pipeline's jobs",
         on: &["Show its log", "Earlier runs", "Their logs"],
         what: "A job of a pipeline's stage: its status (as the marks colour them), its name, \
-               whether it may fail without failing the pipeline or waits to be started by hand, \
-               how many times it ran, and how long it ran. A click shows its log; its menu \
-               lists its earlier runs (each with how it ended, how long it took, and when; each \
-               opening its log), retries, cancels, or starts it, and opens its page on GitLab, \
-               in your browser.",
-        git: "GitLab's GraphQL API: a pipeline's jobs(retried: true), the runs a retry replaced",
+               whether it may fail without failing the pipeline (GitLab's allow_failure, \
+               GitHub's continue-on-error) or waits to be started by hand, how many times it \
+               ran, and how long it ran. A click shows its log; its menu lists its earlier runs \
+               (each with how it ended, how long it took, and when; each opening its log), \
+               retries, cancels, or starts it, and opens its page on its forge, in your browser.",
+        git: "GitLab's GraphQL API: a pipeline's jobs(retried: true), the runs a retry replaced; GitHub's REST API: a run's jobs?filter=all, its attempts' every job",
         cases: &[
             (
                 "Start a manual job?",
@@ -1354,7 +1386,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "Which runs are listed?",
-                "Every run of the job in this pipeline that a retry replaced, newest first; a job of the same name in another pipeline is that pipeline's.",
+                "Every run of the job in this pipeline that a retry replaced (a GitHub run's earlier attempts'), newest first; a job of the same name in another pipeline is that pipeline's.",
             ),
             (
                 "A trigger job?",
@@ -1366,16 +1398,19 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "job-log",
         group: Group::Remotes,
         title: "A job's log",
-        on: &["Pipeline #*", "Run #* · *", "Latest #* · *"],
-        what: "A job's log as GitLab shows it, in the pipeline's place: its colours, each line's \
-               time beside its number (where the runner writes them), progress lines as their \
-               last state, and its sections' headers marked; Sections jumps to one and says how \
-               long it took; where the job ran more than once, Run 2 of 3 switches between its \
-               runs' logs. While the job runs, egit asks how it stands and reads what its log \
-               gained every two seconds, the view following its end while it rests there: \
-               scrolled up, it stays put; back at the end, it follows again. ⌘F (Ctrl+F) finds in \
-               it, a drag selects and ⌘C (Ctrl+C) copies. Escape, or the pipeline's button, goes back.",
-        git: "GitLab's REST API: GET /projects/:id/jobs/:job_id, and …/trace (a Range from what was read)",
+        on: &["Pipeline #*", "* #*", "Run #* · *", "Latest #* · *"],
+        what: "A job's log as its forge shows it, in the pipeline's place: its colours, each \
+               line's time beside its number (where the runner writes them), progress lines as \
+               their last state, and its sections' headers marked (a GitHub log's groups, \
+               ##[group]); Sections jumps to one and says how long it took; where the job ran \
+               more than once, Run 2 of 3 switches between its runs' logs. While the job runs, \
+               egit asks how it stands and reads what its log gained every two seconds, the \
+               view following its end while it rests there: scrolled up, it stays put; back at \
+               the end, it follows again. GitHub gives a job's log once the job has ended: \
+               meanwhile its steps show as they go, each with how long it took. ⌘F (Ctrl+F) \
+               finds in it, a drag selects and ⌘C (Ctrl+C) copies. Escape, or the pipeline's \
+               button, goes back.",
+        git: "GitLab's REST API: GET /projects/:id/jobs/:job_id, and …/trace (a Range from what was read). GitHub's: GET /repos/:owner/:name/actions/jobs/:id (its steps), and …/logs (a redirect to a file of it, fetched without your token)",
         cases: &[
             (
                 "Only part of a long log?",
@@ -1391,7 +1426,11 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "Retry or cancel it?",
-                "Retry the job, Cancel the job, or Start the job on the bar, as GitLab allows: a retry shows the new run as it starts, the one before kept among its runs.",
+                "Retry the job, Cancel the job, or Start the job on the bar, as GitLab allows (Re-run this job on GitHub, once its run has ended): a retry shows the new run as it starts, the one before kept among its runs.",
+            ),
+            (
+                "A running GitHub job's log?",
+                "GitHub's API gives a job's log once the job has ended; its own page streams it live. egit shows the steps as they go, looks for the log now and then, and shows it as soon as GitHub has it.",
             ),
         ],
     },

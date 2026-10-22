@@ -45,6 +45,7 @@ it.
 | 31 | Signing in to GitHub and GitLab, offered wherever it counts, with a token | done; awaiting the owner's review |
 | 32 | A GitLab job's log in egit, followed as it runs | done; awaiting the owner's review |
 | 33 | Pipelines acted on (retry, cancel, start), a job's earlier runs, the jobs as a graph; repositories suggested on Home | done; awaiting the owner's review |
+| 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -750,6 +751,9 @@ writes paths), never `OsStrExt`.
     built in a zeroizing string, and refused without HTTPS (but to the loopback address);
     `stream`: a GET's body handed over a part at a time with its status and `Content-Range`
     (a `Range` asked of the bytes as stored: `Accept-Encoding: identity`), never held whole;
+    an answer's `location` (a redirect's, never followed with the token) and `stream_public`, a
+    place it names fetched without any credential (HTTPS, or the loopback address: GitHub's
+    log files at signed addresses);
     GitHub's media type and API version only to GitHub; either forge's rate-limit headers.
     Each request logged at debug level (method, address, status, size, time; never the token),
     and each GraphQL error with the query's name (`answer.rs`): `EGIT_LOG=egit_forge=debug`.
@@ -797,8 +801,10 @@ writes paths), never `OsStrExt`.
     which counts as none. `Pictures::find` asks them in order; `fetch`: no credential, so
     redirects are followed, HTTPS only (but every source on the loopback address, for tests),
     1 MiB at most; `Fetched::Found` or `Missing` (404).
-  - `job_log.rs` — a GitLab job's log: `job` (how it stands, REST: status, stage, started,
-    finished, duration, why it failed, its page), `read_log` (its trace after the bytes read:
+  - `job_log.rs` — a CI/CD job's log: `job` (how it stands, REST: status, stage, started,
+    finished, duration, why it failed, its page; a GitHub job's `JobStep`s too), `read_log`
+    (a GitHub job's: its file, GitHub's redirect fetched without the token, whole as far as
+    written, none before the job ends but perhaps; a GitLab job's trace after the bytes read:
     asked as a range where wanted, a 206 from elsewhere refused; a whole answer skipped as far
     as read, as it streams; `LogRead`: read (how many new, ranged or not), shorter (erased or
     begun again: from the start), missing). `JobLog`, the parser fed as it comes: a runner's
@@ -808,25 +814,56 @@ writes paths), never `OsStrExt`.
     effect), sections' markers noted (`Section`: name, header line, start and end time and
     line, collapsed, depth; a line holding only markers isn't one) and out of the text; at
     most `MOST_TEXT` (128 MiB) kept; `parts` (the line under way as ended) for drawing.
-  - `pipelines.rs` — GitLab's CI/CD pipelines through its GraphQL API (`has_pipelines`: GitLab
-    alone; GitHub's Actions are a pull request's checks): `pipelines` (a project's newest, 100 a
+    `JobLog::github` (`of` a kind): a GitHub log's dialect: each line's time
+    (`2024-05-14T11:19:20.1234567Z `) taken off, a byte order mark dropped, `##[group]` a
+    section (its name its header line) and `##[endgroup]` its end, `##[error]`,
+    `##[warning]`, `##[notice]` said ("Error: …") and coloured, `##[command]` blue,
+    `##[debug]` faint; GitLab's markers left as text.
+  - `pipelines/` — CI/CD pipelines, GitLab's and GitHub Actions' workflow runs alike
+    (`has_pipelines`: both), each call sent to its forge's (`mod.rs`). `gitlab.rs`: through
+    GitLab's GraphQL API: `pipelines` (a project's newest, 100 a
     page, each page handed over as it lands, up to a limit; none for a project whose pipelines
     can't be seen: `PipelineListing::Hidden`, GitLab's `pipelines: null`, said, not an error;
     nodes without a number or commit left out, logged), `pipeline_details` (one by its `iid`:
     its stages in order, each one's jobs
     (their latest runs), each job's page, a trigger job's its downstream pipeline's; the runs a
     retry replaced, `jobs(retried: true)`, each under its job by stage and name).
-    `Pipeline` (GitLab's number from its global id, `iid`, commit, `CiStatus`, warnings, ref,
-    made, page; `is_newer_than`), `PipelineDetails` (started, finished, duration, who, how,
-    whether it can be retried or cancelled and the account may (`updatePipeline`),
+    `github.rs`: through GitHub's REST API (GraphQL has no runs): a repository's workflow runs
+    (`actions/runs`, 100 a page, `exclude_pull_requests`; none to the account answers as no
+    repository: `Hidden`), one whole (the run, and its jobs of every attempt,
+    `jobs?filter=all`, up to ten pages: each job's latest attempt, the ones before as its
+    earlier runs, in the order their first attempts were made; grouped into stages by name,
+    a matrix's `test (ubuntu)` and a reusable workflow's `release / publish` under theirs:
+    `group_of`; no needs until its workflow says), what the account may do (the repository's
+    `permissions`: push, maintain, or admin; remembered by the account ten minutes,
+    `remembered_push`), and asking: a run's failed jobs re-run, all of them, cancelled; a job
+    re-run, its new run looked for in the run's latest attempt (a second apart, five times);
+    `github_job` (with its steps) and `github_log` for `job_log.rs`. `workflow.rs`:
+    `Workflow::parse`, a reader of a workflow file's `jobs:` (not a YAML parser: by
+    indentation, block scalars and comments skipped, keys and scalars plain or quoted; each
+    job's id, `name`, `needs` as a word, a flow list (over lines too) or a block list,
+    `continue-on-error: true`, `uses`), its `job_of` a run's job by name (whole, with a
+    matrix's values, a called workflow's `<caller> / …`, or a name with `${{ }}` as any
+    text), and `PipelineDetails::with_workflow` laying it over a run's details: each job's
+    needs as the run's jobs' names, may fail, and stage (the workflow's job it is one of).
+    `Pipeline` (the forge's number, `iid` to read it again by (a GitHub run's id), `name` (a
+    workflow's), `number` shown (GitLab's global id, a GitHub run number: `title`, "Pipeline
+    #9003", "CI #57"), `series` (a GitHub workflow's id; GitLab's 0), `attempt`, commit,
+    `CiStatus`, warnings, ref, made, page; `is_newer_than`), `PipelineDetails` (started,
+    finished, duration, who, how, `PipelineActions` (retry, cancel, rerun: GitHub's every
+    job again) and whether the account may (`updatePipeline`; GitHub's push),
+    `ordered_stages` (GitLab's), the `workflow` file (GitHub's),
     `Stage`s of `Job`s: number, status, may fail, manual, duration, started, page, `needs` by
     name (none where it is scheduled by stage), `JobActions` (retry, cancel, play: GitLab's
     say), whether the account may (`updateBuild`), its `EarlierRun`s, the newest first).
     `ci_act`: a `CiAction` asked of GitLab by REST (`POST …/pipelines/:id/retry` or `cancel`,
-    `…/jobs/:id/retry`, `cancel`, `play`), returning the run a job's retry made. `CiStatus` (GitLab's every
-    status, read however it writes them: `RUNNING`, `running`, `waiting-for-resource`; `word`,
-    `is_moving`: under way or waiting for its time) and its `CiGroup`, the five egit colours:
-    passed, failed, under way, paused (waiting for someone or its time), cancelled or skipped.
+    `…/jobs/:id/retry`, `cancel`, `play`), or of GitHub (`…/actions/runs/:id/rerun-failed-jobs`,
+    `rerun`, `cancel`, `…/actions/jobs/:id/rerun`; none for a job's cancel or play), returning
+    the run a job's retry made. `CiStatus` (GitLab's every status, read however it writes them:
+    `RUNNING`, `running`, `waiting-for-resource`; GitHub's status and conclusion read into them,
+    `from_github`; `word`, `is_moving`: under way or waiting for its time; `weight`, how much it
+    says of a commit) and its `CiGroup`, the five egit colours: passed, failed, under way,
+    paused (waiting for someone or its time), cancelled or skipped.
   - `testing.rs` (feature `testing`) — `FakeForge`: either forge's API on the loopback address
     (pages, details, repository, who is signed in, opening; GitLab's pipelines, `FakePipeline`
     and `FakeJob`, a page or one whole, or refused with GitLab's words, `pipelines_refused`, or
@@ -834,11 +871,17 @@ writes paths), never `OsStrExt`.
     runs, and log, served by REST, its state and its trace (whole, or from a `Range` when
     `ranges`; an earlier run's too); pipelines and jobs retried, cancelled, and started as
     GitLab would (a retried job's run kept as an earlier one, numbered from `next_job`), or
-    refused (`read_only`: 403, and no permission said); the
+    refused (`read_only`: 403, and no permission said); GitHub Actions too (a `FakePipeline`
+    a workflow's run: its `workflow` name, id, and file, `attempt`; its jobs' `steps`): runs a
+    page, a run, its jobs of every attempt, a job, its log a redirect to its file at
+    `/blob/job/<id>` served without the token (there once the job has ended), the
+    repository's `permissions`, re-runs, cancelling (409 with nothing under way); the
     bearer token checked; a rate limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
     signed in through a sandbox's `store` helper (and an askpass script): pipelines a page at a
     time and one whole (stages in order, jobs, pages, needs, earlier runs), retried, cancelled,
-    and started, and none asked of GitHub.
+    and started; GitHub's workflow runs listed (each workflow its series), one whole (its
+    matrix together, a job's earlier attempt, laid over by its workflow), a job's steps and
+    log (through the redirect, without the token), re-runs, cancelling, and refusals.
 - `crates/egit-agents` — agents working in a repository beside egit: Claude Code, driven
   through Anthropic's Claude Agent SDK (TypeScript) by a small bridge under Node; no egui.
   - `bridge/claude/` — `bridge.mjs` (plain JavaScript: the SDK's `query` with streaming input,
@@ -1125,23 +1168,29 @@ writes paths), never `OsStrExt`.
     entry, `log -g -1 --date=unix --format=%gd`, else its last commit's time; at most 300 asked,
     the most recently changed `.git`s first beyond; the most recently active first, at most
     `MOST`, 20).
-  - `job_log.rs` — a GitLab job's log followed: `JobFollower` (a thread of its own, stopped
+  - `job_log.rs` — a CI/CD job's log followed: `JobFollower` (a thread of its own, stopped
     when dropped) asks how the job stands and reads what the log gained (a range while the
-    host answers them, else whole, compressed, skipped as far as read) every `EVERY` (2 s; a
+    host answers them, else whole, compressed, skipped as far as read; parsed in its forge's
+    dialect; a GitHub job's looked for every `GITHUB_LOG_EVERY`th time while it runs, and
+    `LOOKS_AFTER_END` times more once it ended, as GitHub writes it out after) every `EVERY` (2 s; a
     second more for each MiB sent whole or 4 MiB laid out, at most `LONGEST`, 15 s), a log
     begun again read from the start, a failure tried again after 10 s; each read laid out
     (`LogSource`: its text measured, colours by `views::terminal_color`, faint ones nearer the
     background, section headers on the surface's tone, each line's time beside its number in
     the viewer's zone) and handed over (`Following`: the job, the log, its version, missing,
     the problem, done) until the job has ended and its log is whole.
-  - `ci.rs` — a repository's GitLab pipelines, for the commit table's marks (`Pipelines`, its
-    forge's: `RepoForge::pipeline_of`, `has_pipelines`): each GitLab project's newest `LIMIT`
+  - `ci.rs` — a repository's pipelines (GitLab's, GitHub Actions' workflow runs), for the
+    commit table's marks (`Pipelines`, its
+    forge's: `RepoForge::pipeline_of`, `has_pipelines`): each GitLab project's (GitHub
+    repository's) newest `LIMIT`
     (500) read in a job when the remotes are known, and again whenever the requests are
     (`RepoForge::refresh`: after a task reaching the remotes, each background fetch, a sign-in,
     Refresh); while any shown may still change, the newest page read again every `EVERY`
     (20 s) and merged in, or at once after something asked of GitLab (`read_newest_now`,
-    `Action::ReadPipelines`). `Marks`: each commit's latest (`CiMark`: its project's place and the
-    `Pipeline`), of any project, sorted by commit (a binary search a row); a read takes over
+    `Action::ReadPipelines`). `Marks`: each commit's pipelines (`CiMark`: the newest of each
+    series, a GitHub workflow's runs; a GitLab commit's newest of any project; the most telling
+    shown, by `CiStatus::weight`, with its project's place, the `others` beside it; `runs`,
+    `showing` another), sorted by commit (a binary search a row); a read takes over
     only once complete, one that fails keeping what is shown (a host needing a sign-in or rate
     limited skipped for its other projects) and its reason (`problem`, until a read goes
     through), which a notice under the commit table says (`views/pipeline/`'s `unread`: the
@@ -1890,33 +1939,43 @@ writes paths), never `OsStrExt`.
     made.
     `views/job.rs` — `JobView`, a job's run's log in its pipeline's page's place (`Tool::Job`,
     the page kept to go back to, read again once back; the details panel left out, so the log
-    has its room): a bar (back, "Pipeline #9004"; the job's status and name, how long it has
-    run, why it failed; Open on GitLab, Wrap lines; then, on a row of its own where it doesn't
+    has its room): a bar (back, its pipeline's title, "Pipeline #9004" or "CI #57"; the job's
+    status and name, how long it has run, why it failed; Open on its forge, Wrap lines; then,
+    on a row of its own where it doesn't
     fit (`widgets::room_for`): "Run 2 of 3", a menu of the job's runs, the latest and those
     retried before it, each with how it ended, how long it took, and when, a click following
     its log instead (`show_run`); for the latest, Retry the job, Cancel the job, or Start the
-    job as its status as last read allows (GitLab's own say while that is as the page read it)
-    and the account may, a retry's new run becoming the latest, shown as it starts
+    job as its status as last read allows (GitLab's own say while that is as the page read it;
+    on GitHub, Re-run this job as the page read it: once the whole run has ended) and the
+    account may, a retry's new run becoming the latest, shown as it starts
     (`JobEvent::Acted`: the marks read again); Sections: each section stepped in by depth with
     how long it took, a click scrolling to its header; a spinner while followed, or what is
     asked of GitLab while it is), then GitLab's refusal (a problem box, Dismiss), then the log in
     the text grid (find, select, copy), following its end while it rests there
     (`TextGrid::is_at_end`, `scroll_to_end`): scrolled up it stays, back at the end it follows;
-    before there is a log, why (waiting for a runner, manual, scheduled, skipped, cancelled);
-    Escape goes back.
-    `views/pipeline/` — `PipelineView` (`mod.rs`), a GitLab pipeline in the commit table's place
-    (from its mark; the details panel left out; Escape or History goes back): a bar (its number
-    and status in words, Refresh, Open on GitLab; then, as GitLab allows and the account may,
-    Retry failed jobs and Cancel the pipeline, asked first in place ("Cancel the pipeline?",
-    Cancel it, Keep it running), on a row of their own where they don't fit; a spinner while
-    read, or what is asked of GitLab), GitLab's refusal (`Acting`, the page's and the log's:
-    the action asked in a job, its refusal said with what to do, `refusal`), what it ran for,
-    its commit (Show the commit), who started it and how, how long it ran (or has so far); then
-    its jobs laid out as chosen (`JobsLayout`, a segmented control kept in egui's memory: List,
-    Stages, Dependencies). `list.rs`: each stage a card (a band: its status, name, how many
+    before there is a log, why (waiting for a runner, manual, scheduled, skipped, cancelled); a
+    GitHub job's steps as they go, each's status, number, name, and how long (`steps`: GitHub
+    gives its log once the job has ended); Escape goes back.
+    `views/pipeline/` — `PipelineView` (`mod.rs`), a pipeline in the commit table's place (a
+    GitLab pipeline, a GitHub workflow's run; from its mark; the details panel left out; Escape
+    or History goes back), its forge's words its buttons' (`CiWords`: GitLab's or GitHub's): a
+    bar (its title and status in words, Refresh, Open on its forge, the commit's other runs (a
+    menu, "2 more workflow runs for this commit": another GitHub workflow's, each showing it in
+    this one's place, `PipelineEvent::Other`); then, as the forge allows and the account may,
+    Retry failed jobs and Cancel the pipeline (GitHub's Re-run failed jobs, Re-run all jobs,
+    Cancel workflow), asked first in place ("Cancel the pipeline?", Cancel it, Keep it
+    running), on a row of their own where they don't fit; a spinner while read, or what is
+    asked of the forge), its refusal (`Acting`, the page's and the log's: the action asked in a
+    job, its refusal said with what to do, by forge, `refusal`), what it ran for, its commit
+    (Show the commit), who started it and how (GitLab's sources, GitHub's events), how long it
+    ran (or has so far), which attempt (GitHub's, past the first); then its jobs laid out as
+    chosen (`JobsLayout`, a segmented control kept in egui's memory: List, Stages, Dependencies;
+    Stages only where stages run in order, GitLab's). A GitHub run's workflow is read at its
+    commit in the read's job (`git cat-file blob <commit>:<file>`, kept for the reads after:
+    `workflow_at`) and laid over its details. `list.rs`: each stage a card (a band: its status, name, how many
     jobs; its jobs' rows touching under it, the last's corners rounded) drawn as far as they
     show (`show_rows`); a job's row: status, name, "may fail", "manual", "3 runs", and at its
-    right Start, Cancel, or Retry as an icon (named "Retry unit"), status in words, duration, a
+    right Start, Cancel, or Retry as an icon (named "Retry unit", "Re-run unit"), status in words, duration, a
     log's icon or the arrow of a page outside. `graph.rs`: the jobs as cards (status, name,
     duration) in columns, by stage (each titled) or by what each waits for (`Wait`: its needs
     by name, else every job of the stage before, kept as the stage; a column after the
@@ -1927,9 +1986,9 @@ writes paths), never `OsStrExt`.
     rests on another card. Either way a job's click shows its
     latest run's log (`PipelineEvent::Job`, with the run), a trigger job's opens the pipeline
     it runs in the browser; its menu (`job_menu`): Show its log, Earlier runs (each run's log),
-    Retry the job, Cancel the job, Start the job (disabled, saying why, where the account may
-    not), Open on GitLab. Read when shown and again every 5 s while it, or a job of it, may
-    still change (`READ_AGAIN`), and at once after GitLab did what was asked
+    Retry the job (Re-run this job), Cancel the job, Start the job (disabled, saying why, where
+    the account may not), Open on its forge. Read when shown and again every 5 s while it, or a
+    job of it, may still change (`READ_AGAIN`), and at once after the forge did what was asked
     (`PipelineEvent::Acted`: the marks too), what was read shown meanwhile. `ci_look` (each
     status's icon and colour: the theme's `ok`, `danger`, `running`, `paused`, `muted`),
     `ci_words` ("passed with warnings", "waiting for someone to start a job"), `duration` ("1
@@ -1941,8 +2000,9 @@ writes paths), never `OsStrExt`.
     know offered as the ssh host of each host Profile lists, the most of its name's end shared
     first, "The ssh host of <host>" adding `egit.<host>.sshHost`; the account it is read
     with: signed in as, not (Sign in…), or the credential git's helper keeps; its pull or merge
-    requests open, or why none were read; on GitLab its pipelines: how many read and the newest,
-    or hidden by GitLab, skipped, failed), and how many of the commits the pipelines ran for
+    requests open, or why none were read; its pipelines (GitHub's "Workflow runs"): how many
+    read and the newest, or hidden by the forge, skipped, failed), and how many of the commits
+    the pipelines ran for
     this history shows ("In this history"); Read again. So a request or a mark that doesn't
     show says why.
     `views/pulls.rs` — `PullRequestView`, the pull (or merge) requests in the commit table's
@@ -2391,6 +2451,12 @@ writes paths), never `OsStrExt`.
     requests, its pipeline's mark, "its ssh on …"; nothing written to the settings); not signed
     in, not known (rendered), tied by "The ssh host of <host>" (kept in the global settings),
     then the project read, its pipeline marked, and Profile listing the ssh host under its host.
+    `src/tests/workflows.rs` serves a fake GitHub's Actions: a commit's runs of two workflows
+    marked as one (the failure, "CI #57: failed"), its page laid out by what its workflow's file
+    (committed here) says the jobs need (no Stages to choose; rendered), a failed job's log
+    through GitHub's redirect, its failed jobs re-run (a second attempt said), the other
+    workflow's run from the menu, a running job's steps (rendered), the run cancelled (asked
+    first), a job re-run from its row, and the mark following.
     `src/tests/suggested.rs` opens two repositories of a folder (and one of another): the
     folder's others suggested by their reflogs' dates (commits at set times), one without a
     commit last, a plain folder and a file left out, nothing from the other folder (rendered);

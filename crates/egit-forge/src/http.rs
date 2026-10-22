@@ -32,6 +32,8 @@ pub(crate) struct Answer {
     pub(crate) reset: Option<i64>,
     /// `retry-after` (seconds), for a secondary rate limit.
     pub(crate) retry_after: Option<i64>,
+    /// `location`, where a redirect points (GitHub's to a log's file).
+    pub(crate) location: Option<String>,
 }
 
 /// What takes a streamed answer's body a part at a time, with its status and `Content-Range`.
@@ -114,6 +116,7 @@ impl Http {
             header(["x-ratelimit-reset", "ratelimit-reset"]).and_then(|value| value.parse().ok());
         let retry_after =
             header(["retry-after", "retry-after"]).and_then(|value| value.parse().ok());
+        let location = header(["location", "location"]);
         let status = response.status().as_u16();
         let body = response
             .body_mut()
@@ -137,6 +140,7 @@ impl Http {
             remaining,
             reset,
             retry_after,
+            location,
         })
     }
 
@@ -183,6 +187,57 @@ impl Http {
             bytes = given,
             ms = started.elapsed().as_millis(),
             "the forge streamed"
+        );
+        Ok(Streamed { status, said })
+    }
+
+    /// GETs `url`, a place a redirect named (a log's file, its address signed), without any
+    /// credential, handing a successful answer's body to `sink` as [`Self::stream`] does; only
+    /// over HTTPS (but to the loopback address).
+    pub(crate) fn stream_public(
+        &self,
+        url: &str,
+        limit: u64,
+        sink: &mut Sink<'_>,
+    ) -> Result<Streamed, ForgeError> {
+        use std::io::Read as _;
+        let loopback = url.starts_with("http://127.0.0.1:") || url.starts_with("http://[::1]:");
+        if !url.starts_with("https://") && !loopback {
+            return Err(ForgeError::Insecure {
+                host: self.host.name().to_owned(),
+            });
+        }
+        let started = std::time::Instant::now();
+        let mut response = self
+            .agent
+            .get(url)
+            .call()
+            .map_err(|error| self.network(&error))?;
+        let status = response.status().as_u16();
+        let mut reader = response.body_mut().with_config().limit(limit).reader();
+        let (mut given, mut said) = (0_u64, Vec::new());
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .map_err(|error| self.network_io(&error))?;
+            let Some(part) = buffer.get(..read).filter(|part| !part.is_empty()) else {
+                break;
+            };
+            if (200..300).contains(&status) {
+                sink(status, None, part);
+                given = given.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+            } else if said.len() < 64 * 1024 {
+                said.extend_from_slice(part);
+            }
+        }
+        // The address only to the host's name: it is signed.
+        tracing::debug!(
+            host = self.host.name(),
+            status,
+            bytes = given,
+            ms = started.elapsed().as_millis(),
+            "a file the forge pointed to was read"
         );
         Ok(Streamed { status, said })
     }

@@ -1,4 +1,4 @@
-//! A pipeline's jobs as a graph, as GitLab's pipeline page draws it: each job a card (its
+//! A pipeline's jobs as a graph, as GitLab's and GitHub's pipeline pages draw them: each job a card (its
 //! status, name, and how long it ran) in columns, by stage (`JobsLayout::Stages`: the stages in
 //! the order they run, lines drawn to what each job `needs`) or by what each waits for
 //! (`JobsLayout::Dependencies`: a job in the column after the furthest of those it waits for: its
@@ -20,7 +20,7 @@ use egui::epaint::CubicBezierShape;
 use egui::{Align, Color32, CornerRadius, Id, Layout, Pos2, Rect, RichText, Sense, Stroke, Ui};
 
 use super::list::{JOB_TOPIC, clicked, job_menu};
-use super::{JobAsk, JobsLayout, ci_look, ci_words, duration};
+use super::{CiWords, JobAsk, JobsLayout, ci_look, ci_words, duration};
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, RADIUS_CONTROL};
 
@@ -326,7 +326,7 @@ fn depths(waits: &[Wait], stages: &[Range<usize>]) -> Vec<usize> {
 /// The graph of `details`'s jobs as `by` lays them out, kept in `graph` from frame to frame.
 pub(super) fn graph(
     ui: &mut Ui,
-    palette: Palette,
+    (palette, said): (Palette, CiWords),
     details: &Arc<PipelineDetails>,
     (by, graph): (JobsLayout, &mut Graph),
 ) -> Option<JobAsk> {
@@ -374,7 +374,7 @@ pub(super) fn graph(
                     continue;
                 };
                 let dim = graph.hovered.is_some() && !graph.lit.get(at).copied().unwrap_or(false);
-                let (card_asked, is_hovered) = card(ui, palette, (job, *rect), (dim, at));
+                let (card_asked, is_hovered) = card(ui, (palette, said), (job, *rect), (dim, at));
                 if is_hovered {
                     now_hovered = Some(at);
                 }
@@ -500,7 +500,7 @@ fn curve(from: Rect, to: Rect, stroke: Stroke) -> CubicBezierShape {
 /// is lit); returns what it asked, and whether the pointer rests on it.
 fn card(
     ui: &mut Ui,
-    palette: Palette,
+    (palette, said): (Palette, CiWords),
     (job, rect): (&Job, Rect),
     (dim, at): (bool, usize),
 ) -> (Option<JobAsk>, bool) {
@@ -588,7 +588,7 @@ fn card(
     });
     let mut asked = None;
     response.context_menu(|ui| {
-        if let Some(menu_asked) = job_menu(ui, job) {
+        if let Some(menu_asked) = job_menu(ui, job, said) {
             asked = Some(menu_asked);
         }
     });
@@ -627,6 +627,10 @@ mod tests {
             pipeline: Pipeline {
                 id: 1,
                 iid: 1,
+                name: None,
+                number: 1,
+                series: 0,
+                attempt: 1,
                 commit: ObjectFormat::Sha1.zero(),
                 status: CiStatus::Success,
                 warnings: false,
@@ -647,9 +651,10 @@ mod tests {
                     jobs,
                 })
                 .collect(),
-            retryable: false,
-            cancelable: false,
+            actions: egit_forge::PipelineActions::default(),
             can_update: true,
+            ordered_stages: true,
+            workflow: None,
         })
     }
 

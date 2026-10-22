@@ -270,7 +270,7 @@ fn the_overview_says_what_each_remote_is_and_what_was_read() {
     harness.get_by_label("https://git.example.invalid/team/tool.git");
     harness.get_by_label("Signed in with the credential git's helper keeps");
     harness.get_by_label("2 open");
-    harness.get_by_label_contains("3 read; the newest, #3, ran for main");
+    harness.get_by_label_contains("3 read; the newest, Pipeline #9003, ran for main");
     wait_for_label(
         &mut harness,
         "2 of the 3 commits the pipelines ran for: each marked beside its name.",

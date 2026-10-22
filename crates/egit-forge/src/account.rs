@@ -53,7 +53,13 @@ struct State {
     /// Whether the host refused the last credential (forgotten since): finding none after
     /// that is still a refusal, until one is accepted.
     refused: bool,
+    /// Whether it may push to each repository (by path), as the host said, and when: what it
+    /// may do to their CI/CD runs (GitHub's).
+    pushes: Vec<(String, std::time::Instant, bool)>,
 }
+
+/// How long what an account may do in a repository is believed.
+const PERMISSION_LASTS: std::time::Duration = std::time::Duration::from_secs(600);
 
 impl Account {
     /// `host`'s sign-in, with `repository`'s configuration (the user's without one).
@@ -154,6 +160,7 @@ impl Account {
             login: Some(signed.login.clone()),
             approved: true,
             refused: false,
+            pushes: Vec::new(),
         };
     }
 
@@ -230,6 +237,43 @@ impl Account {
             .stream(url, credential.password(), (from, limit), sink)?;
         self.answered(&credential, streamed.status)?;
         Ok(streamed)
+    }
+
+    /// GETs `url`, a place the host pointed to (a log's file, its address signed), without the
+    /// credential, as [`Self::stream`] does.
+    pub(crate) fn stream_public(
+        &self,
+        url: &str,
+        limit: u64,
+        sink: &mut Sink<'_>,
+        cancel: &CancelToken,
+    ) -> Result<Streamed, ForgeError> {
+        if cancel.is_cancelled() {
+            return Err(ForgeError::Cancelled);
+        }
+        self.http.stream_public(url, limit, sink)
+    }
+
+    /// Whether it may push to the repository at `path`, as the host said lately.
+    pub(crate) fn remembered_push(&self, path: &str) -> Option<bool> {
+        let now = std::time::Instant::now();
+        self.state
+            .lock()
+            .pushes
+            .iter()
+            .find(|(held, when, _)| {
+                held == path && now.saturating_duration_since(*when) < PERMISSION_LASTS
+            })
+            .map(|(_, _, may)| *may)
+    }
+
+    /// Notes whether it may push to the repository at `path`, as the host said just now.
+    pub(crate) fn remember_push(&self, path: &str, may: bool) {
+        let mut state = self.state.lock();
+        state.pushes.retain(|(held, _, _)| held != path);
+        state
+            .pushes
+            .push((path.to_owned(), std::time::Instant::now(), may));
     }
 
     /// The credential to send: the one known, else filled without asking.

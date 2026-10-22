@@ -1,9 +1,10 @@
 //! A fake forge API on the loopback address, for tests: GitHub's or GitLab's.
 //!
 //! It answers the queries egit makes (a page of pull or merge requests, one's details, a
-//! repository, who is signed in; GitLab's pipelines, and one whole) and opens requests, from
-//! what the test gave it; it checks the bearer token, can be rate limited, and records every
-//! request.
+//! repository, who is signed in; GitLab's pipelines and GitHub Actions' workflow runs, one
+//! whole, a job and its log) and opens requests, retries, re-runs, and cancels, from what the
+//! test gave it; it checks the bearer token (but for a log's file, which GitHub serves from a
+//! signed address), can be rate limited, and records every request.
 
 // A test fixture: it indexes and counts small known things, and never ships; its state is a
 // set of switches.
@@ -12,7 +13,8 @@
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
     clippy::format_push_string,
-    clippy::struct_excessive_bools
+    clippy::struct_excessive_bools,
+    clippy::integer_division
 )]
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -60,13 +62,17 @@ pub struct FakePull {
     pub body: String,
 }
 
-/// A GitLab pipeline the fake serves.
+/// A GitLab pipeline the fake serves, or a GitHub workflow's run.
 #[derive(Clone, Debug, Default)]
 pub struct FakePipeline {
-    /// GitLab's number for it.
+    /// GitLab's number for it; a GitHub run's id.
     pub id: u64,
-    /// Its number within its project.
+    /// Its number within its project; a GitHub workflow's run number.
     pub iid: u64,
+    /// A GitHub run's workflow: its name ("CI"), id, and file (`.github/workflows/ci.yml`).
+    pub workflow: (String, u64, String),
+    /// A GitHub run's attempt (0 is 1).
+    pub attempt: u32,
     /// Its commit (hexadecimal).
     pub sha: String,
     /// Its branch or tag.
@@ -102,6 +108,8 @@ pub struct FakeJob {
     pub needs: Option<Vec<String>>,
     /// Its earlier runs (retried since), the newest first: each with a number of its own.
     pub earlier: Vec<Self>,
+    /// A GitHub job's steps: each one's name and status (as GitLab's enum names it).
+    pub steps: Vec<(String, String)>,
 }
 
 /// A status GitLab retries (`FAILED`, `CANCELED`), may retry (one that ended), cancels (under
@@ -177,6 +185,8 @@ pub struct FakeState {
     pub read_only: bool,
     /// The number the next run made gets.
     pub next_job: u64,
+    /// Its own address (`127.0.0.1:<port>`): GitHub's logs' files are there.
+    pub address: String,
     /// The requests it received.
     pub requests: Vec<Recorded>,
 }
@@ -202,6 +212,7 @@ impl FakeForge {
         let state = Arc::new(Mutex::new(FakeState {
             token: token.to_owned(),
             login: login.to_owned(),
+            address: address.to_string(),
             ..FakeState::default()
         }));
         let stop = Arc::new(AtomicBool::new(false));
@@ -349,6 +360,10 @@ type Answer = (u16, Vec<(&'static str, String)>, String);
 
 /// The fake's answer to `request`.
 fn answer(kind: ForgeKind, request: &Recorded, state: &mut FakeState) -> Answer {
+    // A GitHub log's file, at the address a redirect signed: no token.
+    if let Some(id) = request.path.strip_prefix("/blob/job/") {
+        return github_log_file(id, state);
+    }
     let bearer = request
         .authorization
         .as_deref()
@@ -534,6 +549,9 @@ fn github_rest(request: &Recorded, state: &mut FakeState) -> Answer {
             json!({ "message": "Not Found" }).to_string(),
         )
     };
+    if let Some(answer) = github_actions(request, state) {
+        return answer;
+    }
     let opening = request
         .path
         .strip_prefix("/api/v3/repos/")
@@ -1100,4 +1118,388 @@ fn gitlab_project(path: &str, state: &mut FakeState) -> Option<Answer> {
                 "default_branch": repository.default_branch, "forked_from_project": parent })
         .to_string(),
     ))
+}
+
+/// A fake status (GitLab's enum's word) as GitHub writes it: a status, and once completed a
+/// conclusion.
+fn github_status(status: &str) -> (&'static str, Option<&'static str>) {
+    match status {
+        "SUCCESS" => ("completed", Some("success")),
+        "FAILED" => ("completed", Some("failure")),
+        "CANCELED" => ("completed", Some("cancelled")),
+        "SKIPPED" => ("completed", Some("skipped")),
+        "RUNNING" => ("in_progress", None),
+        "MANUAL" => ("waiting", None),
+        _ => ("queued", None),
+    }
+}
+
+/// A time `seconds` after the fake's jobs start (2024-05-01T10:21:00Z).
+fn github_time(seconds: u64) -> String {
+    let minutes = (21 + seconds.checked_div(60).unwrap_or(0)).min(59);
+    format!("2024-05-01T10:{minutes:02}:{:02}Z", seconds % 60)
+}
+
+/// A minute and a half ago, as GitHub writes a time: when a job (or step) under way started.
+fn github_lately() -> String {
+    let now = crate::answer::now().saturating_sub(90);
+    let (days, of_day) = (now.div_euclid(86_400), now.rem_euclid(86_400));
+    // The civil date of a day since 1970 (Howard Hinnant's algorithm).
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let of_era = shifted - era * 146_097;
+    let year_of_era = (of_era - of_era / 1_460 + of_era / 36_524 - of_era / 146_096) / 365;
+    let of_year = of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * of_year + 2) / 153;
+    let day = of_year - (153 * month_index + 2) / 5 + 1;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        of_day / 3_600,
+        of_day / 60 % 60,
+        of_day % 60
+    )
+}
+
+fn github_run(repository: &FakeRepository, run: &FakePipeline, state: &FakeState) -> Value {
+    let (status, conclusion) = github_status(&run.status);
+    let created = if run.created.is_empty() {
+        "2024-05-01T10:20:30Z"
+    } else {
+        &run.created
+    };
+    json!({
+        "id": run.id, "name": run.workflow.0, "workflow_id": run.workflow.1,
+        "path": run.workflow.2, "head_branch": run.git_ref, "head_sha": run.sha,
+        "run_number": run.iid, "run_attempt": run.attempt.max(1), "event": "push",
+        "status": status, "conclusion": conclusion, "created_at": created,
+        "updated_at": "2024-05-01T10:25:00Z", "run_started_at": created,
+        "html_url": format!("http://{}/{}/actions/runs/{}", state.address, repository.path, run.id),
+        "actor": { "login": state.login }, "triggering_actor": { "login": state.login },
+    })
+}
+
+fn github_job(
+    repository: &FakeRepository,
+    run: &FakePipeline,
+    (job, attempt): (&FakeJob, u32),
+    state: &FakeState,
+) -> Value {
+    let id = job_id(run, job);
+    let (status, conclusion) = github_status(&job.status);
+    let steps: Vec<Value> = job
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(at, (name, step))| {
+            let (status, conclusion) = github_status(step);
+            let started = if status == "in_progress" {
+                github_lately()
+            } else {
+                github_time(0)
+            };
+            json!({ "name": name, "number": at + 1, "status": status,
+                    "conclusion": conclusion, "started_at": started,
+                    "completed_at": (status == "completed").then(|| github_time(1)) })
+        })
+        .collect();
+    let started = if status == "in_progress" {
+        github_lately()
+    } else {
+        github_time(0)
+    };
+    json!({
+        "id": id, "run_id": run.id, "run_attempt": attempt, "name": job.name,
+        "status": status, "conclusion": conclusion, "started_at": started,
+        "completed_at": (status == "completed").then(|| github_time(job.duration.unwrap_or(0))),
+        "html_url": format!("http://{}/{}/actions/runs/{}/job/{id}", state.address, repository.path, run.id),
+        "workflow_name": run.workflow.0, "steps": steps,
+    })
+}
+
+/// A run's jobs as GitHub lists them: each one's latest (attempt by its earlier runs), and with
+/// `all`, every earlier one too.
+fn github_jobs(
+    repository: &FakeRepository,
+    run: &FakePipeline,
+    all: bool,
+    state: &FakeState,
+) -> Vec<Value> {
+    let mut jobs = Vec::new();
+    for (_, _, stage) in &run.stages {
+        for job in stage {
+            let latest = u32::try_from(job.earlier.len()).unwrap_or(0) + 1;
+            jobs.push(github_job(
+                repository,
+                run,
+                (job, latest.max(run.attempt)),
+                state,
+            ));
+            if all {
+                for (back, earlier) in job.earlier.iter().enumerate() {
+                    let attempt = latest - 1 - u32::try_from(back).unwrap_or(0);
+                    jobs.push(github_job(
+                        repository,
+                        run,
+                        (earlier, attempt.max(1)),
+                        state,
+                    ));
+                }
+            }
+        }
+    }
+    jobs
+}
+
+/// The job (latest or earlier) numbered `id` among `runs`: its run, it, and its attempt.
+fn github_find_job<'a>(
+    runs: &'a [FakePipeline],
+    id: &str,
+) -> Option<(&'a FakePipeline, &'a FakeJob, u32)> {
+    runs.iter().find_map(|run| {
+        run.stages
+            .iter()
+            .flat_map(|(_, _, jobs)| jobs)
+            .find_map(|job| {
+                if job_id(run, job).to_string() == id {
+                    return Some((run, job, u32::try_from(job.earlier.len()).unwrap_or(0) + 1));
+                }
+                job.earlier
+                    .iter()
+                    .find(|earlier| earlier.id.to_string() == id)
+                    .map(|earlier| (run, earlier, 1))
+            })
+    })
+}
+
+/// A query's parameter's value.
+fn query<'a>(path: &'a str, name: &str) -> Option<&'a str> {
+    path.split_once('?')?
+        .1
+        .split('&')
+        .find_map(|pair| pair.strip_prefix(name)?.strip_prefix('='))
+}
+
+/// GitHub Actions' API: runs, a run, its jobs, a job, a job's log (a redirect to its file),
+/// re-runs and cancelling; none for another request.
+fn github_actions(request: &Recorded, state: &mut FakeState) -> Option<Answer> {
+    let rest = request.path.strip_prefix("/api/v3/repos/")?;
+    let (owner, rest) = rest.split_once('/')?;
+    let (name, rest) = rest.split_once('/').unwrap_or((rest, ""));
+    let name = name.split('?').next().unwrap_or(name);
+    let path = format!("{owner}/{name}");
+    let resource = rest.split('?').next().unwrap_or(rest);
+    let not_found = (
+        404,
+        Vec::new(),
+        json!({ "message": "Not Found" }).to_string(),
+    );
+    let read_only = state.read_only;
+    if request.method == "POST" && resource.starts_with("actions/") {
+        if read_only {
+            return Some((
+                403,
+                Vec::new(),
+                json!({ "message": "Must have admin rights to Repository." }).to_string(),
+            ));
+        }
+        return Some(github_action(&path, resource, state).unwrap_or(not_found));
+    }
+    let snapshot = state
+        .repositories
+        .iter()
+        .find(|repository| repository.path.eq_ignore_ascii_case(&path))?
+        .clone();
+    let runs = &snapshot.pipelines;
+    let run_of = |id: &str| runs.iter().find(|run| run.id.to_string() == id);
+    let answer = match resource.split('/').collect::<Vec<_>>().as_slice() {
+        [""] => json!({ "full_name": snapshot.path,
+            "permissions": { "admin": false, "maintain": false, "push": !read_only, "pull": true } }),
+        ["actions", "runs"] => {
+            let per_page: usize = query(&request.path, "per_page")
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(30);
+            let page: usize = query(&request.path, "page")
+                .and_then(|n| n.parse().ok())
+                .unwrap_or(1);
+            let start = (page - 1) * per_page;
+            let listed: Vec<Value> = runs
+                .iter()
+                .skip(start)
+                .take(per_page)
+                .map(|run| github_run(&snapshot, run, state))
+                .collect();
+            json!({ "total_count": runs.len(), "workflow_runs": listed })
+        }
+        ["actions", "runs", id] => match run_of(id) {
+            Some(run) => github_run(&snapshot, run, state),
+            None => return Some(not_found),
+        },
+        ["actions", "runs", id, "jobs"] => match run_of(id) {
+            Some(run) => {
+                let all = query(&request.path, "filter") == Some("all");
+                let page: usize = query(&request.path, "page")
+                    .and_then(|n| n.parse().ok())
+                    .unwrap_or(1);
+                let jobs = if page == 1 {
+                    github_jobs(&snapshot, run, all, state)
+                } else {
+                    Vec::new()
+                };
+                json!({ "total_count": jobs.len(), "jobs": jobs })
+            }
+            None => return Some(not_found),
+        },
+        ["actions", "jobs", id] | ["actions", "jobs", id, "logs"] => {
+            let found = github_find_job(runs, id);
+            let Some((run, job, attempt)) = found else {
+                return Some(not_found);
+            };
+            if resource.ends_with("/logs") {
+                // GitHub's log is there once the job has ended.
+                if !ended(&job.status) || job.log.is_empty() {
+                    return Some(not_found);
+                }
+                let location = format!("http://{}/blob/job/{id}", state.address);
+                return Some((302, vec![("location", location)], String::new()));
+            }
+            github_job(&snapshot, run, (job, attempt), state)
+        }
+        _ => return None,
+    };
+    Some((200, Vec::new(), answer.to_string()))
+}
+
+/// A GitHub log's file: its job's log, whoever asks.
+fn github_log_file(id: &str, state: &FakeState) -> Answer {
+    let log = state.repositories.iter().find_map(|repository| {
+        github_find_job(&repository.pipelines, id).map(|(_, job, _)| job.log.clone())
+    });
+    log.map_or_else(
+        || {
+            (
+                404,
+                Vec::new(),
+                "The specified blob does not exist.".to_owned(),
+            )
+        },
+        |log| (200, Vec::new(), log),
+    )
+}
+
+/// A job run again in its place, as GitHub does: its run kept as an earlier one, the new one
+/// numbered from `next`.
+fn rerun(job: &mut FakeJob, number: u64, next: &mut u64) {
+    job.id = number;
+    let mut before = job.clone();
+    before.earlier.clear();
+    job.earlier.insert(0, before);
+    *next += 1;
+    job.id = *next;
+    "PENDING".clone_into(&mut job.status);
+    job.log.clear();
+    job.duration = None;
+    for (_, step) in &mut job.steps {
+        "PENDING".clone_into(step);
+    }
+}
+
+/// A run's re-run (of its failed jobs, or all), its cancelling, or a job's re-run.
+fn github_action(path: &str, resource: &str, state: &mut FakeState) -> Option<Answer> {
+    if state.next_job == 0 {
+        state.next_job = 990_000;
+    }
+    let mut next = state.next_job;
+    let repository = find(state, path)?;
+    let parts: Vec<&str> = resource.split('/').collect();
+    let answer = match parts.as_slice() {
+        ["actions", "runs", id, verb] => {
+            let run = repository
+                .pipelines
+                .iter_mut()
+                .find(|run| run.id.to_string() == *id)?;
+            let numbers: Vec<Vec<u64>> = run
+                .stages
+                .iter()
+                .map(|(_, _, jobs)| jobs.iter().map(|job| job_id(run, job)).collect())
+                .collect();
+            match *verb {
+                "cancel" => {
+                    let mut any = false;
+                    for (_, _, jobs) in &mut run.stages {
+                        for job in jobs
+                            .iter_mut()
+                            .filter(|job| under_way(&job.status) || job.status == "MANUAL")
+                        {
+                            "CANCELED".clone_into(&mut job.status);
+                            any = true;
+                        }
+                    }
+                    if !any {
+                        return Some((
+                            409,
+                            Vec::new(),
+                            json!({ "message": "Cannot cancel a workflow run that is completed." })
+                                .to_string(),
+                        ));
+                    }
+                    "CANCELED".clone_into(&mut run.status);
+                    (202, Vec::new(), String::new())
+                }
+                "rerun" | "rerun-failed-jobs" => {
+                    let all = *verb == "rerun";
+                    for ((_, _, jobs), numbers) in run.stages.iter_mut().zip(&numbers) {
+                        for (job, number) in jobs.iter_mut().zip(numbers) {
+                            if all || retried_by_pipeline(&job.status) {
+                                rerun(job, *number, &mut next);
+                            } else {
+                                job.id = *number;
+                            }
+                        }
+                    }
+                    run.attempt = run.attempt.max(1) + 1;
+                    "RUNNING".clone_into(&mut run.status);
+                    (201, Vec::new(), String::new())
+                }
+                _ => return None,
+            }
+        }
+        ["actions", "jobs", id, "rerun"] => {
+            let mut done = false;
+            for run in &mut repository.pipelines {
+                let numbers: Vec<Vec<u64>> = run
+                    .stages
+                    .iter()
+                    .map(|(_, _, jobs)| jobs.iter().map(|job| job_id(run, job)).collect())
+                    .collect();
+                for ((_, _, jobs), numbers) in run.stages.iter_mut().zip(&numbers) {
+                    for (job, number) in jobs.iter_mut().zip(numbers) {
+                        if number.to_string() == *id {
+                            rerun(job, *number, &mut next);
+                            done = true;
+                        } else {
+                            job.id = *number;
+                        }
+                    }
+                }
+                if done {
+                    run.attempt = run.attempt.max(1) + 1;
+                    "RUNNING".clone_into(&mut run.status);
+                    break;
+                }
+            }
+            if !done {
+                return None;
+            }
+            (201, Vec::new(), String::new())
+        }
+        _ => return None,
+    };
+    state.next_job = next;
+    Some(answer)
 }

@@ -37,3 +37,4 @@ mod submodules;
 mod suggested;
 mod tree;
 mod undo;
+mod workflows;

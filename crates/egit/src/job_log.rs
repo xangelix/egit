@@ -1,17 +1,22 @@
-//! A GitLab job's log, followed while the job runs: a thread of its own asks how the job stands
+//! A CI/CD job's log, followed while the job runs: a thread of its own asks how the job stands
 //! and reads what the log gained since (`egit_forge::read_log`: a range where the host answers
 //! ranges, else the whole skipped as far as was read), every [`EVERY`] (longer for a large log
-//! sent whole), parses it (`egit_forge::JobLog`), and lays it out for the text grid
-//! ([`LogSource`]: measured, its colours, each line's time, its sections), handing each to the
-//! view as it lands. Once the job has ended and its log is read whole, it stops; dropped, it
-//! stops at once.
+//! sent whole), parses it (`egit_forge::JobLog`, in its forge's way), and lays it out for the
+//! text grid ([`LogSource`]: measured, its colours, each line's time, its sections), handing
+//! each to the view as it lands. Once the job has ended and its log is read whole, it stops;
+//! dropped, it stops at once.
+//!
+//! GitHub gives a job's log once the job has ended (as a file it points to): while a GitHub job
+//! runs, it is asked about (its steps) every [`EVERY`] and its log looked for only every
+//! [`GITHUB_LOG_EVERY`]th time; once it has ended, its log is looked for a few times more
+//! ([`LOOKS_AFTER_END`]), as GitHub writes it out a little after.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_forge::{
-    Account, ForgeError, ForgeRepository, JobLog, JobRun, LogParts, LogRead, Run, Section, job,
-    read_log,
+    Account, ForgeError, ForgeKind, ForgeRepository, JobLog, JobRun, LogParts, LogRead, Run,
+    Section, job, read_log,
 };
 use egit_git::{CancelToken, Style};
 use egit_text::{Measure, Text};
@@ -31,6 +36,12 @@ const LONGEST: Duration = Duration::from_secs(15);
 
 /// How long before trying again after a failure.
 const AFTER_FAILING: Duration = Duration::from_secs(10);
+
+/// While a GitHub job runs, its log is looked for every this many times it is asked about.
+const GITHUB_LOG_EVERY: u32 = 5;
+
+/// How many times more a GitHub job's log is looked for once the job has ended without one.
+const LOOKS_AFTER_END: u32 = 5;
 
 /// A log laid out for the text grid: its text measured, styles, each line's time (where the
 /// runner wrote them), and sections.
@@ -252,8 +263,11 @@ impl Follower {
     /// Asks, reads, lays out, and waits, until the job has ended and its log is whole (or it
     /// is dropped).
     fn run(self) {
-        let mut log = JobLog::new();
+        let github = self.repository.host().kind() == ForgeKind::GitHub;
+        let mut log = JobLog::of(self.repository.host().kind());
         let (mut read, mut ranges) = (0_u64, true);
+        // GitHub's: how many times it was asked about, and its log looked for once it ended.
+        let (mut asked, mut looked_after) = (0_u32, 0_u32);
         loop {
             if self.cancel.is_cancelled() {
                 return;
@@ -273,6 +287,15 @@ impl Follower {
                     continue;
                 }
             };
+            asked = asked.wrapping_add(1);
+            if github && !ended && asked.checked_rem(GITHUB_LOG_EVERY) != Some(1) {
+                // Its steps moved on; its log is looked for now and then.
+                self.waker.request_repaint();
+                if !self.wait(EVERY) {
+                    return;
+                }
+                continue;
+            }
             let mut sink = |bytes: &[u8]| log.feed(bytes);
             let took = read_log(
                 &self.account,
@@ -297,17 +320,26 @@ impl Follower {
                     }
                 }
                 Ok(LogRead::Shorter) => {
-                    log = JobLog::new();
+                    log = JobLog::of(self.repository.host().kind());
                     read = 0;
                     continue;
                 }
                 Ok(LogRead::Missing) => {
+                    // GitHub writes an ended job's log out a little after.
+                    let again = github && ended && looked_after < LOOKS_AFTER_END;
+                    looked_after = looked_after.saturating_add(u32::from(ended));
                     let mut shared = self.shared.lock();
                     shared.missing = read == 0;
                     shared.problem = None;
-                    shared.done = ended;
+                    shared.done = ended && !again;
                     drop(shared);
                     self.waker.request_repaint();
+                    if again {
+                        if !self.wait(EVERY) {
+                            return;
+                        }
+                        continue;
+                    }
                 }
                 Err(ForgeError::Cancelled) => return,
                 Err(error) => {

@@ -1,5 +1,7 @@
-//! A GitLab job's log: how the job stands (`GET /projects/:path/jobs/:id`), its log read a part
-//! at a time as it grows (`…/jobs/:id/trace`), and parsed as GitLab's own page shows it.
+//! A CI/CD job's log: how the job stands (GitLab's `GET /projects/:path/jobs/:id`; GitHub's
+//! `GET /repos/:owner/:name/actions/jobs/:id`, with its steps), its log read a part at a time as
+//! it grows (GitLab's `…/jobs/:id/trace`; GitHub's, a file it points to, once there is one), and
+//! parsed as the forge's own page shows it.
 //!
 //! GitLab's API sends a log whole. egit asks for only the bytes after those it has (`Range`,
 //! uncompressed); where the host sends it all anyway, it skips those as they come (and asks
@@ -10,8 +12,12 @@
 //! 00O `, a `+` in the space's place continuing the line before) taken off and kept, colours
 //! (SGR) as style runs, other escapes dropped, a `\r` rewriting the line under way as a terminal
 //! does (progress), and sections (`section_start:<time>:<name>[collapsed=true]\r\e[0K`,
-//! `section_end:<time>:<name>\r\e[0K`) noted, their markers out of the text. At most
-//! [`MOST_TEXT`] bytes of text are kept; the rest is said to be on GitLab.
+//! `section_end:<time>:<name>\r\e[0K`) noted, their markers out of the text. A GitHub job's
+//! ([`JobLog::github`]) has each line's time before it (`2024-05-14T11:19:20.1234567Z `), its
+//! groups (`##[group]Run make`, `##[endgroup]`) as sections, and the lines its workflow
+//! commands make (`##[error]`, `##[warning]`, `##[notice]`, `##[command]`, `##[debug]`) said
+//! and coloured as GitHub shows them. At most [`MOST_TEXT`] bytes of text are kept; the rest
+//! is said to be on the forge.
 
 use bstr::ByteSlice as _;
 use egit_git::{CancelToken, Style, apply_sgr, escape_sequence};
@@ -21,7 +27,8 @@ use crate::account::Account;
 use crate::answer::{parse_time, read_answer};
 use crate::error::ForgeError;
 use crate::gitlab::encoded;
-use crate::pipelines::{CiStatus, has_pipelines};
+use crate::host::ForgeKind;
+use crate::pipelines::{CiStatus, github_job, github_log};
 use crate::repository::ForgeRepository;
 
 /// The most of a log's text kept (GitLab's own limit is 100 MiB by default).
@@ -51,6 +58,23 @@ pub struct JobRun {
     pub failure: Option<String>,
     /// Its page.
     pub url: Option<String>,
+    /// Its steps, where the forge says (GitHub's), in order.
+    pub steps: Vec<JobStep>,
+}
+
+/// A step of a job (GitHub's).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JobStep {
+    /// Its place among the job's steps (from 1).
+    pub number: u32,
+    /// Its name ("Run actions/checkout@v4").
+    pub name: String,
+    /// Where it stands.
+    pub status: CiStatus,
+    /// When it started (seconds since the Unix epoch), if it has.
+    pub started: Option<i64>,
+    /// When it finished, if it has.
+    pub finished: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -66,24 +90,21 @@ struct RestJob {
     web_url: Option<String>,
 }
 
-/// How job `id` of `repository` stands.
+/// How job `id` of `repository` stands (a GitHub job's with its steps).
 ///
 /// # Errors
 ///
-/// Any of [`ForgeError`]'s; [`ForgeError::NotFound`] on a forge without pipelines.
+/// Any of [`ForgeError`]'s.
 pub fn job(
     account: &Account,
     repository: &ForgeRepository,
     id: u64,
     cancel: &CancelToken,
 ) -> Result<JobRun, ForgeError> {
-    let what = format!("{} job {id}", repository.full_name());
-    if !has_pipelines(repository.host().kind()) {
-        return Err(ForgeError::NotFound {
-            host: account.host().name().to_owned(),
-            what,
-        });
+    if repository.host().kind() == ForgeKind::GitHub {
+        return github_job(account, repository, id, cancel);
     }
+    let what = format!("{} job {id}", repository.full_name());
     let url = account.host().rest_url(&format!(
         "/projects/{}/jobs/{id}",
         encoded(repository.path())
@@ -104,6 +125,7 @@ pub fn job(
         duration: job.duration,
         failure: job.failure_reason,
         url: job.web_url,
+        steps: Vec::new(),
     })
 }
 
@@ -126,8 +148,11 @@ pub enum LogRead {
 }
 
 /// Reads job `id`'s log after its first `from` bytes, handing the new ones to `sink` as they
-/// come: asked as a range where `ranges` (the host may answer them), else the whole skipped
-/// as far as `from`.
+/// come.
+///
+/// GitLab's is asked as a range where `ranges` (the host may answer them), else the whole
+/// skipped as far as `from`. A GitHub job's is a file GitHub points to, whole as far as it is
+/// written (none, perhaps, before the job ends: [`LogRead::Missing`]).
 ///
 /// # Errors
 ///
@@ -139,6 +164,9 @@ pub fn read_log(
     cancel: &CancelToken,
     sink: &mut dyn FnMut(&[u8]),
 ) -> Result<LogRead, ForgeError> {
+    if repository.host().kind() == ForgeKind::GitHub {
+        return github_log(account, repository, (id, from), cancel, sink);
+    }
     let url = account.host().rest_url(&format!(
         "/projects/{}/jobs/{id}/trace",
         encoded(repository.path())
@@ -226,10 +254,21 @@ pub struct Section {
     pub depth: u16,
 }
 
+/// Whose log it is: how its lines are written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Dialect {
+    /// A GitLab runner's: `section_start`/`section_end` markers, timestamps with a stream.
+    #[default]
+    GitLab,
+    /// GitHub Actions': timestamps alone, `##[group]` and the other workflow commands.
+    GitHub,
+}
+
 /// A log parsed as it comes: its text (lines ending in `\n`), styles, each line's time where
 /// the runner wrote one, and sections.
 #[derive(Clone, Debug, Default)]
 pub struct JobLog {
+    dialect: Dialect,
     text: Vec<u8>,
     runs: Vec<Run>,
     /// Each line's time (seconds since the Unix epoch; 0 for none), once any line had one.
@@ -269,10 +308,28 @@ pub struct LogParts {
 }
 
 impl JobLog {
-    /// None yet.
+    /// None yet: a GitLab job's.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// None yet: a GitHub Actions job's.
+    #[must_use]
+    pub fn github() -> Self {
+        Self {
+            dialect: Dialect::GitHub,
+            ..Self::default()
+        }
+    }
+
+    /// None yet: a job's of `kind`.
+    #[must_use]
+    pub fn of(kind: ForgeKind) -> Self {
+        match kind {
+            ForgeKind::GitLab => Self::new(),
+            ForgeKind::GitHub => Self::github(),
+        }
     }
 
     /// Takes in `bytes`, the log's next.
@@ -330,6 +387,10 @@ impl JobLog {
     /// One line as the runner wrote it (without its `\n`): its timestamp taken off, and joined
     /// to the one before when it continues it.
     fn raw_line(&mut self, raw: &[u8]) {
+        if self.dialect == Dialect::GitHub {
+            self.github_line(raw);
+            return;
+        }
         match timestamp(raw) {
             Some((time, true, content)) => {
                 if let Some((pending, _)) = &mut self.pending {
@@ -353,6 +414,52 @@ impl JobLog {
         }
     }
 
+    /// One line of a GitHub job's log: its time taken off; a group's start a section (its line
+    /// the group's name), its end closing it; a workflow command's line said as GitHub says it.
+    fn github_line(&mut self, raw: &[u8]) {
+        // The file starts with a byte order mark.
+        let raw = raw.strip_prefix("\u{feff}".as_bytes()).unwrap_or(raw);
+        let (time, content) = github_timestamp(raw).unwrap_or((0, raw));
+        if let Some(name) = content.strip_prefix(b"##[group]") {
+            let depth = u16::try_from(self.open.len()).unwrap_or(u16::MAX);
+            self.open.push(self.sections.len());
+            self.sections.push(Section {
+                name: String::from_utf8_lossy(name).trim().to_owned(),
+                line: self.lines,
+                started: time,
+                ended: None,
+                collapsed: true,
+                depth,
+            });
+            self.commit(name, time);
+            return;
+        }
+        if content.starts_with(b"##[endgroup]") {
+            if let Some(open) = self.open.pop()
+                && let Some(section) = self.sections.get_mut(open)
+            {
+                let last = self.lines.saturating_sub(1).max(section.line);
+                section.ended = Some((time, last));
+            }
+            return;
+        }
+        let said: [(&[u8], &[u8], &[u8]); 5] = [
+            (b"##[error]", b"Error: ", b"\x1b[31m"),
+            (b"##[warning]", b"Warning: ", b"\x1b[33m"),
+            (b"##[notice]", b"Notice: ", b"\x1b[36m"),
+            (b"##[command]", b"", b"\x1b[34m"),
+            (b"##[debug]", b"", b"\x1b[2m"),
+        ];
+        for (command, words, colour) in said {
+            if let Some(rest) = content.strip_prefix(command) {
+                let line = [colour, words, rest, b"\x1b[0m"].concat();
+                self.commit(&line, time);
+                return;
+            }
+        }
+        self.commit(content, time);
+    }
+
     /// One whole line, as a terminal shows it: its sections' markers noted, the text after its
     /// last `\r` kept (the rest's colours still taking effect), escapes made styles.
     fn commit(&mut self, content: &[u8], time: i64) {
@@ -361,7 +468,7 @@ impl JobLog {
         }
         let content = content.strip_suffix(b"\r").unwrap_or(content);
         let line = self.lines;
-        let marked = self.sections_in(content, (line, time));
+        let marked = self.dialect == Dialect::GitLab && self.sections_in(content, (line, time));
         let (dropped, shown) = content.rfind_byte(b'\r').map_or((&[][..], content), |at| {
             (
                 content.get(..at).unwrap_or_default(),
@@ -571,6 +678,20 @@ fn timestamp(line: &[u8]) -> Option<(i64, bool, &[u8])> {
     Some((time, continued, after.get(2..).unwrap_or_default()))
 }
 
+/// A GitHub Actions line's time (`2024-05-14T11:19:20.1234567Z `), and the rest.
+fn github_timestamp(line: &[u8]) -> Option<(i64, &[u8])> {
+    let time = parse_time(line.get(..19)?.to_str().ok()?)?;
+    let after = line.get(19..)?;
+    let fraction = after.strip_prefix(b".").map_or(0, |rest| {
+        rest.iter()
+            .take_while(|byte| byte.is_ascii_digit())
+            .count()
+            .saturating_add(1)
+    });
+    let rest = after.get(fraction..)?.strip_prefix(b"Z")?;
+    Some((time, rest.strip_prefix(b" ").unwrap_or(rest)))
+}
+
 /// Walks `bytes`' text and escapes from `style`: each piece of text with the style it is in
 /// handed to `piece`; returns the style it ends in.
 fn styles(bytes: &[u8], mut style: Style, mut piece: impl FnMut(&[u8], Style)) -> Style {
@@ -694,6 +815,42 @@ mod tests {
             let parts = parsed(&[line, "\n"]);
             assert_eq!(text(&parts), format!("{line}\n"));
         }
+    }
+
+    #[test]
+    fn a_github_log_s_groups_are_sections_and_its_commands_said() {
+        let mut log = JobLog::github();
+        log.feed(
+            "\u{feff}2024-05-14T11:19:20.1234567Z ##[group]Run actions/checkout@v4\n\
+             2024-05-14T11:19:21.0000000Z with: v4\n\
+             2024-05-14T11:19:22.0000000Z ##[endgroup]\n\
+             2024-05-14T11:19:23.0000000Z ##[command]/usr/bin/git version\n\
+             2024-05-14T11:19:24.0000000Z ##[error]Process completed with exit code 1.\n\
+             2024-05-14T11:19:25.0000000Z section_start:1:not GitLab's\n"
+                .as_bytes(),
+        );
+        let parts = log.parts();
+        assert_eq!(
+            text(&parts),
+            "Run actions/checkout@v4\nwith: v4\n/usr/bin/git version\n\
+             Error: Process completed with exit code 1.\nsection_start:1:not GitLab's\n"
+        );
+        assert_eq!(
+            parts
+                .sections
+                .iter()
+                .map(|section| (section.name.as_str(), section.line, section.ended))
+                .collect::<Vec<_>>(),
+            [("Run actions/checkout@v4", 0, Some((1_715_685_562, 1)))]
+        );
+        assert_eq!(parts.times.first(), Some(&1_715_685_560));
+        // The error's line in red.
+        let red = parts
+            .runs
+            .iter()
+            .find(|run| run.style.color == Some(Color::Indexed(1)))
+            .unwrap();
+        assert_eq!(red.at, 54);
     }
 
     #[test]

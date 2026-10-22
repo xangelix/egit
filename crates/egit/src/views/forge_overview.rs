@@ -87,8 +87,9 @@ fn hosts(ui: &mut Ui, resolved: &Resolved) {
         Label::new(muted(
             ui,
             format!(
-                "egit reads pull requests from GitHub, and merge requests and pipelines from \
-                 GitLab, for the remotes on these hosts: {}. Profile lists more.",
+                "egit reads pull requests and Actions' workflow runs from GitHub, and merge \
+                 requests and pipelines from GitLab, for the remotes on these hosts: {}. \
+                 Profile lists more.",
                 hosts.join(", ")
             ),
         ))
@@ -146,9 +147,7 @@ fn remote(
     let index = forge.index_of(repository);
     account(ui, (forge, repository, index), id, actions);
     requests(ui, forge, (kind, index));
-    if kind == ForgeKind::GitLab {
-        pipelines(ui, forge, index);
-    }
+    pipelines(ui, forge, (kind, index));
 }
 
 /// A remote on no host egit knows: why, and what to do. An ssh host is offered as the ssh
@@ -291,29 +290,34 @@ fn requests(ui: &mut Ui, forge: &RepoForge, (kind, index): (ForgeKind, Option<us
     });
 }
 
-/// A GitLab project's pipelines: how many were read and the newest, or why none were.
-fn pipelines(ui: &mut Ui, forge: &mut RepoForge, index: Option<usize>) {
+/// A repository's pipelines (a GitLab project's, a GitHub repository's workflow runs): how
+/// many were read and the newest, or why none were.
+fn pipelines(ui: &mut Ui, forge: &mut RepoForge, (kind, index): (ForgeKind, Option<usize>)) {
     let palette = Palette::of(ui.ctx());
     let ci = forge.pipelines();
     let reading = ci.is_reading();
     let seen = index.and_then(|index| ci.seen().get(index).cloned());
-    widgets::fact_top_of(ui, widgets::FACT_LABEL, ("Pipelines", TOPIC), |ui| {
+    let (label, none, hidden) = match kind {
+        ForgeKind::GitLab => (
+            "Pipelines",
+            "None: the project hasn't run any.",
+            "GitLab lists none to this account: CI/CD may be turned off for the project, or \
+             your role in it may not see its pipelines.",
+        ),
+        ForgeKind::GitHub => (
+            "Workflow runs",
+            "None: the repository hasn't run any Actions workflow.",
+            "GitHub shows this account no Actions here: they may be turned off for the \
+             repository, or a fine-grained token may lack Actions: read.",
+        ),
+    };
+    widgets::fact_top_of(ui, widgets::FACT_LABEL, (label, TOPIC), |ui| {
         let (words, color) = match seen {
             None | Some(CiSeen::NotRead) if reading => ("Reading…".to_owned(), palette.muted),
             None | Some(CiSeen::NotRead) => ("Not read yet".to_owned(), palette.muted),
-            Some(CiSeen::Read { count: 0, .. }) => (
-                "None: the project hasn't run any.".to_owned(),
-                palette.muted,
-            ),
+            Some(CiSeen::Read { count: 0, .. }) => (none.to_owned(), palette.muted),
             Some(CiSeen::Read { count, newest }) => (read(count, newest.as_deref()), palette.text),
-            Some(CiSeen::Hidden) => (
-                format!(
-                    "{}  GitLab lists none to this account: CI/CD may be turned off for the \
-                     project, or your role in it may not see its pipelines.",
-                    icon::WARNING
-                ),
-                palette.warn,
-            ),
+            Some(CiSeen::Hidden) => (format!("{}  {hidden}", icon::WARNING), palette.warn),
             Some(CiSeen::Skipped) => (
                 "Not asked: its host failed for another project first.".to_owned(),
                 palette.muted,
@@ -348,8 +352,8 @@ fn read(count: usize, newest: Option<&egit_forge::Pipeline>) -> String {
             });
         let _ = write!(
             words,
-            "; the newest, #{}, ran{ran_for} ({}): {}{when}.",
-            newest.iid,
+            "; the newest, {}, ran{ran_for} ({}): {}{when}.",
+            newest.title(),
             newest.commit.abbreviated(8),
             ci_words(newest.status, newest.warnings)
         );

@@ -3,8 +3,8 @@
 //! `egit.gitlabHost`), an account per host signed in with git's credentials, and their open pull
 //! requests (GitHub's) and merge requests (GitLab's), read in the background (a page at a time,
 //! shown as each lands) and read again when the remotes may have moved; the badges they put on
-//! their head commits; GitLab's pipelines, a mark on each commit that ran one (`ci.rs`); and
-//! how each forge names them.
+//! their head commits; the CI/CD pipelines (GitLab's, and GitHub Actions' workflow runs), a
+//! mark on each commit that ran one (`ci.rs`); and how each forge names them.
 //!
 //! A read again takes over only once complete, so the list never empties or jumps meanwhile.
 
@@ -340,7 +340,7 @@ pub(crate) struct RepoForge {
     generation: u64,
     /// Wakes the window as pages land.
     waker: egui::Context,
-    /// GitLab's pipelines: each commit's latest.
+    /// The pipelines (GitLab's, GitHub's workflow runs): each commit's.
     ci: Pipelines,
     /// What the run shares: the sign-ins made, which its accounts take as they are made; and
     /// the names listed GitLab hosts' ssh is on.
@@ -583,7 +583,7 @@ impl RepoForge {
         self.reading.is_some() || !self.shown.lock().done
     }
 
-    /// `commit`'s latest pipeline, if it ran one (GitLab's).
+    /// `commit`'s pipelines, if it ran any: the most telling shown, the others beside it.
     pub(crate) fn pipeline_of(&self, commit: &ObjectId) -> Option<&CiMark> {
         self.ci.of(commit)
     }

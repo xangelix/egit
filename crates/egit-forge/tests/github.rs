@@ -1,7 +1,10 @@
 //! GitHub's API against a fake on the loopback address, signed in with a sandbox's credential
 //! helper: pull requests read a page at a time, details, the repository, opening a pull request
 //! (and its refusal), and refused credentials (forgotten), no credentials, rate limits, and
-//! repositories that aren't there.
+//! repositories that aren't there. And Actions' workflow runs as pipelines: listed, each
+//! workflow its series; one whole (its jobs grouped by matrix, each job's earlier attempts,
+//! laid over by its workflow's needs); a job's state with its steps and its log through
+//! GitHub's redirect (fetched without the token); re-runs, cancelling, and refusals.
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
 #![allow(
@@ -14,11 +17,12 @@
 
 use std::sync::Arc;
 
-use egit_forge::testing::{FakeForge, FakePull, FakeRepository};
+use egit_forge::testing::{FakeForge, FakeJob, FakePipeline, FakePull, FakeRepository};
 use egit_forge::{
-    Account, CheckState, ForgeError, ForgeHost, ForgeKind, ForgeRepository, NewPullRequest,
-    ReviewDecision, ReviewState, create_pull_request, pipeline_details, pipelines,
-    pull_request_details, pull_requests, repository_info,
+    Account, CheckState, CiAction, CiStatus, ForgeError, ForgeHost, ForgeKind, ForgeRepository,
+    JobLog, LogRead, NewPullRequest, ReviewDecision, ReviewState, Workflow, ci_act,
+    create_pull_request, job, pipeline_details, pipelines, pull_request_details, pull_requests,
+    read_log, repository_info,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -283,20 +287,333 @@ fn signing_in_asks_the_user_and_has_the_helper_keep_what_worked() {
     assert!(kept.contains("ada:t0ken@127.0.0.1"), "{kept}");
 }
 
+/// A job of a fake workflow run.
+fn job_of(id: u64, name: &str, status: &str) -> FakeJob {
+    FakeJob {
+        id,
+        name: name.to_owned(),
+        status: status.to_owned(),
+        duration: Some(42),
+        steps: vec![
+            ("Set up job".to_owned(), "SUCCESS".to_owned()),
+            ("Run make".to_owned(), status.to_owned()),
+        ],
+        ..FakeJob::default()
+    }
+}
+
+/// A run of workflow `workflow` (its name and id) on commit `commit`, as `status` says.
+fn run_of(
+    (id, number): (u64, u64),
+    (workflow, workflow_id): (&str, u64),
+    commit: u8,
+    (status, jobs): (&str, Vec<FakeJob>),
+) -> FakePipeline {
+    FakePipeline {
+        id,
+        iid: number,
+        sha: format!("{commit:040x}"),
+        git_ref: "main".to_owned(),
+        status: status.to_owned(),
+        workflow: (
+            workflow.to_owned(),
+            workflow_id,
+            format!(".github/workflows/{}.yml", workflow.to_lowercase()),
+        ),
+        stages: vec![(String::new(), String::new(), jobs)],
+        ..FakePipeline::default()
+    }
+}
+
+/// `octo/tool`'s CI run on commit 1: build passed, a matrix of tests (one failed), a deploy
+/// that ran twice (its first attempt failed); and its Docs run, and CI on commit 2 running.
+fn with_runs(fake: &FakeForge) {
+    let mut deploy = job_of(705, "deploy", "SKIPPED");
+    let mut first = job_of(604, "deploy", "FAILED");
+    "the first attempt\n".clone_into(&mut first.log);
+    deploy.earlier = vec![first];
+    let mut failed = job_of(603, "test (macos)", "FAILED");
+    "2024-05-01T10:21:00.1234567Z ##[group]Run make test\n\
+                  2024-05-01T10:21:01.0000000Z \u{1b}[31mFAIL\u{1b}[0m parse\n\
+                  2024-05-01T10:21:02.0000000Z ##[endgroup]\n\
+                  2024-05-01T10:21:03.0000000Z ##[error]Process completed with exit code 1.\n"
+        .clone_into(&mut failed.log);
+    let ci = run_of(
+        (7001, 57),
+        ("CI", 11),
+        1,
+        (
+            "FAILED",
+            vec![
+                job_of(601, "build", "SUCCESS"),
+                job_of(602, "test (ubuntu)", "SUCCESS"),
+                failed,
+                deploy,
+            ],
+        ),
+    );
+    let docs = run_of(
+        (7002, 9),
+        ("Docs", 12),
+        1,
+        ("SUCCESS", vec![job_of(611, "pages", "SUCCESS")]),
+    );
+    let running = run_of(
+        (7003, 58),
+        ("CI", 11),
+        2,
+        ("RUNNING", vec![job_of(621, "build", "RUNNING")]),
+    );
+    fake.state().repositories[0].pipelines = vec![running, docs, ci];
+}
+
+const WORKFLOW: &str = "\
+name: CI
+on: push
+jobs:
+  build:
+    runs-on: ubuntu-latest
+  test:
+    needs: build
+    continue-on-error: true
+    strategy:
+      matrix:
+        os: [ubuntu, macos]
+    name: test
+  deploy:
+    name: deploy
+    needs: [build, test]
+";
+
 #[test]
-fn a_github_repository_has_no_pipelines_and_nothing_is_asked() {
+fn workflow_runs_are_pipelines_each_workflow_a_series_of_its_own() {
     let (fake, _sandbox, account, repository) = setup(0, TOKEN);
-    let mut pages = 0;
-    pipelines(&account, &repository, 500, &CancelToken::new(), |_| {
-        pages += 1;
+    with_runs(&fake);
+    let mut read = Vec::new();
+    pipelines(&account, &repository, 500, &CancelToken::new(), |page| {
+        read.extend(page);
     })
     .unwrap();
-    assert_eq!(pages, 0);
+    let said: Vec<(String, u64, CiStatus, u8)> = read
+        .iter()
+        .map(|run| {
+            (
+                run.title(),
+                run.series,
+                run.status,
+                run.commit.as_bytes()[19],
+            )
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            ("CI #58".to_owned(), 11, CiStatus::Running, 2),
+            ("Docs #9".to_owned(), 12, CiStatus::Success, 1),
+            ("CI #57".to_owned(), 11, CiStatus::Failed, 1),
+        ]
+    );
+    assert_eq!(read[2].iid, 7001);
+    assert_eq!(read[2].git_ref.as_deref(), Some("main"));
+    assert!(read[2].url.ends_with("/octo/tool/actions/runs/7001"));
+}
+
+#[test]
+fn a_run_is_read_whole_its_matrix_together_and_laid_over_by_its_workflow() {
+    let (fake, _sandbox, account, repository) = setup(0, TOKEN);
+    with_runs(&fake);
+    let mut details = pipeline_details(&account, &repository, 7001, &CancelToken::new()).unwrap();
+    assert_eq!(details.pipeline.title(), "CI #57");
+    assert!(!details.ordered_stages && details.can_update);
+    assert!(details.actions.retry && details.actions.rerun && !details.actions.cancel);
+    assert_eq!(
+        details.workflow.as_deref(),
+        Some(".github/workflows/ci.yml")
+    );
+    assert_eq!(details.user.as_deref(), Some("ada"));
+    let stages = |details: &egit_forge::PipelineDetails| -> Vec<(String, Vec<String>)> {
+        details
+            .stages
+            .iter()
+            .map(|stage| {
+                (
+                    stage.name.clone(),
+                    stage.jobs.iter().map(|job| job.name.clone()).collect(),
+                )
+            })
+            .collect()
+    };
+    assert_eq!(
+        stages(&details),
+        [
+            ("build".to_owned(), vec!["build".to_owned()]),
+            (
+                "test".to_owned(),
+                vec!["test (ubuntu)".to_owned(), "test (macos)".to_owned()]
+            ),
+            ("deploy".to_owned(), vec!["deploy".to_owned()]),
+        ]
+    );
+    // The test stage failed; deploy's latest attempt was skipped, its first failed.
+    assert_eq!(details.stages[1].status, CiStatus::Failed);
+    let deploy = &details.stages[2].jobs[0];
+    assert_eq!((deploy.id, deploy.status), (Some(705), CiStatus::Skipped));
+    assert_eq!(deploy.earlier.len(), 1);
+    assert_eq!(
+        (deploy.earlier[0].id, deploy.earlier[0].status),
+        (604, CiStatus::Failed)
+    );
+    assert!(deploy.actions.retry && !deploy.actions.cancel && !deploy.actions.play);
+    // Without its workflow, a job waits for none; with it, as it says.
+    assert_eq!(deploy.needs.as_deref(), Some(&[][..]));
+    details.with_workflow(&Workflow::parse(WORKFLOW));
+    let needs = |details: &egit_forge::PipelineDetails, name: &str| {
+        let job = details
+            .stages
+            .iter()
+            .flat_map(|stage| &stage.jobs)
+            .find(|job| job.name == name)
+            .unwrap();
+        (job.needs.clone().unwrap(), job.allow_failure)
+    };
+    assert_eq!(needs(&details, "build"), (Vec::<String>::new(), false));
+    assert_eq!(
+        needs(&details, "test (macos)"),
+        (vec!["build".to_owned()], true)
+    );
+    assert_eq!(
+        needs(&details, "deploy").0,
+        ["build", "test (ubuntu)", "test (macos)"]
+    );
+    assert_eq!(stages(&details).len(), 3);
+}
+
+#[test]
+fn a_job_s_steps_and_log_are_read_the_log_through_github_s_redirect() {
+    let (fake, _sandbox, account, repository) = setup(0, TOKEN);
+    with_runs(&fake);
+    let cancel = CancelToken::new();
+    let failed = job(&account, &repository, 603, &cancel).unwrap();
+    assert_eq!(failed.status, CiStatus::Failed);
+    assert_eq!(failed.duration, Some(42.0));
+    assert_eq!(
+        failed
+            .steps
+            .iter()
+            .map(|step| (step.number, step.name.as_str(), step.status))
+            .collect::<Vec<_>>(),
+        [
+            (1, "Set up job", CiStatus::Success),
+            (2, "Run make", CiStatus::Failed)
+        ]
+    );
+    let mut log = JobLog::github();
+    let read = read_log(
+        &account,
+        &repository,
+        (603, 0, true),
+        &cancel,
+        &mut |bytes| {
+            log.feed(bytes);
+        },
+    )
+    .unwrap();
+    assert!(matches!(read, LogRead::Read { ranged: false, .. }));
+    let parts = log.parts();
+    assert_eq!(
+        String::from_utf8(parts.text).unwrap(),
+        "Run make test\nFAIL parse\nError: Process completed with exit code 1.\n"
+    );
+    assert_eq!(parts.sections.len(), 1);
+    // The file, at the address GitHub pointed to, was fetched without the token.
+    let state = fake.state();
+    let file = state
+        .requests
+        .iter()
+        .find(|request| request.path.starts_with("/blob/"))
+        .unwrap();
+    assert_eq!(file.authorization, None);
+    drop(state);
+    // A job under way has no log yet; an earlier attempt's is there.
+    let missing = read_log(&account, &repository, (621, 0, true), &cancel, &mut |_| {}).unwrap();
+    assert_eq!(missing, LogRead::Missing);
+    let mut first = Vec::new();
+    read_log(
+        &account,
+        &repository,
+        (604, 0, true),
+        &cancel,
+        &mut |bytes| {
+            first.extend_from_slice(bytes);
+        },
+    )
+    .unwrap();
+    assert_eq!(first, b"the first attempt\n");
+}
+
+#[test]
+fn runs_are_re_run_and_cancelled_and_a_job_s_new_run_found() {
+    let (fake, _sandbox, account, repository) = setup(0, TOKEN);
+    with_runs(&fake);
+    let cancel = CancelToken::new();
+    let read = |id| pipeline_details(&account, &repository, id, &CancelToken::new()).unwrap();
+    // A job re-run: its new run found in the run's new attempt.
+    let again = ci_act(&account, &repository, CiAction::RetryJob(603), &cancel)
+        .unwrap()
+        .unwrap();
+    assert_ne!(again, 603);
+    let details = read(7001);
+    assert_eq!(details.pipeline.attempt, 2);
+    let macos = details
+        .stages
+        .iter()
+        .flat_map(|stage| &stage.jobs)
+        .find(|job| job.name == "test (macos)")
+        .unwrap();
+    assert_eq!(macos.id, Some(again));
+    assert_eq!(macos.earlier[0].id, 603);
+    // A run under way cancelled; then its failed jobs re-run, and all of them.
+    ci_act(
+        &account,
+        &repository,
+        CiAction::CancelPipeline(7003),
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(read(7003).pipeline.status, CiStatus::Canceled);
+    ci_act(
+        &account,
+        &repository,
+        CiAction::RetryPipeline(7003),
+        &cancel,
+    )
+    .unwrap();
+    let retried = read(7003);
+    assert_eq!(retried.pipeline.status, CiStatus::Running);
+    assert_eq!(retried.stages[0].jobs[0].earlier.len(), 1);
+    ci_act(
+        &account,
+        &repository,
+        CiAction::RerunPipeline(7002),
+        &cancel,
+    )
+    .unwrap();
+    assert_eq!(read(7002).pipeline.attempt, 2);
+    // GitHub has no single job's cancel, nor a manual job; and a reader may not.
     assert!(matches!(
-        pipeline_details(&account, &repository, 1, &CancelToken::new()),
+        ci_act(&account, &repository, CiAction::CancelJob(601), &cancel),
         Err(ForgeError::NotFound { .. })
     ));
-    assert!(fake.state().requests.is_empty());
+    fake.state().read_only = true;
+    assert!(matches!(
+        ci_act(
+            &account,
+            &repository,
+            CiAction::RerunPipeline(7002),
+            &cancel
+        ),
+        Err(ForgeError::Forbidden { .. })
+    ));
 }
 
 #[test]

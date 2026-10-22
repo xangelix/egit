@@ -1,9 +1,14 @@
-//! A repository's CI/CD pipelines (GitLab's), for the commit table's marks: each commit's latest
-//! pipeline among the forge's projects, read in the background (each project's newest
-//! [`LIMIT`]), read again whenever the requests are (after a task reaching the remotes, each
-//! background fetch, a sign-in, Refresh), and, while any shown may still change by itself, the
-//! newest page read again every [`EVERY`] and merged in: a mark turns green or red soon after
-//! its pipeline does.
+//! A repository's CI/CD pipelines (GitLab's, and GitHub Actions' workflow runs), for the commit
+//! table's marks: each commit's pipelines among the forge's repositories, read in the background
+//! (each repository's newest [`LIMIT`]), read again whenever the requests are (after a task
+//! reaching the remotes, each background fetch, a sign-in, Refresh), and, while any shown may
+//! still change by itself, the newest page read again every [`EVERY`] and merged in: a mark
+//! turns green or red soon after its pipeline does.
+//!
+//! A commit's mark weighs its pipelines as GitHub's checks do: the newest of each series (each
+//! GitHub workflow's runs; a GitLab commit's pipelines are one series, its newest standing for
+//! it), the most telling shown (a failure, then one under way, waiting, cancelled, skipped,
+//! passed: [`egit_forge::CiStatus::weight`]), the others beside it.
 //!
 //! A read takes over only once complete, so marks never blink out meanwhile; one that fails
 //! keeps what is shown (a project whose pipelines can't be read has none to show). Each full
@@ -12,7 +17,6 @@
 //! ([`Pipelines::on_history`]), so the repository's Overview can say why no mark shows.
 
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -35,12 +39,56 @@ pub(crate) const EVERY: Duration = Duration::from_secs(20);
 /// How many are read again then: GitLab's page.
 const LIVE: u32 = 100;
 
-/// A commit's latest pipeline, and which of the forge's repositories it ran in.
+/// A commit's pipelines: the most telling (shown), and which of the forge's repositories it ran
+/// in; and the others (another GitHub workflow's runs), each with its repository's place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CiMark {
     /// Its repository's place in the forge's.
     pub(crate) repository: usize,
     pub(crate) pipeline: Pipeline,
+    /// The commit's other pipelines, the most telling first.
+    pub(crate) others: Vec<(usize, Pipeline)>,
+}
+
+impl CiMark {
+    /// The commit's pipelines, the one shown first.
+    pub(crate) fn runs(&self) -> impl Iterator<Item = (usize, &Pipeline)> {
+        std::iter::once((self.repository, &self.pipeline))
+            .chain(self.others.iter().map(|(at, pipeline)| (*at, pipeline)))
+    }
+
+    /// The same pipelines with other `at` (its place among the others) shown, the rest beside
+    /// it.
+    pub(crate) fn showing(&self, at: usize) -> Option<Self> {
+        let mut others: Vec<(usize, Pipeline)> = self
+            .runs()
+            .map(|(place, pipeline)| (place, pipeline.clone()))
+            .collect();
+        let shown = at.checked_add(1).filter(|shown| *shown < others.len())?;
+        let (repository, pipeline) = others.remove(shown);
+        Some(Self {
+            repository,
+            pipeline,
+            others,
+        })
+    }
+
+    /// `runs` as a mark: the most telling shown (the newest of those alike), the rest beside.
+    fn of(mut runs: Vec<(usize, Pipeline)>) -> Option<Self> {
+        runs.sort_by(|(_, a), (_, b)| {
+            b.status
+                .weight()
+                .cmp(&a.status.weight())
+                .then_with(|| (b.created, b.id).cmp(&(a.created, a.id)))
+        });
+        let mut runs = runs.into_iter();
+        let (repository, pipeline) = runs.next()?;
+        Some(Self {
+            repository,
+            pipeline,
+            others: runs.collect(),
+        })
+    }
 }
 
 /// Each commit's latest pipeline, by commit.
@@ -69,36 +117,47 @@ impl Marks {
     fn is_moving(&self) -> bool {
         self.by_commit
             .iter()
-            .any(|(_, mark)| mark.pipeline.status.is_moving())
+            .any(|(_, mark)| mark.runs().any(|(_, pipeline)| pipeline.status.is_moving()))
     }
 
-    /// `previous`'s marks with `found` taken in: a pipeline replaces a commit's mark when it is
-    /// the same pipeline read again, or a newer one (of any of the projects).
+    /// `previous`'s marks with `found` taken in: a pipeline takes its series' place on its
+    /// commit when it is the same pipeline read again, or a newer one (of any repository: a
+    /// GitLab commit's newest pipeline of any of the projects).
     fn merged(previous: Option<&Self>, found: Vec<(usize, Pipeline)>) -> Self {
-        let mut by: HashMap<ObjectId, CiMark> = previous
-            .map(|previous| previous.by_commit.iter().cloned().collect())
+        let mut by: HashMap<ObjectId, Vec<(usize, Pipeline)>> = previous
+            .map(|previous| {
+                previous
+                    .by_commit
+                    .iter()
+                    .map(|(id, mark)| {
+                        let runs = mark
+                            .runs()
+                            .map(|(at, pipeline)| (at, pipeline.clone()))
+                            .collect();
+                        (*id, runs)
+                    })
+                    .collect()
+            })
             .unwrap_or_default();
         for (repository, pipeline) in found {
-            match by.entry(pipeline.commit) {
-                Entry::Occupied(mut held) => {
-                    let known = &held.get();
-                    let same = known.repository == repository && known.pipeline.id == pipeline.id;
-                    if same || pipeline.is_newer_than(&known.pipeline) {
-                        held.insert(CiMark {
-                            repository,
-                            pipeline,
-                        });
+            let runs = by.entry(pipeline.commit).or_default();
+            match runs
+                .iter_mut()
+                .find(|(_, held)| held.series == pipeline.series)
+            {
+                Some(held) => {
+                    let same = held.0 == repository && held.1.id == pipeline.id;
+                    if same || pipeline.is_newer_than(&held.1) {
+                        *held = (repository, pipeline);
                     }
                 }
-                Entry::Vacant(empty) => {
-                    empty.insert(CiMark {
-                        repository,
-                        pipeline,
-                    });
-                }
+                None => runs.push((repository, pipeline)),
             }
         }
-        let mut by_commit: Vec<(ObjectId, CiMark)> = by.into_iter().collect();
+        let mut by_commit: Vec<(ObjectId, CiMark)> = by
+            .into_iter()
+            .filter_map(|(id, runs)| Some((id, CiMark::of(runs)?)))
+            .collect();
         by_commit.sort_unstable_by_key(|(id, _)| *id);
         Self { by_commit }
     }
@@ -107,15 +166,15 @@ impl Marks {
 /// How reading a project's pipelines went, last.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CiSeen {
-    /// Not read: the forge has none (GitHub's checks are a pull request's).
+    /// Not read (yet).
     NotRead,
     /// Read: how many (each project's newest [`LIMIT`] at most), and the newest.
     Read {
         count: usize,
         newest: Option<Box<Pipeline>>,
     },
-    /// GitLab lists none to this account: CI/CD turned off for the project, or a role that
-    /// may not see them.
+    /// The forge lists none to this account: GitLab's CI/CD turned off for the project, or a
+    /// role that may not see them; GitHub shows no Actions there.
     Hidden,
     /// Not asked: its host failed for another project first (a sign-in, the rate limit).
     Skipped,
@@ -453,6 +512,10 @@ mod tests {
         Pipeline {
             id,
             iid: id,
+            name: None,
+            number: id,
+            series: 0,
+            attempt: 1,
             commit: ObjectId::from_hex(format!("{commit:040x}").as_bytes()).unwrap(),
             status,
             warnings: false,
@@ -498,5 +561,36 @@ mod tests {
             .unwrap();
         assert_eq!(second.pipeline.id, 10);
         assert!(!again.is_moving());
+    }
+
+    #[test]
+    fn a_commit_s_workflows_stand_side_by_side_the_most_telling_shown() {
+        let run = |id, series, status, created| Pipeline {
+            series,
+            ..pipeline(id, 1, status, created)
+        };
+        // CI's newest attempt passed, Docs failed, Lint runs: Docs' failure shows.
+        let marks = Marks::merged(
+            None,
+            vec![
+                (0, run(1, 11, CiStatus::Failed, 100)),
+                (0, run(2, 11, CiStatus::Success, 200)),
+                (0, run(3, 12, CiStatus::Failed, 150)),
+                (0, run(4, 13, CiStatus::Running, 120)),
+            ],
+        );
+        let mark = marks
+            .of(&pipeline(0, 1, CiStatus::Unknown, 0).commit)
+            .unwrap();
+        assert_eq!(mark.pipeline.id, 3);
+        let others: Vec<u64> = mark.others.iter().map(|(_, run)| run.id).collect();
+        assert_eq!(others, [4, 2]);
+        assert!(marks.is_moving());
+        // Docs read again, passed: Lint's run under way shows.
+        let again = Marks::merged(Some(&marks), vec![(0, run(3, 12, CiStatus::Success, 150))]);
+        let mark = again
+            .of(&pipeline(0, 1, CiStatus::Unknown, 0).commit)
+            .unwrap();
+        assert_eq!((mark.pipeline.id, mark.others.len()), (4, 2));
     }
 }

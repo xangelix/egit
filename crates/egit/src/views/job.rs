@@ -1,18 +1,20 @@
-//! A GitLab job's log in the pipeline page's place (a job's click there): a bar (back to the
-//! pipeline, the job's status and how long it has run, why it failed, its runs (the latest and
-//! those retried before it) to switch between, retrying, cancelling, or starting it as GitLab
-//! allows, its sections to jump to, wrapping, its page on GitLab), then the log in the text
-//! grid as GitLab shows it (colours, each line's time beside its number where the runner wrote
-//! them, sections' headers marked), read again every few seconds while the job runs, the view
+//! A CI/CD job's log in the pipeline page's place (a job's click there), a GitLab job's or a
+//! GitHub Actions job's: a bar (back to the pipeline, the job's status and how long it has run,
+//! why it failed, its runs (the latest and those retried before it) to switch between,
+//! retrying, cancelling, or starting it as its forge allows (in its words: [`CiWords`]), its
+//! sections to jump to, wrapping, its page on the forge), then the log in the text grid as the
+//! forge shows it (colours, each line's time beside its number where the runner wrote them,
+//! sections' headers marked), read again every few seconds while the job runs, the view
 //! following its end while it rests there (scrolled up, it stays; back at the end, it follows
-//! again). A retry shows the new run as it starts. Escape, or the back button, goes back to the
-//! pipeline (read again).
+//! again). GitHub gives a job's log once it has ended: meanwhile its steps show as they go. A
+//! retry shows the new run as it starts. Escape, or the back button, goes back to the pipeline
+//! (read again).
 
-use egit_forge::{CiAction, CiStatus, EarlierRun, Job, JobRun};
+use egit_forge::{CiAction, CiStatus, EarlierRun, ForgeKind, Job, JobRun, JobStep};
 use egui::{Align, Frame, Id, Key, Layout, Modifiers, RichText, Ui};
 
 use super::history::Shared;
-use super::pipeline::{Acting, PipelineView, Reach, ci_look, ci_words, duration};
+use super::pipeline::{Acting, CiWords, PipelineView, Reach, ci_look, ci_words, duration};
 use crate::forge::RepoForge;
 use crate::format;
 use crate::grid::TextGrid;
@@ -39,6 +41,9 @@ pub(super) struct JobView {
     run: u64,
     /// Its project and the account it is read with (none where they are gone).
     reach: Option<Reach>,
+    /// Its forge: GitLab's jobs are retried, cancelled, and started one by one; a GitHub job is
+    /// re-run once its run has ended.
+    kind: ForgeKind,
     /// The run's log followed (none where its project or account is gone).
     follower: Option<JobFollower>,
     /// Why it can't be followed, when it can't.
@@ -48,7 +53,7 @@ pub(super) struct JobView {
     drawn: u64,
     /// Whether the view follows the log's end (it rested there).
     follow: bool,
-    /// What was last asked of GitLab, and how it went.
+    /// What was last asked of the forge, and how it went.
     acting: Acting,
 }
 
@@ -58,7 +63,7 @@ pub(super) enum JobEvent {
     Back,
     /// Open a page in the browser.
     Open(String),
-    /// GitLab did what was asked: the commits' marks read again.
+    /// The forge did what was asked: the commits' marks read again.
     Acted,
 }
 
@@ -73,11 +78,13 @@ impl JobView {
         waker: &egui::Context,
     ) -> Self {
         let reach = pipeline.reached(forge);
+        let kind = forge.kind_of(pipeline.repository());
         let mut view = Self {
             pipeline,
             job,
             run,
             reach,
+            kind,
             follower: None,
             problem: None,
             grid: TextGrid::new(Id::new(("job-log", run))),
@@ -131,12 +138,12 @@ impl JobView {
             })
     }
 
-    /// Asks `action` of GitLab (in a job).
+    /// Asks `action` of the forge (in a job).
     fn act(&mut self, action: CiAction) {
         self.acting.ask(self.reach.clone(), action);
     }
 
-    /// Takes in what GitLab said to an action, once: a retry's new run becomes the latest and
+    /// Takes in what the forge said to an action, once: a retry's new run becomes the latest and
     /// shows, the run is followed again after any other; returns whether one went through.
     fn landed(&mut self, run: Option<&JobRun>, waker: &egui::Context) -> bool {
         let Some(landed) = self.acting.landed() else {
@@ -248,10 +255,11 @@ pub(super) fn show(ui: &mut Ui, shared: &Shared<'_>, view: &mut JobView) -> Opti
                         ui.label(muted(
                             ui,
                             format!(
-                                "Only its first {} show here: the rest is on GitLab.",
+                                "Only its first {} show here: the rest is on {}.",
                                 format::size(
                                     u64::try_from(egit_forge::MOST_TEXT).unwrap_or(u64::MAX)
-                                )
+                                ),
+                                CiWords::of(view.kind).forge
                             ),
                         ));
                     });
@@ -287,7 +295,7 @@ fn padded(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
 }
 
 /// The bar: back to the pipeline, the job (status, name, how long it has run, why it failed),
-/// then its sections, wrapping, and its page on GitLab, wrapping onto a row of their own where
+/// then its sections, wrapping, and its page on its forge, wrapping onto a row of their own where
 /// the bar is narrow.
 fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -> Option<JobEvent> {
     let run = seen.and_then(|seen| seen.run.as_ref());
@@ -296,7 +304,7 @@ fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -
     let mut event = None;
     widgets::bar(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
-            let back = format!("{}  Pipeline #{}", icon::ARROW_LEFT, view.pipeline.number());
+            let back = format!("{}  {}", icon::ARROW_LEFT, view.pipeline.title());
             if widgets::secondary(ui, true, &back).clicked() {
                 event = Some(JobEvent::Back);
             }
@@ -328,7 +336,11 @@ fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -
                 && widgets::secondary(
                     ui,
                     true,
-                    &format!("{}  Open on GitLab", icon::ARROW_SQUARE_OUT),
+                    &format!(
+                        "{}  Open on {}",
+                        icon::ARROW_SQUARE_OUT,
+                        CiWords::of(view.kind).forge
+                    ),
                 )
                 .clicked()
             {
@@ -354,7 +366,7 @@ fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -
 }
 
 /// What follows the bar's fixed part: the runs to switch between, what can be done to the run
-/// shown, its sections, and a spinner while it is followed (or what was asked of GitLab, while
+/// shown, its sections, and a spinner while it is followed (or what was asked of the forge, while
 /// it is being done).
 fn runs(ui: &mut Ui, view: &mut JobView, (seen, status): (Option<&Seen>, CiStatus)) {
     if !view.job.earlier.is_empty() {
@@ -453,10 +465,12 @@ fn run_place(view: &JobView) -> String {
 /// account's role allow.
 fn run_actions(ui: &mut Ui, view: &mut JobView, status: CiStatus) {
     let allowed = view.job.can_update && !view.acting.is_pending();
-    let why_not = if view.job.can_update {
-        "GitLab is being asked"
-    } else {
-        "Your role on this project may not run its pipelines (Developer and above may)"
+    let why_not = match (view.job.can_update, view.kind) {
+        (true, _) => "The forge is being asked",
+        (false, ForgeKind::GitLab) => {
+            "Your role on this project may not run its pipelines (Developer and above may)"
+        }
+        (false, ForgeKind::GitHub) => "Re-running jobs takes write access to the repository",
     };
     let mut asked = None;
     for (action, words, does) in offered(view, status) {
@@ -472,13 +486,14 @@ fn run_actions(ui: &mut Ui, view: &mut JobView, status: CiStatus) {
     }
 }
 
-/// What can be done to the latest run as it stands (as last read; GitLab's own say while that
+/// What can be done to the latest run as it stands (as last read; the forge's own say while that
 /// is as the pipeline's page read it): each action, its button's words, and what it does.
 fn offered(view: &JobView, status: CiStatus) -> Vec<(CiAction, String, &'static str)> {
     let Some(id) = view.job.id.filter(|_| view.is_latest()) else {
         return Vec::new();
     };
-    let (retry, cancel, play) = if status == view.job.status {
+    // GitHub's say stands: a job is re-run once its whole run has ended, which its page knows.
+    let (retry, cancel, play) = if status == view.job.status || view.kind == ForgeKind::GitHub {
         (
             view.job.actions.retry,
             view.job.actions.cancel,
@@ -504,7 +519,11 @@ fn offered(view: &JobView, status: CiStatus) -> Vec<(CiAction, String, &'static 
         (
             retry,
             CiAction::RetryJob(id),
-            format!("{}  Retry the job", icon::ARROW_CLOCKWISE),
+            format!(
+                "{}  {}",
+                icon::ARROW_CLOCKWISE,
+                CiWords::of(view.kind).retry_job
+            ),
             "Run it again: a new run in its place, this one kept among its runs",
         ),
         (
@@ -614,11 +633,24 @@ fn sections(ui: &mut Ui, view: &mut JobView, log: &LogSource) {
     }
 }
 
-/// What shows before the job has a log: why it has none yet, by how it stands.
+/// What shows before the job has a log: why it has none yet, by how it stands; a GitHub job's
+/// steps as they go (GitHub gives its log once it has ended).
 fn waiting(ui: &mut Ui, seen: &Seen, known: CiStatus) {
     let status = seen.run.as_ref().map_or(known, |run| run.status);
     if !seen.missing && seen.run.is_none() {
         widgets::working(ui, "Reading the job's log…");
+        return;
+    }
+    if let Some(run) = seen.run.as_ref().filter(|run| !run.steps.is_empty()) {
+        if status.is_moving() {
+            widgets::working(ui, "Running: GitHub gives its log once it has ended…");
+        } else if !seen.done {
+            widgets::working(ui, "Its log is on its way…");
+        } else {
+            ui.label(muted(ui, "GitHub has no log of it (it may have expired)."));
+        }
+        ui.add_space(8.0);
+        steps(ui, &run.steps);
         return;
     }
     let words = match status {
@@ -641,4 +673,43 @@ fn waiting(ui: &mut Ui, seen: &Seen, known: CiStatus) {
         _ => "This job has no log (it may have been erased).",
     };
     ui.label(muted(ui, words));
+}
+
+/// A GitHub job's steps: each one's status, number, name, and how long it took (or has, so far).
+fn steps(ui: &mut Ui, steps: &[JobStep]) {
+    let palette = Palette::of(ui.ctx());
+    let now = format::now();
+    Frame::new()
+        .fill(palette.surface)
+        .stroke(egui::Stroke::new(1.0, palette.border))
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width().min(720.0));
+            crate::help::note_topic(ui, ui.max_rect(), TOPIC);
+            for step in steps {
+                let (glyph, color) = ci_look(step.status, palette);
+                let took = match (step.started, step.finished) {
+                    (Some(started), Some(finished)) => {
+                        duration(u64::try_from(finished.saturating_sub(started)).unwrap_or(0))
+                    }
+                    (Some(started), None) if step.status.is_moving() => format!(
+                        "{} so far",
+                        duration(now.saturating_sub(u64::try_from(started).unwrap_or(now)))
+                    ),
+                    _ => String::new(),
+                };
+                ui.horizontal(|ui| {
+                    ui.set_min_height(crate::widgets::TARGET);
+                    ui.label(RichText::new(glyph).color(color));
+                    ui.label(muted(ui, format!("{:>2}", step.number)));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(muted(ui, took));
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.add(egui::Label::new(&step.name).truncate());
+                        });
+                    });
+                });
+            }
+        });
 }

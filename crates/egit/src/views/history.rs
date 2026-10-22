@@ -2674,6 +2674,28 @@ fn job_log(
     }
 }
 
+/// A job's log asked for: the job, and its run's number.
+type JobOpened = (Box<egit_forge::Job>, u64);
+
+/// What a pipeline's page asked: the history's part (close, a commit), a job's log opened
+/// (`job_opened`), or another of the commit's pipelines (`other`).
+fn pipeline_event(
+    asked: PipelineEvent,
+    shared: &Shared<'_>,
+    actions: &mut Vec<Action>,
+    (job_opened, other): (&mut Option<JobOpened>, &mut Option<Box<crate::ci::CiMark>>),
+) -> Option<BlameEvent> {
+    match asked {
+        PipelineEvent::Close => return Some(BlameEvent::Close),
+        PipelineEvent::ShowCommit(id) => return Some(BlameEvent::ShowCommit(id)),
+        PipelineEvent::Open(url) => actions.push(Action::OpenUrl(url)),
+        PipelineEvent::Job(job, run) => *job_opened = Some((job, run)),
+        PipelineEvent::Acted => actions.push(Action::ReadPipelines(shared.id)),
+        PipelineEvent::Other(mark) => *other = Some(mark),
+    }
+    None
+}
+
 /// Opens a job's run's log in its pipeline's page's place (`opened`), or goes back to that
 /// page (`left`), read again: the job may have moved on meanwhile.
 fn switch_job_tool(
@@ -2707,8 +2729,9 @@ fn tool(
     actions: &mut Vec<Action>,
 ) {
     let (mut menu, mut wanted_file) = (None, None);
-    // A job's log opened from its pipeline's page, or that page gone back to.
-    let (mut job_opened, mut job_left) = (None, false);
+    // A job's log opened from its pipeline's page, or that page gone back to; or another of the
+    // commit's pipelines shown in its place.
+    let (mut job_opened, mut job_left, mut other_pipeline) = (None, false, None);
     let asked = match &mut view.tool {
         Some(Tool::Rebase(rebase)) => match rebase::show(ui, shared, rebase) {
             Some(RebaseEvent::Start(task)) => {
@@ -2730,24 +2753,14 @@ fn tool(
         Some(Tool::FileHistory(found)) => file_history::show(ui, shared, found),
         Some(Tool::PullRequests(pulls)) => pulls::show(ui, shared, history, pulls)
             .and_then(|asked| pull_request_event(asked, shared, actions)),
-        Some(Tool::Pipeline(page)) => {
-            pipeline::show(ui, shared, page).and_then(|asked| match asked {
-                PipelineEvent::Close => Some(BlameEvent::Close),
-                PipelineEvent::ShowCommit(id) => Some(BlameEvent::ShowCommit(id)),
-                PipelineEvent::Open(url) => {
-                    actions.push(Action::OpenUrl(url));
-                    None
-                }
-                PipelineEvent::Job(job, run) => {
-                    job_opened = Some((job, run));
-                    None
-                }
-                PipelineEvent::Acted => {
-                    actions.push(Action::ReadPipelines(shared.id));
-                    None
-                }
-            })
-        }
+        Some(Tool::Pipeline(page)) => pipeline::show(ui, shared, page).and_then(|asked| {
+            pipeline_event(
+                asked,
+                shared,
+                actions,
+                (&mut job_opened, &mut other_pipeline),
+            )
+        }),
         Some(Tool::Job(log)) => {
             job_left = job_log(ui, shared, log, actions);
             None
@@ -2783,6 +2796,9 @@ fn tool(
         None => None,
     };
     switch_job_tool(ui, shared, view, (job_opened, job_left));
+    if let Some(mark) = other_pipeline {
+        view.show_pipeline(*mark);
+    }
     if let Some(asked) = menu {
         carry_out(asked, shared, view, actions);
     }
@@ -3409,8 +3425,7 @@ impl TableDelegate for CommitRows<'_> {
             // Room for a pipeline's mark on every row while any commit has one.
             let forge = self.shared.forge;
             if forge.has_pipelines() {
-                let mark = forge.pipeline_of(&id);
-                match pipeline::mark(ui, mark, id, self.shared.palette) {
+                match pipeline::mark(ui, forge, id, self.shared.palette) {
                     Some(MarkEvent::Show(mark)) => self.asked = Some(Ask::Pipeline(Box::new(mark))),
                     Some(MarkEvent::Open(url)) => self.asked = Some(Ask::Open(url)),
                     None => {}
