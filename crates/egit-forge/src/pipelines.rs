@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::account::Account;
-use crate::answer::{cancelled, graphql, not_found, parse_time};
+use crate::answer::{cancelled, graphql, not_found, parse_time, read_answer};
 use crate::error::ForgeError;
 use crate::host::ForgeKind;
 use crate::repository::ForgeRepository;
@@ -181,6 +181,27 @@ pub struct PipelineDetails {
     pub source: Option<String>,
     /// Its stages, in the order they run.
     pub stages: Vec<Stage>,
+    /// Whether it has jobs to retry (failed, cancelled).
+    pub retryable: bool,
+    /// Whether it has jobs to cancel (under way, waiting).
+    pub cancelable: bool,
+    /// Whether the account may retry and cancel its jobs (its role on the project).
+    pub can_update: bool,
+}
+
+/// An earlier run of a job: one retried since.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EarlierRun {
+    /// Its number, for its log.
+    pub id: u64,
+    /// How it ended.
+    pub status: CiStatus,
+    /// How long it ran, in seconds.
+    pub duration: Option<u64>,
+    /// When it started (seconds since the Unix epoch).
+    pub started: Option<i64>,
+    /// Its page.
+    pub url: Option<String>,
 }
 
 /// A stage of a pipeline.
@@ -213,6 +234,29 @@ pub struct Job {
     pub started: Option<i64>,
     /// Its page (a trigger job's: its downstream pipeline's), if it has one.
     pub url: Option<String>,
+    /// The jobs it waits for by name (`needs`), where it is scheduled by them; none where it
+    /// waits for every job of the stages before it.
+    pub needs: Option<Vec<String>>,
+    /// What can be done to it, as GitLab says.
+    pub actions: JobActions,
+    /// Whether the account may do those (its role on the project).
+    pub can_update: bool,
+    /// Its earlier runs in this place of the pipeline (retried since), the newest first.
+    pub earlier: Vec<EarlierRun>,
+}
+
+/// What can be done to a job, as GitLab says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct JobActions {
+    /// Whether it can be run again (it ended).
+    #[serde(default, rename = "retryable")]
+    pub retry: bool,
+    /// Whether it can be cancelled (under way, or waiting).
+    #[serde(default, rename = "cancelable")]
+    pub cancel: bool,
+    /// Whether it can be started (a manual job waiting).
+    #[serde(default, rename = "playable")]
+    pub play: bool,
 }
 
 /// Whether repositories on `kind` have pipelines egit reads.
@@ -341,15 +385,73 @@ pub fn pipeline_details(
         })
 }
 
+/// What can be asked of a pipeline, or of one of its jobs (each by its number).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CiAction {
+    /// Run again the pipeline's jobs that failed or were cancelled (those after them run as
+    /// it goes on).
+    RetryPipeline(u64),
+    /// Cancel the pipeline's jobs under way or waiting.
+    CancelPipeline(u64),
+    /// Run a job again: a new run in its place.
+    RetryJob(u64),
+    /// Cancel a job under way or waiting.
+    CancelJob(u64),
+    /// Start a manual job.
+    PlayJob(u64),
+}
+
+#[derive(Deserialize)]
+struct Created {
+    id: Option<u64>,
+}
+
+/// Asks `action` of `repository`'s GitLab (REST: `POST …/pipelines/:id/retry`, `…/cancel`;
+/// `…/jobs/:id/retry`, `…/cancel`, `…/play`); returns the run a job's retry made, or the job
+/// asked of.
+///
+/// # Errors
+///
+/// Any of [`ForgeError`]'s ([`ForgeError::Forbidden`] where the account may not: its role, or
+/// a token without the `api` scope); [`ForgeError::NotFound`] on a forge without pipelines.
+pub fn ci_act(
+    account: &Account,
+    repository: &ForgeRepository,
+    action: CiAction,
+    cancel: &CancelToken,
+) -> Result<Option<u64>, ForgeError> {
+    let what = format!("{}'s {action:?}", repository.path());
+    if !has_pipelines(repository.host().kind()) {
+        return Err(not_found(account, what));
+    }
+    let (kind, id, verb) = match action {
+        CiAction::RetryPipeline(id) => ("pipelines", id, "retry"),
+        CiAction::CancelPipeline(id) => ("pipelines", id, "cancel"),
+        CiAction::RetryJob(id) => ("jobs", id, "retry"),
+        CiAction::CancelJob(id) => ("jobs", id, "cancel"),
+        CiAction::PlayJob(id) => ("jobs", id, "play"),
+    };
+    let url = account.host().rest_url(&format!(
+        "/projects/{}/{kind}/{id}/{verb}",
+        crate::gitlab::encoded(repository.path())
+    ));
+    let answer = account.send(&url, Some(b"{}"), cancel)?;
+    let created: Created = read_answer(account, &answer, &what)?;
+    Ok(created.id)
+}
+
 const PIPELINES: &str = "query Pipelines($path: ID!, $first: Int!, $after: String) { \
     project(fullPath: $path) { pipelines(first: $first, after: $after) { pageInfo { \
     hasNextPage endCursor } nodes { id iid sha ref status warnings createdAt path } } } }";
 
 const PIPELINE: &str = "query Pipeline($path: ID!, $iid: ID!) { project(fullPath: $path) { \
     pipeline(iid: $iid) { id iid sha ref status warnings createdAt startedAt finishedAt \
-    duration path source user { username } stages { nodes { name status jobs { nodes { id name \
-    status allowFailure manualJob webPath duration startedAt downstreamPipeline { path } } } } \
-    } } } }";
+    duration path source retryable cancelable userPermissions { updatePipeline } \
+    user { username } retried: jobs(retried: true) { nodes { id name status duration startedAt \
+    webPath stage { name } } } stages { nodes { name status jobs { nodes { id name status \
+    allowFailure manualJob webPath duration startedAt schedulingType retryable cancelable \
+    playable userPermissions { updateBuild } needs { nodes { name } } downstreamPipeline { path } \
+    } } } } } } }";
 
 #[derive(Deserialize)]
 struct Nodes<T> {
@@ -458,6 +560,38 @@ struct DetailsNode {
     source: Option<String>,
     user: Option<Username>,
     stages: Option<Nodes<StageNode>>,
+    #[serde(default)]
+    retryable: bool,
+    #[serde(default)]
+    cancelable: bool,
+    user_permissions: Option<Permissions>,
+    retried: Option<Nodes<RetriedNode>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct Permissions {
+    #[serde(default)]
+    update_pipeline: bool,
+    #[serde(default)]
+    update_build: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RetriedNode {
+    id: Option<String>,
+    name: Option<String>,
+    status: Option<String>,
+    duration: Option<u64>,
+    started_at: Option<String>,
+    web_path: Option<String>,
+    stage: Option<NameOnly>,
+}
+
+#[derive(Deserialize)]
+struct NameOnly {
+    name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -486,6 +620,17 @@ struct JobNode {
     duration: Option<u64>,
     started_at: Option<String>,
     downstream_pipeline: Option<PathOnly>,
+    scheduling_type: Option<String>,
+    #[serde(flatten)]
+    actions: JobActions,
+    user_permissions: Option<Permissions>,
+    needs: Option<Nodes<NameOnly>>,
+}
+
+/// A job's number, from its global id (`gid://gitlab/Ci::Build/123`; a trigger's is a
+/// `Ci::Bridge`, without a log).
+fn build_id(id: Option<&str>) -> Option<u64> {
+    id?.strip_prefix("gid://gitlab/Ci::Build/")?.parse().ok()
 }
 
 #[derive(Deserialize)]
@@ -498,47 +643,30 @@ impl DetailsNode {
     fn into_details(self, repository: &ForgeRepository) -> Option<PipelineDetails> {
         let host = repository.host();
         let pipeline = self.pipeline.into_pipeline(host, repository)?;
+        let retried = earlier_runs(self.retried, host);
         let stages = self
             .stages
             .unwrap_or_default()
             .nodes
             .into_iter()
             .flatten()
-            .map(|stage| Stage {
-                name: stage.name.unwrap_or_default(),
-                status: stage
-                    .status
-                    .as_deref()
-                    .map_or(CiStatus::Unknown, CiStatus::parse),
-                jobs: stage
-                    .jobs
-                    .unwrap_or_default()
-                    .nodes
-                    .into_iter()
-                    .flatten()
-                    .map(|job| Job {
-                        // `gid://gitlab/Ci::Build/123` (a trigger's is a `Ci::Bridge`).
-                        id: job
-                            .id
-                            .as_deref()
-                            .and_then(|id| id.strip_prefix("gid://gitlab/Ci::Build/"))
-                            .and_then(|id| id.parse().ok()),
-                        name: job.name.unwrap_or_default(),
-                        status: job
-                            .status
-                            .as_deref()
-                            .map_or(CiStatus::Unknown, CiStatus::parse),
-                        allow_failure: job.allow_failure,
-                        manual: job.manual_job.unwrap_or(false),
-                        duration: job.duration,
-                        started: job.started_at.as_deref().and_then(parse_time),
-                        // A trigger job's page is its downstream pipeline's.
-                        url: job
-                            .web_path
-                            .or_else(|| job.downstream_pipeline.and_then(|down| down.path))
-                            .map(|path| host.web_url(&path)),
-                    })
-                    .collect(),
+            .map(|stage| {
+                let name = stage.name.unwrap_or_default();
+                Stage {
+                    status: stage
+                        .status
+                        .as_deref()
+                        .map_or(CiStatus::Unknown, CiStatus::parse),
+                    jobs: stage
+                        .jobs
+                        .unwrap_or_default()
+                        .nodes
+                        .into_iter()
+                        .flatten()
+                        .map(|job| job.into_job(host, (Some(name.as_str()), &retried)))
+                        .collect(),
+                    name,
+                }
             })
             .collect();
         Some(PipelineDetails {
@@ -549,7 +677,93 @@ impl DetailsNode {
             user: self.user.map(|user| user.username),
             source: self.source,
             stages,
+            retryable: self.retryable,
+            cancelable: self.cancelable,
+            can_update: self
+                .user_permissions
+                .is_some_and(|permissions| permissions.update_pipeline),
         })
+    }
+}
+
+/// A pipeline's retried runs: each with its stage's and job's names, the newest first.
+fn earlier_runs(
+    retried: Option<Nodes<RetriedNode>>,
+    host: &crate::host::ForgeHost,
+) -> Vec<(String, String, EarlierRun)> {
+    let mut runs: Vec<(String, String, EarlierRun)> = retried
+        .unwrap_or_default()
+        .nodes
+        .into_iter()
+        .flatten()
+        .filter_map(|run| {
+            let id = build_id(run.id.as_deref())?;
+            Some((
+                run.stage.and_then(|stage| stage.name).unwrap_or_default(),
+                run.name.unwrap_or_default(),
+                EarlierRun {
+                    id,
+                    status: run
+                        .status
+                        .as_deref()
+                        .map_or(CiStatus::Unknown, CiStatus::parse),
+                    duration: run.duration,
+                    started: run.started_at.as_deref().and_then(parse_time),
+                    url: run.web_path.map(|path| host.web_url(&path)),
+                },
+            ))
+        })
+        .collect();
+    runs.sort_by_key(|(_, _, run)| std::cmp::Reverse(run.id));
+    runs
+}
+
+impl JobNode {
+    /// The job, of stage `stage`, with its earlier runs among `retried`.
+    fn into_job(
+        self,
+        host: &crate::host::ForgeHost,
+        (stage, retried): (Option<&str>, &[(String, String, EarlierRun)]),
+    ) -> Job {
+        let name = self.name.unwrap_or_default();
+        let earlier = retried
+            .iter()
+            .filter(|(stage_of, named, _)| *named == name && stage == Some(stage_of.as_str()))
+            .map(|(_, _, run)| run.clone())
+            .collect();
+        // Scheduled by its needs (`dag`), or by the stages before it.
+        let needs = (self.scheduling_type.as_deref() == Some("dag")).then(|| {
+            self.needs
+                .unwrap_or_default()
+                .nodes
+                .into_iter()
+                .flatten()
+                .filter_map(|need| need.name)
+                .collect()
+        });
+        Job {
+            id: build_id(self.id.as_deref()),
+            name,
+            status: self
+                .status
+                .as_deref()
+                .map_or(CiStatus::Unknown, CiStatus::parse),
+            allow_failure: self.allow_failure,
+            manual: self.manual_job.unwrap_or(false),
+            duration: self.duration,
+            started: self.started_at.as_deref().and_then(parse_time),
+            // A trigger job's page is its downstream pipeline's.
+            url: self
+                .web_path
+                .or_else(|| self.downstream_pipeline.and_then(|down| down.path))
+                .map(|path| host.web_url(&path)),
+            needs,
+            actions: self.actions,
+            can_update: self
+                .user_permissions
+                .is_some_and(|permissions| permissions.update_build),
+            earlier,
+        }
     }
 }
 

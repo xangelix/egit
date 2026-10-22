@@ -5,12 +5,14 @@
 //! what the test gave it; it checks the bearer token, can be rate limited, and records every
 //! request.
 
-// A test fixture: it indexes and counts small known things, and never ships.
+// A test fixture: it indexes and counts small known things, and never ships; its state is a
+// set of switches.
 #![allow(
     clippy::missing_panics_doc,
     clippy::indexing_slicing,
     clippy::arithmetic_side_effects,
-    clippy::format_push_string
+    clippy::format_push_string,
+    clippy::struct_excessive_bools
 )]
 
 use std::io::{BufRead as _, BufReader, Read as _, Write as _};
@@ -96,6 +98,24 @@ pub struct FakeJob {
     pub manual: bool,
     /// How long it ran, in seconds.
     pub duration: Option<u64>,
+    /// The jobs it waits for by name (`needs`), where it is scheduled by them.
+    pub needs: Option<Vec<String>>,
+    /// Its earlier runs (retried since), the newest first: each with a number of its own.
+    pub earlier: Vec<Self>,
+}
+
+/// A status GitLab retries (`FAILED`, `CANCELED`), may retry (one that ended), cancels (under
+/// way or waiting), or starts (`MANUAL`).
+fn retried_by_pipeline(status: &str) -> bool {
+    matches!(status, "FAILED" | "CANCELED")
+}
+
+fn ended(status: &str) -> bool {
+    matches!(status, "FAILED" | "CANCELED" | "SUCCESS" | "SKIPPED")
+}
+
+fn under_way(status: &str) -> bool {
+    matches!(status, "RUNNING" | "PENDING" | "CREATED" | "PREPARING")
 }
 
 /// A repository (or GitLab project) the fake serves.
@@ -152,6 +172,11 @@ pub struct FakeState {
     pub ssh_host: Option<String>,
     /// Whether a job's log is sent from where a `Range` asks (else whole, as GitLab does).
     pub ranges: bool,
+    /// Whether the account may only read pipelines (a Reporter's role): retrying or cancelling
+    /// is refused.
+    pub read_only: bool,
+    /// The number the next run made gets.
+    pub next_job: u64,
     /// The requests it received.
     pub requests: Vec<Recorded>,
 }
@@ -589,6 +614,7 @@ fn gitlab_graphql(request: &Recorded, state: &mut FakeState) -> Value {
     }
     let path = variables["path"].as_str().unwrap_or_default().to_owned();
     let login = state.login.clone();
+    let can_update = !state.read_only;
     if query.starts_with("query Pipeline")
         && let Some(message) = &state.pipelines_refused
     {
@@ -602,7 +628,7 @@ fn gitlab_graphql(request: &Recorded, state: &mut FakeState) -> Value {
         return json!({ "data": { "project": null } });
     };
     if query.starts_with("query Pipeline") {
-        return gitlab_pipelines(query, variables, repository, &login);
+        return gitlab_pipelines(query, variables, repository, (&login, can_update));
     }
     if query.starts_with("query MergeRequests") {
         let (start, end) = page(repository.pulls.len(), variables);
@@ -654,7 +680,7 @@ fn gitlab_pipelines(
     query: &str,
     variables: &Value,
     repository: &FakeRepository,
-    login: &str,
+    (login, can_update): (&str, bool),
 ) -> Value {
     if query.starts_with("query Pipelines") {
         let (start, end) = page(repository.pipelines.len(), variables);
@@ -685,17 +711,45 @@ fn gitlab_pipelines(
                     .iter()
                     .map(|job| {
                         let id = job_id(pipeline, job);
+                        let needs: Vec<Value> = job
+                            .needs
+                            .iter()
+                            .flatten()
+                            .map(|need| json!({ "name": need }))
+                            .collect();
                         json!({ "id": format!("gid://gitlab/Ci::Build/{id}"), "name": job.name,
                                 "status": job.status,
                                 "allowFailure": job.allow_failure, "manualJob": job.manual,
                                 "webPath": format!("/{}/-/jobs/{id}", repository.path),
                                 "duration": job.duration, "startedAt": "2024-05-01T10:21:00Z",
+                                "schedulingType": if job.needs.is_some() { "dag" } else { "stage" },
+                                "needs": { "nodes": needs },
+                                "retryable": ended(&job.status),
+                                "cancelable": under_way(&job.status),
+                                "playable": job.status == "MANUAL",
+                                "userPermissions": { "updateBuild": can_update },
                                 "downstreamPipeline": null })
                     })
                     .collect();
                 json!({ "name": name, "status": status, "jobs": { "nodes": jobs } })
             })
             .collect();
+        let retried: Vec<Value> = pipeline
+            .stages
+            .iter()
+            .flat_map(|(stage, _, jobs)| {
+                jobs.iter().flat_map(move |job| {
+                    job.earlier.iter().map(move |run| {
+                        json!({ "id": format!("gid://gitlab/Ci::Build/{}", run.id),
+                                "name": job.name, "status": run.status,
+                                "duration": run.duration, "startedAt": "2024-05-01T10:15:00Z",
+                                "webPath": format!("/{}/-/jobs/{}", repository.path, run.id),
+                                "stage": { "name": stage } })
+                    })
+                })
+            })
+            .collect();
+        let jobs = || pipeline.stages.iter().flat_map(|(_, _, jobs)| jobs);
         if let Some(fields) = node.as_object_mut() {
             fields.insert("startedAt".to_owned(), json!("2024-05-01T10:21:00Z"));
             fields.insert("finishedAt".to_owned(), Value::Null);
@@ -703,10 +757,108 @@ fn gitlab_pipelines(
             fields.insert("source".to_owned(), json!("push"));
             fields.insert("user".to_owned(), json!({ "username": login }));
             fields.insert("stages".to_owned(), json!({ "nodes": stages }));
+            fields.insert("retried".to_owned(), json!({ "nodes": retried }));
+            fields.insert(
+                "retryable".to_owned(),
+                json!(jobs().any(|job| retried_by_pipeline(&job.status))),
+            );
+            fields.insert(
+                "cancelable".to_owned(),
+                json!(jobs().any(|job| under_way(&job.status))),
+            );
+            fields.insert(
+                "userPermissions".to_owned(),
+                json!({ "updatePipeline": can_update }),
+            );
         }
         return json!({ "data": { "project": { "pipeline": node } } });
     }
     json!({ "errors": [{ "message": "unknown query" }] })
+}
+
+/// A pipeline's or a job's action (`<project>/pipelines/<id>/retry`, `…/jobs/<id>/cancel`, …):
+/// done to the fake's pipelines as GitLab would (a job retried keeps its run as an earlier one,
+/// and waits under a new number), or refused where the account may only read.
+fn gitlab_ci_action(
+    decoded: &dyn Fn(&str) -> String,
+    rest: &str,
+    state: &mut FakeState,
+) -> Option<Answer> {
+    let (rest, verb) = rest.rsplit_once('/')?;
+    let (project, kind, id) = if let Some((project, id)) = rest.split_once("/pipelines/") {
+        (project, "pipelines", id)
+    } else {
+        let (project, id) = rest.split_once("/jobs/")?;
+        (project, "jobs", id)
+    };
+    let id: u64 = id.parse().ok()?;
+    if state.read_only {
+        return Some((
+            403,
+            Vec::new(),
+            json!({ "message": "403 Forbidden" }).to_string(),
+        ));
+    }
+    let project = decoded(project);
+    if state.next_job == 0 {
+        state.next_job = 990_000;
+    }
+    let mut next = state.next_job;
+    let repository = find(state, &project)?;
+    let mut answered = None;
+    for pipeline in &mut repository.pipelines {
+        // Each job's number fixed first: its place in the pipeline is about to change.
+        let numbers: Vec<Vec<u64>> = pipeline
+            .stages
+            .iter()
+            .map(|(_, _, jobs)| jobs.iter().map(|job| job_id(pipeline, job)).collect())
+            .collect();
+        let whole = kind == "pipelines" && pipeline.id == id;
+        for ((_, _, jobs), numbers) in pipeline.stages.iter_mut().zip(&numbers) {
+            for (job, number) in jobs.iter_mut().zip(numbers) {
+                job.id = *number;
+                let asked = kind == "jobs" && *number == id;
+                let retry = verb == "retry"
+                    && ((whole && retried_by_pipeline(&job.status))
+                        || (asked && ended(&job.status)));
+                if retry {
+                    let mut earlier = job.clone();
+                    earlier.earlier.clear();
+                    job.earlier.insert(0, earlier);
+                    next += 1;
+                    job.id = next;
+                    "PENDING".clone_into(&mut job.status);
+                    job.log.clear();
+                    job.duration = None;
+                    answered = Some(next);
+                } else if verb == "cancel" && (whole || asked) && under_way(&job.status) {
+                    "CANCELED".clone_into(&mut job.status);
+                    answered = Some(*number);
+                } else if verb == "play" && asked && job.status == "MANUAL" {
+                    "PENDING".clone_into(&mut job.status);
+                    answered = Some(*number);
+                } else if asked {
+                    answered = answered.or(Some(*number));
+                }
+            }
+        }
+        if whole {
+            let status = if verb == "retry" {
+                "RUNNING"
+            } else {
+                "CANCELED"
+            };
+            status.clone_into(&mut pipeline.status);
+            answered = Some(id);
+        }
+    }
+    state.next_job = next;
+    let id = answered?;
+    Some((
+        201,
+        Vec::new(),
+        json!({ "id": id, "status": "pending" }).to_string(),
+    ))
 }
 
 /// A job's number: its own, or one made up from its pipeline's and its place in it.
@@ -734,10 +886,16 @@ fn gitlab_job(project: &str, asked: &str, request: &Recorded, state: &FakeState)
         .repositories
         .iter()
         .find(|repository| repository.path.eq_ignore_ascii_case(project))?;
+    // A job's latest run, or one of its earlier ones (each numbered).
     let (pipeline, stage_name, job) = repository.pipelines.iter().find_map(|pipeline| {
         pipeline.stages.iter().find_map(|(name, _, jobs)| {
             jobs.iter()
                 .find(|job| job_id(pipeline, job) == id)
+                .or_else(|| {
+                    jobs.iter()
+                        .flat_map(|job| &job.earlier)
+                        .find(|earlier| earlier.id == id)
+                })
                 .map(|job| (pipeline, name, job))
         })
     })?;
@@ -835,6 +993,11 @@ fn gitlab_rest(request: &Recorded, state: &mut FakeState) -> Answer {
         return not_found();
     };
     let decoded = |encoded: &str| encoded.replace("%2F", "/").replace("%2f", "/");
+    if request.method == "POST"
+        && let Some(answer) = gitlab_ci_action(&decoded, rest, state)
+    {
+        return answer;
+    }
     if request.method == "GET"
         && let Some((project, job)) = rest.split_once("/jobs/")
     {

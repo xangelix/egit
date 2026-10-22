@@ -16,10 +16,10 @@
 
 use egit_forge::testing::{FakeForge, FakeJob, FakePipeline, FakePull, FakeRepository};
 use egit_forge::{
-    Account, CheckState, CiGroup, CiStatus, ForgeError, ForgeHost, ForgeKind, ForgeRepository,
-    JobLog, LogRead, Mergeable, NewPullRequest, PipelineListing, ReviewDecision, ReviewState,
-    create_pull_request, job, pipeline_details, pipelines, pull_request_details, pull_requests,
-    read_log, repository_info, ssh_host,
+    Account, CheckState, CiAction, CiGroup, CiStatus, ForgeError, ForgeHost, ForgeKind,
+    ForgeRepository, JobLog, LogRead, Mergeable, NewPullRequest, PipelineListing, ReviewDecision,
+    ReviewState, ci_act, create_pull_request, job, pipeline_details, pipelines,
+    pull_request_details, pull_requests, read_log, repository_info, ssh_host,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -526,4 +526,70 @@ fn a_job_s_log_is_read_as_it_grows_from_where_it_was() {
         .collect::<Vec<_>>();
     assert_eq!(ranged[0], None);
     assert_eq!(ranged[1].as_deref(), Some("bytes=61-"));
+}
+
+#[test]
+fn a_pipeline_s_jobs_are_retried_cancelled_and_started_their_earlier_runs_kept() {
+    let (fake, _sandbox, account, project) = setup(0, TOKEN);
+    let mut pipelines = fake_pipelines(1);
+    // `lint` waits for `compile` alone; the rest for the stages before them.
+    pipelines[0].stages[1].2[1].needs = Some(vec!["compile".to_owned()]);
+    fake.state().repositories[0].pipelines = pipelines;
+    let read = || pipeline_details(&account, &project, 1, &CancelToken::new()).unwrap();
+    let act = |action| ci_act(&account, &project, action, &CancelToken::new());
+
+    let details = read();
+    assert!(details.retryable && details.cancelable && details.can_update);
+    let (compile, unit, lint, production) = (
+        &details.stages[0].jobs[0],
+        &details.stages[1].jobs[0],
+        &details.stages[1].jobs[1],
+        &details.stages[2].jobs[0],
+    );
+    assert_eq!(lint.needs.as_deref(), Some(&["compile".to_owned()][..]));
+    assert_eq!(unit.needs, None);
+    assert!(compile.actions.retry && !compile.actions.cancel);
+    assert!(unit.actions.cancel && !unit.actions.retry);
+    assert!(production.actions.play && lint.can_update);
+    let (compile, unit, lint, production) = (
+        compile.id.unwrap(),
+        unit.id.unwrap(),
+        lint.id.unwrap(),
+        production.id.unwrap(),
+    );
+
+    // The pipeline retried: the failed job runs again under a new number, its run kept.
+    assert_eq!(act(CiAction::RetryPipeline(9_000)).unwrap(), Some(9_000));
+    let again = &read().stages[1].jobs[1];
+    assert_eq!(again.status, CiStatus::Pending);
+    assert_ne!(again.id, Some(lint));
+    assert_eq!(
+        again
+            .earlier
+            .iter()
+            .map(|run| (run.id, run.status))
+            .collect::<Vec<_>>(),
+        [(lint, CiStatus::Failed)]
+    );
+    // One job retried: its new run's number given back.
+    let retried = act(CiAction::RetryJob(compile)).unwrap().unwrap();
+    let compiled = &read().stages[0].jobs[0];
+    assert_eq!((compiled.id, compiled.earlier.len()), (Some(retried), 1));
+    // Cancelled, and started.
+    act(CiAction::CancelJob(unit)).unwrap();
+    act(CiAction::PlayJob(production)).unwrap();
+    let details = read();
+    assert_eq!(details.stages[1].jobs[0].status, CiStatus::Canceled);
+    assert_eq!(details.stages[2].jobs[0].status, CiStatus::Pending);
+    // The pipeline cancelled: what waits, cancelled.
+    act(CiAction::CancelPipeline(9_000)).unwrap();
+    assert!(!read().cancelable);
+
+    // An account that may only read: refused, and said so beforehand.
+    fake.state().read_only = true;
+    assert!(!read().can_update);
+    assert!(matches!(
+        act(CiAction::RetryPipeline(9_000)),
+        Err(ForgeError::Forbidden { .. })
+    ));
 }
