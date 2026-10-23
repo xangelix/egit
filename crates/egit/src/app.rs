@@ -138,6 +138,15 @@ pub(crate) enum OutputAsk {
     Toggle,
 }
 
+/// What is asked of a repository's download.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DownloadAsk {
+    /// Stop it, its part removed.
+    Cancel(u64),
+    /// Forget it, once ended.
+    Dismiss(u64),
+}
+
 /// What the views (and finished jobs) ask the application to do.
 #[derive(Debug)]
 pub(crate) enum Action {
@@ -217,6 +226,8 @@ pub(crate) enum Action {
     Reveal(PathBuf, crate::desktop::Reveal),
     /// Show this much of a repository's history.
     Scope(RepoId, Scope),
+    /// Stop or forget one of a repository's downloads.
+    Download(RepoId, DownloadAsk),
     /// Ask the desktop's file dialog `question` (`title` on it; `name`, a file offered).
     AskFiles {
         question: FileQuestion,
@@ -497,6 +508,7 @@ impl EgitApp {
                 title,
                 name,
             } => state.files.ask(question, title, name),
+            Action::Download(id, asked) => state.download_asked(id, asked),
             Action::ToggleAgents(id) => {
                 if let Some(repo) = self.state.repos.iter_mut().find(|repo| repo.id == id) {
                     repo.agents.shown = !repo.agents.shown;
@@ -771,6 +783,16 @@ impl AppState {
         }
     }
 
+    /// Stops or forgets one of repository `id`'s downloads.
+    fn download_asked(&mut self, id: RepoId, asked: DownloadAsk) {
+        if let Some(repo) = self.repo_mut(id) {
+            match asked {
+                DownloadAsk::Cancel(download) => repo.forge.downloads.cancel(download),
+                DownloadAsk::Dismiss(download) => repo.forge.downloads.dismiss(download),
+            }
+        }
+    }
+
     /// Acts on a file dialog's answer: saves there, or shows the patches chosen.
     fn answered(&mut self, question: FileQuestion, mut chosen: Vec<PathBuf>) {
         let first = chosen.first().cloned().unwrap_or_default();
@@ -805,6 +827,11 @@ impl AppState {
                     self.repo_mut(repo).and_then(|repo| repo.agents.current())
                 {
                     conversation.view.attach(chosen);
+                }
+            }
+            FileQuestion::SaveArtifact { repo, wanted } => {
+                if let Some(repo) = self.repo_mut(repo) {
+                    repo.forge.download(*wanted, first);
                 }
             }
             FileQuestion::SavePicked { repo, commits, one } => self.actions.push(Action::Task(

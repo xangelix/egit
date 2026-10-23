@@ -701,3 +701,117 @@ fn jobs_are_laid_out_by_what_they_wait_for_and_retried_cancelled_and_started() {
     harness.key_press(egui::Key::Escape);
     wait_for_label(&mut harness, "Pipeline #9006: running");
 }
+
+/// Steps until the tab's downloads have ended, each saved.
+fn downloads_saved(count: usize) -> impl Fn(&mut EgitApp) -> bool {
+    move |app| {
+        let downloads = app.state.repos[0].forge.downloads.list();
+        downloads.len() == count
+            && downloads
+                .iter()
+                .all(|download| download.stage() == crate::downloads::Stage::Saved)
+    }
+}
+
+#[test]
+fn a_job_s_artifacts_are_downloaded_where_the_save_dialog_says() {
+    const ARCHIVE: &str = "PK\u{3}\u{4} the build's files, zipped";
+    const REPORT: &str = "<testsuites><testsuite name=\"unit\"/></testsuites>";
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    let (work, _, _) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    let head = commit_of(&sandbox, &work, "HEAD");
+    let mut ran = pipeline(9_003, &head, "SUCCESS", "SUCCESS");
+    ran.stages[0].2[0].artifacts = vec![
+        (
+            "ARCHIVE".to_owned(),
+            "artifacts.zip".to_owned(),
+            ARCHIVE.to_owned(),
+        ),
+        (
+            "JUNIT".to_owned(),
+            "junit.xml".to_owned(),
+            REPORT.to_owned(),
+        ),
+    ];
+    ran.stages[0].2[0].log = "compiled\n".to_owned();
+    fake.state().repositories[0].pipelines = vec![ran];
+    let out = sandbox.path("out");
+    std::fs::create_dir(&out).unwrap();
+    let mut harness = harness(&sandbox);
+    harness.state_mut().state.files = crate::desktop::FileDialogs::in_folder(out.clone());
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+    wait_for_label(&mut harness, "Pipeline #9003: passed");
+    harness
+        .get_by_role_and_label(Role::Button, "Pipeline #9003: passed")
+        .click();
+    wait_for_label(&mut harness, "compile: passed");
+
+    // The pipeline's Artifacts: each job's, named after it (its log isn't one).
+    let archive = format!(
+        "Download artifacts.zip of compile · {} bytes",
+        ARCHIVE.len()
+    );
+    harness.get_by_label("Artifacts").click();
+    wait_for_label(&mut harness, &archive);
+    harness.get_by_label_contains("Download junit.xml of compile");
+    assert!(harness.query_by_label_contains("job.log").is_none());
+    render(&mut harness, "pipeline-artifacts");
+    harness.get_by_label(&archive).click();
+    settle(&mut harness, "the archive saved", downloads_saved(1));
+    assert_eq!(
+        std::fs::read_to_string(out.join("artifacts.zip")).unwrap(),
+        ARCHIVE
+    );
+    assert!(!out.join("artifacts.zip.part").exists());
+    wait_for_label(&mut harness, "Show in folder");
+    harness.get_by_label_contains("Saved artifacts.zip to");
+    harness.get_by_label("Show in folder").click();
+    harness.run_steps(2);
+    assert_eq!(
+        harness.state().state.opener.revealed().last().cloned(),
+        Some((crate::desktop::Reveal::InFolder, out.join("artifacts.zip")))
+    );
+    harness.get_by_label("Dismiss").click();
+    harness.run_steps(2);
+    assert!(
+        harness
+            .query_by_label_contains("Saved artifacts.zip")
+            .is_none()
+    );
+
+    // A report from the job's menu, and from its log's bar.
+    super::screens::menu_item(
+        &mut harness,
+        "compile: passed",
+        &format!("Download junit.xml · {} bytes", REPORT.len()),
+    );
+    settle(&mut harness, "the report saved", downloads_saved(1));
+    assert_eq!(
+        std::fs::read_to_string(out.join("junit.xml")).unwrap(),
+        REPORT
+    );
+    harness.get_by_label("Dismiss").click();
+    std::fs::remove_file(out.join("junit.xml")).unwrap();
+    harness
+        .get_by_role_and_label(Role::Button, "compile: passed")
+        .click();
+    settle(&mut harness, "the log", log_holds("compiled"));
+    harness.get_by_label("Artifacts").click();
+    wait_for_label(
+        &mut harness,
+        &format!("Download artifacts.zip · {} bytes", ARCHIVE.len()),
+    );
+    harness.get_by_label_contains("Download junit.xml").click();
+    settle(&mut harness, "the report saved", downloads_saved(1));
+    assert_eq!(
+        std::fs::read_to_string(out.join("junit.xml")).unwrap(),
+        REPORT
+    );
+    render(&mut harness, "artifact-saved");
+}

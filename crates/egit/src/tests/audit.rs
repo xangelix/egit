@@ -351,12 +351,13 @@ fn moved<'a>(
     before: &[Element],
     after: &'a [Element],
 ) -> Option<(Rect, &'a Element)> {
-    let was: std::collections::HashMap<u64, Rect> = before
+    let was: std::collections::HashMap<u64, (Rect, &str)> = before
         .iter()
-        .map(|element| (element.node, element.rect))
+        .map(|element| (element.node, (element.rect, element.label.as_str())))
         .collect();
     // What a control's growth pushes shares its row or its column; anything else moving
-    // was moved by something else (a job landing meanwhile).
+    // was moved by something else (a job landing meanwhile), and so was what says other words
+    // than it did (a clock's second ticking: "1 min 30 s so far").
     let in_line = |rect: Rect| {
         rect.y_range().intersects(hovered.y_range()) || rect.x_range().intersects(hovered.x_range())
     };
@@ -364,8 +365,9 @@ fn moved<'a>(
         .iter()
         .filter(|element| !element.is_handle())
         .find_map(|element| {
-            let rect = *was.get(&element.node)?;
+            let (rect, words) = *was.get(&element.node)?;
             let moved = in_line(rect)
+                && words == element.label
                 && (rect.min.distance(element.rect.min) > 0.5
                     || rect.max.distance(element.rect.max) > 0.5);
             moved.then_some((rect, element))

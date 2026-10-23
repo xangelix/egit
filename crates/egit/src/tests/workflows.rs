@@ -3,19 +3,22 @@
 //! on its page), the run's jobs laid out by what its workflow's file says they need (read at
 //! its commit here), a failed job's log through GitHub's redirect, its failed jobs re-run (a
 //! second attempt), a running job's steps as they go, the run cancelled (asked first), a job
-//! re-run from its row, and the mark following.
+//! re-run from its row, and the mark following. The run's artifacts downloaded where the save
+//! dialog says (each checked against its digest: one that doesn't match isn't saved), an
+//! expired one listed but not offered.
 
 use egit_forge::ForgeKind;
-use egit_forge::testing::{FakeForge, FakeJob, FakePipeline};
+use egit_forge::testing::{FakeArtifact, FakeForge, FakeJob, FakePipeline};
 use egit_git::testing::Sandbox;
 use egui::accesskit::Role;
-use egui_kittest::kittest::Queryable as _;
+use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use super::screens::{
     click_when_enabled, commit_of, forge_clone, harness, history_of, open_path, profile_loaded,
     render, settle, wait_for_label,
 };
 use crate::app::EgitApp;
+use crate::downloads::Stage;
 use crate::theme::icon;
 
 const TOKEN: &str = "ghp-t0ken";
@@ -242,4 +245,84 @@ fn a_commit_s_workflow_runs_are_marked_shown_and_run_again() {
     wait_for_label(&mut harness, "test (macos): pending");
     harness.key_press(egui::Key::Escape);
     wait_for_label(&mut harness, "CI #57: running");
+}
+
+/// Steps until the tab's one download has ended as `stage` says.
+fn download_ended(ended: fn(&Stage) -> bool) -> impl Fn(&mut EgitApp) -> bool {
+    move |app| {
+        let downloads = app.state.repos[0].forge.downloads.list();
+        downloads.len() == 1 && downloads.iter().all(|download| ended(&download.stage()))
+    }
+}
+
+#[test]
+fn a_run_s_artifacts_are_downloaded_and_checked_against_their_digests() {
+    const DIST: &str = "PK\u{3}\u{4} tool for linux";
+    let (sandbox, fake, mut harness) = ran();
+    let artifact = |id, name: &str, contents: &str| FakeArtifact {
+        id,
+        name: name.to_owned(),
+        contents: contents.to_owned(),
+        ..FakeArtifact::default()
+    };
+    fake.state().repositories[0].pipelines[1].artifacts = vec![
+        artifact(71, "dist-linux", DIST),
+        FakeArtifact {
+            expired: true,
+            ..artifact(72, "coverage", "lines")
+        },
+        FakeArtifact {
+            digest: format!("sha256:{}", "0".repeat(64)),
+            ..artifact(73, "dist-macos", "changed on the way")
+        },
+    ];
+    let out = sandbox.path("out");
+    std::fs::create_dir(&out).unwrap();
+    harness.state_mut().state.files = crate::desktop::FileDialogs::in_folder(out.clone());
+    wait_for_label(&mut harness, "CI #57: failed");
+    harness
+        .get_by_role_and_label(Role::Button, "CI #57: failed")
+        .click();
+    wait_for_label(&mut harness, "test (macos): failed");
+
+    // The run's own, each a zip; the expired one listed, not offered.
+    harness.get_by_label("Artifacts").click();
+    let dist = format!("Download dist-linux.zip · {} bytes", DIST.len());
+    wait_for_label(&mut harness, &dist);
+    assert!(
+        harness
+            .get_by_label("Download coverage.zip · 5 bytes")
+            .accesskit_node()
+            .is_disabled()
+    );
+    render(&mut harness, "workflow-artifacts");
+    harness.get_by_label(&dist).click();
+    settle(
+        &mut harness,
+        "the artifact saved",
+        download_ended(|stage| *stage == Stage::Saved),
+    );
+    assert_eq!(
+        std::fs::read_to_string(out.join("dist-linux.zip")).unwrap(),
+        DIST
+    );
+    wait_for_label(&mut harness, "Dismiss");
+    harness.get_by_label("Dismiss").click();
+    harness.run_steps(2);
+
+    // Not what its digest says: said, and nothing left on disk.
+    harness.get_by_label("Artifacts").click();
+    wait_for_label(&mut harness, "Download dist-macos.zip · 18 bytes");
+    harness
+        .get_by_label("Download dist-macos.zip · 18 bytes")
+        .click();
+    settle(
+        &mut harness,
+        "the download refused",
+        download_ended(|stage| matches!(stage, Stage::Failed(_))),
+    );
+    harness.get_by_label_contains("dist-macos.zip doesn't match the SHA-256 digest");
+    assert!(!out.join("dist-macos.zip").exists());
+    assert!(!out.join("dist-macos.zip.part").exists());
+    render(&mut harness, "workflow-artifact-refused");
 }

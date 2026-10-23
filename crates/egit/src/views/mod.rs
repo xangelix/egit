@@ -5,6 +5,7 @@ pub(crate) mod agents;
 mod blame;
 pub(crate) mod clone;
 mod dialogs;
+mod downloads;
 mod file;
 mod file_history;
 mod forge_overview;

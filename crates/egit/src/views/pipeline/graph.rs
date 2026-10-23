@@ -619,6 +619,7 @@ mod tests {
             actions: JobActions::default(),
             can_update: true,
             earlier: Vec::new(),
+            artifacts: Vec::new(),
         }
     }
 
@@ -655,6 +656,7 @@ mod tests {
             can_update: true,
             ordered_stages: true,
             workflow: None,
+            artifacts: Vec::new(),
         })
     }
 

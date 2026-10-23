@@ -359,6 +359,11 @@ pub(super) fn job_menu(ui: &mut Ui, job: &Job, said: CiWords) -> Option<JobAsk> 
             }
         });
     }
+    if let Some((artifact, _)) =
+        super::artifact_items(ui, job.artifacts.iter().map(|artifact| (artifact, None)))
+    {
+        asked = Some(JobAsk::Download(artifact, job.name.clone()));
+    }
     if let Some(id) = job.id {
         let why_not = if job.can_update {
             Ok(())

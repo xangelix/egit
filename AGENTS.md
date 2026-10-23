@@ -46,6 +46,7 @@ it.
 | 32 | A GitLab job's log in egit, followed as it runs | done; awaiting the owner's review |
 | 33 | Pipelines acted on (retry, cancel, start), a job's earlier runs, the jobs as a graph; repositories suggested on Home | done; awaiting the owner's review |
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
+| 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -751,9 +752,12 @@ writes paths), never `OsStrExt`.
     built in a zeroizing string, and refused without HTTPS (but to the loopback address);
     `stream`: a GET's body handed over a part at a time with its status and `Content-Range`
     (a `Range` asked of the bytes as stored: `Accept-Encoding: identity`), never held whole;
-    an answer's `location` (a redirect's, never followed with the token) and `stream_public`, a
-    place it names fetched without any credential (HTTPS, or the loopback address: GitHub's
-    log files at signed addresses);
+    an answer's `location` (a redirect's, never followed with the token); `download`: a GET's
+    body handed to a sink as it comes (256 KiB at a time; the sink may stop it), through an
+    agent of its own (`downloads`: 60 s for an answer to begin, `DOWNLOAD_LASTS`, 12 hours,
+    for the body, no limit in all: an artifact may be gigabytes), with the token, or without
+    any credential for a place a redirect named (HTTPS, or the loopback address: GitHub's log
+    files and artifacts, GitLab's archives, at signed addresses);
     GitHub's media type and API version only to GitHub; either forge's rate-limit headers.
     Each request logged at debug level (method, address, status, size, time; never the token),
     and each GraphQL error with the query's name (`answer.rs`): `EGIT_LOG=egit_forge=debug`.
@@ -767,9 +771,21 @@ writes paths), never `OsStrExt`.
     `SignedIn` (the login, whether the helpers keep it: `fill` gives it back, and the
     credential). `adopt` (another account's sign-in), `who` (the login, or asked with what the
     helpers keep; none without), `sign_out` (the helpers forget it), `signed_out` (forgotten
-    here alone). `tests/github.rs` refuses a mistyped token (the helper's entry kept), keeps
-    the right one under its login, has another account adopt it, signs out, and lasts a run
-    where no helper keeps it.
+    here alone). `download` (with the credential: a 401 handled as any call's) and
+    `download_public` (the place a redirect named, without it). `tests/github.rs` refuses a
+    mistyped token (the helper's entry kept), keeps the right one under its login, has another
+    account adopt it, signs out, and lasts a run where no helper keeps it.
+  - `artifacts.rs` — CI/CD artifacts: `Artifact` (its name, the file it is saved as, its
+    `ArtifactKind`: a GitLab job's `artifacts:paths` as one zip, `Archive`; a GitLab report,
+    `Report` (`JUnit`, coverage, a scan: a file of its own); a GitHub run's, `Uploaded`, a zip
+    each; size, expired, GitHub's `sha256:` digest, and its `ArtifactSource`: a GitLab job and
+    file type, a GitHub artifact's number); `gitlab_artifact` (from GraphQL's `artifacts`
+    nodes; the log, `TRACE`, and the archive's `METADATA` aren't downloads);
+    `download_artifact`: `GET /projects/:id/jobs/:job/artifacts?file_type=<t>` or
+    `/repos/:owner/:name/actions/artifacts/:id/zip` with the token, a redirect's place fetched
+    without it, each part handed to the caller's sink as it comes (never held whole), the
+    digest checked as it streams (`Mismatched` when it doesn't match), 410 an artifact expired
+    (`Said`), cancellable (`CancelToken`, or the sink saying stop).
   - `api.rs` — the calls, each sent to its repository's forge: `pull_requests` (open, most
     recently updated first, 100 a page, each handed over as it lands, up to a limit),
     `pull_request_details`, `repository_info` (default branch, the repository it was forked
@@ -827,7 +843,8 @@ writes paths), never `OsStrExt`.
     nodes without a number or commit left out, logged), `pipeline_details` (one by its `iid`:
     its stages in order, each one's jobs
     (their latest runs), each job's page, a trigger job's its downstream pipeline's; the runs a
-    retry replaced, `jobs(retried: true)`, each under its job by stage and name).
+    retry replaced, `jobs(retried: true)`, each under its job by stage and name; each job's
+    `artifacts`, its size a number or a string, as GitLab's versions write it).
     `github.rs`: through GitHub's REST API (GraphQL has no runs): a repository's workflow runs
     (`actions/runs`, 100 a page, `exclude_pull_requests`; none to the account answers as no
     repository: `Hidden`), one whole (the run, and its jobs of every attempt,
@@ -838,7 +855,9 @@ writes paths), never `OsStrExt`.
     `permissions`: push, maintain, or admin; remembered by the account ten minutes,
     `remembered_push`), and asking: a run's failed jobs re-run, all of them, cancelled; a job
     re-run, its new run looked for in the run's latest attempt (a second apart, five times);
-    `github_job` (with its steps) and `github_log` for `job_log.rs`. `workflow.rs`:
+    `github_job` (with its steps) and `github_log` for `job_log.rs`; a run's artifacts
+    (`runs/:id/artifacts`, 100 at most, by name: a GitHub run's artifacts are its own, not a
+    job's). `workflow.rs`:
     `Workflow::parse`, a reader of a workflow file's `jobs:` (not a YAML parser: by
     indentation, block scalars and comments skipped, keys and scalars plain or quoted; each
     job's id, `name`, `needs` as a word, a flow list (over lines too) or a block list,
@@ -852,10 +871,11 @@ writes paths), never `OsStrExt`.
     `CiStatus`, warnings, ref, made, page; `is_newer_than`), `PipelineDetails` (started,
     finished, duration, who, how, `PipelineActions` (retry, cancel, rerun: GitHub's every
     job again) and whether the account may (`updatePipeline`; GitHub's push),
-    `ordered_stages` (GitLab's), the `workflow` file (GitHub's),
+    `ordered_stages` (GitLab's), the `workflow` file (GitHub's), `artifacts` (a GitHub run's),
     `Stage`s of `Job`s: number, status, may fail, manual, duration, started, page, `needs` by
     name (none where it is scheduled by stage), `JobActions` (retry, cancel, play: GitLab's
-    say), whether the account may (`updateBuild`), its `EarlierRun`s, the newest first).
+    say), whether the account may (`updateBuild`), its `EarlierRun`s, the newest first, its
+    `artifacts` (a GitLab job's)).
     `ci_act`: a `CiAction` asked of GitLab by REST (`POST …/pipelines/:id/retry` or `cancel`,
     `…/jobs/:id/retry`, `cancel`, `play`), or of GitHub (`…/actions/runs/:id/rerun-failed-jobs`,
     `rerun`, `cancel`, `…/actions/jobs/:id/rerun`; none for a job's cancel or play), returning
@@ -875,13 +895,20 @@ writes paths), never `OsStrExt`.
     a workflow's run: its `workflow` name, id, and file, `attempt`; its jobs' `steps`): runs a
     page, a run, its jobs of every attempt, a job, its log a redirect to its file at
     `/blob/job/<id>` served without the token (there once the job has ended), the
-    repository's `permissions`, re-runs, cancelling (409 with nothing under way); the
-    bearer token checked; a rate limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
+    repository's `permissions`, re-runs, cancelling (409 with nothing under way); artifacts:
+    a GitLab job's (`FakeJob::artifacts`: its file type, name, and contents; listed in GraphQL
+    with its log's trace, an archive a redirect to `/blob/artifact/gl/<job>/<type>`, a report
+    served at once), a GitHub run's (`FakeArtifact`: its digest the contents' unless given,
+    410 once expired, its zip a redirect to `/blob/artifact/gh/<id>`), the blobs served without
+    the token; the bearer token checked; a rate limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
     signed in through a sandbox's `store` helper (and an askpass script): pipelines a page at a
     time and one whole (stages in order, jobs, pages, needs, earlier runs), retried, cancelled,
     and started; GitHub's workflow runs listed (each workflow its series), one whole (its
     matrix together, a job's earlier attempt, laid over by its workflow), a job's steps and
-    log (through the redirect, without the token), re-runs, cancelling, and refusals.
+    log (through the redirect, without the token), re-runs, cancelling, and refusals; a GitLab
+    job's artifacts listed (its log left out) and downloaded (the archive through its redirect,
+    without the token; a report at once; stopped by the sink; one removed not found), and a
+    GitHub run's (one downloaded, an expired one said, one not matching its digest refused).
 - `crates/egit-agents` — agents working in a repository beside egit: Claude Code, driven
   through Anthropic's Claude Agent SDK (TypeScript) by a small bridge under Node; no egui.
   - `bridge/claude/` — `bridge.mjs` (plain JavaScript: the SDK's `query` with streaming input,
@@ -1179,6 +1206,18 @@ writes paths), never `OsStrExt`.
     background, section headers on the surface's tone, each line's time beside its number in
     the viewer's zone) and handed over (`Following`: the job, the log, its version, missing,
     the problem, done) until the job has ended and its log is whole.
+  - `downloads.rs` — artifacts downloaded to disk (`RepoForge::downloads`, a tab's
+    `Downloads`): each `ArtifactWanted` (the forge's repository, the `Artifact`, what it is of:
+    a GitLab job's name, a GitHub run's title) on a thread of its own, through its
+    repository's account (`RepoForge::download`), streamed into `<file>.part` beside the file
+    the save dialog named (a 1 MiB buffer; how much has come in an atomic, the window woken at
+    most every 100 ms), synced and renamed into place once whole (and its digest matched), the
+    part removed when cancelled or failed (those under way stopped as their tab closes);
+    `Stage`: running, saved, failed (a `Problem`).
+    `views/downloads.rs` says each under the commit table (or what shows in its place: a
+    pipeline, a job's log): "Downloading artifacts.zip of build: 1.2 MB of 40.0 MB" and
+    Cancel; "Saved … to …", Show in folder, Dismiss; failed, why (a problem box, Dismiss).
+    `Action::Download` (`DownloadAsk`: cancel, dismiss).
   - `ci.rs` — a repository's pipelines (GitLab's, GitHub Actions' workflow runs), for the
     commit table's marks (`Pipelines`, its
     forge's: `RepoForge::pipeline_of`, `has_pipelines`): each GitLab project's (GitHub
@@ -1518,9 +1557,11 @@ writes paths), never `OsStrExt`.
     where a patch or the changes go (a file), where a series goes (a folder), where commits
     picked go (`SavePicked`: a file for one patch, a folder for one each), which patches to
     apply (files, patches first), which images to attach to an agent's prompt
-    (`AttachImages`); for tests a folder answering them all (`in_folder`). `Action::AskFiles`
+    (`AttachImages`), where a pipeline's artifact goes (`SaveArtifact`: a file, named as the
+    forge names it); for tests a folder answering them all (`in_folder`). `Action::AskFiles`
     asks, and `AppState::poll` turns the answer into a task, shows the patches
-    (`Action::OpenPatches`), or attaches the images to the tab's conversation shown.
+    (`Action::OpenPatches`), attaches the images to the tab's conversation shown, or starts
+    the download (`RepoForge::download`).
   - `avatars.rs` — people's pictures (`Preferences::pictures`, on by default): `install` (the
     real application only: tests fetch nothing) starts two worker threads taking the newest
     request first (the rows on screen; past 128 waiting, the oldest dropped), each picture read
@@ -1944,7 +1985,8 @@ writes paths), never `OsStrExt`.
     on a row of its own where it doesn't
     fit (`widgets::room_for`): "Run 2 of 3", a menu of the job's runs, the latest and those
     retried before it, each with how it ended, how long it took, and when, a click following
-    its log instead (`show_run`); for the latest, Retry the job, Cancel the job, or Start the
+    its log instead (`show_run`); for the latest, its Artifacts (a GitLab job's: a menu, each
+    downloaded where the save dialog says, `JobEvent::Download`), Retry the job, Cancel the job, or Start the
     job as its status as last read allows (GitLab's own say while that is as the page read it;
     on GitHub, Re-run this job as the page read it: once the whole run has ended) and the
     account may, a retry's new run becoming the latest, shown as it starts
@@ -1961,7 +2003,10 @@ writes paths), never `OsStrExt`.
     or History goes back), its forge's words its buttons' (`CiWords`: GitLab's or GitHub's): a
     bar (its title and status in words, Refresh, Open on its forge, the commit's other runs (a
     menu, "2 more workflow runs for this commit": another GitHub workflow's, each showing it in
-    this one's place, `PipelineEvent::Other`); then, as the forge allows and the account may,
+    this one's place, `PipelineEvent::Other`); then Artifacts where it has any (a menu: a
+    GitHub run's, each GitLab job's under its name, "Download artifacts.zip of build · 12.3
+    MB", an expired one disabled, saying so; `artifact_items`; one chosen asks where it goes,
+    `PipelineEvent::Download`); then, as the forge allows and the account may,
     Retry failed jobs and Cancel the pipeline (GitHub's Re-run failed jobs, Re-run all jobs,
     Cancel workflow), asked first in place ("Cancel the pipeline?", Cancel it, Keep it
     running), on a row of their own where they don't fit; a spinner while read, or what is
@@ -1986,6 +2031,7 @@ writes paths), never `OsStrExt`.
     rests on another card. Either way a job's click shows its
     latest run's log (`PipelineEvent::Job`, with the run), a trigger job's opens the pipeline
     it runs in the browser; its menu (`job_menu`): Show its log, Earlier runs (each run's log),
+    its artifacts (GitLab's) to download,
     Retry the job (Re-run this job), Cancel the job, Start the job (disabled, saying why, where
     the account may not), Open on its forge. Read when shown and again every 5 s while it, or a
     job of it, may still change (`READ_AGAIN`), and at once after the forge did what was asked
@@ -2445,7 +2491,10 @@ writes paths), never `OsStrExt`.
     earlier run's log from a job's menu and the latest's from the runs' menu, a retry GitLab
     refuses (said; rendered), then one it doesn't (its new run shown), back on the page a job
     cancelled and one started from their rows, the pipeline cancelled (asked first) and its
-    failed jobs retried, its mark running again; and a
+    failed jobs retried, its mark running again; a job's artifacts downloaded where the save
+    dialog says (a folder answering): the archive from the pipeline's Artifacts (its log not
+    listed; rendered; Show in folder recorded), a report from the job's menu and again from its
+    log's bar (rendered, the notice saying where it went); and a
     remote on `ssh://git@git-ssh.example.invalid:2222/…` (fetched through `insteadOf`): signed
     in, the fake GitLab says its ssh is there and the project is read unasked (its merge
     requests, its pipeline's mark, "its ssh on …"; nothing written to the settings); not signed
@@ -2456,7 +2505,9 @@ writes paths), never `OsStrExt`.
     (committed here) says the jobs need (no Stages to choose; rendered), a failed job's log
     through GitHub's redirect, its failed jobs re-run (a second attempt said), the other
     workflow's run from the menu, a running job's steps (rendered), the run cancelled (asked
-    first), a job re-run from its row, and the mark following.
+    first), a job re-run from its row, and the mark following; and the run's artifacts (an
+    expired one listed, disabled; rendered): one downloaded, one whose digest doesn't match
+    refused, said (rendered), nothing left on disk, no part either.
     `src/tests/suggested.rs` opens two repositories of a folder (and one of another): the
     folder's others suggested by their reflogs' dates (commits at set times), one without a
     commit last, a plain folder and a file left out, nothing from the other folder (rendered);

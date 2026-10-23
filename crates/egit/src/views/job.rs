@@ -14,7 +14,11 @@ use egit_forge::{CiAction, CiStatus, EarlierRun, ForgeKind, Job, JobRun, JobStep
 use egui::{Align, Frame, Id, Key, Layout, Modifiers, RichText, Ui};
 
 use super::history::Shared;
-use super::pipeline::{Acting, CiWords, PipelineView, Reach, ci_look, ci_words, duration};
+use super::pipeline::{
+    ARTIFACTS_TOPIC, Acting, CiWords, PipelineView, Reach, artifact_items, ci_look, ci_words,
+    duration,
+};
+use crate::downloads::ArtifactWanted;
 use crate::forge::RepoForge;
 use crate::format;
 use crate::grid::TextGrid;
@@ -65,6 +69,8 @@ pub(super) enum JobEvent {
     Open(String),
     /// The forge did what was asked: the commits' marks read again.
     Acted,
+    /// One of the job's artifacts, saved where the user says.
+    Download(Box<ArtifactWanted>),
 }
 
 impl JobView {
@@ -320,7 +326,11 @@ fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -
                 said.push_str(" · ");
                 said.push_str(&took);
             }
-            ui.label(muted(ui, said));
+            if status.is_moving() {
+                widgets::ticking(ui, said);
+            } else {
+                ui.label(muted(ui, said));
+            }
             if let Some(why) = run
                 .filter(|run| run.status == CiStatus::Failed)
                 .and_then(|run| run.failure.as_deref())
@@ -358,7 +368,11 @@ fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -
                 egui::UiBuilder::new()
                     .id(Id::new("job-log-runs"))
                     .layout(Layout::left_to_right(Align::Center)),
-                |ui| runs(ui, view, (seen, status)),
+                |ui| {
+                    if let Some(asked) = runs(ui, view, (seen, status)) {
+                        event = Some(asked);
+                    }
+                },
             );
         });
     });
@@ -368,10 +382,15 @@ fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -
 /// What follows the bar's fixed part: the runs to switch between, what can be done to the run
 /// shown, its sections, and a spinner while it is followed (or what was asked of the forge, while
 /// it is being done).
-fn runs(ui: &mut Ui, view: &mut JobView, (seen, status): (Option<&Seen>, CiStatus)) {
+fn runs(
+    ui: &mut Ui,
+    view: &mut JobView,
+    (seen, status): (Option<&Seen>, CiStatus),
+) -> Option<JobEvent> {
     if !view.job.earlier.is_empty() {
         runs_menu(ui, view);
     }
+    let asked = artifacts(ui, view);
     run_actions(ui, view, status);
     if let Some(log) = seen.and_then(|seen| seen.log.as_ref())
         && !log.sections.is_empty()
@@ -383,6 +402,33 @@ fn runs(ui: &mut Ui, view: &mut JobView, (seen, status): (Option<&Seen>, CiStatu
     } else if seen.is_some_and(|seen| !seen.done && seen.problem.is_none()) {
         ui.spinner();
     }
+    asked
+}
+
+/// The latest run's artifacts (a GitLab job's), a menu of them; the one chosen.
+fn artifacts(ui: &mut Ui, view: &JobView) -> Option<JobEvent> {
+    if !view.is_latest() || view.job.artifacts.is_empty() {
+        return None;
+    }
+    let mut chosen = None;
+    widgets::tool_menu_of(
+        ui,
+        (icon::DOWNLOAD_SIMPLE, "Artifacts"),
+        Look::Full,
+        ARTIFACTS_TOPIC,
+        |ui| {
+            super::actions::menu_rows(ui);
+            let items = view.job.artifacts.iter().map(|artifact| (artifact, None));
+            chosen = artifact_items(ui, items);
+        },
+    );
+    chosen.map(|(artifact, _)| {
+        JobEvent::Download(Box::new(ArtifactWanted {
+            repository: view.pipeline.repository(),
+            artifact,
+            of: view.job.name.clone(),
+        }))
+    })
 }
 
 /// The Runs menu: the job's latest run and those retried before it (the newest first), each
@@ -543,6 +589,14 @@ fn offered(view: &JobView, status: CiStatus) -> Vec<(CiAction, String, &'static 
 /// sections' menu, and a spinner or what is being done.
 fn runs_width(ui: &Ui, view: &mut JobView, (seen, status): (Option<&Seen>, CiStatus)) -> Vec<f32> {
     let mut widths = Vec::new();
+    if view.is_latest() && !view.job.artifacts.is_empty() {
+        widths.push(widgets::tool_width(
+            ui,
+            (icon::DOWNLOAD_SIMPLE, "Artifacts"),
+            Look::Full,
+            true,
+        ));
+    }
     if !view.job.earlier.is_empty() {
         let place = run_place(view);
         widths.push(widgets::tool_width(

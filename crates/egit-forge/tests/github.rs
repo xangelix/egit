@@ -4,7 +4,8 @@
 //! repositories that aren't there. And Actions' workflow runs as pipelines: listed, each
 //! workflow its series; one whole (its jobs grouped by matrix, each job's earlier attempts,
 //! laid over by its workflow's needs); a job's state with its steps and its log through
-//! GitHub's redirect (fetched without the token); re-runs, cancelling, and refusals.
+//! GitHub's redirect (fetched without the token); re-runs, cancelling, and refusals; a run's
+//! artifacts listed and downloaded (their digest checked; one expired).
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
 #![allow(
@@ -17,12 +18,14 @@
 
 use std::sync::Arc;
 
-use egit_forge::testing::{FakeForge, FakeJob, FakePipeline, FakePull, FakeRepository};
+use egit_forge::testing::{
+    FakeArtifact, FakeForge, FakeJob, FakePipeline, FakePull, FakeRepository,
+};
 use egit_forge::{
-    Account, CheckState, CiAction, CiStatus, ForgeError, ForgeHost, ForgeKind, ForgeRepository,
-    JobLog, LogRead, NewPullRequest, ReviewDecision, ReviewState, Workflow, ci_act,
-    create_pull_request, job, pipeline_details, pipelines, pull_request_details, pull_requests,
-    read_log, repository_info,
+    Account, ArtifactKind, CheckState, CiAction, CiStatus, ForgeError, ForgeHost, ForgeKind,
+    ForgeRepository, JobLog, LogRead, NewPullRequest, ReviewDecision, ReviewState, Workflow,
+    ci_act, create_pull_request, download_artifact, job, pipeline_details, pipelines,
+    pull_request_details, pull_requests, read_log, repository_info,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -671,4 +674,75 @@ fn a_token_no_helper_keeps_lasts_until_egit_quits() {
     assert!(!signed.kept);
     // Signed in all the same, for as long as the account lasts.
     pull_requests(&account, &repository, 10, &CancelToken::new(), |_| {}).unwrap();
+}
+
+#[test]
+fn a_run_s_artifacts_are_listed_and_downloaded_their_digest_checked() {
+    let (fake, _sandbox, account, repository) = setup(0, TOKEN);
+    with_runs(&fake);
+    fake.state().repositories[0].pipelines[2].artifacts = vec![
+        FakeArtifact {
+            id: 91,
+            name: "dist-linux".to_owned(),
+            contents: "PK the linux build".to_owned(),
+            ..FakeArtifact::default()
+        },
+        FakeArtifact {
+            id: 92,
+            name: "coverage".to_owned(),
+            contents: "PK old".to_owned(),
+            expired: true,
+            ..FakeArtifact::default()
+        },
+        FakeArtifact {
+            id: 93,
+            name: "changed".to_owned(),
+            contents: "PK not what was listed".to_owned(),
+            digest: format!("sha256:{}", "0".repeat(64)),
+            ..FakeArtifact::default()
+        },
+    ];
+    let details = pipeline_details(&account, &repository, 7001, &CancelToken::new()).unwrap();
+    let artifacts = &details.artifacts;
+    assert_eq!(
+        artifacts
+            .iter()
+            .map(|artifact| (
+                artifact.file_name.as_str(),
+                artifact.kind,
+                artifact.size,
+                artifact.expired
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("changed.zip", ArtifactKind::Uploaded, Some(22), false),
+            ("coverage.zip", ArtifactKind::Uploaded, Some(6), true),
+            ("dist-linux.zip", ArtifactKind::Uploaded, Some(18), false),
+        ]
+    );
+    let download = |which: usize| {
+        let mut bytes = Vec::new();
+        download_artifact(
+            &account,
+            &repository,
+            &artifacts[which],
+            &CancelToken::new(),
+            &mut |part| {
+                bytes.extend_from_slice(part);
+                true
+            },
+        )
+        .map(|_| String::from_utf8(bytes).unwrap())
+    };
+    assert_eq!(download(2).unwrap(), "PK the linux build");
+    let asked = fake
+        .state()
+        .requests
+        .iter()
+        .find(|request| request.path == "/blob/artifact/gh/91")
+        .map(|request| request.authorization.clone());
+    assert_eq!(asked, Some(None));
+    // Expired, GitHub says so; not what its digest says, refused.
+    assert!(matches!(download(1), Err(ForgeError::Said { .. })));
+    assert!(matches!(download(0), Err(ForgeError::Mismatched { .. })));
 }

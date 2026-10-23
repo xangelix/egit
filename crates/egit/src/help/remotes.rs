@@ -1320,6 +1320,40 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "pipeline-artifacts",
+        group: Group::Remotes,
+        title: "A pipeline's artifacts",
+        on: &["Artifacts", "Download *"],
+        what: "What a pipeline kept, downloaded to a file you choose (the save dialog asks \
+               where), never through the browser. A GitLab job keeps everything its \
+               artifacts:paths name as one zip archive (artifacts.zip), and its reports \
+               (artifacts:reports: JUnit, coverage, scans) apart, each a file of its own; its \
+               log isn't an artifact here. A GitHub run's artifacts are its own, not a job's: \
+               each a zip of what the workflow uploaded. The pipeline's Artifacts menu lists \
+               them all (a GitLab job's under its name), a job's menu and its log's bar its \
+               own. The download goes on under the commit table, however far you go: how much \
+               has come, Cancel; then where it went, and Show in folder.",
+        git: "GitLab's REST API: GET /projects/:id/jobs/:job_id/artifacts?file_type=archive (or a report's type), a redirect to its storage; GitHub's: GET /repos/:owner/:name/actions/runs/:id/artifacts, then …/actions/artifacts/:id/zip, a redirect to its storage. The storage is asked without your token",
+        cases: &[
+            (
+                "Why a zip?",
+                "Both forges keep artifacts zipped: GitLab a job's whole archive, GitHub each uploaded artifact. egit saves the zip as the forge gives it, for any archive tool to open; GitLab's reports come as the files they are.",
+            ),
+            (
+                "Expired?",
+                "Forges delete artifacts after a while (GitLab's expire_in, 30 days on gitlab.com unless set; GitHub's retention, 90 days unless set): an expired one is listed but can't be downloaded.",
+            ),
+            (
+                "Where is it while it downloads?",
+                "In <file>.part beside the file you chose, renamed to it once whole (a GitHub artifact checked against the SHA-256 digest GitHub gives); cancelled or failed, the part is removed, so a half file never passes for the whole.",
+            ),
+            (
+                "Refused?",
+                "Downloading takes read access to the project or repository (GitLab's Reporter role and up on a private project; a token with read_api, or a classic GitHub token's repo scope on a private repository).",
+            ),
+        ],
+    },
+    Topic {
         id: "pipeline-actions",
         group: Group::Remotes,
         title: "Retrying and cancelling",

@@ -25,6 +25,7 @@ use super::{
 };
 use crate::account::Account;
 use crate::answer::{cancelled, not_found, parse_time, read_answer};
+use crate::artifacts::{Artifact, ArtifactKind, ArtifactSource};
 use crate::error::ForgeError;
 use crate::http::Answer;
 use crate::job_log::{JobRun, JobStep, LogRead};
@@ -345,7 +346,59 @@ pub(super) fn pipeline_details(
         can_update: may,
         ordered_stages: false,
         workflow: run.workflow(),
+        artifacts: run_artifacts(account, repository, id, cancel)?,
     })
+}
+
+/// A GitHub artifact, as GitHub lists a run's.
+#[derive(Deserialize)]
+struct RestArtifact {
+    id: u64,
+    name: Option<String>,
+    size_in_bytes: Option<u64>,
+    #[serde(default)]
+    expired: bool,
+    digest: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ArtifactsPage {
+    #[serde(default)]
+    artifacts: Vec<RestArtifact>,
+}
+
+/// What run `id` uploaded (its first hundred artifacts, by name).
+fn run_artifacts(
+    account: &Account,
+    repository: &ForgeRepository,
+    id: u64,
+    cancel: &CancelToken,
+) -> Result<Vec<Artifact>, ForgeError> {
+    let what = format!("{}'s workflow run {id}'s artifacts", repository.full_name());
+    let url = rest(
+        account,
+        repository,
+        &format!("/actions/runs/{id}/artifacts?per_page={PAGE}"),
+    );
+    let page: ArtifactsPage = get(account, &url, &what, cancel)?;
+    let mut artifacts: Vec<Artifact> = page
+        .artifacts
+        .into_iter()
+        .map(|artifact| {
+            let name = artifact.name.unwrap_or_else(|| artifact.id.to_string());
+            Artifact {
+                file_name: format!("{name}.zip"),
+                name,
+                kind: ArtifactKind::Uploaded,
+                size: artifact.size_in_bytes,
+                expired: artifact.expired,
+                digest: artifact.digest,
+                source: ArtifactSource::GitHub { id: artifact.id },
+            }
+        })
+        .collect();
+    artifacts.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(artifacts)
 }
 
 /// Each job's latest run (by its name: the highest attempt), in the order they were made, the
@@ -383,6 +436,7 @@ fn latest_jobs(all: Vec<RestJob>, ended: bool, may: bool) -> Vec<Job> {
                 },
                 can_update: may,
                 earlier: runs.map(|run| run.earlier()).collect(),
+                artifacts: Vec::new(),
             };
             // The first attempt's number orders it among the others.
             let first = job.earlier.last().map_or(latest.id, |run| run.id);
@@ -562,8 +616,16 @@ pub(crate) fn github_log(
     };
     let status = match (answer.status, answer.location.as_deref()) {
         (301 | 302 | 303 | 307 | 308, Some(location)) => {
-            let streamed =
-                account.stream_public(location, MOST_LOG, &mut |_, _, part| take(part), cancel)?;
+            let mut kept = 0_u64;
+            let streamed = account.download_public(
+                location,
+                &mut |part| {
+                    kept = kept.saturating_add(u64::try_from(part.len()).unwrap_or(u64::MAX));
+                    take(part);
+                    kept < MOST_LOG
+                },
+                cancel,
+            )?;
             if !(200..300).contains(&streamed.status) && streamed.status != 404 {
                 return Err(ForgeError::Status {
                     host: account.host().name().to_owned(),

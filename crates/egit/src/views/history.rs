@@ -1149,7 +1149,8 @@ fn notices_panel(
         .filter(|_| shared.forge.needs_sign_in().is_none())
         .map(ToString::to_string)
         .filter(|why| view.pipelines_dismissed.as_ref() != Some(why));
-    if !outcome && !brought && pipelines.is_none() {
+    let downloads = super::downloads::any(shared);
+    if !outcome && !brought && pipelines.is_none() && !downloads {
         return;
     }
     egui::Panel::bottom(Id::new(("history-notices", shared.id)))
@@ -1162,6 +1163,7 @@ fn notices_panel(
             }
             let event = tasks::brought(ui, pane);
             task_event(event, history, view);
+            let pipelines_shown = pipelines.is_some();
             if let Some(why) = pipelines {
                 if outcome || brought {
                     ui.add_space(6.0);
@@ -1169,6 +1171,12 @@ fn notices_panel(
                 if super::pipeline::unread(ui, shared.id, &why) {
                     view.pipelines_dismissed = Some(why);
                 }
+            }
+            if downloads {
+                if outcome || brought || pipelines_shown {
+                    ui.add_space(6.0);
+                }
+                super::downloads::notices(ui, shared, pane.actions);
             }
         });
 }
@@ -2670,6 +2678,10 @@ fn job_log(
             actions.push(Action::ReadPipelines(shared.id));
             false
         }
+        Some(super::job::JobEvent::Download(wanted)) => {
+            actions.push(save_artifact(shared.id, wanted));
+            false
+        }
         None => false,
     }
 }
@@ -2692,8 +2704,19 @@ fn pipeline_event(
         PipelineEvent::Job(job, run) => *job_opened = Some((job, run)),
         PipelineEvent::Acted => actions.push(Action::ReadPipelines(shared.id)),
         PipelineEvent::Other(mark) => *other = Some(mark),
+        PipelineEvent::Download(wanted) => actions.push(save_artifact(shared.id, wanted)),
     }
     None
+}
+
+/// Asks where `wanted`, an artifact, is saved (its file's name offered); then it downloads.
+fn save_artifact(repo: RepoId, wanted: Box<crate::downloads::ArtifactWanted>) -> Action {
+    let name = wanted.artifact.file_name.clone();
+    Action::AskFiles {
+        question: FileQuestion::SaveArtifact { repo, wanted },
+        title: "Save the artifact",
+        name,
+    }
 }
 
 /// Opens a job's run's log in its pipeline's page's place (`opened`), or goes back to that

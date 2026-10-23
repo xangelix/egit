@@ -21,8 +21,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_forge::{
-    CiAction, CiGroup, CiStatus, ForgeKind, Job, PipelineDetails, Workflow, ci_act,
-    pipeline_details,
+    Artifact, ArtifactKind, CiAction, CiGroup, CiStatus, ForgeKind, Job, PipelineDetails, Workflow,
+    ci_act, pipeline_details,
 };
 use egit_git::{CancelToken, Git, ObjectId};
 use egui::{Align, Color32, Frame, Id, Key, Layout, Margin, Modifiers, RichText, Sense, Ui};
@@ -33,6 +33,7 @@ mod list;
 
 use super::history::Shared;
 use crate::ci::CiMark;
+use crate::downloads::ArtifactWanted;
 use crate::forge::RepoForge;
 use crate::format;
 use crate::jobs;
@@ -43,6 +44,9 @@ use crate::widgets::{self, muted};
 
 /// How soon a pipeline that may still change is read again.
 const READ_AGAIN: Duration = Duration::from_secs(5);
+
+/// The help topic artifacts are explained by.
+pub(super) const ARTIFACTS_TOPIC: &str = "pipeline-artifacts";
 
 /// The help topic the page's parts are explained by.
 const TOPIC: &str = "pipeline-page";
@@ -257,6 +261,8 @@ pub(super) enum JobAsk {
     Act(CiAction),
     /// Its page on GitLab.
     Open(String),
+    /// One of its artifacts downloaded (a GitLab job's), and the job's name.
+    Download(Artifact, String),
 }
 
 /// The pipeline page's state.
@@ -303,6 +309,8 @@ pub(super) enum PipelineEvent {
     Acted,
     /// Another of the commit's pipelines (another GitHub workflow's run), in this one's place.
     Other(Box<CiMark>),
+    /// An artifact saved where the user says.
+    Download(Box<ArtifactWanted>),
 }
 
 impl PipelineView {
@@ -613,6 +621,13 @@ pub(super) fn show(
         Some(BarAsk::Open(url)) => event = Some(PipelineEvent::Open(url)),
         Some(BarAsk::Act(action)) => view.act(shared.forge, action),
         Some(BarAsk::Other(mark)) => event = Some(PipelineEvent::Other(mark)),
+        Some(BarAsk::Download(artifact, of)) => {
+            event = Some(PipelineEvent::Download(Box::new(ArtifactWanted {
+                repository: view.mark.repository,
+                artifact,
+                of,
+            })));
+        }
         None => {}
     }
     let palette = shared.palette;
@@ -649,6 +664,13 @@ pub(super) fn show(
         Some(JobAsk::Log(job, run)) => event = Some(PipelineEvent::Job(Box::new(job), run)),
         Some(JobAsk::Act(action)) => view.act(shared.forge, action),
         Some(JobAsk::Open(url)) => event = Some(PipelineEvent::Open(url)),
+        Some(JobAsk::Download(artifact, of)) => {
+            event = Some(PipelineEvent::Download(Box::new(ArtifactWanted {
+                repository: view.mark.repository,
+                artifact,
+                of,
+            })));
+        }
         None => {}
     }
     event
@@ -703,6 +725,8 @@ enum BarAsk {
     Act(CiAction),
     /// Another of the commit's pipelines.
     Other(Box<CiMark>),
+    /// One of its artifacts, and what it is of.
+    Download(Artifact, String),
 }
 
 /// The bar: back, the pipeline's number and status, Refresh (a spinner while reading), its
@@ -752,6 +776,10 @@ fn bar(
                     .id(Id::new("pipeline-actions"))
                     .layout(Layout::left_to_right(Align::Center)),
                 |ui| {
+                    if let Some((artifact, of)) = details.and_then(|details| artifacts(ui, details))
+                    {
+                        event = Some(BarAsk::Download(artifact, of));
+                    }
                     if let Some(details) = details
                         && let Some(asked) = pipeline_actions(ui, (details, words), view, acting)
                     {
@@ -812,6 +840,15 @@ fn action_widths(
     view: &mut PipelineView,
 ) -> Vec<f32> {
     let mut texts: Vec<String> = Vec::new();
+    let mut widths = Vec::new();
+    if details.is_some_and(has_artifacts) {
+        widths.push(widgets::tool_width(
+            ui,
+            (icon::DOWNLOAD_SIMPLE, "Artifacts"),
+            widgets::Look::Full,
+            true,
+        ));
+    }
     if view.confirming {
         texts.extend([words.cancel_asked, "Cancel it", "Keep it running"].map(str::to_owned));
     } else if let Some(details) = details {
@@ -828,10 +865,88 @@ fn action_widths(
     if let Some(doing) = view.acting.doing() {
         texts.push(format!("{doing}…  "));
     }
-    texts
-        .iter()
-        .map(|text| widgets::button_width(ui, text))
-        .collect()
+    widths.extend(texts.iter().map(|text| widgets::button_width(ui, text)));
+    widths
+}
+
+/// Whether a pipeline has artifacts to download: a GitHub run's, a GitLab job's.
+fn has_artifacts(details: &PipelineDetails) -> bool {
+    !details.artifacts.is_empty()
+        || details
+            .stages
+            .iter()
+            .flat_map(|stage| &stage.jobs)
+            .any(|job| !job.artifacts.is_empty())
+}
+
+/// The Artifacts menu, where the pipeline has any: a GitHub run's, each GitLab job's (named
+/// after it); the one chosen, and what it is of.
+fn artifacts(ui: &mut Ui, details: &PipelineDetails) -> Option<(Artifact, String)> {
+    if !has_artifacts(details) {
+        return None;
+    }
+    let mut chosen = None;
+    widgets::tool_menu_of(
+        ui,
+        (icon::DOWNLOAD_SIMPLE, "Artifacts"),
+        widgets::Look::Full,
+        ARTIFACTS_TOPIC,
+        |ui| {
+            super::actions::menu_rows(ui);
+            let title = details.pipeline.title();
+            let run = details.artifacts.iter().map(|artifact| (artifact, None));
+            let jobs = details
+                .stages
+                .iter()
+                .flat_map(|stage| &stage.jobs)
+                .flat_map(|job| {
+                    job.artifacts
+                        .iter()
+                        .map(move |artifact| (artifact, Some(job.name.as_str())))
+                });
+            egui::ScrollArea::vertical()
+                .max_height(420.0)
+                .show(ui, |ui| {
+                    if let Some((artifact, of)) = artifact_items(ui, run.chain(jobs)) {
+                        chosen = Some((artifact, of.unwrap_or(title)));
+                    }
+                });
+        },
+    );
+    chosen
+}
+
+/// An item downloading each of `artifacts` (each with the job it is of, where said): "Download
+/// artifacts.zip of build · 12.3 MB"; an expired one disabled. The one chosen, and its job.
+pub(super) fn artifact_items<'a>(
+    ui: &mut Ui,
+    artifacts: impl Iterator<Item = (&'a Artifact, Option<&'a str>)>,
+) -> Option<(Artifact, Option<String>)> {
+    let mut chosen = None;
+    for (artifact, of) in artifacts {
+        let mut words = format!("Download {}", artifact.file_name);
+        if let Some(of) = of {
+            words.push_str(" of ");
+            words.push_str(of);
+        }
+        if let Some(size) = artifact.size {
+            words.push_str(" · ");
+            words.push_str(&format::size(size));
+        }
+        let allowed = if artifact.expired {
+            Err("It expired: the forge no longer keeps it")
+        } else {
+            Ok(())
+        };
+        let glyph = match artifact.kind {
+            ArtifactKind::Report => icon::FILE_TEXT,
+            ArtifactKind::Archive | ArtifactKind::Uploaded => icon::FILE_ZIP,
+        };
+        if super::actions::item_of(ui, (glyph, &words), allowed, ARTIFACTS_TOPIC) {
+            chosen = Some((artifact.clone(), of.map(str::to_owned)));
+        }
+    }
+    chosen
 }
 
 /// Retrying the failed jobs and cancelling the pipeline (asked first), where GitLab allows them;

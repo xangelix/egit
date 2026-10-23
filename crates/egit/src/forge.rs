@@ -8,6 +8,7 @@
 //!
 //! A read again takes over only once complete, so the list never empties or jumps meanwhile.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use bstr::{BStr, BString, ByteSlice as _};
@@ -20,6 +21,7 @@ use egui_async::Bind;
 use parking_lot::{Mutex, MutexGuard};
 
 use crate::ci::{CiMark, Pipelines};
+use crate::downloads::{ArtifactWanted, Downloads};
 use crate::jobs;
 use crate::problem::Problem;
 
@@ -342,6 +344,8 @@ pub(crate) struct RepoForge {
     waker: egui::Context,
     /// The pipelines (GitLab's, GitHub's workflow runs): each commit's.
     ci: Pipelines,
+    /// Their artifacts downloaded, or being downloaded.
+    pub(crate) downloads: Downloads,
     /// What the run shares: the sign-ins made, which its accounts take as they are made; and
     /// the names listed GitLab hosts' ssh is on.
     run: ForgeRun,
@@ -373,6 +377,7 @@ impl RepoForge {
             generation: 0,
             waker: waker.clone(),
             ci: Pipelines::new(waker),
+            downloads: Downloads::default(),
             run,
             learned_at: 0,
             here,
@@ -581,6 +586,17 @@ impl RepoForge {
     /// Whether a read is under way.
     pub(crate) fn is_reading(&self) -> bool {
         self.reading.is_some() || !self.shown.lock().done
+    }
+
+    /// Downloads `wanted` into `to` (where the user said), through the account for its
+    /// repository.
+    pub(crate) fn download(&mut self, wanted: ArtifactWanted, to: PathBuf) {
+        let reach = self
+            .repositories
+            .get(wanted.repository)
+            .cloned()
+            .and_then(|repository| Some((self.account(repository.host())?, repository)));
+        self.downloads.start(reach, wanted, to, &self.waker);
     }
 
     /// `commit`'s pipelines, if it ran any: the most telling shown, the others beside it.

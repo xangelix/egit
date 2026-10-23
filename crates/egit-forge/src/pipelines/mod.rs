@@ -10,6 +10,7 @@ use egit_git::{CancelToken, ObjectId};
 use serde::Deserialize;
 
 use crate::account::Account;
+use crate::artifacts::Artifact;
 use crate::error::ForgeError;
 use crate::host::ForgeKind;
 use crate::repository::ForgeRepository;
@@ -264,6 +265,9 @@ pub struct PipelineDetails {
     /// The file its jobs and their needs are written in, as the repository holds it at its
     /// commit (a GitHub workflow's, `.github/workflows/ci.yml`), for [`Self::with_workflow`].
     pub workflow: Option<String>,
+    /// What the run uploaded to download (a GitHub run's artifacts; a GitLab pipeline's are
+    /// its jobs': [`Job::artifacts`]).
+    pub artifacts: Vec<Artifact>,
 }
 
 /// What can be done to a pipeline, as the forge says.
@@ -332,6 +336,9 @@ pub struct Job {
     pub can_update: bool,
     /// Its earlier runs in this place of the pipeline (retried since), the newest first.
     pub earlier: Vec<EarlierRun>,
+    /// What it kept to download (a GitLab job's archive and reports; a GitHub run's are the
+    /// run's: [`PipelineDetails::artifacts`]).
+    pub artifacts: Vec<Artifact>,
 }
 
 /// What can be done to a job, as the forge says.

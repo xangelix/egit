@@ -100,6 +100,11 @@ pub(crate) enum FileQuestion {
         commits: Arc<[ObjectId]>,
         one: bool,
     },
+    /// Where a pipeline's artifact goes (a file).
+    SaveArtifact {
+        repo: RepoId,
+        wanted: Box<crate::downloads::ArtifactWanted>,
+    },
 }
 
 /// The desktop's file dialogs (`rfd`, one at a time): where a file is saved, a folder, the
@@ -148,6 +153,7 @@ impl FileDialogs {
             let answer = match &question {
                 FileQuestion::SavePatch { .. }
                 | FileQuestion::SaveChanges { .. }
+                | FileQuestion::SaveArtifact { .. }
                 | FileQuestion::SavePicked { one: true, .. } => vec![folder.join(name)],
                 FileQuestion::SavePatches { .. } | FileQuestion::SavePicked { one: false, .. } => {
                     vec![folder.clone()]
@@ -161,6 +167,7 @@ impl FileDialogs {
         let kind = match &question {
             FileQuestion::SavePatch { .. }
             | FileQuestion::SaveChanges { .. }
+            | FileQuestion::SaveArtifact { .. }
             | FileQuestion::SavePicked { one: true, .. } => Asked::File,
             FileQuestion::SavePatches { .. } | FileQuestion::SavePicked { one: false, .. } => {
                 Asked::Folder

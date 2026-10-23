@@ -3,7 +3,7 @@
 //! credentials git's helpers keep, and pull requests (GitHub's) or merge requests (GitLab's):
 //! read, detailed, and opened; and CI/CD pipelines, GitLab's and GitHub Actions' workflow
 //! runs alike: each commit's, one whole (its stages and jobs, each job's earlier runs), what
-//! can be asked of them, and a job's log as it grows. No egui.
+//! can be asked of them, a job's log as it grows, and their artifacts downloaded. No egui.
 //!
 //! And people's pictures, from GitHub and Gravatar, by their email (when the preferences ask).
 //!
@@ -13,6 +13,7 @@
 mod account;
 mod answer;
 mod api;
+mod artifacts;
 mod error;
 mod github;
 mod gitlab;
@@ -30,6 +31,7 @@ pub use account::{Account, SignedIn};
 pub use api::{
     create_pull_request, pull_request_details, pull_requests, repository_info, ssh_host,
 };
+pub use artifacts::{Artifact, ArtifactKind, ArtifactSource, download_artifact};
 pub use error::ForgeError;
 pub use host::{ForgeHost, ForgeHosts, ForgeKind};
 pub use job_log::{

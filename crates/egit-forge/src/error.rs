@@ -77,6 +77,18 @@ pub enum ForgeError {
         /// What was wrong with it.
         detail: String,
     },
+    /// What was downloaded isn't what the host's digest of it says: changed on the way, or
+    /// since the digest was taken.
+    #[error(
+        "{what} doesn't match the SHA-256 digest {host} gave for it: it may have been changed on \
+         the way"
+    )]
+    Mismatched {
+        /// The host.
+        host: String,
+        /// What was downloaded (its file).
+        what: String,
+    },
     /// A credential would have gone over a connection that isn't encrypted.
     #[error("not sending credentials to {host} without HTTPS")]
     Insecure {

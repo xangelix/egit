@@ -85,6 +85,23 @@ pub struct FakePipeline {
     pub created: String,
     /// Its stages in order: each one's name, status (`success`, …), and jobs.
     pub stages: Vec<(String, String, Vec<FakeJob>)>,
+    /// A GitHub run's artifacts.
+    pub artifacts: Vec<FakeArtifact>,
+}
+
+/// A GitHub run's artifact the fake serves.
+#[derive(Clone, Debug, Default)]
+pub struct FakeArtifact {
+    /// Its number.
+    pub id: u64,
+    /// Its name.
+    pub name: String,
+    /// What its zip holds, as the fake sends it.
+    pub contents: String,
+    /// The SHA-256 digest listed for it (`sha256:<hex>`; empty: the contents').
+    pub digest: String,
+    /// Whether it has expired (its download answers 410).
+    pub expired: bool,
 }
 
 /// A job of a fake pipeline.
@@ -110,6 +127,9 @@ pub struct FakeJob {
     pub earlier: Vec<Self>,
     /// A GitHub job's steps: each one's name and status (as GitLab's enum names it).
     pub steps: Vec<(String, String)>,
+    /// A GitLab job's artifacts: each one's file type (`ARCHIVE`, `JUNIT`, …), name, and
+    /// contents. An archive is sent through a redirect (as gitlab.com's CDN), a report as it is.
+    pub artifacts: Vec<(String, String, String)>,
 }
 
 /// A status GitLab retries (`FAILED`, `CANCELED`), may retry (one that ended), cancels (under
@@ -363,6 +383,9 @@ fn answer(kind: ForgeKind, request: &Recorded, state: &mut FakeState) -> Answer 
     // A GitHub log's file, at the address a redirect signed: no token.
     if let Some(id) = request.path.strip_prefix("/blob/job/") {
         return github_log_file(id, state);
+    }
+    if let Some(place) = request.path.strip_prefix("/blob/artifact/") {
+        return artifact_file(place, state);
     }
     let bearer = request
         .authorization
@@ -746,6 +769,7 @@ fn gitlab_pipelines(
                                 "cancelable": under_way(&job.status),
                                 "playable": job.status == "MANUAL",
                                 "userPermissions": { "updateBuild": can_update },
+                                "artifacts": { "nodes": gitlab_artifact_nodes(job) },
                                 "downstreamPipeline": null })
                     })
                     .collect();
@@ -1019,6 +1043,9 @@ fn gitlab_rest(request: &Recorded, state: &mut FakeState) -> Answer {
     if request.method == "GET"
         && let Some((project, job)) = rest.split_once("/jobs/")
     {
+        if let Some(answer) = gitlab_artifact(&decoded(project), job, state) {
+            return answer;
+        }
         return gitlab_job(&decoded(project), job, request, state).unwrap_or_else(not_found);
     }
     if request.method == "GET" {
@@ -1317,6 +1344,9 @@ fn github_actions(request: &Recorded, state: &mut FakeState) -> Option<Answer> {
         .clone();
     let runs = &snapshot.pipelines;
     let run_of = |id: &str| runs.iter().find(|run| run.id.to_string() == id);
+    if let Some(answer) = github_artifacts(resource, runs, state) {
+        return Some(answer);
+    }
     let answer = match resource.split('/').collect::<Vec<_>>().as_slice() {
         [""] => json!({ "full_name": snapshot.path,
             "permissions": { "admin": false, "maintain": false, "push": !read_only, "pull": true } }),
@@ -1369,6 +1399,49 @@ fn github_actions(request: &Recorded, state: &mut FakeState) -> Option<Answer> {
                 return Some((302, vec![("location", location)], String::new()));
             }
             github_job(&snapshot, run, (job, attempt), state)
+        }
+        _ => return None,
+    };
+    Some((200, Vec::new(), answer.to_string()))
+}
+
+/// A run's artifacts listed, or an artifact's zip (a redirect to its file; 410 once expired);
+/// none for another request.
+fn github_artifacts(resource: &str, runs: &[FakePipeline], state: &FakeState) -> Option<Answer> {
+    let not_found = (
+        404,
+        Vec::new(),
+        json!({ "message": "Not Found" }).to_string(),
+    );
+    let answer = match resource.split('/').collect::<Vec<_>>().as_slice() {
+        ["actions", "runs", id, "artifacts"] => {
+            let Some(run) = runs.iter().find(|run| run.id.to_string() == *id) else {
+                return Some(not_found);
+            };
+            let listed: Vec<Value> = run.artifacts.iter().map(github_artifact).collect();
+            json!({ "total_count": listed.len(), "artifacts": listed })
+        }
+        ["actions", "artifacts", id, "zip"] => {
+            let found = runs
+                .iter()
+                .flat_map(|run| &run.artifacts)
+                .find(|artifact| artifact.id.to_string() == *id);
+            return Some(match found {
+                Some(artifact) if artifact.expired => (
+                    410,
+                    Vec::new(),
+                    json!({ "message": "Artifact has expired" }).to_string(),
+                ),
+                Some(artifact) => (
+                    302,
+                    vec![(
+                        "location",
+                        format!("http://{}/blob/artifact/gh/{}", state.address, artifact.id),
+                    )],
+                    String::new(),
+                ),
+                None => not_found,
+            });
         }
         _ => return None,
     };
@@ -1502,4 +1575,119 @@ fn github_action(path: &str, resource: &str, state: &mut FakeState) -> Option<An
     };
     state.next_job = next;
     Some(answer)
+}
+
+/// A GitLab job's artifacts as its GraphQL API lists them: its own, and its log's (a trace).
+fn gitlab_artifact_nodes(job: &FakeJob) -> Vec<Value> {
+    let mut nodes: Vec<Value> = job
+        .artifacts
+        .iter()
+        .map(|(file_type, name, contents)| {
+            json!({ "name": name, "fileType": file_type, "size": contents.len().to_string(),
+                    "expireAt": null })
+        })
+        .collect();
+    if !job.log.is_empty() {
+        nodes.push(
+            json!({ "name": "job.log", "fileType": "TRACE", "size": job.log.len().to_string(),
+                           "expireAt": null }),
+        );
+    }
+    nodes
+}
+
+/// A GitHub artifact as GitHub lists it, its digest the contents' unless given.
+fn github_artifact(artifact: &FakeArtifact) -> Value {
+    use sha2::{Digest as _, Sha256};
+    let digest = if artifact.digest.is_empty() {
+        let hash = Sha256::digest(artifact.contents.as_bytes());
+        let hex = hash.iter().fold(String::new(), |mut hex, byte| {
+            hex.push_str(&format!("{byte:02x}"));
+            hex
+        });
+        format!("sha256:{hex}")
+    } else {
+        artifact.digest.clone()
+    };
+    json!({ "id": artifact.id, "name": artifact.name, "size_in_bytes": artifact.contents.len(),
+            "expired": artifact.expired, "digest": digest,
+            "archive_download_url": format!("/actions/artifacts/{}/zip", artifact.id) })
+}
+
+/// A GitLab job's artifact (`<project>/jobs/<id>/artifacts?file_type=<type>`): an archive a
+/// redirect to its file, a report its file; none for another request.
+fn gitlab_artifact(project: &str, job: &str, state: &FakeState) -> Option<Answer> {
+    let (id, query) = job.split_once("/artifacts")?;
+    let file_type = query
+        .strip_prefix("?file_type=")
+        .unwrap_or("archive")
+        .to_ascii_uppercase();
+    let repository = state
+        .repositories
+        .iter()
+        .find(|repository| repository.path.eq_ignore_ascii_case(project))?;
+    let contents = repository.pipelines.iter().find_map(|pipeline| {
+        pipeline
+            .stages
+            .iter()
+            .flat_map(|(_, _, jobs)| jobs)
+            .find(|job| job_id(pipeline, job).to_string() == id)
+            .and_then(|job| job.artifacts.iter().find(|(kind, _, _)| *kind == file_type))
+            .map(|(_, _, contents)| contents.clone())
+    });
+    Some(match contents {
+        None => (
+            404,
+            Vec::new(),
+            json!({ "message": "404 Not Found" }).to_string(),
+        ),
+        Some(_) if file_type == "ARCHIVE" => (
+            302,
+            vec![(
+                "location",
+                format!("http://{}/blob/artifact/gl/{id}/{file_type}", state.address),
+            )],
+            String::new(),
+        ),
+        Some(contents) => (200, Vec::new(), contents),
+    })
+}
+
+/// An artifact's file, at the address a redirect signed (`gl/<job>/<type>`, `gh/<id>`):
+/// whoever asks.
+fn artifact_file(place: &str, state: &FakeState) -> Answer {
+    let pipelines = || {
+        state
+            .repositories
+            .iter()
+            .flat_map(|repository| &repository.pipelines)
+    };
+    let found = match place.split_once('/') {
+        Some(("gl", rest)) => rest.split_once('/').and_then(|(id, file_type)| {
+            pipelines().find_map(|pipeline| {
+                pipeline
+                    .stages
+                    .iter()
+                    .flat_map(|(_, _, jobs)| jobs)
+                    .find(|job| job_id(pipeline, job).to_string() == id)
+                    .and_then(|job| job.artifacts.iter().find(|(kind, _, _)| kind == file_type))
+                    .map(|(_, _, contents)| contents.clone())
+            })
+        }),
+        Some(("gh", id)) => pipelines()
+            .flat_map(|pipeline| &pipeline.artifacts)
+            .find(|artifact| artifact.id.to_string() == id)
+            .map(|artifact| artifact.contents.clone()),
+        _ => None,
+    };
+    found.map_or_else(
+        || {
+            (
+                404,
+                Vec::new(),
+                "The specified blob does not exist.".to_owned(),
+            )
+        },
+        |contents| (200, Vec::new(), contents),
+    )
 }

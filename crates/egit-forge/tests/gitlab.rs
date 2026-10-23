@@ -3,7 +3,9 @@
 //! project and the one it was forked from, opening a merge request (in the project, and from a
 //! fork; a draft by its title) and its refusal, and refused credentials (forgotten), no
 //! credentials, rate limits, projects that aren't there, and signing in; pipelines a page at a
-//! time, and one whole (its stages in order, its jobs and their pages).
+//! time, and one whole (its stages in order, its jobs and their pages); a job's artifacts
+//! listed (its log left out) and downloaded (an archive through a redirect, without the token;
+//! a report as it is).
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
 #![allow(
@@ -16,10 +18,11 @@
 
 use egit_forge::testing::{FakeForge, FakeJob, FakePipeline, FakePull, FakeRepository};
 use egit_forge::{
-    Account, CheckState, CiAction, CiGroup, CiStatus, ForgeError, ForgeHost, ForgeKind,
-    ForgeRepository, JobLog, LogRead, Mergeable, NewPullRequest, PipelineListing, ReviewDecision,
-    ReviewState, ci_act, create_pull_request, job, pipeline_details, pipelines,
-    pull_request_details, pull_requests, read_log, repository_info, ssh_host,
+    Account, ArtifactKind, CheckState, CiAction, CiGroup, CiStatus, ForgeError, ForgeHost,
+    ForgeKind, ForgeRepository, JobLog, LogRead, Mergeable, NewPullRequest, PipelineListing,
+    ReviewDecision, ReviewState, ci_act, create_pull_request, download_artifact, job,
+    pipeline_details, pipelines, pull_request_details, pull_requests, read_log, repository_info,
+    ssh_host,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -592,4 +595,87 @@ fn a_pipeline_s_jobs_are_retried_cancelled_and_started_their_earlier_runs_kept()
         act(CiAction::RetryPipeline(9_000)),
         Err(ForgeError::Forbidden { .. })
     ));
+}
+
+#[test]
+fn a_job_s_artifacts_are_listed_and_downloaded() {
+    let (fake, _sandbox, account, project) = setup(0, TOKEN);
+    let mut pipelines = fake_pipelines(1);
+    let compile = &mut pipelines[0].stages[0].2[0];
+    compile.log = "built\n".to_owned();
+    compile.artifacts = vec![
+        (
+            "ARCHIVE".to_owned(),
+            "artifacts.zip".to_owned(),
+            "PK the archive".to_owned(),
+        ),
+        (
+            "JUNIT".to_owned(),
+            "junit.xml.gz".to_owned(),
+            "the report".to_owned(),
+        ),
+    ];
+    fake.state().repositories[0].pipelines = pipelines;
+    let details = pipeline_details(&account, &project, 1, &CancelToken::new()).unwrap();
+    let artifacts = &details.stages[0].jobs[0].artifacts;
+    // Its log is no artifact to download.
+    assert_eq!(
+        artifacts
+            .iter()
+            .map(|artifact| (artifact.file_name.as_str(), artifact.kind, artifact.size))
+            .collect::<Vec<_>>(),
+        [
+            ("artifacts.zip", ArtifactKind::Archive, Some(14)),
+            ("junit.xml.gz", ArtifactKind::Report, Some(10)),
+        ]
+    );
+    assert_eq!(details.artifacts.len(), 0);
+    let download = |which: usize| {
+        let mut bytes = Vec::new();
+        let count = download_artifact(
+            &account,
+            &project,
+            &artifacts[which],
+            &CancelToken::new(),
+            &mut |part| {
+                bytes.extend_from_slice(part);
+                true
+            },
+        )
+        .unwrap();
+        assert_eq!(count, u64::try_from(bytes.len()).unwrap());
+        String::from_utf8(bytes).unwrap()
+    };
+    // The archive comes through a redirect, its file asked without the token.
+    assert_eq!(download(0), "PK the archive");
+    let asked = fake
+        .state()
+        .requests
+        .iter()
+        .find(|request| request.path.starts_with("/blob/artifact/"))
+        .map(|request| request.authorization.clone());
+    assert_eq!(asked, Some(None));
+    // A report comes as it is.
+    assert_eq!(download(1), "the report");
+    // A sink that can't take more stops it.
+    let stopped = download_artifact(
+        &account,
+        &project,
+        &artifacts[0],
+        &CancelToken::new(),
+        &mut |_| false,
+    );
+    assert!(matches!(stopped, Err(ForgeError::Cancelled)));
+    // One gone from GitLab isn't found.
+    fake.state().repositories[0].pipelines[0].stages[0].2[0]
+        .artifacts
+        .clear();
+    let gone = download_artifact(
+        &account,
+        &project,
+        &artifacts[1],
+        &CancelToken::new(),
+        &mut |_| true,
+    );
+    assert!(matches!(gone, Err(ForgeError::NotFound { .. })));
 }

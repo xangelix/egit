@@ -443,6 +443,43 @@ pub(crate) fn muted(ui: &Ui, text: impl Into<String>) -> RichText {
     RichText::new(text).color(Palette::of(ui.ctx()).muted)
 }
 
+/// Muted words holding a clock that ticks ("running · 1 min 30 s so far"), as wide as they
+/// would be with every digit at its widest, so what follows them in a row stays where it is as
+/// the seconds go by.
+pub(crate) fn ticking(ui: &mut Ui, text: String) -> Response {
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let width = |text: String| {
+        ui.painter()
+            .layout_no_wrap(text, font.clone(), Color32::PLACEHOLDER)
+            .size()
+            .x
+    };
+    let widest = ('0'..='9')
+        .max_by(|one, other| width(one.to_string()).total_cmp(&width(other.to_string())))
+        .unwrap_or('0');
+    let steady: String = text
+        .chars()
+        .map(|character| {
+            if character.is_ascii_digit() {
+                widest
+            } else {
+                character
+            }
+        })
+        .collect();
+    let room = width(steady).max(width(text.clone()));
+    let words = muted(ui, text);
+    ui.allocate_ui_with_layout(
+        egui::vec2(room, CONTROL),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_width(room);
+            ui.label(words)
+        },
+    )
+    .inner
+}
+
 /// The button for the main thing to do: filled with the accent; while it can't be pressed, a
 /// plain one (a faded accent reads as pressable).
 pub(crate) fn primary(ui: &mut Ui, enabled: bool, text: &str) -> Response {

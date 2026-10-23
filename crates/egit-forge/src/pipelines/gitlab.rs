@@ -13,6 +13,7 @@ use super::{
 };
 use crate::account::Account;
 use crate::answer::{cancelled, graphql, not_found, parse_time, read_answer};
+use crate::artifacts::{Artifact, gitlab_artifact};
 use crate::error::ForgeError;
 use crate::repository::ForgeRepository;
 
@@ -155,6 +156,7 @@ const PIPELINE: &str = "query Pipeline($path: ID!, $iid: ID!) { project(fullPath
     webPath stage { name } } } stages { nodes { name status jobs { nodes { id name status \
     allowFailure manualJob webPath duration startedAt schedulingType retryable cancelable \
     playable userPermissions { updateBuild } needs { nodes { name } } downstreamPipeline { path } \
+    artifacts { nodes { name fileType size expireAt } } \
     } } } } } } }";
 
 #[derive(Deserialize)]
@@ -333,6 +335,37 @@ struct JobNode {
     actions: JobActions,
     user_permissions: Option<Permissions>,
     needs: Option<Nodes<NameOnly>>,
+    artifacts: Option<Nodes<ArtifactNode>>,
+}
+
+/// A job's artifact, as GitLab's GraphQL API lists it (its size a big integer, written as text).
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ArtifactNode {
+    name: Option<String>,
+    file_type: Option<String>,
+    size: Option<serde_json::Value>,
+    expire_at: Option<String>,
+}
+
+impl ArtifactNode {
+    /// The artifact of job `job`, unless it is its log or the archive's metadata.
+    fn artifact(self, job: u64) -> Option<Artifact> {
+        let size = match &self.size {
+            Some(serde_json::Value::Number(number)) => number.as_u64(),
+            Some(serde_json::Value::String(text)) => text.parse().ok(),
+            _ => None,
+        };
+        gitlab_artifact(
+            job,
+            (
+                self.file_type.as_deref()?,
+                self.name.as_deref().unwrap_or_default(),
+                size,
+                self.expire_at.as_deref().and_then(parse_time),
+            ),
+        )
+    }
 }
 
 /// A job's number, from its global id (`gid://gitlab/Ci::Build/123`; a trigger's is a
@@ -395,6 +428,7 @@ impl DetailsNode {
                 .is_some_and(|permissions| permissions.update_pipeline),
             ordered_stages: true,
             workflow: None,
+            artifacts: Vec::new(),
         })
     }
 }
@@ -454,8 +488,18 @@ impl JobNode {
                 .filter_map(|need| need.name)
                 .collect()
         });
+        let id = build_id(self.id.as_deref());
+        let artifacts = id.map_or_else(Vec::new, |id| {
+            self.artifacts
+                .unwrap_or_default()
+                .nodes
+                .into_iter()
+                .flatten()
+                .filter_map(|artifact| artifact.artifact(id))
+                .collect()
+        });
         Job {
-            id: build_id(self.id.as_deref()),
+            id,
             name,
             status: self
                 .status
@@ -476,6 +520,7 @@ impl JobNode {
                 .user_permissions
                 .is_some_and(|permissions| permissions.update_build),
             earlier,
+            artifacts,
         }
     }
 }

@@ -44,6 +44,10 @@ pub(crate) type Sink<'a> = dyn FnMut(u16, Option<&str>, &[u8]) + 'a;
 pub(crate) struct Streamed {
     pub(crate) status: u16,
     pub(crate) said: Vec<u8>,
+    /// Where a redirect points.
+    pub(crate) location: Option<String>,
+    /// Whether the sink said to stop before the end.
+    pub(crate) stopped: bool,
 }
 
 /// One of an answer's headers: the first of `names` it has.
@@ -63,7 +67,13 @@ fn header_of(response: &ureq::http::Response<ureq::Body>, names: [&str; 2]) -> O
 pub(crate) struct Http {
     host: ForgeHost,
     agent: Agent,
+    /// Downloads' (an artifact may be gigabytes): the same, but without an overall time limit;
+    /// 60 s for an answer to begin, and its body as long as [`DOWNLOAD_LASTS`].
+    downloads: Agent,
 }
+
+/// The longest a download's body may take.
+const DOWNLOAD_LASTS: Duration = Duration::from_hours(12);
 
 impl Http {
     /// The client for `host`.
@@ -75,20 +85,29 @@ impl Http {
                 rustls::crypto::aws_lc_rs::default_provider(),
             ))
             .build();
-        let mut config = Agent::config_builder()
-            .http_status_as_error(false)
-            .max_redirects(0)
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_global(Some(Duration::from_secs(60)))
-            .user_agent(concat!("egit/", env!("CARGO_PKG_VERSION")))
-            .tls_config(tls);
-        if host.protocol() == "http" {
-            // The loopback address, never through a proxy.
-            config = config.proxy(None);
-        }
+        let base = || {
+            let config = Agent::config_builder()
+                .http_status_as_error(false)
+                .max_redirects(0)
+                .timeout_connect(Some(Duration::from_secs(10)))
+                .user_agent(concat!("egit/", env!("CARGO_PKG_VERSION")))
+                .tls_config(tls.clone());
+            if host.protocol() == "http" {
+                // The loopback address, never through a proxy.
+                config.proxy(None)
+            } else {
+                config
+            }
+        };
+        let agent = base().timeout_global(Some(Duration::from_secs(60))).build();
+        let downloads = base()
+            .timeout_recv_response(Some(Duration::from_secs(60)))
+            .timeout_recv_body(Some(DOWNLOAD_LASTS))
+            .build();
         Self {
             host,
-            agent: config.build().into(),
+            agent: agent.into(),
+            downloads: downloads.into(),
         }
     }
 
@@ -107,7 +126,7 @@ impl Http {
     ) -> Result<Answer, ForgeError> {
         let started = std::time::Instant::now();
         let method = if body.is_some() { "POST" } else { "GET" };
-        let mut response = self.request(url, body, token, None)?;
+        let mut response = self.request(&self.agent, url, body, token, (None, false))?;
         let header = |names: [&str; 2]| header_of(&response, names);
         // GitHub's names, then GitLab's.
         let remaining = header(["x-ratelimit-remaining", "ratelimit-remaining"])
@@ -157,7 +176,7 @@ impl Http {
     ) -> Result<Streamed, ForgeError> {
         use std::io::Read as _;
         let started = std::time::Instant::now();
-        let mut response = self.request(url, None, token, from)?;
+        let mut response = self.request(&self.agent, url, None, token, (from, false))?;
         let status = response.status().as_u16();
         let content_range = header_of(&response, ["content-range", "content-range"]);
         let reader = response.body_mut().with_config().limit(limit);
@@ -188,35 +207,46 @@ impl Http {
             ms = started.elapsed().as_millis(),
             "the forge streamed"
         );
-        Ok(Streamed { status, said })
+        Ok(Streamed {
+            status,
+            said,
+            location: None,
+            stopped: false,
+        })
     }
 
-    /// GETs `url`, a place a redirect named (a log's file, its address signed), without any
-    /// credential, handing a successful answer's body to `sink` as [`Self::stream`] does; only
-    /// over HTTPS (but to the loopback address).
-    pub(crate) fn stream_public(
+    /// GETs `url` for a download (an artifact, a log's file), handing a successful answer's
+    /// body to `sink` a part at a time until it says to stop (`false`): with `token` (the
+    /// host's own address), or without any credential (a place a redirect named, its address
+    /// signed: only over HTTPS, but to the loopback address). Through the agent without an
+    /// overall time limit; a redirect is said (`location`), never followed.
+    pub(crate) fn download(
         &self,
         url: &str,
-        limit: u64,
-        sink: &mut Sink<'_>,
+        token: Option<&str>,
+        sink: &mut dyn FnMut(&[u8]) -> bool,
     ) -> Result<Streamed, ForgeError> {
         use std::io::Read as _;
-        let loopback = url.starts_with("http://127.0.0.1:") || url.starts_with("http://[::1]:");
-        if !url.starts_with("https://") && !loopback {
-            return Err(ForgeError::Insecure {
-                host: self.host.name().to_owned(),
-            });
-        }
         let started = std::time::Instant::now();
-        let mut response = self
-            .agent
-            .get(url)
-            .call()
-            .map_err(|error| self.network(&error))?;
+        let mut response = if let Some(token) = token {
+            self.request(&self.downloads, url, None, token, (None, true))?
+        } else {
+            let loopback = url.starts_with("http://127.0.0.1:") || url.starts_with("http://[::1]:");
+            if !url.starts_with("https://") && !loopback {
+                return Err(ForgeError::Insecure {
+                    host: self.host.name().to_owned(),
+                });
+            }
+            self.downloads
+                .get(url)
+                .call()
+                .map_err(|error| self.network(&error))?
+        };
         let status = response.status().as_u16();
-        let mut reader = response.body_mut().with_config().limit(limit).reader();
-        let (mut given, mut said) = (0_u64, Vec::new());
-        let mut buffer = vec![0_u8; 64 * 1024];
+        let location = header_of(&response, ["location", "location"]);
+        let mut reader = response.body_mut().with_config().limit(u64::MAX).reader();
+        let (mut given, mut said, mut stopped) = (0_u64, Vec::new(), false);
+        let mut buffer = vec![0_u8; 256 * 1024];
         loop {
             let read = reader
                 .read(&mut buffer)
@@ -225,31 +255,43 @@ impl Http {
                 break;
             };
             if (200..300).contains(&status) {
-                sink(status, None, part);
                 given = given.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
+                if !sink(part) {
+                    stopped = true;
+                    break;
+                }
             } else if said.len() < 64 * 1024 {
                 said.extend_from_slice(part);
             }
         }
-        // The address only to the host's name: it is signed.
+        // Not the address: a signed one carries its own authority.
         tracing::debug!(
             host = self.host.name(),
+            credential = token.is_some(),
             status,
             bytes = given,
+            stopped,
             ms = started.elapsed().as_millis(),
-            "a file the forge pointed to was read"
+            "a download went"
         );
-        Ok(Streamed { status, said })
+        Ok(Streamed {
+            status,
+            said,
+            location,
+            stopped,
+        })
     }
 
-    /// Sends a request to `url` with `token` (and `body`, JSON, as a POST; `from`, a `Range` of
-    /// the bytes as stored), and gives its answer's head, its body still to read.
+    /// Sends a request to `url` through `agent` with `token` (and `body`, JSON, as a POST;
+    /// `from`, a `Range` of the bytes as stored; `any`, any kind of answer accepted: a
+    /// download's), and gives its answer's head, its body still to read.
     fn request(
         &self,
+        agent: &Agent,
         url: &str,
         body: Option<&[u8]>,
         token: &str,
-        from: Option<u64>,
+        (from, any): (Option<u64>, bool),
     ) -> Result<ureq::http::Response<ureq::Body>, ForgeError> {
         if !self.host.is_safe_for_credentials() {
             return Err(ForgeError::Insecure {
@@ -264,14 +306,15 @@ impl Http {
         authorization.set_sensitive(true);
         // GitHub's media type and API version; GitLab needs neither.
         let github = self.host.kind() == ForgeKind::GitHub;
-        let accept = if github {
+        let accept = if any {
+            "*/*"
+        } else if github {
             "application/vnd.github+json"
         } else {
             "application/json"
         };
         let sent = if let Some(body) = body {
-            let mut request = self
-                .agent
+            let mut request = agent
                 .post(url)
                 .header("Authorization", authorization)
                 .header("Accept", accept)
@@ -281,8 +324,7 @@ impl Http {
             }
             request.send(body)
         } else {
-            let mut request = self
-                .agent
+            let mut request = agent
                 .get(url)
                 .header("Authorization", authorization)
                 .header("Accept", accept);

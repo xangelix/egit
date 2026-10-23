@@ -239,19 +239,32 @@ impl Account {
         Ok(streamed)
     }
 
-    /// GETs `url`, a place the host pointed to (a log's file, its address signed), without the
-    /// credential, as [`Self::stream`] does.
-    pub(crate) fn stream_public(
+    /// GETs `url`, one of the host's, for a download (an artifact), with the credential,
+    /// handing its body to `sink` until it says to stop; a redirect said, not followed.
+    pub(crate) fn download(
         &self,
         url: &str,
-        limit: u64,
-        sink: &mut Sink<'_>,
+        sink: &mut dyn FnMut(&[u8]) -> bool,
+        cancel: &CancelToken,
+    ) -> Result<Streamed, ForgeError> {
+        let credential = self.credential(cancel)?;
+        let streamed = self.http.download(url, Some(credential.password()), sink)?;
+        self.answered(&credential, streamed.status)?;
+        Ok(streamed)
+    }
+
+    /// GETs `url`, a place the host pointed to (an artifact's or a log's file, its address
+    /// signed), without the credential, handing its body to `sink` until it says to stop.
+    pub(crate) fn download_public(
+        &self,
+        url: &str,
+        sink: &mut dyn FnMut(&[u8]) -> bool,
         cancel: &CancelToken,
     ) -> Result<Streamed, ForgeError> {
         if cancel.is_cancelled() {
             return Err(ForgeError::Cancelled);
         }
-        self.http.stream_public(url, limit, sink)
+        self.http.download(url, None, sink)
     }
 
     /// Whether it may push to the repository at `path`, as the host said lately.

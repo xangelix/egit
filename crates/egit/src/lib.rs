@@ -26,6 +26,7 @@ mod commands;
 mod desktop;
 mod diff;
 mod discarding;
+mod downloads;
 mod exporting;
 mod file_tree;
 mod fonts;
