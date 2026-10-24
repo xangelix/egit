@@ -156,7 +156,9 @@ impl FileDialogs {
     /// Asks `question` (`title` on the dialog; `name`, a file offered), unless a dialog is
     /// open already.
     pub(crate) fn ask(&mut self, question: FileQuestion, title: &'static str, name: String) {
-        if self.asking.is_pending() {
+        // A browser's dialog may never say it was cancelled (one without its `cancel` event):
+        // a second question replaces the first there.
+        if self.asking.is_pending() && !crate::desktop::IN_BROWSER {
             return;
         }
         if let Some(folder) = &self.folder {
@@ -185,11 +187,25 @@ impl FileDialogs {
             FileQuestion::ApplyPatches { .. } => Asked::Patches,
             FileQuestion::AttachImages { .. } => Asked::Images,
         };
-        self.question = Some(question);
-        // A browser's are its own: files sent and received through the page (`web`).
         #[cfg(target_arch = "wasm32")]
-        let _ = (kind, title, name);
+        {
+            let _ = title;
+            self.ask_the_browser(question, kind, &name);
+        }
         #[cfg(not(target_arch = "wasm32"))]
+        self.ask_the_desktop(question, kind, title, name);
+    }
+
+    /// The desktop's dialog (`rfd`), its answer coming in its own time.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ask_the_desktop(
+        &mut self,
+        question: FileQuestion,
+        kind: Asked,
+        title: &'static str,
+        name: String,
+    ) {
+        self.question = Some(question);
         self.asking.request(async move {
             let dialog = rfd::AsyncFileDialog::new().set_title(title);
             let chosen = match kind {
@@ -214,6 +230,30 @@ impl FileDialogs {
             };
             Ok(chosen.iter().map(|file| file.path().to_owned()).collect())
         });
+    }
+
+    /// In a browser: what is saved goes to its downloads (a file by `name`, a folder's files
+    /// each by its own); what is opened is chosen in its dialog. Its folders aren't the
+    /// repository's computer's: a worktree's isn't chosen there.
+    #[cfg(target_arch = "wasm32")]
+    fn ask_the_browser(&mut self, question: FileQuestion, kind: Asked, name: &str) {
+        let downloads = std::path::Path::new(egit_git::local::DOWNLOADS);
+        let accept = match kind {
+            _ if matches!(question, FileQuestion::WorktreeFolder { .. }) => return,
+            Asked::File => {
+                self.answered = Some((question, vec![downloads.join(name)]));
+                return;
+            }
+            Asked::Folder => {
+                self.answered = Some((question, vec![downloads.to_owned()]));
+                return;
+            }
+            Asked::Patches => ".patch,.diff,.mbox,.eml,text/plain,text/x-diff,text/x-patch",
+            Asked::Images => "image/png,image/jpeg,image/gif,image/webp",
+        };
+        self.question = Some(question);
+        self.asking
+            .request(async move { Ok(crate::web::files::choose(accept).await) });
     }
 
     /// The question answered and its answer, once given (none when the dialog was cancelled).

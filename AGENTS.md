@@ -48,7 +48,7 @@ it.
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
 | 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
-| 37 | egit in a browser: WebAssembly, git through a relay | under way: the relay, its protocol, and egit in a browser (a repository's history, work tree, and diffs); files through the browser, fonts, and the page's tests to come |
+| 37 | egit in a browser: WebAssembly, git through a relay | under way: the relay, its protocol, and egit in a browser (a repository's history, work tree, and diffs; patches saved and chosen through the browser); artifacts, fonts, and the page's tests to come |
 
 ## Toolchain & commands
 
@@ -227,6 +227,13 @@ compile.
     `std::fs`; there `sh -c` with
     the paths as arguments, one session for several paths where it can (a missing path exits 3:
     `NotFound`). `is_absolute`: a path absolute where git runs (in a browser, from the root).
+  - `local.rs` — the files of the computer egit runs on, as `Files` are git's: `read`,
+    `size`, `write`, `create_dir_all`; `std::fs`, or in a browser the files the person chose
+    there (`give`: kept in the page's memory under a path of their own, `/given/<n>/<name>`,
+    the latest `KEPT`, 32) and downloads (a link to a `Blob` of the bytes, clicked; its address
+    let go a minute later). A repository elsewhere's patches are written through it
+    (`format_patches`, `format_series_into`), as are egit's own saves (a patch, changes,
+    commits picked) and the patches and images it reads.
   - `looking.rs` — following a repository on another computer: `look_there` (a `Follow`: how
     often to look, and the `inotifywait` to be told by) runs a session there that, where
     `inotifywait` is installed, runs it on the git directories, `refs` (recursive), and the
@@ -1186,6 +1193,9 @@ compile.
     `socket.rs`: the page's WebSockets, kept by number on the page's thread
     (`thread_local`), a `Numbered` one the relay's `Transport` (`Send`, as every egit future
     is): its messages handed to `Relay::receive` as they come, its close to `Relay::closed`.
+    `files.rs`: `choose`, the browser's dialog (an `<input type=file>` clicked, its `change`
+    or `cancel` answering): each file chosen read into the page (256 MiB at most) and given to
+    egit (`egit_git::local::give`), its path what is answered.
     `notify.rs`: `notify`'s names, a watch failing at once (sessions on the relay's computer
     follow what changes, as over SSH).
   - `app.rs` — `EgitApp { tabs, state }`. Views never change `AppState` directly: they push
@@ -1737,7 +1747,12 @@ compile.
     picked go (`SavePicked`: a file for one patch, a folder for one each), which patches to
     apply (files, patches first), which images to attach to an agent's prompt
     (`AttachImages`), where a pipeline's artifact goes (`SaveArtifact`: a file, named as the
-    forge names it); for tests a folder answering them all (`in_folder`). `Action::AskFiles`
+    forge names it); for tests a folder answering them all (`in_folder`). In a browser
+    (`ask_the_browser`): what is saved goes to its downloads, at once (a file by its name in
+    `egit_git::local::DOWNLOADS`, a folder that folder: each patch a download), what is opened
+    is chosen in its dialog (`web::files::choose`), and no worktree's folder is (its folders
+    are the relay's computer's, typed); a second question replaces one the browser never
+    answered (one without its `cancel` event). `Action::AskFiles`
     asks, and `AppState::poll` turns the answer into a task, shows the patches
     (`Action::OpenPatches`), attaches the images to the tab's conversation shown, or starts
     the download (`RepoForge::download`).

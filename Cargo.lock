@@ -1230,6 +1230,7 @@ dependencies = [
  "egit-git",
  "futures-util",
  "getrandom 0.4.3",
+ "js-sys",
  "libc",
  "parking_lot",
  "rustix 1.1.5",

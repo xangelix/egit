@@ -1856,7 +1856,7 @@ async fn stashing(
 
 /// Writes a patch to `path`.
 fn write_patch(path: &std::path::Path, bytes: &[u8]) -> Result<Outcome, Problem> {
-    std::fs::write(path, bytes)
+    egit_git::local::write(path, bytes)
         .map(|()| Outcome::Done)
         .map_err(|error| {
             Problem::new(

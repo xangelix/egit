@@ -77,7 +77,7 @@ log = "0.4.33"
 tracing = { workspace = true, features = ["log"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = ["BinaryType", "CloseEvent", "Document", "EventTarget", "History", "HtmlCanvasElement", "KeyboardEvent", "Location", "MessageEvent", "Navigator", "Storage", "WebSocket", "Window"] }
+web-sys = { workspace = true, features = ["BinaryType", "Blob", "CloseEvent", "Document", "Element", "EventTarget", "File", "FileList", "History", "HtmlCanvasElement", "HtmlInputElement", "KeyboardEvent", "Location", "MessageEvent", "Navigator", "Storage", "WebSocket", "Window"] }
 
 # In a browser, the page's randomness, for what egui's hashing asks of getrandom 0.3 (which also
 # needs `--cfg getrandom_backend="wasm_js"`: scripts/build-web.sh gives it).

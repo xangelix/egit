@@ -1,5 +1,5 @@
 //! egit in a browser: what the page gives in place of a computer's own (watches, threads,
-//! dialogs), and its connection to its relay.
+//! dialogs: `files`), and its connection to its relay.
 //!
 //! The page egit is served from is its relay's (`egit-relay`): its address carries the relay's
 //! token after `#`, which a browser never sends in a request. The token is kept for the tab
@@ -7,6 +7,7 @@
 //! (history, bookmarks, and a screen shared show no token). Then egit opens the relay's
 //! WebSocket (`/relay`, the page's own host) and runs every git through it.
 
+pub(crate) mod files;
 pub(crate) mod notify;
 mod socket;
 

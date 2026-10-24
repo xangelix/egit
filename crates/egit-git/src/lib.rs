@@ -46,6 +46,7 @@ mod ignore;
 mod integrate;
 mod lfs;
 mod lines;
+pub mod local;
 mod looking;
 mod object_id;
 mod objects;

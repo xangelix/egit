@@ -79,9 +79,7 @@ pub(crate) fn read(paths: &[PathBuf]) -> Result<Vec<Attachment>, Problem> {
 
 /// Reads one image.
 fn read_one(path: &Path) -> Result<Attachment, String> {
-    let size = std::fs::metadata(path)
-        .map_err(|error| error.to_string())?
-        .len();
+    let size = egit_git::local::size(path).map_err(|error| error.to_string())?;
     if size > READ_LIMIT {
         return Err(format!(
             "it is {}: images up to {} are attached",
@@ -89,7 +87,7 @@ fn read_one(path: &Path) -> Result<Attachment, String> {
             crate::format::size(READ_LIMIT)
         ));
     }
-    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    let bytes = egit_git::local::read(path).map_err(|error| error.to_string())?;
     let name = path
         .file_name()
         .map_or_else(String::new, |name| name.to_string_lossy().into_owned());

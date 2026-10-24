@@ -185,7 +185,8 @@ async fn written_into(
         .read_all(&made.iter().map(PathBuf::as_path).collect::<Vec<_>>())
         .await
         .map_err(io)?;
-    std::fs::create_dir_all(folder).map_err(io)?;
+    // This computer's (in a browser, downloads).
+    crate::local::create_dir_all(folder).map_err(io)?;
     made.iter()
         .zip(read)
         .map(|(path, bytes)| {
@@ -193,7 +194,7 @@ async fn written_into(
             let here = folder.join(name);
             let bytes = bytes
                 .ok_or_else(|| GitError::unexpected("format-patch", "a patch it said it wrote"))?;
-            std::fs::write(&here, bytes).map_err(io)?;
+            crate::local::write(&here, &bytes).map_err(io)?;
             Ok(here)
         })
         .collect()

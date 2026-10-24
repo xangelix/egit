@@ -115,7 +115,7 @@ pub(crate) async fn run(
                 Ok(combined) => combined,
                 Err(error) => return combine_failed(error),
             };
-            return std::fs::write(file, combined)
+            return egit_git::local::write(file, &combined)
                 .map(|()| Outcome::Exported {
                     made: commits.len(),
                     copied: None,

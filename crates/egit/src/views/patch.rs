@@ -150,7 +150,7 @@ impl PatchView {
 fn read_files(files: &[PathBuf]) -> Result<Vec<u8>, Problem> {
     let mut bytes = Vec::new();
     for file in files {
-        let read = std::fs::read(file).map_err(|error| {
+        let read = egit_git::local::read(file).map_err(|error| {
             Problem::new(
                 "The patch couldn't be read",
                 format!("{}: {error}.", file.display()),
