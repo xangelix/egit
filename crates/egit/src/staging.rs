@@ -10,7 +10,8 @@ use bstr::ByteSlice as _;
 use bstr::{BStr, BString};
 use egit_git::{
     CancelToken, Direction, FileDiff, Git, LinesError, ObjectKind, Pick, Repository, Resolution,
-    ResolveError, TreeEntry, apply_lines, resolve_conflict, stage, unstage, write_index_content,
+    ResolveError, TreeEntry, apply_lines, conflict_sides, resolve_conflict, stage, unstage,
+    write_index_content,
 };
 
 use crate::history::Objects;
@@ -30,6 +31,21 @@ pub(crate) enum StageRequest {
     Lines(Box<LinesRequest>),
     /// A conflict resolved.
     Resolve(ResolveRequest),
+    /// Files in conflict resolved whole as one side has them (as a side that deleted a file
+    /// would: deleted), as they are in the index now.
+    TakeSide {
+        paths: Vec<BString>,
+        side: WholeSide,
+    },
+}
+
+/// A side of conflicts taken whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WholeSide {
+    /// `HEAD`'s.
+    Current,
+    /// What is brought in.
+    Incoming,
 }
 
 /// A conflict to resolve, and how.
@@ -90,6 +106,9 @@ pub(crate) async fn run(
             }
             StageRequest::Lines(lines) => stage_lines(&git, &repository, &objects, *lines, &cancel),
             StageRequest::Resolve(request) => resolve(&git, &repository, &request, &cancel),
+            StageRequest::TakeSide { paths, side } => {
+                take_side(&git, &repository, (&paths, side), &cancel)
+            }
         }
     })
     .await
@@ -212,6 +231,40 @@ fn resolve(
         ),
         ResolveError::Git(error) => Problem::git(TITLE, &error),
     })
+}
+
+/// Resolves each file at `paths` as `side` has it, the sides read now (one that is no longer
+/// in conflict, resolved meanwhile, is left as it is).
+fn take_side(
+    git: &Git,
+    repository: &Repository,
+    (paths, side): (&[BString], WholeSide),
+    cancel: &CancelToken,
+) -> Result<(), Problem> {
+    const TITLE: &str = "The conflicts couldn't be resolved";
+    for path in paths {
+        let path = path.as_ref();
+        let Some(sides) = conflict_sides(git, repository, path, cancel)
+            .map_err(|error| Problem::git(TITLE, &error))?
+        else {
+            continue;
+        };
+        let taken = match side {
+            WholeSide::Current => sides.current,
+            WholeSide::Incoming => sides.incoming,
+        };
+        let resolution = taken.map_or(Resolution::Delete, Resolution::Side);
+        resolve_conflict(git, repository, path, &sides, resolution, cancel).map_err(|error| {
+            match error {
+                ResolveError::Stale => Problem::new(
+                    TITLE,
+                    "A file's sides changed while it was resolved. Look at it again.",
+                ),
+                ResolveError::Git(error) => Problem::git(TITLE, &error),
+            }
+        })?;
+    }
+    Ok(())
 }
 
 /// The mode a file not yet tracked gets: executable or not, as the work tree has it.

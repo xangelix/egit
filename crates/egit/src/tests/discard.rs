@@ -2,7 +2,8 @@
 //! asked) and Undo putting it back; a right click in the diff staging a line's hunk, and in the
 //! staged diff unstaging it; a file from its row's menu, asked first; an untracked file
 //! deleted from its menu and brought back by Undo; and everything not staged at once, from a
-//! row's menu.
+//! row's menu. Then one file's changes stashed from its menu (Undo putting them back), and a
+//! conflict resolved whole as the incoming side has it, from its menu.
 
 use std::path::Path;
 
@@ -269,4 +270,62 @@ fn one_files_changes_are_stashed_from_its_menu() {
     assert_eq!(read(&repo, "notes.txt").as_deref(), Some("two\n"));
     let listed = sandbox.run(&repo, "stash", &["list"]).unwrap().stdout;
     assert_eq!(listed, b"");
+}
+
+#[test]
+fn a_conflict_is_resolved_whole_from_its_menu() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "f", "base\n", "Base").unwrap();
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--create", "side"])
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "f", "theirs\n", "Theirs")
+        .unwrap();
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    sandbox.commit_file(&repo, "f", "ours\n", "Ours").unwrap();
+    // The merge stops at the conflict (git exits 1).
+    assert!(sandbox.run(&repo, "merge", &["--quiet", "side"]).is_err());
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+    wait_for_label(&mut harness, &uncommitted(1));
+    harness.get_by_label(&uncommitted(1)).click();
+    wait_for_label(&mut harness, "Not staged");
+
+    // The incoming side taken whole, without the merge editor: resolved and staged.
+    wait_for_label(&mut harness, "f");
+    harness
+        .get_by_role_and_label(Role::Button, "f")
+        .click_secondary();
+    wait_for_label(&mut harness, "Take the incoming side");
+    render(&mut harness, "conflict-row-menu");
+    harness.get_by_label("Take the incoming side").click();
+    settle(&mut harness, "the conflict resolved", |app| {
+        app.state.repos[0]
+            .work_tree
+            .status()
+            .and_then(Result::ok)
+            .is_some_and(|status| {
+                status
+                    .entries()
+                    .all(|entry| entry.kind != egit_git::EntryKind::Unmerged)
+            })
+    });
+    assert_eq!(read(&repo, "f").as_deref(), Some("theirs\n"));
+    let unmerged = sandbox
+        .run(&repo, "diff", &["--name-only", "--diff-filter=U"])
+        .unwrap()
+        .stdout;
+    assert_eq!(unmerged, b"");
+    let staged = sandbox
+        .run(&repo, "diff", &["--cached", "--name-only"])
+        .unwrap()
+        .stdout;
+    assert_eq!(staged, b"f\n");
 }

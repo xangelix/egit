@@ -592,10 +592,12 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "take-current",
         group: Group::Conflicts,
         title: "Taking the current side",
-        on: &["Current", "Take current"],
+        on: &["Current", "Take current", "Take the current side"],
         what: "Resolves the selected conflict with the current side's lines, dropping the \
                incoming side's there. Current is HEAD: your branch in a merge, cherry-pick, or \
-               revert, but the branch being rebased onto in a rebase.",
+               revert, but the branch being rebased onto in a rebase. From a file's (or \
+               folder's) menu in the working tree, the whole file as that side has it, every \
+               conflict in it, without opening the editor (deleted, where that side deleted it).",
         git: "",
         cases: &[
             (
@@ -612,10 +614,11 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "take-incoming",
         group: Group::Conflicts,
         title: "Taking the incoming side",
-        on: &["Incoming", "Take incoming"],
+        on: &["Incoming", "Take incoming", "Take the incoming side"],
         what: "Resolves the selected conflict with the incoming side's lines: the branch being \
                merged in, the commit being cherry-picked or reverted, the patch being applied, \
-               or, in a rebase, your own commit being replayed.",
+               or, in a rebase, your own commit being replayed. From a file's (or folder's) \
+               menu in the working tree, the whole file as that side has it.",
         git: "",
         cases: &[(
             "Both sides added something useful?",

@@ -1020,6 +1020,35 @@ fn look_items(
     event
 }
 
+/// Where a row's file, or a folder's files, are in conflict: each resolved whole as a side has
+/// it, without the merge editor (a side that deleted it deletes it).
+fn side_items(
+    ui: &mut Ui,
+    (files, entries): (&ListFiles, &[usize]),
+    allowed: Result<(), &'static str>,
+) -> Option<WorkEvent> {
+    use crate::staging::WholeSide;
+    let conflicted = || {
+        entries
+            .iter()
+            .filter_map(|entry| files.entry(*entry))
+            .filter(|entry| entry.kind == EntryKind::Unmerged)
+    };
+    conflicted().next()?;
+    let mut event = None;
+    for (words, side) in [
+        ("Take the current side", WholeSide::Current),
+        ("Take the incoming side", WholeSide::Incoming),
+    ] {
+        if super::actions::item(ui, (icon::GIT_MERGE, words), allowed) {
+            let paths = conflicted().map(|entry| entry.path.to_owned()).collect();
+            event = Some(WorkEvent::Stage(StageRequest::TakeSide { paths, side }));
+        }
+    }
+    ui.separator();
+    event
+}
+
 /// Stashing a row's file, or a folder's: its changes alone put aside, staged or not (a
 /// rename's both paths); none in conflict.
 fn stash_item(
@@ -1081,12 +1110,16 @@ fn row_menu_items(
         (Side::Unstaged, true) => (icon::PLUS, "Stage the folder"),
         (Side::Staged, true) => (icon::MINUS, "Unstage the folder"),
     };
-    let mut event = item(ui, (glyph, words), staging).then(|| {
-        WorkEvent::Stage(StageRequest::Files {
-            paths: each().flat_map(|entry| paths(entry, side)).collect(),
-            direction: side.direction(),
+    // A conflict's sides first: what such a file is opened for.
+    let taken = side_items(ui, (files, entries), staging);
+    let mut event = item(ui, (glyph, words), staging)
+        .then(|| {
+            WorkEvent::Stage(StageRequest::Files {
+                paths: each().flat_map(|entry| paths(entry, side)).collect(),
+                direction: side.direction(),
+            })
         })
-    });
+        .or(taken);
     let stashing = if task {
         Err("Another task is running")
     } else {

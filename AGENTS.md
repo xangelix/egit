@@ -1389,7 +1389,9 @@ writes paths), never `OsStrExt`.
     blob read through the shared `cat-file`, `apply_lines`, `write_index_content` against the
     entry the diff was read with; a stale diff says so), or a conflict's resolution
     (`ResolveRequest`: each conflict as chosen, built into the file in the job, a whole side,
-    or deletion, through `resolve_conflict`; sides changed since say so). `RepoTab::stage` runs
+    or deletion, through `resolve_conflict`; sides changed since say so), or files in
+    conflict taken whole as a side has them (`TakeSide`, `WholeSide`: each one's sides read in
+    the job, a side that deleted it deleting it; one resolved meanwhile left). `RepoTab::stage` runs
     one (`Action::Stage`), keeps its result for the panel, and reads the work tree again after.
   - `merge.rs` — a file in conflict: `read_conflict` (a job: `conflict_sides`, `merge_sides`,
     `incoming_commit` for the operation in progress) makes a `ConflictFile`; `Choice` (open, a
@@ -1755,6 +1757,8 @@ writes paths), never `OsStrExt`.
     folders (the first list's header choosing; each folder a button too, "Stage the folder
     src", every file it holds), a file clicked opened in the `FileView`, a right click opening
     its row's menu (an `egui::Popup` at the pointer, over the list's files as they were then:
+    for a file in conflict (or a folder holding some) "Take the current side" and "Take the
+    incoming side" first, each file resolved whole without the merge editor,
     stage or unstage it or the folder, stash its changes alone ("Stash this file…", "Stash the
     folder's changes…": the stash dialog naming them, `Task::Stash`'s `paths`; none in
     conflict), "Discard changes…" or "Discard the folder's changes…",
