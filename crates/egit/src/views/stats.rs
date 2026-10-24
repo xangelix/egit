@@ -1201,12 +1201,25 @@ fn languages(ui: &mut Ui, stats: &Stats, palette: Palette) {
         x += width;
     }
     ui.add_space(8.0);
+    // The names in a column as wide as the widest (at most half the card), the shares in one
+    // of their own, right-aligned: the figures read down.
+    let named_width = shown
+        .iter()
+        .map(|(name, ..)| widgets::text_width(ui, name))
+        .fold(0.0, f32::max)
+        .min(ui.available_width() * 0.5);
+    let share_width = widgets::text_width(ui, "100%");
+    let height = ui.spacing().interact_size.y;
     for (&(name, measured, files), color) in shown.iter().zip(palette.avatars.iter().cycle()) {
         ui.horizontal(|ui| {
             let (dot, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
             ui.painter().circle_filled(dot.center(), 5.0, *color);
-            ui.label(name);
-            ui.label(muted(ui, format!("{}%", percent(measured, total))));
+            widgets::column(ui, (named_width, height), Align::Min, |ui| {
+                ui.add(Label::new(name).truncate());
+            });
+            widgets::column(ui, (share_width, height), Align::Max, |ui| {
+                ui.label(muted(ui, format!("{}%", percent(measured, total))));
+            });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.label(muted(
                     ui,
