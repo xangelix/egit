@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use egit_git::ProgressReport;
 use jiff::Timestamp;

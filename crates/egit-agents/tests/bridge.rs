@@ -370,7 +370,10 @@ fn the_bridge_runs_through_a_relay_its_key_sent() {
     let mut conversation = Conversation::start_with(&launch, Mode::Default, key);
     conversation.say("who");
     conversation.until_turn_ends();
-    assert_eq!(conversation.last_text(), Some("Key sk-relayed, folder none"));
+    assert_eq!(
+        conversation.last_text(),
+        Some("Key sk-relayed, folder none")
+    );
     let dir = std::env::temp_dir();
     let sessions = list_sessions(&launch, &dir, 10).wait().unwrap();
     assert_eq!(sessions.len(), 2);

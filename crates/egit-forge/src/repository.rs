@@ -5,7 +5,9 @@
 use std::ffi::OsStr;
 use std::io::Read as _;
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_git::{Git, ObjectId};
 

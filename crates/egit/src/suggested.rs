@@ -7,23 +7,31 @@
 //!
 //! Only repositories on this computer: a folder on another is listed only by a session there.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
 
+#[cfg(not(target_arch = "wasm32"))]
 use bstr::ByteSlice as _;
 use egit_git::Git;
 
 /// The most suggested.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const MOST: usize = 20;
 
 /// How many of a folder's entries are looked at, at most (a folder of everything).
+#[cfg(not(target_arch = "wasm32"))]
 const MOST_LOOKED_AT: usize = 500;
 
 /// How many repositories are asked when they were last active, at most (the most recently
 /// changed `.git`s first beyond).
+#[cfg(not(target_arch = "wasm32"))]
 const MOST_ASKED: usize = 300;
 
 /// How many asked at once.
+#[cfg(not(target_arch = "wasm32"))]
 const AT_ONCE: usize = 8;
 
 /// A repository suggested: its folder, and when it was last active (seconds since the Unix
@@ -35,6 +43,7 @@ pub(crate) struct Suggestion {
 }
 
 /// The folders holding at least two of `known` directly.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn shared_folders(known: &[PathBuf]) -> Vec<PathBuf> {
     let mut held: BTreeMap<&Path, BTreeSet<&Path>> = BTreeMap::new();
     for repository in known {
@@ -51,8 +60,15 @@ pub(crate) fn shared_folders(known: &[PathBuf]) -> Vec<PathBuf> {
         .collect()
 }
 
+/// In a browser, none: the page has no folders of its own to look in.
+#[cfg(target_arch = "wasm32")]
+pub(crate) const fn suggest(_git: &Git, _known: &[PathBuf]) -> Vec<Suggestion> {
+    Vec::new()
+}
+
 /// The repositories to suggest, given those egit knows: the others in the folders holding two of
 /// them, the most recently active first, at most [`MOST`]; through `git` (this computer's).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn suggest(git: &Git, known: &[PathBuf]) -> Vec<Suggestion> {
     let is_known = |path: &Path| known.iter().any(|repository| repository == path);
     let mut candidates: Vec<(PathBuf, Option<std::time::SystemTime>)> = Vec::new();
@@ -112,6 +128,7 @@ pub(crate) fn suggest(git: &Git, known: &[PathBuf]) -> Vec<Suggestion> {
 
 /// When git last moved `repository`'s `HEAD` (its reflog's newest entry), else its last
 /// commit's time; none where git can't say (not a repository, no commit).
+#[cfg(not(target_arch = "wasm32"))]
 async fn last_active(git: &Git, repository: &Path) -> Option<i64> {
     // `HEAD@{1700000000}`: the reflog entry's own time.
     let moved = git
@@ -122,7 +139,7 @@ async fn last_active(git: &Git, repository: &Path) -> Option<i64> {
         .await
         .ok()
         .and_then(|done| {
-            let said = done.stdout.trim().to_str().ok()?;
+            let said = done.stdout.trim_ascii().to_str().ok()?;
             said.strip_prefix("HEAD@{")?
                 .strip_suffix('}')?
                 .parse::<i64>()
@@ -137,7 +154,7 @@ async fn last_active(git: &Git, repository: &Path) -> Option<i64> {
         .output()
         .await
         .ok()
-        .and_then(|done| done.stdout.trim().to_str().ok()?.parse().ok())
+        .and_then(|done| done.stdout.trim_ascii().to_str().ok()?.parse().ok())
 }
 
 #[cfg(test)]

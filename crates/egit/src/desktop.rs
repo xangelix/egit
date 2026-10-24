@@ -17,6 +17,10 @@ use crate::jobs;
 use crate::problem::Problem;
 use crate::repo::RepoId;
 
+/// Whether egit runs in a browser: no folders, dialogs, or ssh of its own (its relay's computer
+/// has the folders, typed), and web pages opened by the page.
+pub(crate) const IN_BROWSER: bool = cfg!(target_arch = "wasm32");
+
 /// Where web pages and files go: the user's browser and file manager, or (for tests) a list.
 #[derive(Debug, Default)]
 pub(crate) struct Opener {
@@ -75,6 +79,10 @@ impl Opener {
         }
         match &mut self.recorded {
             Some(recorded) => recorded.push(url),
+            // In a tab of the browser egit is in.
+            #[cfg(target_arch = "wasm32")]
+            None => crate::web::open_page(&url),
+            #[cfg(not(target_arch = "wasm32"))]
             None => jobs::detached(async move { open_web_page(&url) }),
         }
     }
@@ -178,6 +186,10 @@ impl FileDialogs {
             FileQuestion::AttachImages { .. } => Asked::Images,
         };
         self.question = Some(question);
+        // A browser's are its own: files sent and received through the page (`web`).
+        #[cfg(target_arch = "wasm32")]
+        let _ = (kind, title, name);
+        #[cfg(not(target_arch = "wasm32"))]
         self.asking.request(async move {
             let dialog = rfd::AsyncFileDialog::new().set_title(title);
             let chosen = match kind {
@@ -299,6 +311,7 @@ const OPENERS: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
 };
 
 /// Opens `url` in the user's browser; a failure is logged (the desktop has no opener).
+#[cfg(not(target_arch = "wasm32"))]
 fn open_web_page(url: &str) {
     if !hand_over(OsStr::new(url)) {
         tracing::warn!(

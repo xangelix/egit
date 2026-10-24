@@ -178,7 +178,7 @@ fn pictures_are_github_s_first_then_gravatar_s_kept_and_drawn() {
     let cache = sandbox.home().join("pictures").join("2");
 
     let mut harness = harness(&sandbox);
-    crate::avatars::install(&harness.ctx, &service.sources, Some(&cache));
+    crate::avatars::install(&harness.ctx, &service.sources, Some(&cache), None);
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &repo);
     settle(&mut harness, "the history", history_shown);
@@ -210,7 +210,7 @@ fn pictures_are_github_s_first_then_gravatar_s_kept_and_drawn() {
     let total = |service: &Service| service.asked.lock().values().sum::<usize>();
     let before = total(&service);
     let mut again = super::screens::harness(&sandbox);
-    crate::avatars::install(&again.ctx, &service.sources, Some(&cache));
+    crate::avatars::install(&again.ctx, &service.sources, Some(&cache), None);
     settle(&mut again, "the profile", profile_loaded);
     open_path(&mut again, &repo);
     settle(&mut again, "the history", history_shown);

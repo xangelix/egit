@@ -511,7 +511,7 @@ fn committing(ui: &mut Ui, side: &CommitSide<'_>) -> Option<WorkEvent> {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(500));
             let palette = Palette::of(ui.ctx());
-            widgets::seconds(ui, run.elapsed(std::time::Instant::now()), palette.muted);
+            widgets::seconds(ui, run.elapsed(web_time::Instant::now()), palette.muted);
         }
         if widgets::link(ui, "Show the output").clicked() {
             asked = Some(WorkEvent::ShowOutput);

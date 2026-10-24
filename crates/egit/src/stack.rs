@@ -7,7 +7,9 @@
 //! terminal does.
 
 use std::ops::Add as _;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egui::{Id, Rect, ScrollArea, Ui, UiBuilder, pos2, vec2};
 

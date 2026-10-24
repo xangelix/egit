@@ -6,7 +6,9 @@
 //! and closes again after a run it opened for went well.
 
 use std::collections::VecDeque;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_git::{CancelToken, Transcript};
 

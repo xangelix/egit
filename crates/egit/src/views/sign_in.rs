@@ -8,7 +8,9 @@
 //! where no helper keeps it, the helpers installed to keep it with ([`keep_choices`], which
 //! Profile's credentials offer too).
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_forge::{ForgeHost, ForgeKind};
 use egit_git::Git;

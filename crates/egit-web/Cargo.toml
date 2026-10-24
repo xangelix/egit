@@ -1,0 +1,20 @@
+[package]
+name = "egit-web"
+description = "egit in a browser: the page's entry, its git run through the relay that served it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# WebAssembly for the page (`scripts/build-web.sh`); empty anywhere else.
+[lib]
+crate-type = ["cdylib"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+egit.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = ["Document", "Element", "HtmlCanvasElement", "HtmlElement", "Window"] }

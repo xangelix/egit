@@ -4,10 +4,14 @@
 //! after the frame's views are drawn. Background results arrive through `Bind`s polled at the
 //! start of each frame ([`AppState::poll`]), which turns finished jobs into actions too.
 
+#[cfg(target_arch = "wasm32")]
+use crate::web::notify;
 use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_git::{
     ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, Host, NewCommit, Repository,
@@ -276,6 +280,7 @@ pub(crate) enum Action {
 impl EgitApp {
     /// The application as eframe creates it: settings from storage, git looked for on `PATH`,
     /// and `paths` (from the command line) opened once it is found.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new(creation: &eframe::CreationContext<'_>, paths: Vec<PathBuf>) -> Self {
         let settings = Settings::load(creation.storage);
         let home_dir = std::env::var_os("HOME").map(PathBuf::from);
@@ -290,6 +295,7 @@ impl EgitApp {
             &creation.egui_ctx,
             &egit_forge::PictureSources::public(),
             crate::avatars::cache_folder(home_dir.as_deref()).as_deref(),
+            None,
         );
         Self::start(
             &creation.egui_ctx,
@@ -299,6 +305,39 @@ impl EgitApp {
             options,
             prompts,
             paths,
+        )
+    }
+
+    /// The application in a browser: settings from the page's storage, every git through
+    /// `relay` (the one that served the page), its questions relayed to this window.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn in_browser(
+        creation: &eframe::CreationContext<'_>,
+        relay: egit_git::Relay,
+    ) -> Self {
+        let settings = Settings::load(creation.storage);
+        let (sender, incoming) = std::sync::mpsc::channel();
+        let waker = creation.egui_ctx.clone();
+        relay.send_prompts_to(sender, move || waker.request_repaint());
+        // People's pictures, asked of their services by the relay; kept while the page lives.
+        crate::avatars::install(
+            &creation.egui_ctx,
+            &egit_forge::PictureSources::public(),
+            None,
+            Some(relay.clone()),
+        );
+        let options = GitOptions {
+            host: egit_git::Host::Relay(relay),
+            ..GitOptions::default()
+        };
+        Self::start(
+            &creation.egui_ctx,
+            settings,
+            None,
+            None,
+            options,
+            Prompts::relayed(incoming),
+            Vec::new(),
         )
     }
 
@@ -355,8 +394,11 @@ impl EgitApp {
                 let front = settings.front == Some(place);
                 (tab.location(), Some(Restored { place, front }))
             })
-            // Here, those still there; there, found out when reached.
-            .filter(|(location, _)| location.host.is_some() || location.path.is_dir())
+            // Here, those still there; there (and in a browser, its relay's), found out when
+            // reached.
+            .filter(|(location, _)| {
+                cfg!(target_arch = "wasm32") || location.host.is_some() || location.path.is_dir()
+            })
             .collect();
         waiting.extend(paths.into_iter().map(|path| (Location::here(path), None)));
         let home_dir_for_agents = home_dir.clone();
@@ -762,6 +804,13 @@ impl AppState {
             }
         }
         if let Some(git) = self.git() {
+            // In a browser, `~` is the relay's computer's home folder, known once git is.
+            if self.home_dir.is_none()
+                && let Some(home) = git.home_there()
+            {
+                self.home_dir = Some(home.to_owned());
+                self.home.clone.home_known();
+            }
             // The listed GitLab hosts the repositories' remotes asked about, asked where their ssh is.
             let wanted = self.ssh_learning.take_wanted();
             if !wanted.is_empty() {
@@ -1164,6 +1213,8 @@ impl eframe::App for EgitApp {
         if let Some(command) = commands::pressed(ui.ctx()) {
             self.run(command);
         }
+        #[cfg(target_arch = "wasm32")]
+        crate::web::note_typing(ui.ctx().egui_wants_keyboard_input());
         palette::take_keys(ui.ctx(), &mut self.state.palette);
         CentralPanel::default()
             .frame(Frame::new().fill(palette.background))

@@ -90,18 +90,32 @@ impl CloneView {
         }
     }
 
-    /// Opens the desktop's folder dialog.
-    pub(crate) fn pick_folder(&mut self) {
-        if self.picking.is_pending() {
-            return;
+    /// The home folder became known (in a browser, the relay's computer's, once reached): the
+    /// clone goes into it unless a folder was given.
+    pub(crate) fn home_known(&mut self) {
+        if self.folder.is_none() && self.folder_text.is_empty() {
+            "~".clone_into(&mut self.folder_text);
         }
-        self.picking.request(async {
-            let folder = rfd::AsyncFileDialog::new()
-                .set_title("Clone into")
-                .pick_folder()
-                .await;
-            Ok(folder.map(|folder| folder.path().to_owned()))
-        });
+    }
+
+    /// Nothing: a browser has no folder dialog (its folders are its relay's, typed).
+    #[cfg(target_arch = "wasm32")]
+    #[expect(clippy::unused_self, reason = "the desktop's takes it")]
+    pub(crate) const fn pick_folder(&self) {}
+
+    /// Opens the desktop's folder dialog (a browser has none: its folders are its relay's,
+    /// typed).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pick_folder(&mut self) {
+        if !self.picking.is_pending() {
+            self.picking.request(async {
+                let folder = rfd::AsyncFileDialog::new()
+                    .set_title("Clone into")
+                    .pick_folder()
+                    .await;
+                Ok(folder.map(|folder| folder.path().to_owned()))
+            });
+        }
     }
 
     /// Takes the folder picked in the dialog.
@@ -187,7 +201,7 @@ impl CloneView {
                 return None;
             }
             let folder = super::home::expand_home(typed, home);
-            if folder.is_absolute() {
+            if egit_git::is_absolute(&folder) {
                 folder
             } else {
                 home?.join(folder)
@@ -239,6 +253,8 @@ pub(crate) fn card(
             ui,
             if view.there {
                 "From an address (https:// or ssh) the other computer reaches, or a path there."
+            } else if crate::desktop::IN_BROWSER {
+                "From an address (https:// or ssh), or a path on the relay's computer."
             } else {
                 "From an address (https:// or ssh), or a path on this computer."
             },
@@ -347,8 +363,9 @@ fn fields(ui: &mut Ui, view: &mut CloneView, actions: &mut Vec<Action>) -> bool 
         view.name = name_from_url(&view.url);
     }
     submitted |= field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
-    // Not from Windows, whose OpenSSH can't share a connection (as Home's "Open there").
-    if !cfg!(windows) {
+    // Not from Windows, whose OpenSSH can't share a connection (as Home's "Open there"), nor
+    // from a browser, whose relay's computer is the one.
+    if !cfg!(windows) && !crate::desktop::IN_BROWSER {
         widgets::fact(ui, FORM_LABEL, "Onto", |ui| {
             widgets::segmented(
                 ui,
@@ -372,6 +389,17 @@ fn fields(ui: &mut Ui, view: &mut CloneView, actions: &mut Vec<Action>) -> bool 
                 widgets::line_field(&mut view.folder_there).hint_text("~/src"),
             )
         });
+    } else if crate::desktop::IN_BROWSER {
+        // Typed: a browser has no dialog of the relay's folders.
+        let field = widgets::form_row(ui, FORM_LABEL, "Into", |ui| {
+            ui.add_sized(
+                [ui.available_width(), CONTROL],
+                widgets::line_field(&mut view.folder_text).hint_text("~/src"),
+            )
+        });
+        if field.changed() {
+            view.folder = None;
+        }
     } else {
         let picking = view.picking.is_pending();
         let mut choose = false;

@@ -1162,8 +1162,11 @@ dependencies = [
  "egui_kittest",
  "egui_plot",
  "egui_tiles",
+ "getrandom 0.3.4",
  "image",
  "jiff",
+ "js-sys",
+ "log",
  "memchr",
  "notify",
  "parking_lot",
@@ -1177,6 +1180,10 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
  "zeroize",
 ]
 
@@ -1233,6 +1240,10 @@ dependencies = [
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "web-time",
  "windows-sys 0.61.2",
  "zeroize",
 ]
@@ -1277,6 +1288,16 @@ version = "0.1.0"
 dependencies = [
  "memchr",
  "unicode-width",
+]
+
+[[package]]
+name = "egit-web"
+version = "0.1.0"
+dependencies = [
+ "egit",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]
@@ -1950,9 +1971,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 5.3.0",
  "wasip2",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1962,8 +1985,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -2966,10 +2991,12 @@ dependencies = [
  "jiff-core",
  "jiff-static",
  "jiff-tzdb-platform",
+ "js-sys",
  "log",
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
+ "wasm-bindgen",
  "windows-link",
 ]
 

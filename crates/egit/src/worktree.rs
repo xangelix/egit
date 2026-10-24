@@ -16,10 +16,14 @@
 //! `inotifywait` where it is installed; until it is told (or where it isn't, or while its
 //! session is down), the status is read every [`UNWATCHED_READS`].
 
+#[cfg(target_arch = "wasm32")]
+use crate::web::notify;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use bstr::ByteSlice as _;
 

@@ -55,7 +55,7 @@ struct State {
     refused: bool,
     /// Whether it may push to each repository (by path), as the host said, and when: what it
     /// may do to their CI/CD runs (GitHub's).
-    pushes: Vec<(String, std::time::Instant, bool)>,
+    pushes: Vec<(String, web_time::Instant, bool)>,
 }
 
 /// How long what an account may do in a repository is believed.
@@ -278,7 +278,7 @@ impl Account {
 
     /// Whether it may push to the repository at `path`, as the host said lately.
     pub(crate) fn remembered_push(&self, path: &str) -> Option<bool> {
-        let now = std::time::Instant::now();
+        let now = web_time::Instant::now();
         self.state
             .lock()
             .pushes
@@ -295,7 +295,7 @@ impl Account {
         state.pushes.retain(|(held, _, _)| held != path);
         state
             .pushes
-            .push((path.to_owned(), std::time::Instant::now(), may));
+            .push((path.to_owned(), web_time::Instant::now(), may));
     }
 
     /// The credential to send: the one known, else filled without asking.

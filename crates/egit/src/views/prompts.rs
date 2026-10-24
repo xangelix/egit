@@ -7,7 +7,9 @@
 //! text field's own copy (egui keeps one for undo).
 
 use std::collections::VecDeque;
+#[cfg(any(test, not(target_arch = "wasm32")))]
 use std::ffi::OsString;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -51,6 +53,7 @@ impl Prompts {
     /// Relays questions for egit's own executable, waking `ctx` when one arrives, and shares
     /// ssh's connections, so each is asked once. Returns the environment git needs for both
     /// (empty when neither could start).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn start(ctx: &egui::Context) -> (Self, Vec<(OsString, OsString)>) {
         let (mut prompts, mut environment) = match std::env::current_exe() {
             Ok(executable) => Self::start_with(ctx, &executable, None),
@@ -77,6 +80,7 @@ impl Prompts {
     }
 
     /// As [`Self::start`], for `executable`, under `base` when given.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn start_with(
         ctx: &egui::Context,
         executable: &Path,
@@ -111,6 +115,21 @@ impl Prompts {
         }
     }
 
+    /// The questions a relay relays, as they arrive on `incoming` (egit in a browser).
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn relayed(incoming: std::sync::mpsc::Receiver<Prompt>) -> Self {
+        Self {
+            server: None,
+            ssh: None,
+            incoming: Some(incoming),
+            queue: VecDeque::new(),
+            answer: Zeroizing::new(String::new()),
+            answering: None,
+            unavailable: None,
+        }
+    }
+
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     fn unavailable(reason: String) -> Self {
         Self {
             server: None,

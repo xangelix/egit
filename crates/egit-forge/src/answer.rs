@@ -3,7 +3,7 @@
 //! headers, or GraphQL's `RATE_LIMITED`) says until when, a repository that isn't there (or
 //! isn't visible) says so, and anything else the host refuses carries its own reason.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use web_time::{SystemTime, UNIX_EPOCH};
 
 use egit_git::CancelToken;
 use serde::Deserialize;

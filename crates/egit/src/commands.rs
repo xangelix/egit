@@ -183,7 +183,7 @@ impl Command {
             Self::Help => "F1",
             Self::Preferences => "⌘,",
             Self::OpenRepository => "⌘O",
-            Self::CloseTab => "⌘W",
+            Self::CloseTab => CLOSE_TAB,
             Self::Repo(RepoCommand::Search) => "⌘F",
             Self::Repo(RepoCommand::Undo) => "⌘Z",
             Self::Repo(RepoCommand::Redo) => "⇧⌘Z",
@@ -216,7 +216,7 @@ fn global() -> [(Modifiers, Key, Command); 10] {
         (Modifiers::COMMAND, Key::K, Command::Palette),
         (Modifiers::COMMAND, Key::Comma, Command::Preferences),
         (Modifiers::COMMAND, Key::O, Command::OpenRepository),
-        (Modifiers::COMMAND, Key::W, Command::CloseTab),
+        (TAB_MODIFIERS, Key::W, Command::CloseTab),
         (
             Modifiers::COMMAND,
             Key::B,
@@ -240,7 +240,29 @@ fn global() -> [(Modifiers, Key, Command); 10] {
     ]
 }
 
-/// The tabs' keys: ⌘1 to ⌘9.
+/// What closing a tab and going to one take: ⌘ on a desktop; ⌥ in a browser, which keeps ⌘W
+/// and ⌘1 … ⌘9 for its own tabs (a page is never told of them).
+const TAB_MODIFIERS: Modifiers = if crate::desktop::IN_BROWSER {
+    Modifiers::ALT
+} else {
+    Modifiers::COMMAND
+};
+
+/// Closing a tab's keys, as a Mac shows them.
+const CLOSE_TAB: &str = if crate::desktop::IN_BROWSER {
+    "⌥W"
+} else {
+    "⌘W"
+};
+
+/// Going to a tab's keys, as a Mac shows them.
+const TAB_NUMBERS: &str = if crate::desktop::IN_BROWSER {
+    "⌥1 … ⌥9"
+} else {
+    "⌘1 … ⌘9"
+};
+
+/// The tabs' keys: 1 to 9, with [`TAB_MODIFIERS`].
 const TAB_KEYS: [Key; 9] = [
     Key::Num1,
     Key::Num2,
@@ -256,33 +278,53 @@ const TAB_KEYS: [Key; 9] = [
 /// The command a shortcut pressed this frame runs, its keys taken (so a view doesn't see them
 /// too).
 pub(crate) fn pressed(ctx: &egui::Context) -> Option<Command> {
+    // In a browser, ⌥ and a letter or digit types a character on a Mac (⌥1 is ¡): the tabs'
+    // keys are the text's while it is typed.
+    let typing = crate::desktop::IN_BROWSER && ctx.egui_wants_keyboard_input();
+    let tabs = !(typing && TAB_MODIFIERS == Modifiers::ALT);
     ctx.input_mut(|input| {
         for (modifiers, key, command) in global() {
-            if input.consume_shortcut(&KeyboardShortcut::new(modifiers, key)) {
+            if (tabs || modifiers != TAB_MODIFIERS || key != Key::W)
+                && input.consume_shortcut(&KeyboardShortcut::new(modifiers, key))
+            {
                 return Some(command);
             }
+        }
+        if !tabs {
+            return None;
         }
         TAB_KEYS
             .iter()
             .zip(1..)
-            .find(|(key, _)| {
-                input.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, **key))
-            })
+            .find(|(key, _)| input.consume_shortcut(&KeyboardShortcut::new(TAB_MODIFIERS, **key)))
             .map(|(_, n)| Command::Tab(n))
     })
 }
 
-/// A shortcut as this platform names its keys. Written as a Mac shows it (`⌘K`, `⇧⌘Z`, `⌥⌘F`),
-/// it is shown so on macOS, and elsewhere, where egui's command key is Ctrl, as `Ctrl+K`,
-/// `Ctrl+Shift+Z`, `Ctrl+Alt+F`.
+/// Whether keys are named as a Mac names them: on a Mac, or in a browser on one.
+#[cfg(target_arch = "wasm32")]
+fn on_a_mac() -> bool {
+    crate::web::is_mac()
+}
+
+/// Whether keys are named as a Mac names them: on a Mac.
+#[cfg(not(target_arch = "wasm32"))]
+const fn on_a_mac() -> bool {
+    cfg!(target_os = "macos")
+}
+
+/// A shortcut as this platform names its keys. Written as a Mac shows it (`⌘K`, `⇧⌘Z`, `⌥⌘F`,
+/// `⌥W`), it is shown so on macOS, and elsewhere, where egui's command key is Ctrl, as `Ctrl+K`,
+/// `Ctrl+Shift+Z`, `Ctrl+Alt+F`, `Alt+W`.
 pub(crate) fn keys_text(mac: &'static str) -> Cow<'static, str> {
-    if cfg!(target_os = "macos") || !mac.contains('⌘') {
+    if on_a_mac() || !mac.contains(['⌘', '⌥']) {
         return Cow::Borrowed(mac);
     }
     Cow::Owned(
         mac.replace("⇧⌘", "Ctrl+Shift+")
             .replace("⌥⌘", "Ctrl+Alt+")
-            .replace('⌘', "Ctrl+"),
+            .replace('⌘', "Ctrl+")
+            .replace('⌥', "Alt+"),
     )
 }
 
@@ -299,8 +341,8 @@ const SHORTCUTS: [(&str, &str); 27] = [
     ),
     ("⌘,", "Preferences"),
     ("⌘O", "Open a repository"),
-    ("⌘W", "Close the tab"),
-    ("⌘1 … ⌘9", "Go to a tab"),
+    (CLOSE_TAB, "Close the tab"),
+    (TAB_NUMBERS, "Go to a tab"),
     ("⌘R", "Read the repository again"),
     ("⌘F", "Search the history (in a file or diff: find in it)"),
     ("⌘B", "Show or hide the sidebar"),
@@ -415,6 +457,7 @@ mod tests {
             assert_eq!(shown("⌘Z, ⇧⌘Z"), "Ctrl+Z, Ctrl+Shift+Z");
             assert_eq!(shown("⌥⌘F"), "Ctrl+Alt+F");
             assert_eq!(shown("⌘1 … ⌘9"), "Ctrl+1 … Ctrl+9");
+            assert_eq!(shown("⌥1 … ⌥9"), "Alt+1 … Alt+9");
         }
         assert_eq!(shown("Alt+↑, Alt+↓"), "Alt+↑, Alt+↓");
     }

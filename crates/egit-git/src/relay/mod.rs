@@ -137,6 +137,12 @@ impl Relay {
         self.0.transport.close();
     }
 
+    /// The relay's welcome, once it was said.
+    #[must_use]
+    pub fn welcomed(&self) -> Option<Welcome> {
+        self.0.state.lock().welcome.clone()
+    }
+
     /// Whether the connection ended.
     #[must_use]
     pub fn has_ended(&self) -> bool {

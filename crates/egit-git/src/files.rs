@@ -19,6 +19,18 @@ use crate::relay::Relay;
 /// How a script there says the path asked about isn't there.
 const MISSING: i32 = 3;
 
+/// Whether `path` is absolute where git runs. In a browser, whose standard library knows no
+/// computer's paths (it calls none absolute), one from the root is: its relay's computer writes
+/// them so (`/home/…`).
+#[must_use]
+pub fn is_absolute(path: &Path) -> bool {
+    if cfg!(target_arch = "wasm32") {
+        path.has_root()
+    } else {
+        path.is_absolute()
+    }
+}
+
 /// The files of the computer a [`Git`] runs on.
 #[derive(Clone, Copy, Debug)]
 pub struct Files<'g> {
@@ -835,13 +847,22 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         if let Self::There { path, git } = self {
-            let removed = crate::exec::block_on(git.files().run(
-                "exec rm -rf -- \"$1\"",
-                &[path.as_os_str()],
-                None,
-            ));
-            if let Err(error) = removed {
-                tracing::debug!(%error, path = %path.display(), "a folder there wasn't removed");
+            let (path, git) = (std::mem::take(path), git.clone());
+            let removing = async move {
+                let removed = git
+                    .files()
+                    .run("exec rm -rf -- \"$1\"", &[path.as_os_str()], None)
+                    .await;
+                if let Err(error) = removed {
+                    tracing::debug!(%error, path = %path.display(), "a folder there wasn't removed");
+                }
+            };
+            // Here a drop may wait for it; in a browser it goes on by itself.
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::exec::block_on(removing);
+            #[cfg(target_arch = "wasm32")]
+            if let Err(error) = crate::exec::spawn("removing a folder there", removing) {
+                tracing::debug!(%error, "a folder there wasn't removed");
             }
         }
     }

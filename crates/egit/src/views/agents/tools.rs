@@ -481,7 +481,7 @@ fn file_of(call: &ToolCall, work_tree: &Path) -> Option<(PathBuf, String)> {
     }
     let shown = super::shown_path(path, work_tree).to_owned();
     let path = Path::new(path);
-    let absolute = if path.is_absolute() {
+    let absolute = if egit_git::is_absolute(path) {
         path.to_owned()
     } else {
         work_tree.join(path)

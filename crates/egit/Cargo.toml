@@ -19,15 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 bstr.workspace = true
-eframe = { workspace = true, features = [
-    "accesskit",
-    "default_fonts",
-    "persistence",
-    # Xorg sessions: without it winit can't open a window outside Wayland.
-    "wayland",
-    "wgpu",
-    "x11",
-] }
+eframe = { workspace = true, features = ["default_fonts", "persistence", "wgpu"] }
 egit-agents.workspace = true
 egit-forge.workspace = true
 egit-git.workspace = true
@@ -44,20 +36,27 @@ egui_tiles.workspace = true
 image.workspace = true
 jiff.workspace = true
 memchr.workspace = true
-notify.workspace = true
 parking_lot.workspace = true
 pulldown-cmark.workspace = true
-# Native folder dialogs through the desktop portal (no GTK).
-rfd = { workspace = true, features = ["xdg-portal"] }
 serde.workspace = true
 # The agents' messages, as the SDK gives them.
 serde_json.workspace = true
 skrifa.workspace = true
 syntect.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "std"] }
+web-time.workspace = true
 zeroize.workspace = true
+
+# A window of its own: its screen reader's tree, and Xorg sessions (without it winit can't open
+# a window outside Wayland); the desktop's dialogs; watches; jobs on threads.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+eframe = { workspace = true, features = ["accesskit", "wayland", "x11"] }
+notify.workspace = true
+# Native folder dialogs through the desktop portal (no GTK).
+rfd = { workspace = true, features = ["xdg-portal"] }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 # FSEvents, which macOS's watches need.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -68,3 +67,22 @@ egit-forge = { workspace = true, features = ["testing"] }
 egit-git = { workspace = true, features = ["testing"] }
 egui_kittest = { workspace = true, features = ["eframe", "snapshot", "wgpu"] }
 ron.workspace = true
+
+# In a browser: the page's clock and time zone, its WebSocket to the relay, its futures.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+jiff = { workspace = true, features = ["js"] }
+js-sys.workspace = true
+# Logs to the page's console (eframe's `WebLogger`), egit's own through tracing's records.
+log = "0.4.33"
+tracing = { workspace = true, features = ["log"] }
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+web-sys = { workspace = true, features = ["BinaryType", "CloseEvent", "Document", "EventTarget", "History", "HtmlCanvasElement", "KeyboardEvent", "Location", "MessageEvent", "Navigator", "Storage", "WebSocket", "Window"] }
+
+# In a browser, the page's randomness, for what egui's hashing asks of getrandom 0.3 (which also
+# needs `--cfg getrandom_backend="wasm_js"`: scripts/build-web.sh gives it).
+getrandom_03 = { package = "getrandom", version = "0.3.4", features = ["wasm_js"] }
+
+# getrandom 0.3 is named only to turn on the page's randomness for what egui's hashing uses.
+[package.metadata.cargo-shear]
+ignored = ["getrandom_03"]

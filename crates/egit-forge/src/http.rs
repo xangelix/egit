@@ -5,6 +5,7 @@
 //! them the same way. No redirects followed (a credential never travels to another place), and
 //! answers of bounded size.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Read as _;
 
 use egit_git::relay::Fetching;

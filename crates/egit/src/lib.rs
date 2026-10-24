@@ -65,18 +65,28 @@ mod tree_table;
 mod undo;
 mod views;
 mod watch;
+#[cfg(target_arch = "wasm32")]
+mod web;
 mod widgets;
 mod worktree;
 
 #[cfg(test)]
 mod tests;
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::ffi::OsString;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write as _;
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::ExitCode;
 
+#[cfg(target_arch = "wasm32")]
+pub use web::start;
+
 /// What `egit --help` prints.
+#[cfg(not(target_arch = "wasm32"))]
 const USAGE: &str = "\
 usage: egit [PATH…]
 
@@ -92,6 +102,7 @@ was taken for).
 
 /// Runs egit with the command line's arguments (after the program's name) and returns how the
 /// process should exit.
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     let mut paths = Vec::new();
@@ -140,6 +151,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
 }
 
 /// Logs to stderr, as `EGIT_LOG` asks (`warn` by default).
+#[cfg(not(target_arch = "wasm32"))]
 fn init_logging() {
     let filter = tracing_subscriber::EnvFilter::try_from_env("EGIT_LOG")
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
@@ -151,6 +163,7 @@ fn init_logging() {
 }
 
 /// Prints `text` to stdout.
+#[cfg(not(target_arch = "wasm32"))]
 fn say(text: &str, code: ExitCode) -> ExitCode {
     match std::io::stdout().write_all(text.as_bytes()) {
         Ok(()) => code,
@@ -159,6 +172,7 @@ fn say(text: &str, code: ExitCode) -> ExitCode {
 }
 
 /// Prints `text` to stderr, prefixed with the program's name.
+#[cfg(not(target_arch = "wasm32"))]
 fn complain(text: &str) {
     // Nothing more can be done when stderr is gone.
     let _ = write!(std::io::stderr(), "egit: {text}");

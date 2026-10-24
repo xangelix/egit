@@ -1,9 +1,10 @@
 //! Following a repository on another computer: this one, through the tests' sshd (skipped
-//! without one, unless `EGIT_REQUIRE_SSHD` is set). Told at once by `inotifywait` (skipped
-//! without inotify-tools, unless `EGIT_REQUIRE_INOTIFYWAIT` is set) of refs, the index, an
-//! operation's state, and the configuration, the repository's and the user's; looking every
-//! second where it isn't installed, or stops; a work tree's folders followed, those not named left
-//! alone; and every watcher there stopped as soon as the session is dropped.
+//! without one, unless `EGIT_REQUIRE_SSHD` is set), or their relay (`EGIT_TEST_RELAY`). Told at
+//! once by `inotifywait` (skipped without inotify-tools, unless `EGIT_REQUIRE_INOTIFYWAIT` is
+//! set) of refs, the index, an operation's state, and the configuration, the repository's and the
+//! user's; looking every second where it isn't installed, or stops; a work tree's folders
+//! followed, those not named left alone; and every watcher there stopped as soon as the session
+//! is dropped.
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
 #![allow(
@@ -29,6 +30,15 @@ use egit_git::{
 /// The sandbox's git, run on "another computer"; `None` (the test skipped) without the tests'
 /// sshd.
 fn there(sandbox: &Sandbox, tmp: &Path) -> Option<Git> {
+    if egit_git::testing::through_a_relay() {
+        std::fs::create_dir_all(tmp).unwrap();
+        let relay = egit_git::testing::relay().unwrap();
+        // As below: the folders' list goes here.
+        let git = sandbox
+            .git_through(&relay, [("TMPDIR", tmp.as_os_str().to_owned())])
+            .unwrap();
+        return Some(git);
+    }
     let host = match egit_git::testing::ssh_host() {
         Ok(host) => host,
         Err(error) => {

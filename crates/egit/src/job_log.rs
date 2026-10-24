@@ -12,7 +12,9 @@
 //! ([`LOOKS_AFTER_END`]), as GitHub writes it out a little after.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_forge::{
     Account, ForgeError, ForgeKind, ForgeRepository, JobLog, JobRun, LogMark, LogParts, LogRead,
@@ -332,9 +334,7 @@ impl JobFollower {
             waker,
             options: crate::preferences::text_options(),
         };
-        let started = std::thread::Builder::new()
-            .name(format!("job {id}'s log"))
-            .spawn(move || egit_git::block_on(follower.run()));
+        let started = egit_git::exec::spawn(&format!("job {id}'s log"), follower.run());
         if let Err(error) = started {
             shared.lock().problem = Some(Problem::new(
                 "The job's log couldn't be followed",
@@ -398,7 +398,7 @@ impl Follower {
                 Err(ForgeError::Cancelled) => return,
                 Err(error) => {
                     self.failed(&error);
-                    if !self.wait(AFTER_FAILING) {
+                    if !self.wait(AFTER_FAILING).await {
                         return;
                     }
                     continue;
@@ -408,7 +408,7 @@ impl Follower {
             if github && !ended && asked.checked_rem(GITHUB_LOG_EVERY) != Some(1) {
                 // Its steps moved on; its log is looked for now and then.
                 self.waker.request_repaint();
-                if !self.wait(EVERY) {
+                if !self.wait(EVERY).await {
                     return;
                 }
                 continue;
@@ -446,14 +446,15 @@ impl Follower {
                     // GitHub writes an ended job's log out a little after.
                     let again = github && ended && looked_after < LOOKS_AFTER_END;
                     looked_after = looked_after.saturating_add(u32::from(ended));
-                    let mut shared = self.shared.lock();
-                    shared.missing = read == 0;
-                    shared.problem = None;
-                    shared.done = ended && !again;
-                    drop(shared);
+                    {
+                        let mut shared = self.shared.lock();
+                        shared.missing = read == 0;
+                        shared.problem = None;
+                        shared.done = ended && !again;
+                    }
                     self.waker.request_repaint();
                     if again {
-                        if !self.wait(EVERY) {
+                        if !self.wait(EVERY).await {
                             return;
                         }
                         continue;
@@ -462,13 +463,13 @@ impl Follower {
                 Err(ForgeError::Cancelled) => return,
                 Err(error) => {
                     self.failed(&error);
-                    if !self.wait(AFTER_FAILING) {
+                    if !self.wait(AFTER_FAILING).await {
                         return;
                     }
                     continue;
                 }
             }
-            if ended || !self.wait(pause_after(read, ranges)) {
+            if ended || !self.wait(pause_after(read, ranges)).await {
                 return;
             }
         }
@@ -511,13 +512,13 @@ impl Follower {
     }
 
     /// Waits `pause`, unless dropped meanwhile (then false).
-    fn wait(&self, pause: Duration) -> bool {
+    async fn wait(&self, pause: Duration) -> bool {
         let until = Instant::now().checked_add(pause);
         while until.is_some_and(|until| Instant::now() < until) {
             if self.cancel.is_cancelled() {
                 return false;
             }
-            std::thread::sleep(Duration::from_millis(100));
+            egit_git::exec::sleep(Duration::from_millis(100)).await;
         }
         !self.cancel.is_cancelled()
     }

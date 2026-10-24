@@ -5,7 +5,7 @@
 //! ended. Only the lines in view are laid out; the view follows new lines while at the bottom.
 //! Its bar: show or hide it, the runs kept, Cancel while one runs, Copy, Clear.
 
-use std::time::Instant;
+use web_time::Instant;
 
 use egit_git::{Color, Line, LineKind};
 use egui::text::{LayoutJob, TextFormat};

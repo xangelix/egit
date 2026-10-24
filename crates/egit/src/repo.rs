@@ -1,7 +1,11 @@
 //! An open repository: what egit knows about it, kept current by background jobs.
 
+#[cfg(target_arch = "wasm32")]
+use crate::web::notify;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_git::{
     Bisection, CancelToken, Committed, ConfigPlace, ConfigSnapshot, Git, Head, Hooks,

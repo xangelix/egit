@@ -3,7 +3,9 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egui::{Key, RichText, Ui};
 use egui_async::Bind;
@@ -121,18 +123,24 @@ impl HomeView {
         )
     }
 
-    /// Opens the desktop's folder dialog.
+    /// Nothing: a browser has no folder dialog (its folders are its relay's, typed).
+    #[cfg(target_arch = "wasm32")]
+    #[expect(clippy::unused_self, reason = "the desktop's takes it")]
+    pub(crate) const fn pick_folder(&self) {}
+
+    /// Opens the desktop's folder dialog (a browser has none: its folders are its relay's,
+    /// typed).
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn pick_folder(&mut self) {
-        if self.picking.is_pending() {
-            return;
+        if !self.picking.is_pending() {
+            self.picking.request(async {
+                let folder = rfd::AsyncFileDialog::new()
+                    .set_title("Open a repository")
+                    .pick_folder()
+                    .await;
+                Ok(folder.map(|folder| folder.path().to_owned()))
+            });
         }
-        self.picking.request(async {
-            let folder = rfd::AsyncFileDialog::new()
-                .set_title("Open a repository")
-                .pick_folder()
-                .await;
-            Ok(folder.map(|folder| folder.path().to_owned()))
-        });
     }
 }
 
@@ -196,21 +204,39 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
              be made a repository.",
         ));
         ui.add_space(8.0);
+        // In a browser, the relay's computer's folders.
+        if let Some(there) = state
+            .git
+            .ok_ref()
+            .and_then(|git| git.host().relay())
+            .and_then(egit_git::Relay::welcomed)
+        {
+            let words = format!(
+                "In this browser, the folders are {}'s, where egit's relay runs.",
+                there.host
+            );
+            ui.label(muted(ui, words));
+        }
         ui.horizontal(|ui| {
             let picking = state.home.picking.is_pending();
-            if widgets::primary(
-                ui,
-                ready && !picking,
-                &format!("{}  Open folder…", icon::FOLDER_OPEN),
-            )
-            .clicked()
+            if !crate::desktop::IN_BROWSER
+                && widgets::primary(
+                    ui,
+                    ready && !picking,
+                    &format!("{}  Open folder…", icon::FOLDER_OPEN),
+                )
+                .clicked()
             {
                 state.actions.push(Action::PickFolder);
             }
             let field = ui
                 .add(
                     crate::widgets::line_field(&mut state.home.path)
-                        .hint_text("…or type a path")
+                        .hint_text(if crate::desktop::IN_BROWSER {
+                            "A folder's path: ~/src/project"
+                        } else {
+                            "…or type a path"
+                        })
                         .desired_width((ui.available_width() - 72.0).max(120.0)),
                 )
                 .labelled_by(heading.id);
@@ -223,8 +249,9 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
             }
         });
         // Not from Windows: its OpenSSH can't share one connection (each command would log in
-        // again), and its paths join with `\`, which the other computer's don't.
-        if !cfg!(windows) {
+        // again), and its paths join with `\`, which the other computer's don't. Nor from a
+        // browser: its relay's computer is the other.
+        if !cfg!(windows) && !crate::desktop::IN_BROWSER {
             ui.add_space(6.0);
             open_there(ui, state, ready);
         }

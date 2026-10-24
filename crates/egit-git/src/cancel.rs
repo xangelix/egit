@@ -2,7 +2,9 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use parking_lot::{Condvar, Mutex};
 
@@ -130,13 +132,34 @@ impl CancelToken {
 
     /// Waits for `duration`, or less if the token is cancelled meanwhile. Returns whether it was
     /// cancelled.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) async fn sleep(&self, duration: Duration) -> bool {
+        // The page's one thread can't wait for a cancel to wake it: it looks, now and then.
+        const LOOKS: Duration = Duration::from_millis(25);
+        let deadline = Instant::now().checked_add(duration);
+        while !self.is_cancelled() {
+            let left = deadline.map_or(LOOKS, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
+            if left.is_zero() {
+                break;
+            }
+            crate::exec::sleep(left.min(LOOKS)).await;
+        }
+        self.is_cancelled()
+    }
+
+    /// Waits for `duration`, or less if the token is cancelled meanwhile. Returns whether it was
+    /// cancelled.
+    #[cfg(not(target_arch = "wasm32"))]
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
         reason = "here it blocks; through a relay it will await"
     )]
     pub(crate) async fn sleep(&self, duration: Duration) -> bool {
-        let deadline = Instant::now().checked_add(duration);
+        // The condition variable's clock, the standard library's.
+        let deadline = std::time::Instant::now().checked_add(duration);
         let mut running = self.0.running.lock();
         while !self.is_cancelled() {
             if let Some(deadline) = deadline {

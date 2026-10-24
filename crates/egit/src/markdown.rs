@@ -20,7 +20,9 @@
 
 use std::ops::Range;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_git::{Git, Repository};
 use egui::{Color32, Rect, ScrollArea, TextStyle, Ui, UiBuilder, pos2, vec2};

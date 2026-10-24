@@ -4,11 +4,19 @@
 // No console window behind the application on Windows (a debug build keeps one, for its logs).
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+#[cfg(not(target_arch = "wasm32"))]
 use std::process::ExitCode;
 
+#[cfg(not(target_arch = "wasm32"))]
 use egit_git::askpass::{HELPER_NAME, run_helper};
 
+/// In a browser, egit starts from its page (`egit-web`), not here.
+#[cfg(target_arch = "wasm32")]
+const fn main() {}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> ExitCode {
     let mut args = std::env::args_os();
     let program = args.next().unwrap_or_default();

@@ -48,7 +48,7 @@ it.
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
 | 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
-| 37 | egit in a browser: WebAssembly, git through a relay | under way: async egit-git, the relay and its protocol |
+| 37 | egit in a browser: WebAssembly, git through a relay | under way: the relay, its protocol, and egit in a browser (a repository's history, work tree, and diffs); files through the browser, fonts, and the page's tests to come |
 
 ## Toolchain & commands
 
@@ -76,6 +76,14 @@ it.
   relay on the loopback address over one WebSocket, as egit in a browser runs them, and the
   agents' bridge through it too. Do this after
   touching how commands or requests are made, the relay, or its protocol (CI does it).
+- A browser: `scripts/build-web.sh` builds egit's WebAssembly and its page into `target/web`
+  (needs `rustup target add wasm32-unknown-unknown`, and `cargo install wasm-bindgen-cli
+  --version <the lock file's wasm-bindgen> --locked`; wasm-opt, binaryen's, makes it smaller
+  where installed); `egit-relay --web target/web` serves it and runs its git: open the address
+  it prints (its token after `#`). Its crates are linted by `scripts/check-platforms.sh` (with
+  `RUSTFLAGS='--cfg getrandom_backend="wasm_js"'`, which the build gives too). Look at it in a
+  headless browser: Chromium with `--disable-features=WebGPU` draws through WebGL2, which a
+  screenshot can read (WebGPU's canvas shows blank).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
 - Agents: the bridge's tests need Node.js (`EGIT_REQUIRE_NODE=1` makes their absence fail);
   `cargo test -p egit-agents --test install -- --ignored` installs the Claude Agent SDK for real
@@ -147,6 +155,15 @@ tree, font folders, the browser opener); bytes git prints become paths through b
 `to_path_lossy`/`to_os_str_lossy` (byte for byte on Unix, UTF-8 on Windows, as Git for Windows
 writes paths), never `OsStrExt`.
 
+And a browser, since phase 37: egit's WebAssembly (`wasm32-unknown-unknown`, WebGPU where the
+browser has it, else WebGL2), its git run by `egit-relay` on a Linux or macOS computer. There
+`std` has no processes, threads, files, environment, or clock (`env::vars_os` and
+`Instant::now` panic): every command goes through the relay (`Host::Relay`), every job is the
+page's future (a long computation yields: `jobs::Pace`), time is `web_time`'s, and a path is
+absolute when it starts at the root (`egit_git::is_absolute`: `std` there calls none so).
+What differs is behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both
+compile.
+
 ## Rules for running git
 
 - Every repository operation runs the system `git`, but for the reads `egit-gix` makes in
@@ -209,7 +226,7 @@ writes paths), never `OsStrExt`.
     inside them, `.git` left out, at most so many: breadth first here, `find` there). Here
     `std::fs`; there `sh -c` with
     the paths as arguments, one session for several paths where it can (a missing path exits 3:
-    `NotFound`).
+    `NotFound`). `is_absolute`: a path absolute where git runs (in a browser, from the root).
   - `looking.rs` — following a repository on another computer: `look_there` (a `Follow`: how
     often to look, and the `inotifywait` to be told by) runs a session there that, where
     `inotifywait` is installed, runs it on the git directories, `refs` (recursive), and the
@@ -228,7 +245,8 @@ writes paths), never `OsStrExt`.
     inotify-tools unless `EGIT_REQUIRE_INOTIFYWAIT`, which CI sets): told at once of a commit,
     a file staged, a bisection, both configurations, branches in a new folder; looking every
     second without it, or with one that stops; folders followed and no others, a folder made
-    seen; every watcher there stopped at once when dropped.
+    seen; every watcher there stopped at once when dropped. Through the tests' relay too
+    (`EGIT_TEST_RELAY`).
   - `command.rs` — `GitCommand` from `Git::read` / `Git::write`: `-c` settings, arguments,
     directory, stdin, and a `CancelToken`; `output` (collected up to `stdout_limit`, failing
     unless git succeeds), `output_unchecked` (any exit), `stream` (chunks through one reused
@@ -1044,7 +1062,9 @@ writes paths), never `OsStrExt`.
   local reads only, no network or TLS; its dynamic pack cache, as the static one needs
   MPL-2.0 `uluru`), each giving what egit's git commands give, and measured faster (phase 12);
   no egui.
-  - `lib.rs` — `GixRepository::open`: `None` (git reads it) for references in a reftable or
+  - `lib.rs` — `here.rs`'s reads, or in a browser `browser.rs`'s, which open nothing (git,
+    through the relay, reads every repository there).
+  - `here.rs` — `GixRepository::open`: `None` (git reads it) for references in a reftable or
     replaced objects (`refs/replace/`, which `cat-file` reads in their place); shared behind an
     `Arc`, each read taking a thread's own handle. `references`: `list_references`'s list
     (peeled through every tag: a packed ref's peeled line, else objects' headers, only tags
@@ -1090,6 +1110,10 @@ writes paths), never `OsStrExt`.
   tunnel's names let in, compressed, nothing outside), another site's page and a wrong token
   refused, git run through it (a 9 MiB file read and fed back, a folder that isn't one,
   cancelled), git's questions relayed and answered, and a session's programs stopped with it.
+- `crates/egit-web` — egit in a browser: the page (`web/index.html`, `start.js`: its
+  WebAssembly loaded, a problem said in the page) and its entry (`lib.rs`, `wasm_bindgen(start)`:
+  `egit_app::start` in the canvas `#egit`); a `cdylib`, empty anywhere but `wasm32`. Built by
+  `scripts/build-web.sh` (wasm-bindgen, wasm-opt, `.gz` and `.br` beside each file).
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
   - `layout.rs` — `GraphBuilder::push` lays out each commit as `walk_history` yields it, in
@@ -1147,7 +1171,20 @@ writes paths), never `OsStrExt`.
   - `main.rs` — started as `egit-askpass` it is the askpass helper (`run_helper`; on Windows
     in any case, `.exe` or not); otherwise `lib.rs`'s `run`: `-h`/`-V`, paths to open,
     `EGIT_LOG` logging, the runtime, the window (no console window behind it on Windows,
-    but in a debug build).
+    but in a debug build). In a browser, nothing: the page starts egit (`web::start`).
+  - `web/` — egit in a browser (`wasm32`): `start` (from `egit-web`): the relay's token from
+    the address after `#` (kept for the tab in `sessionStorage`, taken out of the address bar
+    and its history), the relay's WebSocket (`ws(s)://<the page's host>/relay`), the keys
+    egit takes from the browser (`keep_shortcuts`: a listener on the window, capturing,
+    preventing the default of ⌘K, ⌘F, ⌘R, F1, … and, while no field has the keys, ⌥W and ⌥1 …
+    ⌥9), then eframe's `WebRunner` with `EgitApp::in_browser` (settings in the page's storage,
+    every git through the relay, git's questions relayed to the window, people's pictures asked
+    by the relay); `open_page` (a new tab, `noopener`), `is_mac` (the keys' names).
+    `socket.rs`: the page's WebSockets, kept by number on the page's thread
+    (`thread_local`), a `Numbered` one the relay's `Transport` (`Send`, as every egit future
+    is): its messages handed to `Relay::receive` as they come, its close to `Relay::closed`.
+    `notify.rs`: `notify`'s names, a watch failing at once (sessions on the relay's computer
+    follow what changes, as over SSH).
   - `app.rs` — `EgitApp { tabs, state }`. Views never change `AppState` directly: they push
     `Action`s, applied after the frame (`apply_actions`); `AppState::poll` (each frame's
     start) turns finished jobs into state or actions. Git is detected by a job
@@ -1175,7 +1212,9 @@ writes paths), never `OsStrExt`.
     beyond), `blocking` (a future polled to its end on the blocking pool by
     `egit_git::block_on`, as a future for a `Bind`), `detached` (the same, not waited for),
     and `WriteLock` (an async lock, `hold().await`, taken inside jobs, never on the interface
-    thread).
+    thread). In a browser `blocking` is the future itself and `detached` the page's
+    (`spawn_local`); `Pace`, a long computation's (the syntax walk's) `step().await`, yields
+    to the page every 10 ms there, and never here.
   - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Preferences,
     Repo(id)}` (a repository's on another computer titled with it, "repo · devbox", under a
     globe); `show` focuses or adds a tab; `front` (the tab in front), `close_front`,

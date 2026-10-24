@@ -10,7 +10,9 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_forge::{Account, Artifact, ForgeError, ForgeRepository, download_artifact};
 use egit_git::CancelToken;
@@ -109,17 +111,15 @@ impl Downloads {
             return;
         };
         let (going, waker) = (Arc::clone(&download), waker.clone());
-        let started = std::thread::Builder::new()
-            .name("artifact download".to_owned())
-            .spawn(move || {
-                let saved = egit_git::block_on(save(&going, (&account, &repository), &waker));
-                let stage = match saved {
-                    Ok(()) => Stage::Saved,
-                    Err(problem) => Stage::Failed(problem),
-                };
-                *going.stage.lock() = stage;
-                waker.request_repaint();
-            });
+        let started = egit_git::exec::spawn("artifact download", async move {
+            let saved = save(&going, (&account, &repository), &waker).await;
+            let stage = match saved {
+                Ok(()) => Stage::Saved,
+                Err(problem) => Stage::Failed(problem),
+            };
+            *going.stage.lock() = stage;
+            waker.request_repaint();
+        });
         if let Err(error) = started {
             *download.stage.lock() = Stage::Failed(Problem::new(
                 "The artifact couldn't be downloaded",

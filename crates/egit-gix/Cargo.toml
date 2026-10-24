@@ -11,8 +11,11 @@ workspace = true
 
 [dependencies]
 egit-git.workspace = true
-gix.workspace = true
 thiserror.workspace = true
+
+# Files read here; a browser has none of its own.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+gix.workspace = true
 
 [dev-dependencies]
 bstr.workspace = true

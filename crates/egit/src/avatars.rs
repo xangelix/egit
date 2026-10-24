@@ -16,13 +16,16 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant, SystemTime};
+use std::task::{Poll, Waker};
+use std::time::{Duration, SystemTime};
+
+use web_time::Instant;
 
 use egit_forge::{Fetched, PictureSources, Pictures};
 use egui::{Color32, ColorImage, Context, Id, Rect, TextureHandle, TextureId, TextureOptions};
 use image::imageops::FilterType;
 use image::{DynamicImage, RgbaImage};
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 
 /// The size a picture is kept at, once fetched.
 pub(crate) const MASTER: u32 = 128;
@@ -86,25 +89,36 @@ enum Entry {
     None { until: Instant },
 }
 
-/// The requests waiting, the newest first.
+/// The requests waiting, the newest first, and the workers waiting for one.
 #[derive(Default)]
 struct Queue {
-    waiting: Mutex<VecDeque<Request>>,
-    ready: Condvar,
+    waiting: Mutex<Waiting>,
+}
+
+#[derive(Default)]
+struct Waiting {
+    requests: VecDeque<Request>,
+    workers: Vec<Waker>,
 }
 
 impl Queue {
     /// The newest request, once there is one.
-    fn next(&self) -> Request {
-        let mut waiting = self.waiting.lock();
-        let request = loop {
-            if let Some(request) = waiting.pop_front() {
-                break request;
+    async fn next(&self) -> Request {
+        std::future::poll_fn(|context| {
+            let mut waiting = self.waiting.lock();
+            if let Some(request) = waiting.requests.pop_front() {
+                return Poll::Ready(request);
             }
-            self.ready.wait(&mut waiting);
-        };
-        drop(waiting);
-        request
+            if !waiting
+                .workers
+                .iter()
+                .any(|worker| worker.will_wake(context.waker()))
+            {
+                waiting.workers.push(context.waker().clone());
+            }
+            Poll::Pending
+        })
+        .await
     }
 }
 
@@ -133,9 +147,15 @@ fn avatars(ctx: &Context) -> Option<Avatars> {
     ctx.data(|data| data.get_temp::<Avatars>(id()))
 }
 
-/// Starts fetching pictures for `ctx`'s window from `sources`, kept in `cache` (when there is
-/// one): two worker threads for the life of the process.
-pub(crate) fn install(ctx: &Context, sources: &PictureSources, cache: Option<&Path>) {
+/// Starts fetching pictures for `ctx`'s window from `sources` (through `relay`, in a browser),
+/// kept in `cache` (when there is one): two workers for the life of the process (threads; in a
+/// browser, the page's tasks).
+pub(crate) fn install(
+    ctx: &Context,
+    sources: &PictureSources,
+    cache: Option<&Path>,
+    relay: Option<egit_git::Relay>,
+) {
     let queue = Arc::new(Queue::default());
     let (sender, landed) = mpsc::channel();
     let state = State {
@@ -148,7 +168,7 @@ pub(crate) fn install(ctx: &Context, sources: &PictureSources, cache: Option<&Pa
         landed,
         sender: sender.clone(),
     };
-    let pictures = Pictures::new(None);
+    let pictures = Pictures::new(relay);
     let cache = cache.map(Path::to_path_buf);
     if let Some(cache) = &cache {
         forget_older(cache);
@@ -156,23 +176,21 @@ pub(crate) fn install(ctx: &Context, sources: &PictureSources, cache: Option<&Pa
     for worker in 0..2 {
         let (queue, sender, ctx) = (Arc::clone(&queue), sender.clone(), ctx.clone());
         let (sources, pictures, cache) = (sources.clone(), pictures.clone(), cache.clone());
-        let spawned = std::thread::Builder::new()
-            .name(format!("avatars {worker}"))
-            .spawn(move || {
-                let fetching = Fetching {
-                    sources: &sources,
-                    pictures: &pictures,
-                    cache: cache.as_deref(),
-                };
-                loop {
-                    let request = queue.next();
-                    let landed = fetching.picture(&request);
-                    if sender.send(landed).is_err() {
-                        return;
-                    }
-                    ctx.request_repaint();
+        let spawned = egit_git::exec::spawn(&format!("avatars {worker}"), async move {
+            let fetching = Fetching {
+                sources: &sources,
+                pictures: &pictures,
+                cache: cache.as_deref(),
+            };
+            loop {
+                let request = queue.next().await;
+                let landed = fetching.picture(&request).await;
+                if sender.send(landed).is_err() {
+                    return;
                 }
-            });
+                ctx.request_repaint();
+            }
+        });
         if let Err(error) = spawned {
             tracing::warn!(%error, "an avatar worker couldn't be started");
         }
@@ -267,17 +285,20 @@ impl State {
     /// Puts a request at the queue's front, dropping the oldest past [`QUEUED`].
     fn ask(&self, key: u64, email: &str) {
         let mut waiting = self.queue.waiting.lock();
-        waiting.push_front(Request {
+        waiting.requests.push_front(Request {
             key,
             email: email.to_owned(),
         });
-        while waiting.len() > QUEUED {
-            if let Some(dropped) = waiting.pop_back() {
+        while waiting.requests.len() > QUEUED {
+            if let Some(dropped) = waiting.requests.pop_back() {
                 let _ = self.sender.send(Landed::Dropped(dropped.key));
             }
         }
+        let worker = waiting.workers.pop();
         drop(waiting);
-        self.queue.ready.notify_one();
+        if let Some(worker) = worker {
+            worker.wake();
+        }
     }
 
     /// Lays `tile` into a free slot, or the one drawn least recently (its person forgotten).
@@ -368,7 +389,7 @@ struct Fetching<'a> {
 
 impl Fetching<'_> {
     /// `request`'s picture: from the cache, else fetched (and cached).
-    fn picture(&self, request: &Request) -> Landed {
+    async fn picture(&self, request: &Request) -> Landed {
         let key = request.key;
         let files = self.cache.map(|cache| {
             (
@@ -387,9 +408,11 @@ impl Fetching<'_> {
                 };
             }
         }
-        // A worker thread of its own: it waits for the answer.
-        let found = egit_git::block_on(self.pictures.find(self.sources, &request.email, MASTER));
-        match found {
+        match self
+            .pictures
+            .find(self.sources, &request.email, MASTER)
+            .await
+        {
             Ok(Fetched::Found(bytes)) => {
                 let Some(master) = decode(&bytes) else {
                     return Landed::Missing(key);
@@ -540,22 +563,20 @@ fn forget_older(cache: &Path) {
     let Some(pictures) = cache.parent().map(Path::to_path_buf) else {
         return;
     };
-    let spawned = std::thread::Builder::new()
-        .name("avatars' clean-up".to_owned())
-        .spawn(move || {
-            let Ok(entries) = std::fs::read_dir(&pictures) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let kept = path
-                    .extension()
-                    .is_some_and(|extension| extension == "png" || extension == "none");
-                if kept && path.is_file() {
-                    let _ = std::fs::remove_file(&path);
-                }
+    let spawned = egit_git::exec::spawn("avatars' clean-up", async move {
+        let Ok(entries) = std::fs::read_dir(&pictures) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let kept = path
+                .extension()
+                .is_some_and(|extension| extension == "png" || extension == "none");
+            if kept && path.is_file() {
+                let _ = std::fs::remove_file(&path);
             }
-        });
+        }
+    });
     if let Err(error) = spawned {
         tracing::debug!(%error, "the old pictures couldn't be cleared");
     }

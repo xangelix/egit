@@ -9,6 +9,7 @@ members = [
     "crates/egit-graph",
     "crates/egit-relay",
     "crates/egit-text",
+    "crates/egit-web",
 ]
 
 [workspace.package]
@@ -19,6 +20,7 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
+egit = { path = "crates/egit" }
 egit-agents = { path = "crates/egit-agents" }
 egit-forge = { path = "crates/egit-forge" }
 egit-gix = { path = "crates/egit-gix" }
@@ -89,6 +91,11 @@ ureq = { version = "3.4.2", default-features = false, features = ["gzip", "platf
 unicode-width = { version = "0.2.2", default-features = false }
 # A moment's clock where a browser has no `std::time::Instant` (the standard library's elsewhere).
 web-time = "1.1.0"
+# egit in a browser: the page's JavaScript, its futures, and its WebSocket.
+js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
+wasm-bindgen-futures = "0.4.79"
+web-sys = { version = "0.3.106", default-features = false }
 # Windows' process calls the standard library doesn't make (stopping git gently).
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 zeroize = "1.9.1"

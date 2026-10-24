@@ -85,7 +85,12 @@ impl Git {
             ),
             Host::Local | Host::Ssh(_) => None,
         };
-        let mut environment = Environment::plan(std::env::vars_os());
+        // A browser has no environment of its own to start from.
+        let mut environment = if cfg!(target_arch = "wasm32") {
+            Environment::plan(std::iter::empty())
+        } else {
+            Environment::plan(std::env::vars_os())
+        };
         for (key, value) in options.env {
             environment.push(key, value);
         }

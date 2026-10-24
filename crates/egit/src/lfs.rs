@@ -116,7 +116,9 @@ async fn attributes_patterns(git: &Git, repository: &Repository) -> Vec<LfsPatte
     };
     text.lines()
         .filter_map(|line| {
-            let mut fields = line.fields();
+            let mut fields = line
+                .split(u8::is_ascii_whitespace)
+                .filter(|field| !field.is_empty());
             let pattern = fields.next()?;
             let mut lfs = false;
             let mut lockable = false;

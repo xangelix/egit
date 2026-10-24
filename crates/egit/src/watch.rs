@@ -19,10 +19,14 @@
 //! at its git directories every [`LOOKING_THERE`] (and its work tree's status read every few
 //! seconds by its owner).
 
+#[cfg(target_arch = "wasm32")]
+use crate::web::notify;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_git::{Follow, Git, INOTIFYWAIT, Liveness, Looked, Looking, Repository, Seen};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};

@@ -168,6 +168,34 @@ jobs:
       - name: Tests
         run: cargo test --workspace --locked
 
+  web:
+    name: A browser (WebAssembly)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install the pinned toolchain and the WebAssembly target
+        run: |
+          rustup toolchain install
+          rustup target add wasm32-unknown-unknown
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The CLI must be the version the lock file names (wasm-opt, which only makes the page
+      # smaller, is left out).
+      - name: Install wasm-bindgen's CLI
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - name: Clippy
+        run: cargo clippy --locked --target wasm32-unknown-unknown -p egit-web -p egit -p egit-git -p egit-forge -p egit-agents -p egit-gix -p egit-graph -p egit-text -- -D warnings
+        env:
+          RUSTFLAGS: --cfg getrandom_backend="wasm_js"
+
+      - name: Build the page
+        run: scripts/build-web.sh
+
   supply-chain:
     name: Supply chain
     runs-on: ubuntu-24.04

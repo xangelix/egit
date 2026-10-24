@@ -406,7 +406,7 @@ pub fn look_at_folders_there<'p>(
     let mut list = Vec::new();
     for folder in folders {
         let bytes = Vec::from_path_lossy(folder);
-        if folder.is_absolute() && !bytes.contains(&b'\n') && !bytes.contains(&0) {
+        if crate::is_absolute(folder) && !bytes.contains(&b'\n') && !bytes.contains(&0) {
             list.extend_from_slice(&bytes);
             list.push(0);
         }

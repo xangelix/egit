@@ -17,7 +17,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_text::Text;
 use egui::Color32;
@@ -227,7 +229,7 @@ impl Syntax {
         let bytes = text.shared();
         let lines = text.lines();
         let (shared, walk_feeds) = (Arc::clone(&walk), feeds.clone());
-        jobs::detached(async move { parse(grammar, &bytes, lines, &walk_feeds, &shared) });
+        jobs::detached(async move { parse(grammar, &bytes, lines, &walk_feeds, &shared).await });
         Some(Self {
             grammar,
             feeds,
@@ -444,14 +446,17 @@ fn colored(
 }
 
 /// Parses `lines` lines of `bytes` in order, keeping the states every [`CHECKPOINT`] lines.
-fn parse(syntax: &SyntaxReference, bytes: &[u8], lines: u32, feeds: &Feeds, walk: &Walk) {
+async fn parse(syntax: &SyntaxReference, bytes: &[u8], lines: u32, feeds: &Feeds, walk: &Walk) {
     let mut states = States::new(syntax);
     let mut buffer = String::new();
     let mut rest = bytes;
+    // In a browser, the page draws meanwhile (the walk has its thread elsewhere).
+    let mut pace = jobs::Pace::new();
     for line in 0..lines {
         if walk.stop.load(Ordering::Relaxed) {
             return;
         }
+        pace.step().await;
         if line.checked_rem(CHECKPOINT) == Some(0) {
             let mut checkpoints = walk.checkpoints.lock();
             let kept = match checkpoints.last() {

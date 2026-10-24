@@ -13,7 +13,9 @@
 use std::io;
 use std::process::{Child, Command, ExitStatus};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use parking_lot::Mutex;
 
@@ -21,6 +23,13 @@ use parking_lot::Mutex;
 mod unix;
 #[cfg(unix)]
 pub(crate) use unix::{Group, group_of, spawn_in_new_session, terminate_group, wait_until_exited};
+
+#[cfg(not(any(unix, windows)))]
+mod unsupported;
+#[cfg(not(any(unix, windows)))]
+pub(crate) use unsupported::{
+    Group, group_of, spawn_in_new_session, terminate_group, wait_until_exited,
+};
 
 #[cfg(windows)]
 mod windows;

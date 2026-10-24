@@ -682,11 +682,11 @@ pub(crate) struct Conversation {
     /// Whether its bridge was started ahead of its first prompt (once).
     warmed: bool,
     /// When the turn under way began.
-    turn_began: Option<std::time::Instant>,
+    turn_began: Option<web_time::Instant>,
     /// What its view keeps (the draft, what is folded open, heights).
     pub(crate) view: crate::views::agents::ConversationView,
     /// When a turn ended, while it hasn't been shown since.
-    ended_unseen: Option<std::time::Instant>,
+    ended_unseen: Option<web_time::Instant>,
 }
 
 /// What a tab's agents want of the user: answers they wait for, and turns that ended unseen.
@@ -814,7 +814,7 @@ impl Conversation {
         };
         self.transcript.prompt(prompt);
         self.prompted = true;
-        self.turn_began = Some(std::time::Instant::now());
+        self.turn_began = Some(web_time::Instant::now());
         self.view.follow();
         if self.is_running() {
             self.deliver(request);
@@ -993,7 +993,7 @@ impl Conversation {
             self.event(event);
         }
         if busy && !self.transcript.busy() {
-            self.ended_unseen = Some(std::time::Instant::now());
+            self.ended_unseen = Some(web_time::Instant::now());
         }
         // Claude Code changed mode itself (a plan approved, say): the menu follows.
         let reported = self.transcript.mode();

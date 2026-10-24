@@ -837,7 +837,7 @@ pub(super) fn worktree_path(typed: &str, work_tree: &Path, home: Option<&Path>) 
         return None;
     }
     let path = super::home::expand_home(typed, home);
-    if path.is_absolute() {
+    if egit_git::is_absolute(&path) {
         Some(path)
     } else {
         Some(work_tree.parent().unwrap_or(work_tree).join(path))

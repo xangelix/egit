@@ -9,6 +9,13 @@
 //! [`Git::write`] build a [`GitCommand`], which runs git in a session of its own and can be
 //! cancelled through a [`CancelToken`].
 
+// In a browser the standard library's processes are stand-ins that can't exist (a relay runs
+// every program): what drops or borrows one there is never reached.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(clippy::drop_non_drop, clippy::uninhabited_references)
+)]
+
 mod applying;
 pub mod askpass;
 mod batch;
@@ -108,8 +115,9 @@ pub use discard::{
     discard_lines, put_back,
 };
 pub use error::{Failure, GitError};
+#[cfg(not(target_arch = "wasm32"))]
 pub use exec::{Wait, block_on};
-pub use files::{Entry, Files, Put, TempDir};
+pub use files::{Entry, Files, Put, TempDir, is_absolute};
 pub use foresee::{Foreseen, MAX_REPLAYED, foresee_merge, foresee_pick, foresee_rebase};
 pub use format_patch::{
     Changes, CombineError, Series, changes_patch, combined_patch, format_patch, format_patches,

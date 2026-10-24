@@ -24,6 +24,9 @@ mod platform;
 #[cfg(windows)]
 #[path = "windows.rs"]
 mod platform;
+#[cfg(not(any(unix, windows)))]
+#[path = "unsupported.rs"]
+mod platform;
 
 pub use client::run_helper;
 #[cfg(unix)]

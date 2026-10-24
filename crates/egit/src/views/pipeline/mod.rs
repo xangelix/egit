@@ -18,7 +18,9 @@
 //! time) orange, cancelled or skipped grey.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use web_time::Instant;
 
 use egit_forge::{
     Artifact, ArtifactKind, CiAction, CiGroup, CiStatus, ForgeKind, Job, PipelineDetails, Workflow,
