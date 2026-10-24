@@ -48,7 +48,7 @@ it.
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
 | 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
-| 37 | egit in a browser: WebAssembly, git through a relay | under way: the relay, its protocol, and egit in a browser (a repository's history, work tree, and diffs; patches saved and chosen, artifacts delivered, through the browser; fonts from the relay's computer); the page's tests to come |
+| 37 | egit in a browser: WebAssembly, git through a relay (patches, artifacts, and dropped files through the browser; fonts from the relay's computer; driven headless in CI) | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -81,9 +81,14 @@ it.
   --version <the lock file's wasm-bindgen> --locked`; wasm-opt, binaryen's, makes it smaller
   where installed); `egit-relay --web target/web` serves it and runs its git: open the address
   it prints (its token after `#`). Its crates are linted by `scripts/check-platforms.sh` (with
-  `RUSTFLAGS='--cfg getrandom_backend="wasm_js"'`, which the build gives too). Look at it in a
-  headless browser: Chromium with `--disable-features=WebGPU` draws through WebGL2, which a
-  screenshot can read (WebGPU's canvas shows blank).
+  `RUSTFLAGS='--cfg getrandom_backend="wasm_js"'`, which the build gives too). The page in a
+  browser: `EGIT_TEST_BROWSER=<chromium or chrome> EGIT_TEST_WEB=$PWD/target/web cargo test -p
+  egit-relay --test browser` (after the build) drives it headless over the browser's developer
+  tools protocol, and keeps its screens in `target/web-screens` (look at them); CI does it with
+  the runner's Chrome. Do this after touching anything a browser runs: a call that panics there
+  (`Instant::now`, `env::vars_os`, a thread) passes every other test. Chromium with
+  `--disable-features=WebGPU` draws through WebGL2, which a screenshot reads (WebGPU's canvas
+  shows blank, headless).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
 - Agents: the bridge's tests need Node.js (`EGIT_REQUIRE_NODE=1` makes their absence fail);
   `cargo test -p egit-agents --test install -- --ignored` installs the Claude Agent SDK for real
@@ -1140,6 +1145,11 @@ compile.
   cancelled), git's questions relayed and answered, and a session's programs stopped with it;
   a download delivered whole once (its name, length, and bytes; taken twice, 404), one not
   matching its digest cut short (chunked, its end never sent), and a redirect left to egit.
+  `tests/browser.rs` (`EGIT_TEST_BROWSER` and `EGIT_TEST_WEB`, else skipped): the web build
+  served, headless Chromium driven over its developer tools protocol (no npm: a WebSocket of
+  JSON): the page opens a sandbox's repository its address names (titled by it; the address
+  then plain), the palette (⌘K, typed into, Enter) shows its Stats, nothing in the page
+  saying an error or panicking; screens kept in `target/web-screens`.
 - `crates/egit-web` — egit in a browser: the page (`web/index.html`, `start.js`: its
   WebAssembly loaded, a problem said in the page) and its entry (`lib.rs`, `wasm_bindgen(start)`:
   `egit_app::start` in the canvas `#egit`); a `cdylib`, empty anywhere but `wasm32`. Built by
@@ -1204,19 +1214,25 @@ compile.
     but in a debug build). In a browser, nothing: the page starts egit (`web::start`).
   - `web/` — egit in a browser (`wasm32`): `start` (from `egit-web`): the relay's token from
     the address after `#` (kept for the tab in `sessionStorage`, taken out of the address bar
-    and its history), the relay's WebSocket (`ws(s)://<the page's host>/relay`), the keys
+    and its history), the repositories the address names (`?open=<path>`, as the command line
+    names them; taken out of it too), the relay's WebSocket (`ws(s)://<the page's host>/relay`), the keys
     egit takes from the browser (`keep_shortcuts`: a listener on the window, capturing,
     preventing the default of ⌘K, ⌘F, ⌘R, F1, … and, while no field has the keys, ⌥W and ⌥1 …
     ⌥9), then eframe's `WebRunner` with `EgitApp::in_browser` (settings in the page's storage,
     every git through the relay, git's questions relayed to the window, people's pictures asked
-    by the relay); `open_page` (a new tab, `noopener`), `is_mac` (the keys' names).
+    by the relay); `open_page` (a new tab, `noopener`), `is_mac` (the keys' names), `language`
+    (the browser's, for fonts), `title` (the page titled by the repository in front, "repo —
+    egit", touched only when it changes).
     `socket.rs`: the page's WebSockets, kept by number on the page's thread
     (`thread_local`), a `Numbered` one the relay's `Transport` (`Send`, as every egit future
     is): its messages handed to `Relay::receive` as they come, its close to `Relay::closed`.
     `files.rs`: `choose`, the browser's dialog (an `<input type=file>` clicked, its `change`
     or `cancel` answering): each file chosen read into the page (256 MiB at most) and given to
     egit (`egit_git::local::give`), its path what is answered; `open_download`, the browser
-    sent to a download the relay delivers.
+    sent to a download the relay delivers; `begin_frame` (each frame's start) reads the files
+    dropped on the window (a browser gives their bytes, not a path), each given as it is read,
+    and `dropped`, those this frame shows the views (`desktop::dropped_files`, a computer's
+    paths elsewhere: patches shown to apply, images attached).
     `notify.rs`: `notify`'s names, a watch failing at once (sessions on the relay's computer
     follow what changes, as over SSH).
   - `app.rs` — `EgitApp { tabs, state }`. Views never change `AppState` directly: they push

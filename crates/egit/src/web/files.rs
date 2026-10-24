@@ -108,3 +108,42 @@ pub(crate) fn open_download(path: &str) -> bool {
     link.click();
     true
 }
+
+thread_local! {
+    /// Files dropped on the window, read and given, for the next frame.
+    static READY: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Those this frame shows the views.
+    static SHOWN: std::cell::RefCell<Vec<PathBuf>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// At a frame's start: files just dropped on the window begin to be read (a browser reads
+/// them only so), each given to egit as it is; those read since are this frame's ([`dropped`]).
+pub(crate) fn begin_frame(ctx: &egui::Context) {
+    let dropped = ctx.input(|input| input.raw.dropped_files.clone());
+    for file in dropped {
+        if file.web_file().is_some_and(|file| file.size() > MOST) {
+            tracing::warn!(name = %file.path().display(), "a file too large to read into the page");
+            continue;
+        }
+        let ctx = ctx.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            match file.bytes_async().await {
+                Ok(bytes) => {
+                    // A browser's dropped file's path is its name alone.
+                    let name = file.path().to_string_lossy().into_owned();
+                    let given = egit_git::local::give(&name, bytes);
+                    READY.with_borrow_mut(|ready| ready.push(given));
+                    ctx.request_repaint();
+                }
+                Err(error) => tracing::warn!(%error, "a file dropped couldn't be read"),
+            }
+        });
+    }
+    let ready = READY.with_borrow_mut(std::mem::take);
+    SHOWN.with_borrow_mut(|shown| *shown = ready);
+}
+
+/// The files dropped on the window this frame shows, read and given (their paths).
+pub(crate) fn dropped() -> Vec<PathBuf> {
+    SHOWN.with_borrow(Clone::clone)
+}

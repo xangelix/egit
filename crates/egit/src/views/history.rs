@@ -1515,16 +1515,11 @@ fn lfs_banner(ui: &mut Ui, shared: &Shared<'_>, pane: &mut TaskPane<'_>) -> bool
 /// Patch files dropped on the window, shown to apply (others are left alone: images go to the
 /// agents' prompt, while it shows); a hint while files are dragged over it.
 fn dropped_patches(ui: &Ui, (id, agents_shown): (RepoId, bool), view: &mut HistoryView) {
-    let (hovering, dropped) = ui.ctx().input(|input| {
-        let dropped: Vec<PathBuf> = input
-            .raw
-            .dropped_files
-            .iter()
-            .map(|file| file.path().to_path_buf())
-            .filter(|path| looks_like_patch(BStr::new(path.as_os_str().as_encoded_bytes())))
-            .collect();
-        (!input.raw.hovered_files.is_empty(), dropped)
-    });
+    let dropped: Vec<PathBuf> = crate::desktop::dropped_files(ui.ctx())
+        .into_iter()
+        .filter(|path| looks_like_patch(BStr::new(path.as_os_str().as_encoded_bytes())))
+        .collect();
+    let hovering = ui.ctx().input(|input| !input.raw.hovered_files.is_empty());
     if !dropped.is_empty() {
         view.show_patches(dropped);
     }

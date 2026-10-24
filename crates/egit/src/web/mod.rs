@@ -11,6 +11,7 @@ pub(crate) mod files;
 pub(crate) mod notify;
 mod socket;
 
+use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -47,15 +48,53 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
         if secure { "wss:" } else { "ws:" },
         location.host()?
     );
+    let paths = wanted(&window)?;
+    // Out of the address bar, its history, and a screen shared: the token; and what was opened
+    // (a reload opens it again with the tabs left open).
+    if let Ok(history) = window.history() {
+        let path = location.pathname()?;
+        let _replaced = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
+    }
     let relay = socket::connect(&address, &token)?;
     keep_shortcuts(&window)?;
     eframe::WebRunner::new()
         .start(
             canvas,
             eframe::WebOptions::default(),
-            Box::new(move |creation| Ok(Box::new(EgitApp::in_browser(creation, relay)))),
+            Box::new(move |creation| Ok(Box::new(EgitApp::in_browser(creation, relay, paths)))),
         )
         .await
+}
+
+/// The repositories the address asks to open (`?open=<path>`, each the relay's computer's;
+/// `~` its home folder), as egit's command line names them.
+fn wanted(window: &web_sys::Window) -> Result<Vec<PathBuf>, JsValue> {
+    let search = window.location().search()?;
+    let asked = web_sys::UrlSearchParams::new_with_str(&search)?.get_all("open");
+    Ok(asked
+        .iter()
+        .filter_map(|path| path.as_string())
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect())
+}
+
+/// Titles the page by the repository in front (`repo — egit`), or none (`egit`); the page is
+/// touched only when that changes.
+pub(crate) fn title(front: Option<&str>) {
+    thread_local! {
+        static SHOWN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    }
+    let title = front.map_or_else(|| "egit".to_owned(), |front| format!("{front} — egit"));
+    SHOWN.with_borrow_mut(|shown| {
+        if shown.as_deref() == Some(title.as_str()) {
+            return;
+        }
+        if let Some(document) = web_sys::window().and_then(|window| window.document()) {
+            document.set_title(&title);
+        }
+        *shown = Some(title);
+    });
 }
 
 /// Notes whether a field of egit's has the keys (each frame), for [`keep_shortcuts`].
@@ -157,11 +196,6 @@ fn token(window: &web_sys::Window) -> Result<String, JsValue> {
         if let Some(kept) = &kept {
             // Not kept, it is asked for again on a reload: no worse.
             let _kept = kept.set_item(TOKEN_KEY, &token);
-        }
-        // Out of the address bar, its history, and a screen shared.
-        if let Ok(history) = window.history() {
-            let path = location.pathname()?;
-            let _replaced = history.replace_state_with_url(&JsValue::NULL, "", Some(&path));
         }
         return Ok(token);
     }

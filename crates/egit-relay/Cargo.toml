@@ -32,6 +32,8 @@ zeroize.workspace = true
 rustix = { workspace = true, features = ["system"] }
 
 [dev-dependencies]
+base64.workspace = true
 egit-git = { workspace = true, features = ["testing"] }
+serde_json.workspace = true
 tempfile.workspace = true
 zeroize.workspace = true

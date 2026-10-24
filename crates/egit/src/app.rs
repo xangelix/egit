@@ -309,11 +309,13 @@ impl EgitApp {
     }
 
     /// The application in a browser: settings from the page's storage, every git through
-    /// `relay` (the one that served the page), its questions relayed to this window.
+    /// `relay` (the one that served the page), its questions relayed to this window; `paths`
+    /// (the relay's computer's) opened.
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn in_browser(
         creation: &eframe::CreationContext<'_>,
         relay: egit_git::Relay,
+        paths: Vec<PathBuf>,
     ) -> Self {
         let settings = Settings::load(creation.storage);
         let (sender, incoming) = std::sync::mpsc::channel();
@@ -337,7 +339,7 @@ impl EgitApp {
             None,
             options,
             Prompts::relayed(incoming),
-            Vec::new(),
+            paths,
         )
     }
 
@@ -1196,6 +1198,8 @@ impl AppState {
 impl eframe::App for EgitApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         crate::help::begin_frame(ui.ctx());
+        #[cfg(target_arch = "wasm32")]
+        crate::web::files::begin_frame(ui.ctx());
         self.state.poll(ui.ctx());
         // ⌘+ and ⌘− change the text's size: kept as preferred.
         let zoom = Preferences::zoom_of(ui.ctx());
@@ -1215,7 +1219,15 @@ impl eframe::App for EgitApp {
             self.run(command);
         }
         #[cfg(target_arch = "wasm32")]
-        crate::web::note_typing(ui.ctx().egui_wants_keyboard_input());
+        {
+            crate::web::note_typing(ui.ctx().egui_wants_keyboard_input());
+            // The browser's tab says which repository is in front.
+            let front = match tabs::front(&self.tabs) {
+                Some(Pane::Repo(id)) => self.state.repos.iter().find(|repo| repo.id == id),
+                _ => None,
+            };
+            crate::web::title(front.map(|repo| repo.title.as_str()));
+        }
         palette::take_keys(ui.ctx(), &mut self.state.palette);
         CentralPanel::default()
             .frame(Frame::new().fill(palette.background))

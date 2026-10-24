@@ -21,6 +21,25 @@ use crate::repo::RepoId;
 /// has the folders, typed), and web pages opened by the page.
 pub(crate) const IN_BROWSER: bool = cfg!(target_arch = "wasm32");
 
+/// The files dropped on the window this frame: their paths (in a browser, as they were given
+/// once read into the page: `web::files::dropped`).
+pub(crate) fn dropped_files(ctx: &egui::Context) -> Vec<PathBuf> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = ctx;
+        crate::web::files::dropped()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    ctx.input(|input| {
+        input
+            .raw
+            .dropped_files
+            .iter()
+            .map(|file| file.path().to_path_buf())
+            .collect()
+    })
+}
+
 /// Where web pages and files go: the user's browser and file manager, or (for tests) a list.
 #[derive(Debug, Default)]
 pub(crate) struct Opener {

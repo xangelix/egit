@@ -196,6 +196,21 @@ jobs:
       - name: Build the page
         run: scripts/build-web.sh
 
+      # The runner's Chrome, headless, drawing through WebGL2 (SwiftShader).
+      - name: egit in a browser, through the relay
+        run: cargo test --package egit-relay --test browser --locked
+        env:
+          EGIT_TEST_BROWSER: /usr/bin/google-chrome
+          EGIT_TEST_WEB: ${{ github.workspace }}/target/web
+
+      - name: Upload the browser's screens
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-screens
+          path: target/web-screens/
+          if-no-files-found: ignore
+
   supply-chain:
     name: Supply chain
     runs-on: ubuntu-24.04

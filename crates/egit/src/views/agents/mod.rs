@@ -180,15 +180,10 @@ pub(crate) fn panel(
         return;
     }
     // Images dropped on the window go to the prompt (patches to the history's view).
-    let dropped: Vec<PathBuf> = ui.ctx().input(|input| {
-        input
-            .raw
-            .dropped_files
-            .iter()
-            .map(|file| file.path().to_path_buf())
-            .filter(|path| crate::attachments::is_image(path))
-            .collect()
-    });
+    let dropped: Vec<PathBuf> = crate::desktop::dropped_files(ui.ctx())
+        .into_iter()
+        .filter(|path| crate::attachments::is_image(path))
+        .collect();
     if !dropped.is_empty()
         && let Some(conversation) = agents.current()
     {
