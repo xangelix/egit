@@ -5,7 +5,7 @@ use std::fmt;
 use std::io::{self, Read as _, Write as _};
 use std::ops::ControlFlow;
 use std::path::PathBuf;
-use std::process::{Child, ChildStderr, ChildStdin, Command, ExitStatus, Stdio};
+use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -17,7 +17,7 @@ use crate::cancel::{CancelToken, Elsewhere, Registration};
 use crate::error::GitError;
 use crate::git::Git;
 use crate::host::{self, GitStdout, Host, PidReader, Remote, RemotePid};
-use crate::output::{Completed, Stderr, TailBuffer};
+use crate::output::{Completed, Exit, Stderr, TailBuffer};
 use crate::process::{self, Group};
 use crate::progress::{Progress, ProgressReader};
 use crate::transcript::{Stream, Transcript};
@@ -86,7 +86,7 @@ impl fmt::Debug for Input {
 /// wiped from memory when dropped, and never shown in debug output.
 pub struct SecretOutput {
     /// How git exited.
-    pub status: ExitStatus,
+    pub status: Exit,
     /// Everything git printed to standard output.
     pub stdout: Zeroizing<Vec<u8>>,
     /// The end of what git printed to standard error.
@@ -130,7 +130,7 @@ pub struct GitCommand {
 #[derive(Debug)]
 pub struct Streamed {
     /// How git exited.
-    pub status: ExitStatus,
+    pub status: Exit,
     /// The end of what git printed to standard error.
     pub stderr: Stderr,
     /// Whether the consumer stopped the stream early (git was then stopped too).
@@ -145,7 +145,7 @@ enum ReadError {
 
 /// One run of git, before its output is interpreted.
 struct Attempt {
-    status: ExitStatus,
+    status: Exit,
     stderr: Stderr,
     stopped: bool,
 }
@@ -556,7 +556,7 @@ impl GitCommand {
         let status = child.wait();
         let (stderr, fed) = helpers.join();
         waited.map_err(|error| self.io_error(error))?;
-        let status = status.map_err(|error| self.io_error(error))?;
+        let status = Exit::from(status.map_err(|error| self.io_error(error))?);
 
         // There, its script couldn't go into its directory: said as here.
         if !started

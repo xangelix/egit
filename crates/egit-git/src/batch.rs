@@ -3,6 +3,8 @@
 
 use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
 use std::process::{Child, ChildStdin, ExitStatus};
+
+use crate::output::Exit;
 use std::thread::JoinHandle;
 
 use crate::error::GitError;
@@ -117,7 +119,11 @@ impl GitProcess {
         let (status, stderr) = self.reap();
         match status {
             Ok(status) if status.success() => Ok(()),
-            Ok(status) => Err(GitError::failed(self.subcommand, status, stderr)),
+            Ok(status) => Err(GitError::failed(
+                self.subcommand,
+                Exit::from(status),
+                stderr,
+            )),
             Err(source) => Err(GitError::Io {
                 subcommand: self.subcommand,
                 source,

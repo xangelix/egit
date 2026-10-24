@@ -6,10 +6,11 @@
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read as _, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{ExitStatus, Stdio};
+use std::process::Stdio;
 
 use crate::git::Git;
 use crate::host::{self, GitStdout, Host, PidReader, Remote, RemotePid, SshHost};
+use crate::output::Exit;
 
 /// How a script there says the path asked about isn't there.
 const MISSING: i32 = 3;
@@ -454,7 +455,7 @@ impl<'g> Files<'g> {
         stdout.read_to_end(&mut printed)?;
         let status = loop {
             if let Some(status) = child.try_wait()? {
-                break status;
+                break Exit::from(status);
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         };
@@ -741,7 +742,7 @@ const fn with_executable(bits: u32, executable: bool) -> u32 {
 
 /// What a script there did.
 struct Ran {
-    status: ExitStatus,
+    status: Exit,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
 }

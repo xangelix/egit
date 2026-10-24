@@ -1,14 +1,90 @@
-//! What a git command printed.
+//! What a git command printed, and how it ended.
 
-use std::process::ExitStatus;
+use std::fmt;
 
 use bstr::{BStr, ByteSlice as _};
+
+/// How a program ended: its exit code, or the signal that stopped it (where there are signals).
+///
+/// egit's own, rather than the standard library's: a program run through a relay ended on
+/// another computer, and is told of in a message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Exit {
+    code: Option<i32>,
+    signal: Option<i32>,
+}
+
+impl Exit {
+    /// An end with exit code `code`, or by `signal`.
+    #[must_use]
+    pub const fn new(code: Option<i32>, signal: Option<i32>) -> Self {
+        Self { code, signal }
+    }
+
+    /// Whether it succeeded: exit code 0.
+    #[must_use]
+    pub const fn success(self) -> bool {
+        matches!(self.code, Some(0))
+    }
+
+    /// Its exit code, unless a signal stopped it.
+    #[must_use]
+    pub const fn code(self) -> Option<i32> {
+        self.code
+    }
+
+    /// The signal that stopped it, if one did.
+    #[must_use]
+    pub const fn signal(self) -> Option<i32> {
+        self.signal
+    }
+}
+
+impl From<std::process::ExitStatus> for Exit {
+    fn from(status: std::process::ExitStatus) -> Self {
+        #[cfg(unix)]
+        let signal = std::os::unix::process::ExitStatusExt::signal(&status);
+        #[cfg(not(unix))]
+        let signal = None;
+        Self {
+            code: status.code(),
+            signal,
+        }
+    }
+}
+
+impl fmt::Display for Exit {
+    /// As the standard library says it: `exit status: 1`, `signal: 15 (SIGTERM)`.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.code, self.signal) {
+            (Some(code), _) => write!(f, "exit status: {code}"),
+            (None, Some(signal)) => {
+                // Those numbered alike everywhere egit runs.
+                let name = match signal {
+                    1 => Some("SIGHUP"),
+                    2 => Some("SIGINT"),
+                    3 => Some("SIGQUIT"),
+                    6 => Some("SIGABRT"),
+                    9 => Some("SIGKILL"),
+                    13 => Some("SIGPIPE"),
+                    15 => Some("SIGTERM"),
+                    _ => None,
+                };
+                match name {
+                    Some(name) => write!(f, "signal: {signal} ({name})"),
+                    None => write!(f, "signal: {signal}"),
+                }
+            }
+            (None, None) => f.write_str("an unknown end"),
+        }
+    }
+}
 
 /// A finished git command: how it exited and what it printed.
 #[derive(Debug)]
 pub struct Completed {
     /// How git exited.
-    pub status: ExitStatus,
+    pub status: Exit,
     /// Everything git printed to standard output.
     pub stdout: Vec<u8>,
     /// The end of what git printed to standard error.
@@ -195,5 +271,25 @@ mod tests {
         let stderr = stderr("fatal: short\n");
         assert!(!stderr.was_truncated());
         assert_eq!(stderr.as_bytes(), b"fatal: short\n");
+    }
+
+    #[test]
+    fn an_exit_says_itself_as_the_standard_library_does() {
+        #[cfg(unix)]
+        {
+            let failed = std::process::Command::new("sh")
+                .args(["-c", "exit 3"])
+                .status()
+                .unwrap();
+            assert_eq!(Exit::from(failed).to_string(), failed.to_string());
+            assert_eq!(Exit::from(failed), Exit::new(Some(3), None));
+        }
+        assert!(Exit::new(Some(0), None).success());
+        assert!(!Exit::new(None, Some(15)).success());
+        assert_eq!(
+            Exit::new(None, Some(15)).to_string(),
+            "signal: 15 (SIGTERM)"
+        );
+        assert_eq!(Exit::new(None, Some(42)).to_string(), "signal: 42");
     }
 }

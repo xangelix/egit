@@ -2,11 +2,10 @@
 
 use std::io;
 use std::path::PathBuf;
-use std::process::ExitStatus;
 
 use bstr::BStr;
 
-use crate::output::Stderr;
+use crate::output::{Exit, Stderr};
 use crate::version::GitVersion;
 
 /// Running git failed.
@@ -110,7 +109,7 @@ impl GitError {
     }
 
     /// A [`Failed`](Self::Failed) error.
-    pub(crate) fn failed(subcommand: &'static str, status: ExitStatus, stderr: Stderr) -> Self {
+    pub(crate) fn failed(subcommand: &'static str, status: Exit, stderr: Stderr) -> Self {
         Self::Failed(Box::new(Failure {
             subcommand,
             status,
@@ -134,7 +133,7 @@ pub struct Failure {
     /// The git command.
     pub subcommand: &'static str,
     /// How it exited.
-    pub status: ExitStatus,
+    pub status: Exit,
     /// The end of what it printed to standard error.
     pub stderr: Stderr,
 }
@@ -142,7 +141,7 @@ pub struct Failure {
 impl Failure {
     /// The exit code, unless git was ended by a signal.
     #[must_use]
-    pub fn code(&self) -> Option<i32> {
+    pub const fn code(&self) -> Option<i32> {
         self.status.code()
     }
 
