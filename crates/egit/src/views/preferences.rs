@@ -34,8 +34,8 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
     });
 }
 
-/// The width of the preferences' labels.
-const LABEL: f32 = 150.0;
+/// The width of the preferences' labels: every page's.
+const LABEL: f32 = widgets::FACT_LABEL;
 
 /// The accounts agents run as, besides Claude Code's own: those there are, forgotten from here,
 /// and one added (a Claude subscription in a Claude Code folder, or an API key kept by git's

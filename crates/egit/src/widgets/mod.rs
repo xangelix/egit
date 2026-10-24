@@ -38,8 +38,9 @@ const PAGE_TITLE: f32 = 22.0;
 /// A panel's or a dialog's title.
 pub(crate) const PANEL_TITLE: f32 = 15.0;
 
-/// The width of a fact's label column: facts in different cards line up.
-pub(crate) const FACT_LABEL: f32 = 112.0;
+/// The width of a fact's (or a form's) label column on a page: facts and fields in different
+/// cards, and on different pages (Profile, Preferences, an Overview), line up.
+pub(crate) const FACT_LABEL: f32 = 150.0;
 
 /// A raised panel grouping related content.
 pub(crate) fn card<R>(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui) -> R) -> R {

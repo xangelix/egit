@@ -959,7 +959,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "forge-hosts",
         group: Group::Remotes,
         title: "GitHub and GitLab hosts",
-        on: &["GitHub and GitLab"],
+        on: &["GitHub and GitLab", "GitHub host", "GitLab host"],
         what: "egit reads pull requests from remotes on github.com and merge requests from \
                gitlab.com, and from the GitHub Enterprise and self-managed GitLab hosts listed \
                here. A remote whose address points at one of them (https, ssh, or an ssh alias) \

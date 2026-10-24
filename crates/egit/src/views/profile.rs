@@ -660,6 +660,40 @@ impl HostList<'_> {
             ForgeKind::GitLab => ("Self-managed GitLab hosts", "gitlab.example.com"),
         };
         ui.label(RichText::new(title).semibold());
+        // None listed: no rows to lay out (an empty grid still takes its spacing).
+        if snapshot.get_all(self.key).next().is_some() {
+            self.listed(ui, snapshot, actions);
+        }
+        widgets::form_row(
+            ui,
+            widgets::FACT_LABEL,
+            &format!("{} host", self.kind.name()),
+            |ui| {
+                let field = ui.add_sized(FIELD, crate::widgets::line_field(typed).hint_text(hint));
+                let entry = typed.trim().to_owned();
+                let host = ForgeHost::parse(self.kind, &entry).filter(|host| !host.is_public());
+                let entered =
+                    field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                let add = widgets::secondary(ui, host.is_some() && !self.saving, "Add");
+                if (add.clicked() || entered) && host.is_some() {
+                    actions.push(Action::SaveProfile(vec![ConfigChange::Add {
+                        key: self.key.into(),
+                        value: entry,
+                    }]));
+                    typed.clear();
+                } else if !entry.is_empty() && host.is_none() {
+                    ui.label(
+                        RichText::new("Not a host egit can use")
+                            .color(Palette::of(ui.ctx()).danger),
+                    );
+                }
+                field
+            },
+        );
+    }
+
+    /// The hosts listed, each with where it is set, and its ssh hosts on names of their own.
+    fn listed(&self, ui: &mut Ui, snapshot: &ConfigSnapshot, actions: &mut Vec<Action>) {
         Grid::new(("profile-forge-hosts", self.key))
             .num_columns(3)
             .min_col_width(widgets::FACT_LABEL)
@@ -688,28 +722,6 @@ impl HostList<'_> {
                     }
                 }
             });
-        ui.horizontal(|ui| {
-            let label = ui.label(muted(ui, format!("{} host", self.kind.name())));
-            let field = ui
-                .add_sized(FIELD, crate::widgets::line_field(typed).hint_text(hint))
-                .labelled_by(label.id);
-            let entry = typed.trim().to_owned();
-            let host = ForgeHost::parse(self.kind, &entry).filter(|host| !host.is_public());
-            let entered =
-                field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-            let add = widgets::secondary(ui, host.is_some() && !self.saving, "Add");
-            if (add.clicked() || entered) && host.is_some() {
-                actions.push(Action::SaveProfile(vec![ConfigChange::Add {
-                    key: self.key.into(),
-                    value: entry,
-                }]));
-                typed.clear();
-            } else if !entry.is_empty() && host.is_none() {
-                ui.label(
-                    RichText::new("Not a host egit can use").color(Palette::of(ui.ctx()).danger),
-                );
-            }
-        });
     }
 }
 

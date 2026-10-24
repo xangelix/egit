@@ -2434,7 +2434,8 @@ writes paths), never `OsStrExt`.
     keeping that line's room above it), facts in
     aligned columns (`fact`, `fact_top` (its first line as far down as a one-line fact's, so
     facts keep one rhythm),
-    `form_row` naming its field; `FACT_LABEL` on pages), `line_field` one-line fields a
+    `form_row` naming its field; `FACT_LABEL` on pages, 150 points: Profile, Preferences, and
+    an Overview line up), `line_field` one-line fields a
     control's height, their text centred and 8 points from the side, and `text_area` (several
     lines, 8 points from every edge; `bounded_text_area` at most so tall, scrolling inside its
     edge, as every message, description, and pasted patch is), `show_overflow` (scroll bars
