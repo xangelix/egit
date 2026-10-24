@@ -47,7 +47,7 @@ it.
 | 33 | Pipelines acted on (retry, cancel, start), a job's earlier runs, the jobs as a graph; repositories suggested on Home | done; awaiting the owner's review |
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
-| 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | under way |
+| 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
