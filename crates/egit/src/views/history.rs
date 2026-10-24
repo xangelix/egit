@@ -657,6 +657,14 @@ impl HistoryView {
         }
     }
 
+    /// A folder chosen in the desktop's dialog for the worktree the dialog open makes, if one
+    /// is.
+    pub(crate) fn chosen_folder(&mut self, folder: &Path) {
+        if let Some(super::dialogs::Dialog::AddWorktree { path, .. }) = &mut self.tasks.dialog {
+            *path = folder.display().to_string();
+        }
+    }
+
     /// Shows the working tree's changes beside the history.
     /// Opens a file's blame or history in the commit table's place.
     fn open_tool(&mut self, shared: &Shared<'_>, objects: &Objects, wanted: FileWanted) {
@@ -980,12 +988,8 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         config,
         stashes,
         refs: (history.shown.refs().shared(), history.shown.refs().read()),
-        conflicts: shared.work_status.map_or(0, |status| {
-            status
-                .entries()
-                .filter(|entry| entry.kind == egit_git::EntryKind::Unmerged)
-                .count()
-        }),
+        conflicts: shared.work_status.map_or(0, conflicted),
+        here: shared.here(),
         tasks: &mut *tasks,
         actions: &mut *actions,
     };
@@ -4808,6 +4812,14 @@ fn change_asked(
         }
     }
     None
+}
+
+/// How many of a status's files are in conflict.
+fn conflicted(status: &Arc<Status>) -> usize {
+    status
+        .entries()
+        .filter(|entry| entry.kind == egit_git::EntryKind::Unmerged)
+        .count()
 }
 
 /// The details of the commit `id`, asked for when they aren't yet; until they are read (or

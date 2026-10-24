@@ -844,6 +844,11 @@ impl AppState {
                     conversation.view.attach(chosen);
                 }
             }
+            FileQuestion::WorktreeFolder { repo } => {
+                if let Some(repo) = self.repo_mut(repo) {
+                    repo.history_view.chosen_folder(&first);
+                }
+            }
             FileQuestion::SaveArtifact { repo, wanted } => {
                 if let Some(repo) = self.repo_mut(repo) {
                     repo.forge.download(*wanted, first);

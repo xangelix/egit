@@ -19,6 +19,7 @@ use egui::{Id, Key, Modal, RichText, Ui};
 
 use super::history::ID_DIGITS;
 use super::tasks::TaskPane;
+use crate::app::Action;
 use crate::discarding::Discard;
 use crate::tasks::{Task, WorktreeSource};
 use crate::theme::Palette;
@@ -148,6 +149,8 @@ enum Answer {
     Closed,
     /// This task started.
     Run(Task),
+    /// This asked meanwhile (a folder picked in the desktop's dialog), the dialog staying.
+    Meanwhile(Action),
 }
 
 /// Shows `dialog` while there is one.
@@ -178,6 +181,7 @@ pub(super) fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>, pane: &mut 
             *dialog = None;
         }
         Some(Answer::Closed) => *dialog = None,
+        Some(Answer::Meanwhile(action)) => pane.actions.push(action),
         None => {}
     }
 }
@@ -761,8 +765,27 @@ fn add_worktree(
     says(ui, &said);
     ui.add_space(8.0);
     let label = ui.label(muted(ui, "Folder (a new or empty one)"));
-    ui.add(crate::widgets::line_field(path).desired_width(f32::INFINITY))
-        .labelled_by(label.id);
+    // Typed, or chosen in the desktop's dialog (where the repository is on this computer).
+    let choose = ui
+        .horizontal(|ui| {
+            let button = crate::widgets::button_width(ui, "Choose…");
+            let room = ui.available_width() - button - ui.spacing().item_spacing.x;
+            ui.add(crate::widgets::line_field(path).desired_width(room.max(120.0)))
+                .labelled_by(label.id);
+            let choose = crate::widgets::secondary(ui, pane.here, "Choose…")
+                .on_hover_text("Choose the folder (a new or empty one) in a dialog")
+                .on_disabled_hover_text(super::ELSEWHERE);
+            crate::help::note_topic(ui, choose.rect, "worktree-create");
+            choose.clicked()
+        })
+        .inner;
+    if choose {
+        return Some(Answer::Meanwhile(Action::AskFiles {
+            question: crate::desktop::FileQuestion::WorktreeFolder { repo: pane.id },
+            title: "Where the worktree goes",
+            name: String::new(),
+        }));
+    }
     let target = worktree_path(path, pane.work_tree, pane.home);
     let needs_name = !matches!(from, WorktreeAsked::Branch(_));
     let mut ready = target.is_some();

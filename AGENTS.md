@@ -1834,7 +1834,8 @@ writes paths), never `OsStrExt`.
     remote at once (again, when it isn't merged). The stash dialog: a message, and untracked
     files too. A branch's upstream: typed, the remote branches holding what is typed offered
     as buttons, refused until it is one; "Forget <upstream>". A worktree: its folder (`~` the
-    home folder; relative beside the repository), a new branch's name where one is made (none
+    home folder; relative beside the repository; or chosen in the desktop's dialog, "Choose…",
+    `FileQuestion::WorktreeFolder`, the dialog staying open: `Answer::Meanwhile`), a new branch's name where one is made (none
     for a commit: detached), "Open it once made" (a tab, once, as the task ends). A remote to
     add (a name git takes and none here has, "origin" offered for the first; its address;
     "Fetch from it now"), its addresses (fetching, and pushing: empty is the same), its new

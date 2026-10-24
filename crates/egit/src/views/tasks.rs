@@ -83,6 +83,8 @@ pub(crate) struct TaskPane<'a> {
     pub(crate) refs: (std::sync::Arc<[egit_git::Reference]>, u64),
     /// How many files are in conflict (an operation's banner says, and waits for none).
     pub(crate) conflicts: usize,
+    /// Whether the repository is on this computer (its folders can be picked in a dialog).
+    pub(crate) here: bool,
     pub(crate) tasks: &'a mut Tasks,
     pub(crate) actions: &'a mut Vec<Action>,
 }

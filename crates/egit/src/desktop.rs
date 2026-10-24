@@ -105,6 +105,8 @@ pub(crate) enum FileQuestion {
         repo: RepoId,
         wanted: Box<crate::downloads::ArtifactWanted>,
     },
+    /// Which folder a new worktree goes into (a folder), for the dialog making it.
+    WorktreeFolder { repo: RepoId },
 }
 
 /// The desktop's file dialogs (`rfd`, one at a time): where a file is saved, a folder, the
@@ -155,9 +157,9 @@ impl FileDialogs {
                 | FileQuestion::SaveChanges { .. }
                 | FileQuestion::SaveArtifact { .. }
                 | FileQuestion::SavePicked { one: true, .. } => vec![folder.join(name)],
-                FileQuestion::SavePatches { .. } | FileQuestion::SavePicked { one: false, .. } => {
-                    vec![folder.clone()]
-                }
+                FileQuestion::SavePatches { .. }
+                | FileQuestion::SavePicked { one: false, .. }
+                | FileQuestion::WorktreeFolder { .. } => vec![folder.clone()],
                 FileQuestion::ApplyPatches { .. } => patches_in(folder),
                 FileQuestion::AttachImages { .. } => images_in(folder),
             };
@@ -169,9 +171,9 @@ impl FileDialogs {
             | FileQuestion::SaveChanges { .. }
             | FileQuestion::SaveArtifact { .. }
             | FileQuestion::SavePicked { one: true, .. } => Asked::File,
-            FileQuestion::SavePatches { .. } | FileQuestion::SavePicked { one: false, .. } => {
-                Asked::Folder
-            }
+            FileQuestion::SavePatches { .. }
+            | FileQuestion::SavePicked { one: false, .. }
+            | FileQuestion::WorktreeFolder { .. } => Asked::Folder,
             FileQuestion::ApplyPatches { .. } => Asked::Patches,
             FileQuestion::AttachImages { .. } => Asked::Images,
         };

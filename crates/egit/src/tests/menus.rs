@@ -300,17 +300,22 @@ fn worktrees_patches_and_the_graph_s_scope_come_from_the_menus() {
     wait_for_label(&mut harness, "Create a worktree from parser");
     let tree = sandbox.path("parser tree");
     let folder = "Folder (a new or empty one)";
-    harness
-        .get_by_role_and_label(Role::TextInput, folder)
-        .click();
-    harness.run_steps(1);
-    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
-    type_into(
-        &mut harness,
-        Role::TextInput,
-        folder,
-        tree.to_str().unwrap(),
-    );
+    // Chosen in the desktop's dialog (the tests' answers with a folder of its own).
+    harness.state_mut().state.files = FileDialogs::in_folder(tree.clone());
+    harness.get_by_label("Choose…").click();
+    let chosen = tree.display().to_string();
+    let shown = |harness: &Harness<'_, EgitApp>| {
+        harness
+            .get_by_role_and_label(Role::TextInput, folder)
+            .value()
+    };
+    for _ in 0..200 {
+        if shown(&harness).as_deref() == Some(chosen.as_str()) {
+            break;
+        }
+        harness.step();
+    }
+    assert_eq!(shown(&harness).as_deref(), Some(chosen.as_str()));
     render(&mut harness, "add-worktree");
     harness.get_by_label("Create worktree").click();
     settle(&mut harness, "the worktree's tab", |app| {
