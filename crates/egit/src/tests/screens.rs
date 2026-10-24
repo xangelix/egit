@@ -1768,6 +1768,27 @@ fn branches_are_switched_to_made_and_deleted_from_the_graph() {
     wait_for_label(&mut harness, "Made feature; switched to it.");
     wait_for_label(&mut harness, &on("feature"));
 
+    // A commit switched to without a branch: HEAD's badge says so, and goes once back.
+    assert!(harness.query_by_label("HEAD, detached").is_none());
+    settle(&mut harness, "the history after the switch", history_shown);
+    harness
+        .get_by_role_and_label(Role::Button, "Other")
+        .click_secondary();
+    wait_for_label(&mut harness, "Switch here, without a branch");
+    harness
+        .get_by_label("Switch here, without a branch")
+        .click();
+    wait_for_label(&mut harness, "HEAD, detached");
+    render(&mut harness, "detached-head");
+    double_click(&mut harness, &badge("feature"));
+    wait_for_label(&mut harness, &on("feature"));
+    settle(&mut harness, "the badge gone", |app| {
+        app.state.repos[0]
+            .status
+            .ok_ref()
+            .is_some_and(|status| matches!(status.head, egit_git::Head::Branch(_)))
+    });
+
     // Deleting a branch whose commit is nowhere else asks again, saying so.
     menu_item(&mut harness, &badge("other"), "Delete other…");
     wait_for_label(&mut harness, "Delete other?");

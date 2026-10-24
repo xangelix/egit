@@ -1449,7 +1449,7 @@ fn section_menu(ui: &mut Ui, drawing: &Drawing<'_>, section: Section) -> Option<
             if actions::item(ui, (icon::ARROWS_CLOCKWISE, "Update every submodule"), idle) {
                 ask(Ask::Task(Task::UpdateSubmodules(Vec::new())));
             }
-            if actions::item(ui, (icon::PACKAGE, "Each one, and adding one…"), Ok(())) {
+            if actions::item(ui, (icon::PACKAGE, "Open the submodules page"), Ok(())) {
                 event = Some(SidebarEvent::Submodules);
             }
         }

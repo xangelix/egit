@@ -84,8 +84,8 @@ fn a_fresh_clones_submodules_are_mended_followed_and_recorded() {
         .commit_file(&library, "lib", "two\n", "Two")
         .unwrap();
     harness.get_by_label("Submodules").click();
-    wait_for_label(&mut harness, "Each one, and adding one…");
-    harness.get_by_label("Each one, and adding one…").click();
+    wait_for_label(&mut harness, "Open the submodules page");
+    harness.get_by_label("Open the submodules page").click();
     wait_for_label(&mut harness, "Every one set up and at the commit recorded.");
     harness
         .get_by_label("libs/lib, at the commit recorded")

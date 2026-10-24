@@ -2412,7 +2412,7 @@ fn submodules_menu(
             task(crate::submodules::SubmoduleTask::Sync(Vec::new()));
         }
         ui.separator();
-        page = actions::item(ui, (icon::PACKAGE, "Each one, and adding one…"), Ok(()));
+        page = actions::item(ui, (icon::PACKAGE, "Open the submodules page"), Ok(()));
     });
     if page {
         view.show_submodules();
@@ -2485,11 +2485,7 @@ fn lfs_menu(
             task(crate::lfs::LfsTask::Prune);
         }
         ui.separator();
-        page = actions::item(
-            ui,
-            (icon::HARD_DRIVES, "Patterns, files, and locks…"),
-            Ok(()),
-        );
+        page = actions::item(ui, (icon::HARD_DRIVES, "Open the Git LFS page"), Ok(()));
     });
     if page {
         view.show_lfs();
@@ -3761,6 +3757,13 @@ impl TableDelegate for CommitRows<'_> {
             let refs = self.history.refs().at(&id);
             // A branch hidden from the graph loses its badge too.
             let scope = Some(&self.shared.scope);
+            // A detached HEAD's commit says so first: what is committed there joins no branch.
+            if menus.branch.is_none()
+                && menus.head == Some(id)
+                && detached_badge(ui, &menus, self.shared.palette, &mut self.asked)
+            {
+                self.clicked = Some((cell.row_nr, Click::Plain));
+            }
             if badges(
                 ui,
                 (refs, scope),
@@ -4166,6 +4169,33 @@ fn badges(
     }
     more_badges(ui, total.saturating_sub(drawn));
     clicked
+}
+
+/// "HEAD", on the commit a detached `HEAD` is at: filled, as the branch checked out's badge is,
+/// its menu the commit's (a branch made there keeps what is committed). Returns whether it was
+/// clicked (which selects its row).
+fn detached_badge(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    palette: Palette,
+    asked: &mut Option<Ask>,
+) -> bool {
+    let label = format!("{} HEAD", icon::CROSSHAIR_SIMPLE);
+    let look = BadgeLook {
+        fill: palette.warn,
+        edge: palette.warn.gamma_multiply(0.7),
+        text: palette.on_accent,
+        strong: true,
+    };
+    let galley = badge_galley(ui, &label, &look);
+    let badge = paint_badge(ui, galley, &look, "HEAD, detached").on_hover_text(
+        "HEAD is detached here: commits made now belong to no branch until you create one",
+    );
+    crate::help::note_topic(ui, badge.rect, "detached");
+    if let Some(head) = menus.head {
+        badge.context_menu(|ui| actions::commit_menu(ui, menus, head, asked));
+    }
+    badge.clicked()
 }
 
 /// A badge's height: a commit row's less a gap above and below, so badges in rows next to each
@@ -4950,8 +4980,10 @@ fn commit_info(
     let commit = &details.commit;
     let refs = all.at(&details.id);
     let mut go_to = None;
-    // The description apart from the subject (the panel's title): a box of its own.
-    let body = commit.body().trim_ascii();
+    // The description apart from the subject (the panel's title): a box of its own; its
+    // co-authors are shown as people below.
+    let body = commit.description();
+    let body = body.trim_ascii();
     let mut description = None;
     if described && !body.is_empty() {
         let shown = widgets::text_box(ui, |ui| ui.add(Label::new(body.to_str_lossy()).wrap()));

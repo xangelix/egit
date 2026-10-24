@@ -346,7 +346,8 @@ writes paths), never `OsStrExt`.
     requests go 128 at a time then `flush` (both pipes stay under their buffers), answers are
     read into one reused buffer. `commit.rs` — `Commit::parse` (raw commit objects; `subject`
     is `%s`; `co_authors`, each `Person` its `Co-authored-by` trailers name, in any case,
-    once). `people.rs` — `recent_authors`: who wrote the last commits of every branch (`log
+    once; `description`, the body without those trailers, borrowed where it has none).
+    `people.rs` — `recent_authors`: who wrote the last commits of every branch (`log
     --all --no-merges`, the stash left out), through the mailmap (`%aN`, `%aE`), most commits
     first, each email once; `map_contacts`, any number of `Name <email>` through the mailmap
     (`check-mailmap --stdin`; one it can't read passed through as it is).
@@ -1640,7 +1641,9 @@ writes paths), never `OsStrExt`.
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
     screen, then a screen below and above). Graph cells paint lines (cubic curves between
     lanes) and nodes (hollow for merges, ringed for `HEAD`); rows are buttons named by their
-    subject; a bisection's refs as badges in its terms (bad, good, skipped; `bisect_badge`);
+    subject; a detached `HEAD`'s commit a filled "HEAD" badge first (`detached_badge`: its
+    menu the commit's); a bisection's refs as badges in its terms (bad, good, skipped;
+    `bisect_badge`);
     ref badges (each its menu, a branch's double-click switching to it; dragged onto another
     ref's badge or sidebar row (`dragging`: the ref carried as egui's drag payload, its words
     following the pointer, the badge held over ringed in the accent), a menu of what that
@@ -1977,7 +1980,7 @@ writes paths), never `OsStrExt`.
     changed each month (added above, removed below) and how large commits are, and the largest
     files. Each chart is named for those who can't see it.
     `views/lfs.rs` — `LfsView`, Git LFS's page in the commit table's place (the LFS menu's
-    "Patterns, files, and locks…", the Repository menu's "Git LFS", the banner; Escape or
+    "Open the Git LFS page", the Repository menu's "Git LFS", the banner; Escape or
     History goes back): what LFS is and whether it is installed and set up here (how to,
     when it isn't), moving its files (Pull, Fetch, Fetch every file, Check out, Push to each
     remote, Prune; each saying what it does), the patterns tracked (each to stop tracking;

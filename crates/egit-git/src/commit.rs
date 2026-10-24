@@ -1,5 +1,7 @@
 //! Commits as git stores them, parsed.
 
+use std::borrow::Cow;
+
 use bstr::{BStr, BString, ByteSlice as _};
 
 use crate::object_id::ObjectId;
@@ -150,20 +152,47 @@ impl Commit {
     pub fn co_authors(&self) -> Vec<Person> {
         let mut found: Vec<Person> = Vec::new();
         for line in self.message.lines() {
-            let line = line.trim_ascii();
-            let Some((key, value)) = line.split_once_str(b":") else {
-                continue;
-            };
-            if key
-                .trim_ascii()
-                .eq_ignore_ascii_case(CO_AUTHORED_BY.as_bytes())
-                && let Some(person) = Person::parse(value)
+            if let Some(person) = co_author_of(line)
                 && !found.contains(&person)
             {
                 found.push(person);
             }
         }
         found
+    }
+
+    /// The body as it reads beside its co-authors shown apart: without the `Co-authored-by`
+    /// trailers of its last paragraph (the paragraph too, when nothing else is left of it).
+    /// Borrowed when there are none.
+    #[must_use]
+    pub fn description(&self) -> Cow<'_, BStr> {
+        let body = self.body();
+        let bytes: &[u8] = body.as_bytes();
+        let (before, last) = bytes.rfind(b"\n\n").map_or_else(
+            || (&b""[..], bytes),
+            |at| {
+                (
+                    bytes.get(..at).unwrap_or_default(),
+                    bytes.get(at..).unwrap_or_default(),
+                )
+            },
+        );
+        if !last.lines().any(|line| co_author_of(line).is_some()) {
+            return Cow::Borrowed(body);
+        }
+        let kept: Vec<&[u8]> = last
+            .lines()
+            .filter(|line| co_author_of(line).is_none())
+            .collect();
+        let mut description = BString::from(before);
+        let kept = kept.join(&b'\n').trim_ascii().to_vec();
+        if !kept.is_empty() {
+            if !description.is_empty() {
+                description.extend_from_slice(b"\n\n");
+            }
+            description.extend_from_slice(&kept);
+        }
+        Cow::Owned(description)
     }
 
     /// The message after the subject's paragraph, without the blank lines around it.
@@ -176,6 +205,20 @@ impl Commit {
             .find(b"\n\n")
             .map_or(&[][..], |end| rest.get(end..).unwrap_or_default());
         BStr::new(body.trim_ascii())
+    }
+}
+
+/// The person a `Co-authored-by` trailer names (its key in any case), or nothing when the line
+/// isn't one.
+fn co_author_of(line: &[u8]) -> Option<Person> {
+    let (key, value) = line.trim_ascii().split_once_str(b":")?;
+    if key
+        .trim_ascii()
+        .eq_ignore_ascii_case(CO_AUTHORED_BY.as_bytes())
+    {
+        Person::parse(value)
+    } else {
+        None
     }
 }
 
@@ -286,6 +329,10 @@ mod tests {
                 ("Alan Turing".to_owned(), "alan@example.com".to_owned()),
             ]
         );
+        assert_eq!(
+            &*parsed.description(),
+            "Why.\n\nCo-authored-by: nobody\nSigned-off-by: Zoë Example <zoe@example.com>"
+        );
         assert_eq!(Person::parse(b"Name <a@b> trailing"), None);
         assert_eq!(Person::parse(b" <a@b>"), None);
     }
@@ -299,6 +346,16 @@ mod tests {
         .unwrap();
         assert_eq!(parsed.subject(), "Fix the thing for real");
         assert_eq!(parsed.body(), "Because.\n\nMore.");
+        assert!(matches!(parsed.description(), Cow::Borrowed(_)));
+        let paired = Commit::parse(&commit(
+            "",
+            "Pair\n\nWhy.\n\nCo-authored-by: Ada <ada@example.com>\n",
+        ))
+        .unwrap();
+        assert_eq!(&*paired.description(), "Why.");
+        let only =
+            Commit::parse(&commit("", "Pair\n\nCo-authored-by: Ada <ada@example.com>")).unwrap();
+        assert_eq!(&*only.description(), "");
     }
 
     #[test]

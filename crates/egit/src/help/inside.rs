@@ -452,7 +452,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "submodules-page",
         group: Group::Inside,
         title: "The submodules' page",
-        on: &["Each one, and adding one…"],
+        on: &["Open the submodules page"],
         what: "Every submodule (nested ones under theirs) with where it stands; a click shows one: \
                what its state means, its addresses, the branch it follows, the commits recorded \
                and checked out, and what can be done to it. The card above mends, updates, or \
@@ -505,7 +505,7 @@ pub(super) const TOPICS: &[Topic] = &[
             "LFS",
             "Git LFS",
             "Git LFS here",
-            "Patterns, files, and locks…",
+            "Open the Git LFS page",
             "Open Git LFS",
         ],
         what: "Large files kept apart: git commits a small pointer for each file a pattern \

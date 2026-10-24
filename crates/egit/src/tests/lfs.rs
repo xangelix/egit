@@ -75,8 +75,8 @@ fn lfs_is_set_up_tracked_and_listed() {
     // Its history read again first: rendered meanwhile, the commit count would change.
     settle(&mut harness, "the commit shown", history_of(2));
     harness.get_by_label("LFS").click();
-    wait_for_label(&mut harness, "Patterns, files, and locks…");
-    harness.get_by_label("Patterns, files, and locks…").click();
+    wait_for_label(&mut harness, "Open the Git LFS page");
+    harness.get_by_label("Open the Git LFS page").click();
     wait_for_label(&mut harness, "Files held: 1");
     wait_for_label(&mut harness, "data.bin");
     render(&mut harness, "lfs-page");
