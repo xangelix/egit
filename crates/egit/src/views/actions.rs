@@ -23,7 +23,7 @@ use crate::foresight::{Bringing, Foresight, Look};
 use crate::forge::{RepoForge, request_noun, request_number};
 use crate::format;
 use crate::history::{Refs, Scope};
-use crate::tasks::{ForwardSource, Task, remote_names, upstream_of};
+use crate::tasks::{ForwardSource, PipelineToStart, Task, remote_names, upstream_of};
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::muted;
@@ -250,7 +250,7 @@ fn split_remote<'n>(remotes: &[String], name: &'n BStr) -> Option<(&'n BStr, &'n
 /// A menu's item: its icon, in a column of its own, then its words (it is named by them); a
 /// click closes the menu. Disabled, it says why on hover.
 pub(crate) fn item(ui: &mut Ui, entry: (&str, &str), allowed: Result<(), &str>) -> bool {
-    menu_entry(ui, entry, allowed, (false, None), None)
+    menu_entry(ui, entry, allowed, (false, Explained::Words), None)
 }
 
 /// An [`item`] bringing commits in, what it would do at its right once foreseen ("✓ clean",
@@ -272,7 +272,7 @@ fn foreseen_item(
     } else {
         None
     };
-    menu_entry(ui, entry, allowed, (false, None), hint)
+    menu_entry(ui, entry, allowed, (false, Explained::Words), hint)
 }
 
 /// What a foreseen item says at its right, and on hover.
@@ -363,7 +363,7 @@ pub(crate) fn item_of(
     allowed: Result<(), &str>,
     topic: &'static str,
 ) -> bool {
-    menu_entry(ui, entry, allowed, (false, Some(topic)), None)
+    menu_entry(ui, entry, allowed, (false, Explained::Topic(topic)), None)
 }
 
 /// A menu's item whose words want more said: `about` on hover (in the danger colour when
@@ -378,7 +378,7 @@ pub(crate) fn described_item(
         ui,
         entry,
         allowed,
-        (danger, None),
+        (danger, Explained::Words),
         Some((RichText::new(""), about.to_owned())),
     )
 }
@@ -402,7 +402,7 @@ pub(crate) fn shortcut_item(ui: &mut Ui, (glyph, label): (&str, &str), keys: &'s
 
 /// A menu's item for what loses work (deleting, dropping, a hard reset): in the danger colour.
 pub(crate) fn danger_item(ui: &mut Ui, entry: (&str, &str), allowed: Result<(), &str>) -> bool {
-    menu_entry(ui, entry, allowed, (true, None), None)
+    menu_entry(ui, entry, allowed, (true, Explained::Words), None)
 }
 
 /// A [`danger_item`] explained by the help topic `topic` rather than by its words.
@@ -412,7 +412,29 @@ pub(crate) fn danger_item_of(
     allowed: Result<(), &str>,
     topic: &'static str,
 ) -> bool {
-    menu_entry(ui, entry, allowed, (true, Some(topic)), None)
+    menu_entry(ui, entry, allowed, (true, Explained::Topic(topic)), None)
+}
+
+/// An [`item`] named with someone's words (a workflow's name), explained by the help topic
+/// `topic` alone.
+pub(crate) fn item_named(
+    ui: &mut Ui,
+    entry: (&str, &str),
+    allowed: Result<(), &str>,
+    topic: &'static str,
+) -> bool {
+    menu_entry(ui, entry, allowed, (false, Explained::Named(topic)), None)
+}
+
+/// How an item is explained in Help.
+#[derive(Clone, Copy)]
+enum Explained {
+    /// By its words.
+    Words,
+    /// By a topic of its own (its words a common word, claimed elsewhere too).
+    Topic(&'static str),
+    /// By a topic alone: its words are someone's.
+    Named(&'static str),
 }
 
 /// Draws an item (in the danger colour, explained by a help topic of its own); returns whether
@@ -421,7 +443,7 @@ fn menu_entry(
     ui: &mut Ui,
     (glyph, label): (&str, &str),
     allowed: Result<(), &str>,
-    (danger, topic): (bool, Option<&'static str>),
+    (danger, explained): (bool, Explained),
     hint: Option<(RichText, String)>,
 ) -> bool {
     menu_rows(ui);
@@ -449,9 +471,13 @@ fn menu_entry(
     response.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, allowed.is_ok(), label)
     });
-    crate::help::note(ui, response.rect, label);
-    if let Some(topic) = topic {
-        crate::help::note_topic(ui, response.rect, topic);
+    match explained {
+        Explained::Words => crate::help::note(ui, response.rect, label),
+        Explained::Topic(topic) => {
+            crate::help::note(ui, response.rect, label);
+            crate::help::note_topic(ui, response.rect, topic);
+        }
+        Explained::Named(topic) => crate::help::note_topic(ui, response.rect, topic),
     }
     let response = match (allowed, hover) {
         (Err(why), _) => response.on_disabled_hover_text(why),
@@ -902,6 +928,7 @@ pub(super) fn ref_menu(
                 remote_items(ui, menus, short, is_current, &mut ask);
             }
             pull_request_items(ui, menus, reference, &mut ask);
+            pipeline_items(ui, menus, reference, &mut ask);
             ui.separator();
             worktree_item(ui, menus, reference, is_current, &mut ask);
             ui.separator();
@@ -950,6 +977,80 @@ pub(super) fn ref_menu(
     }
 }
 
+/// Where a branch is on a remote: a local branch's upstream (its remote, and its branch there),
+/// or a remote's branch itself.
+fn on_remote(menus: &Menus<'_>, reference: &Reference) -> Option<(BString, String)> {
+    let short = reference.short_name();
+    match reference.kind {
+        RefKind::Branch => menus.config.and_then(|config| {
+            let (remote, branch) = upstream_of(config, &short.to_str_lossy())?;
+            Some((BString::from(remote), branch))
+        }),
+        _ => menus
+            .split_remote(short)
+            .map(|(remote, branch)| (remote.to_owned(), branch.to_str_lossy().into_owned())),
+    }
+}
+
+/// A pipeline started on a branch where it is on a forge's remote: GitLab's, or a run of one
+/// of a GitHub repository's workflows (a submenu of them, once read).
+fn pipeline_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    reference: &Reference,
+    ask: &mut impl FnMut(Ask),
+) {
+    let forge = menus.forge;
+    let Some((remote, branch)) = on_remote(menus, reference) else {
+        return;
+    };
+    let Some(repository) = forge.repository_of(remote.as_bstr()) else {
+        return;
+    };
+    let start = |workflow: Option<(u64, String)>| {
+        Ask::Task(Task::StartPipeline(Box::new(PipelineToStart {
+            repository: repository.clone(),
+            reference: branch.clone(),
+            workflow,
+        })))
+    };
+    match repository.host().kind() {
+        egit_forge::ForgeKind::GitLab => {
+            let words = format!("Run a pipeline on {branch}");
+            if item(ui, (icon::PLAY, &words), menus.idle()) {
+                ask(start(None));
+            }
+        }
+        egit_forge::ForgeKind::GitHub => {
+            let words = format!("Run a workflow on {branch}");
+            let listed = forge
+                .index_of(repository)
+                .and_then(|index| forge.workflows_of(index));
+            submenu(ui, (icon::PLAY, &words), |ui| match listed {
+                None => {
+                    ui.label(muted(ui, "Reading the workflows…"));
+                }
+                Some(listed) if listed.is_empty() => {
+                    ui.label(muted(ui, "No workflows: none is active, or none was read"));
+                }
+                Some(listed) => {
+                    menu_header(ui, "Workflows");
+                    for workflow in listed {
+                        if item_named(
+                            ui,
+                            (icon::PLAY, &workflow.name),
+                            menus.idle(),
+                            "start-pipeline",
+                        ) {
+                            ask(start(Some((workflow.id, workflow.name.clone()))));
+                        }
+                    }
+                }
+            });
+        }
+    }
+}
+
 /// A branch's pull (or merge) request, when one of the remotes is on GitHub or GitLab: the
 /// open one bringing it
 /// in, or opening one (once it is pushed there).
@@ -964,16 +1065,7 @@ fn pull_request_items(
         return;
     }
     let short = reference.short_name();
-    // Where the branch is on a remote: its upstream, or the remote's branch itself.
-    let pushed = match reference.kind {
-        RefKind::Branch => menus.config.and_then(|config| {
-            let (remote, branch) = upstream_of(config, &short.to_str_lossy())?;
-            Some((BString::from(remote), branch))
-        }),
-        _ => menus
-            .split_remote(short)
-            .map(|(remote, branch)| (remote.to_owned(), branch.to_str_lossy().into_owned())),
-    };
+    let pushed = on_remote(menus, reference);
     let on_forge = pushed.as_ref().and_then(|(remote, branch)| {
         Some((remote, branch, forge.repository_of(remote.as_bstr())?))
     });

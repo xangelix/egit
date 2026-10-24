@@ -1463,7 +1463,9 @@ writes paths), never `OsStrExt`.
     `Arc<str>`, as an outcome is cloned each frame it shows). A forge's tasks run with the
     tab's accounts:
     `CheckOutPullRequest` (`fetch_refspecs` of its refspec, then a switch; changes in the way
-    lead to stash-and-switch, as a switch's do) and `CreatePullRequest` (`Outcome::Opened`).
+    lead to stash-and-switch, as a switch's do), `CreatePullRequest` (`Outcome::Opened`), and
+    `StartPipeline` (`PipelineToStart`: the repository, the branch there, and a GitHub
+    workflow; `start_pipeline`, the requests and pipelines read again after).
     The repository's plumbing: `AddRemote` (fetched at once if asked), `FetchRemote`,
     `RenameRemote`, `RemoveRemote`, `SetRemoteUrls` (the push address unset when none);
     `RemoveWorktree` (`Outcome::WorktreeChanges` when it has changes: asked again, forced),
@@ -1578,7 +1580,8 @@ writes paths), never `OsStrExt`.
     none, and the hosts known then; logged at debug level; the first working out applied even
     where no remote is a forge's), and why they couldn't be (`resolve_problem`, kept, not
     dropped); `index_of`, `pipelines` (the `Pipelines`, for the Overview); `kind`, `kind_of`,
-    `nouns`. Each forge's words:
+    `nouns`; each GitHub repository's workflows (`workflows_of`, read with the remotes and
+    again with every refresh, one that can't be read listing none). Each forge's words:
     `request_noun` ("pull request", "merge request"), `request_number` (`#12`, `!12`), and
     `fork_head` (`refs/pull/12/head` into `pr/12`, `refs/merge-requests/12/head` into
     `mr/12`).
@@ -1882,7 +1885,9 @@ writes paths), never `OsStrExt`.
     upstream; a worktree from it; rename or delete a branch, delete a remote's on its remote,
     or both at once; copy its name, or a link to it on its forge; pin it to the left or unpin
     it, show only it, it too, or hide it (`Scope`, `Action::Scope`), or every branch again;
-    push or delete a tag), a branch badge double-clicked (switch), a ref dropped onto another
+    push or delete a tag; where a branch is on a forge's remote, "Run a pipeline on main"
+    (GitLab) or "Run a workflow on main", a submenu of the repository's workflows (GitHub;
+    `item_named`: someone's words, explained by a topic alone)), a branch badge double-clicked (switch), a ref dropped onto another
     (`drop_items`, in a menu where it lands: onto the current branch, merging the dragged one
     in (or without fast-forward), rebasing onto it, or fast-forwarding to it; the current branch onto another, rebasing
     onto that (keeping merges or not), merging it in (or without fast-forward), fast-forwarding; else fast-forwarding

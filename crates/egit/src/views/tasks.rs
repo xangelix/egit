@@ -900,6 +900,10 @@ fn switched_text(to: &SwitchTo, stashed: bool) -> String {
 fn done_text(task: &Task) -> String {
     let short = |name: &BString| name.to_str_lossy().into_owned();
     match task {
+        Task::StartPipeline(start) => match &start.workflow {
+            Some((_, name)) => format!("Started {name} on {}.", start.reference),
+            None => format!("Started a pipeline on {}.", start.reference),
+        },
         Task::Switch(to) => switched_text(to, false),
         Task::StashAndSwitch(to) => switched_text(to, true),
         Task::CreateBranch { name, .. } => format!("Made {}.", short(name)),

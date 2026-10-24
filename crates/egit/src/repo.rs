@@ -546,7 +546,8 @@ impl RepoTab {
         }
         let exchanged = finished
             && self.tasks.task.as_ref().is_some_and(|task| {
-                task.reaches_remotes() || matches!(task, Task::CreatePullRequest(_))
+                task.reaches_remotes()
+                    || matches!(task, Task::CreatePullRequest(_) | Task::StartPipeline(_))
             });
         let fetched = self.tasks.background_fetches != self.forge_fetches;
         self.forge_fetches = self.tasks.background_fetches;

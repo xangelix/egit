@@ -342,3 +342,38 @@ fn a_run_s_artifacts_are_downloaded_and_checked_against_their_digests() {
     assert!(!out.join("dist-macos.zip.part").exists());
     render(&mut harness, "workflow-artifact-refused");
 }
+
+#[test]
+fn a_workflow_is_run_on_a_branch_from_its_menu() {
+    let (_sandbox, fake, mut harness) = ran();
+    settle(&mut harness, "the workflows read", |app| {
+        app.state.repos[0].forge.workflows_of(0).is_some()
+    });
+    // The commit table's badge (the details may show one too): its workflows in a submenu.
+    harness
+        .get_all_by_label(&format!("{} main", icon::GIT_BRANCH))
+        .next()
+        .unwrap()
+        .click_secondary();
+    wait_for_label(&mut harness, "Run a workflow on main");
+    harness.get_by_label("Run a workflow on main").hover();
+    wait_for_label(&mut harness, "Docs");
+    render(&mut harness, "branch-menu-workflows");
+    // The audit's pointer went over every control: the submenu opened again.
+    if harness.query_by_label("Docs").is_none() {
+        harness.key_press(egui::Key::Escape);
+        harness.run_steps(2);
+        harness
+            .get_all_by_label(&format!("{} main", icon::GIT_BRANCH))
+            .next()
+            .unwrap()
+            .click_secondary();
+        wait_for_label(&mut harness, "Run a workflow on main");
+        harness.get_by_label("Run a workflow on main").hover();
+        wait_for_label(&mut harness, "Docs");
+    }
+    harness.get_by_label("Docs").click();
+    wait_for_label(&mut harness, "Started Docs on main.");
+    let made = &fake.state().repositories[0].pipelines[0];
+    assert_eq!((made.workflow.1, made.git_ref.as_str()), (12, "main"));
+}

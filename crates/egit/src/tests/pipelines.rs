@@ -179,6 +179,20 @@ fn each_commit_s_pipeline_is_marked_and_shown_down_to_its_jobs() {
     harness.key_press(egui::Key::Escape);
     harness.run_steps(2);
     assert!(!shows(&harness, "unit: failed"));
+
+    // A new pipeline started on main from its branch's menu: its mark on main's commit.
+    // The commit table's badge (the details show one too).
+    harness
+        .get_all_by_label(&format!("{} main", icon::GIT_BRANCH))
+        .next()
+        .unwrap()
+        .click_secondary();
+    wait_for_label(&mut harness, "Run a pipeline on main");
+    render(&mut harness, "branch-menu-pipeline");
+    harness.get_by_label("Run a pipeline on main").click();
+    wait_for_label(&mut harness, "Started a pipeline on main.");
+    wait_for_label(&mut harness, "Pipeline #9004: created");
+    assert_eq!(fake.state().repositories[0].pipelines[0].git_ref, "main");
 }
 
 #[test]

@@ -1328,6 +1328,37 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "start-pipeline",
+        group: Group::Remotes,
+        title: "Starting a pipeline",
+        on: &["Run a pipeline on *", "Run a workflow on *", "Workflows"],
+        what: "From a branch's menu, where the branch is on a GitLab or GitHub remote (its \
+               upstream, or the remote's branch itself): GitLab runs a new pipeline on it, \
+               from its .gitlab-ci.yml as the branch has it there; on GitHub, pick one of the \
+               repository's workflows to run on it. The commit's mark shows the new run once \
+               the forge has made it.",
+        git: "nothing: GitLab's POST /projects/:id/pipeline; GitHub's POST \
+              /repos/:owner/:repo/actions/workflows/:id/dispatches",
+        cases: &[
+            (
+                "GitHub says the workflow has no workflow_dispatch trigger?",
+                "Only workflows whose file says on: workflow_dispatch can be started by hand: add it to the file (on the branch), push, and run it again.",
+            ),
+            (
+                "Refused?",
+                "Starting a pipeline needs Developer on GitLab, write access on GitHub; signing in with a token that may is the way.",
+            ),
+            (
+                "Run on what I haven't pushed?",
+                "The forge runs what the branch holds there: push first.",
+            ),
+            (
+                "A workflow that asks for inputs?",
+                "egit starts it without any: one whose inputs are required is refused, as GitHub says. Run it from GitHub's page.",
+            ),
+        ],
+    },
+    Topic {
         id: "pipeline-artifacts",
         group: Group::Remotes,
         title: "A pipeline's artifacts",

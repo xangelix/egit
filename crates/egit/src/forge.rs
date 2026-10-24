@@ -14,7 +14,7 @@ use std::sync::Arc;
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_forge::{
     Account, CheckState, ForgeError, ForgeHost, ForgeHosts, ForgeKind, ForgeRepository,
-    PullRequest, forge_repository, pull_requests, resolve_ssh_alias_on,
+    PullRequest, WorkflowFile, forge_repository, pull_requests, resolve_ssh_alias_on,
 };
 use egit_git::{CancelToken, ConfigSnapshot, Git, ObjectId, Repository, remote_urls};
 use egui_async::Bind;
@@ -346,6 +346,11 @@ pub(crate) struct RepoForge {
     ci: Pipelines,
     /// Their artifacts downloaded, or being downloaded.
     pub(crate) downloads: Downloads,
+    /// Each GitHub repository's workflows (its place among `repositories`), whose runs a
+    /// branch's menu starts: read with the remotes, and again with the pipelines; the last
+    /// read, once one has landed.
+    workflows: Bind<Arc<[(usize, WorkflowFile)]>, Problem>,
+    workflows_read: Option<Arc<[(usize, WorkflowFile)]>>,
     /// What the run shares: the sign-ins made, which its accounts take as they are made; and
     /// the names listed GitLab hosts' ssh is on.
     run: ForgeRun,
@@ -378,6 +383,8 @@ impl RepoForge {
             waker: waker.clone(),
             ci: Pipelines::new(waker),
             downloads: Downloads::default(),
+            workflows: Bind::new(true),
+            workflows_read: None,
             run,
             learned_at: 0,
             here,
@@ -519,6 +526,54 @@ impl RepoForge {
         }
         self.index();
         self.ci.poll(&self.repositories, &self.accounts);
+        self.workflows.poll();
+        if let Some(Ok(read)) = self.workflows.take() {
+            self.workflows_read = Some(read);
+        }
+    }
+
+    /// Reads each GitHub repository's workflows (none to read for GitLab's projects); one
+    /// that can't be read lists none (its menu says so).
+    fn read_workflows(&mut self) {
+        let wanted: Vec<(usize, ForgeRepository, Arc<Account>)> = self
+            .repositories
+            .iter()
+            .enumerate()
+            .filter(|(_, repository)| repository.host().kind() == ForgeKind::GitHub)
+            .filter_map(|(index, repository)| {
+                Some((index, repository.clone(), self.account(repository.host())?))
+            })
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        let cancel = self.cancel.clone();
+        self.workflows.request(jobs::blocking(move || {
+            let mut found = Vec::new();
+            for (index, repository, account) in wanted {
+                match egit_forge::workflows(&account, &repository, &cancel) {
+                    Ok(listed) => found.extend(listed.into_iter().map(|file| (index, file))),
+                    Err(error) => tracing::debug!(
+                        repository = %repository.full_name(),
+                        %error,
+                        "its workflows couldn't be read"
+                    ),
+                }
+            }
+            Ok(Arc::from(found))
+        }));
+    }
+
+    /// The workflows of the repository at `index` among `repositories`, once read (none
+    /// while they are read, or where none could be).
+    pub(crate) fn workflows_of(&self, index: usize) -> Option<Vec<&WorkflowFile>> {
+        let read = self.workflows_read.as_ref()?;
+        Some(
+            read.iter()
+                .filter(|(at, _)| *at == index)
+                .map(|(_, file)| file)
+                .collect(),
+        )
     }
 
     /// Reads the pull requests and the pipelines again (after the reads under way, if any).
@@ -527,6 +582,7 @@ impl RepoForge {
             return;
         }
         self.ci.refresh(&self.repositories, &self.accounts);
+        self.read_workflows();
         let first_under_way = !self.shown.lock().done && self.generation == 0;
         if self.reading.is_some() || first_under_way {
             self.again = true;
@@ -815,6 +871,9 @@ impl RepoForge {
             self.start_read(Arc::clone(&self.shown));
         }
         self.ci.reset(&self.repositories, &self.accounts);
+        self.workflows = Bind::new(true);
+        self.workflows_read = None;
+        self.read_workflows();
     }
 
     /// Reads every repository's open pull requests into `into`, a page at a time.

@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_forge::{
     Account, ForgeKind, ForgeRepository, NewPullRequest, Opened, create_pull_request,
+    start_pipeline,
 };
 use egit_git::{
     ApplyAs, BisectMark, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget,
@@ -195,6 +196,8 @@ pub(crate) enum Task {
     },
     /// Open a pull request on a forge.
     CreatePullRequest(Box<PullRequestToOpen>),
+    /// Start a pipeline on a forge: GitLab's, or a GitHub workflow's run.
+    StartPipeline(Box<PipelineToStart>),
     /// Fast-forward the current branch to a ref (its full name), `shown` its name for people.
     FastForward {
         to: BString,
@@ -333,6 +336,15 @@ pub(crate) enum WorktreeSource {
     },
     /// A commit, without a branch.
     Detached(ObjectId),
+}
+
+/// A pipeline to start: on which repository and branch, and (on GitHub) which workflow, its
+/// number and name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PipelineToStart {
+    pub(crate) repository: ForgeRepository,
+    pub(crate) reference: String,
+    pub(crate) workflow: Option<(u64, String)>,
 }
 
 /// A pull request to open, and the repository it goes into.
@@ -480,6 +492,8 @@ impl Task {
                 ForgeKind::GitHub => "Opening the pull request",
                 ForgeKind::GitLab => "Opening the merge request",
             },
+            Self::StartPipeline(start) if start.workflow.is_some() => "Starting the workflow",
+            Self::StartPipeline(_) => "Starting the pipeline",
             Self::SetUpstream { .. } => "Setting the upstream",
             Self::AddWorktree { .. } => "Making the worktree",
             Self::SavePatch { .. } | Self::SaveChanges { .. } => "Saving the patch",
@@ -936,7 +950,7 @@ fn run(
     match task {
         // `start` takes them back and does them again itself.
         Task::Undo(_) | Task::Redo(_) => Ok(Outcome::Done),
-        Task::CheckOutPullRequest { .. } | Task::CreatePullRequest(_) => {
+        Task::CheckOutPullRequest { .. } | Task::CreatePullRequest(_) | Task::StartPipeline(_) => {
             forge(git, repository, task, progress, cancel, accounts)
         }
         Task::Lfs(lfs) => crate::lfs::run(git, repository, lfs, progress, cancel),
@@ -1075,6 +1089,33 @@ fn forge(
             create_pull_request(account, on, new, cancel)
                 .map(Outcome::Opened)
                 .map_err(|error| Problem::new(title, error.to_string()))
+        }
+        Task::StartPipeline(start) => {
+            let title = match start.repository.host().kind() {
+                ForgeKind::GitHub => "The workflow wasn't started",
+                ForgeKind::GitLab => "The pipeline wasn't started",
+            };
+            let account = accounts
+                .iter()
+                .find(|account| account.host() == start.repository.host())
+                .ok_or_else(|| {
+                    Problem::new(
+                        title,
+                        format!(
+                            "{} isn't one of this repository's remotes.",
+                            start.repository.full_name()
+                        ),
+                    )
+                })?;
+            let workflow = start.workflow.as_ref().map(|(id, _)| *id);
+            start_pipeline(
+                account,
+                &start.repository,
+                (workflow, &start.reference),
+                cancel,
+            )
+            .map(|_| Outcome::Done)
+            .map_err(|error| Problem::new(title, error.to_string()))
         }
         // `run` sends the others elsewhere.
         _ => Ok(Outcome::Done),
