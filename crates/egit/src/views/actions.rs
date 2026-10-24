@@ -1829,10 +1829,7 @@ pub(super) fn stash_menu(
     crate::widgets::tool_menu(ui, crate::theme::icon::ARCHIVE, &label, look, |ui| {
         ui.set_width(STASH_MENU_WIDTH);
         if item(ui, (icon::ARCHIVE, "Stash the changes…"), can_stash) {
-            *asked = Some(Ask::Dialog(Dialog::Stash {
-                message: String::new(),
-                untracked: true,
-            }));
+            *asked = Some(Ask::Dialog(Dialog::stash(Vec::new())));
         }
         if stashes.is_empty() {
             return;

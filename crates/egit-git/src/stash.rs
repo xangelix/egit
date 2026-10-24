@@ -5,7 +5,7 @@
 //! go; each one acted on is checked against the commit it was listed with first
 //! ([`StashError::Stale`] otherwise), so another stash is never applied or dropped by mistake.
 
-use bstr::ByteSlice as _;
+use bstr::{BStr, ByteSlice as _};
 
 use crate::cancel::CancelToken;
 use crate::error::GitError;
@@ -90,14 +90,17 @@ pub fn stashes(
 /// and files git doesn't track too with `untracked`. Returns whether there was anything to
 /// stash.
 ///
+/// Only the changes at `paths` go, when any are given (literal paths on standard input;
+/// untracked ones among them always go too: git refuses an untracked path otherwise).
+///
 /// # Errors
 ///
 /// When git fails or is cancelled.
 pub fn stash_push(
     git: &Git,
     repository: &Repository,
-    message: &str,
-    untracked: bool,
+    (message, untracked): (&str, bool),
+    paths: &[&BStr],
     cancel: &CancelToken,
 ) -> Result<bool, GitError> {
     let before = latest(git, repository, cancel)?;
@@ -106,12 +109,25 @@ pub fn stash_push(
         .args(["push", "--quiet"])
         .current_dir(repository.work_tree())
         .cancel_token(cancel);
-    if untracked {
+    if untracked || !paths.is_empty() {
         command = command.arg("--include-untracked");
     }
     let message = message.trim();
     if !message.is_empty() {
         command = command.arg("--message").arg(message);
+    }
+    if !paths.is_empty() {
+        let mut stdin =
+            Vec::with_capacity(paths.iter().map(|path| path.len().saturating_add(1)).sum());
+        for path in paths {
+            stdin.extend_from_slice(path);
+            stdin.push(b'\0');
+        }
+        command = command
+            .args(["--pathspec-from-file=-", "--pathspec-file-nul"])
+            // Paths are paths, never patterns.
+            .env("GIT_LITERAL_PATHSPECS", "1")
+            .stdin(stdin);
     }
     command.output()?;
     // Nothing to stash makes no stash (and says so only without `--quiet`).

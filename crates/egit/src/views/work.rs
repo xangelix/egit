@@ -44,7 +44,6 @@ pub(super) enum WorkEvent {
     Open(WorkFile),
     /// Stage or unstage.
     Stage(StageRequest),
-    /// Commit what is staged.
     /// A commit to make, and whether to push the branch once it is made.
     Commit(NewCommit, bool),
     /// Stop the commit under way (its hooks with it).
@@ -55,6 +54,8 @@ pub(super) enum WorkEvent {
     Preferences(Preferences),
     /// Ask whether to discard whole files' changes not staged.
     AskDiscard(Discard),
+    /// Ask what to call a stash of the changes at these paths.
+    AskStash(Vec<BString>),
     /// Ignore a file git doesn't track (or its extension, or folder).
     Ignore(Ignore),
     /// Open a file or folder of the work tree (its path from the top) in its app, or show it
@@ -985,6 +986,70 @@ fn row_menu(ui: &Ui, list: &mut List, side: Side, busy: (bool, bool, bool)) -> O
     event
 }
 
+/// Looking at a row's file (`first`; none for a folder) or folder at `path`: its changes, it
+/// opened or shown in its folder (only `here`: its apps and file manager are this computer's),
+/// its path copied.
+fn look_items(
+    ui: &mut Ui,
+    (first, path): (Option<StatusEntry<'_>>, &BStr),
+    side: Side,
+    here: bool,
+) -> Option<WorkEvent> {
+    use super::actions::item;
+    let mut event = first.and_then(|entry| {
+        item(ui, (icon::FILE_TEXT, "Show changes"), Ok(()))
+            .then(|| WorkEvent::Open(WorkFile::of(entry, side.which(entry))))
+    });
+    let reveals: &[(&str, &str, Reveal)] = if first.is_none() {
+        &[(icon::FOLDER_OPEN, "Open the folder", Reveal::Open)]
+    } else {
+        &[
+            (icon::ARROW_SQUARE_OUT, "Open file", Reveal::Open),
+            (icon::FOLDER_OPEN, "Show in folder", Reveal::InFolder),
+        ]
+    };
+    let revealing = if here { Ok(()) } else { Err(ELSEWHERE) };
+    for (glyph, words, how) in reveals {
+        if item(ui, (glyph, words), revealing) {
+            event = Some(WorkEvent::Reveal(path.to_owned(), *how));
+        }
+    }
+    if item(ui, (icon::COPY, "Copy path"), Ok(())) {
+        ui.ctx().copy_text(path.to_str_lossy().into_owned());
+    }
+    event
+}
+
+/// Stashing a row's file, or a folder's: its changes alone put aside, staged or not (a
+/// rename's both paths); none in conflict.
+fn stash_item(
+    ui: &mut Ui,
+    (files, entries): (&ListFiles, &[usize]),
+    folder: bool,
+    allowed: Result<(), &'static str>,
+) -> Option<WorkEvent> {
+    let each = || entries.iter().filter_map(|entry| files.entry(*entry));
+    let allowed = allowed.and_then(|()| {
+        if each().any(|entry| entry.kind == EntryKind::Unmerged) {
+            Err("A file in conflict can't be stashed: resolve it first")
+        } else {
+            Ok(())
+        }
+    });
+    let words = if folder {
+        "Stash the folder's changes…"
+    } else {
+        "Stash this file…"
+    };
+    super::actions::item(ui, (icon::ARCHIVE, words), allowed).then(|| {
+        WorkEvent::AskStash(
+            each()
+                .flat_map(|entry| paths(entry, Side::Staged))
+                .collect(),
+        )
+    })
+}
+
 /// A row's menu's items; what is chosen, its paths gathered only then (a folder may hold
 /// thousands).
 fn row_menu_items(
@@ -1022,6 +1087,14 @@ fn row_menu_items(
             direction: side.direction(),
         })
     });
+    let stashing = if task {
+        Err("Another task is running")
+    } else {
+        staging
+    };
+    if let Some(stash) = stash_item(ui, (files, entries), folder, stashing) {
+        event = Some(stash);
+    }
     if side == Side::Unstaged {
         let refused = if folder {
             None
@@ -1053,29 +1126,9 @@ fn row_menu_items(
         }
     }
     ui.separator();
-    if !folder
-        && item(ui, (icon::FILE_TEXT, "Show changes"), Ok(()))
-        && let Some(entry) = each().next()
-    {
-        event = Some(WorkEvent::Open(WorkFile::of(entry, side.which(entry))));
-    }
-    let reveals: &[(&str, &str, Reveal)] = if folder {
-        &[(icon::FOLDER_OPEN, "Open the folder", Reveal::Open)]
-    } else {
-        &[
-            (icon::ARROW_SQUARE_OUT, "Open file", Reveal::Open),
-            (icon::FOLDER_OPEN, "Show in folder", Reveal::InFolder),
-        ]
-    };
-    // Its apps and file manager are this computer's.
-    let revealing = if here { Ok(()) } else { Err(ELSEWHERE) };
-    for (glyph, words, how) in reveals {
-        if item(ui, (glyph, words), revealing) {
-            event = Some(WorkEvent::Reveal(path.clone(), *how));
-        }
-    }
-    if item(ui, (icon::COPY, "Copy path"), Ok(())) {
-        ui.ctx().copy_text(path.to_str_lossy().into_owned());
+    let first = if folder { None } else { each().next() };
+    if let Some(looked) = look_items(ui, (first, path.as_bstr()), side, here) {
+        event = Some(looked);
     }
     if side == Side::Unstaged {
         ui.separator();

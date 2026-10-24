@@ -223,3 +223,50 @@ fn changes_not_staged_are_discarded_and_brought_back() {
     assert_eq!(read(&repo, "notes.txt"), Some(notes(&[])));
     assert_eq!(read(&repo, "todo.md"), None);
 }
+
+#[test]
+fn one_files_changes_are_stashed_from_its_menu() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(&repo, "notes.txt", "one\n", "Write notes")
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "other.txt", "a\n", "Other")
+        .unwrap();
+    std::fs::write(repo.join("notes.txt"), "two\n").unwrap();
+    std::fs::write(repo.join("other.txt"), "b\n").unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+    wait_for_label(&mut harness, &uncommitted(2));
+    harness.get_by_label(&uncommitted(2)).click();
+    wait_for_label(&mut harness, "Not staged");
+
+    // notes.txt's changes alone go into the stash; other.txt's stay.
+    row_menu(&mut harness, "notes.txt", "Stash this file…");
+    wait_for_label(&mut harness, "Stash the changes to notes.txt");
+    render(&mut harness, "stash-one-file");
+    // The dialog's (the top bar has a Stash menu too).
+    harness
+        .get_all_by_role_and_label(Role::Button, "Stash")
+        .last()
+        .unwrap()
+        .click();
+    wait_for_label(&mut harness, "Stashed the changes to notes.txt.");
+    assert_eq!(read(&repo, "notes.txt").as_deref(), Some("one\n"));
+    assert_eq!(read(&repo, "other.txt").as_deref(), Some("b\n"));
+    let listed = sandbox.run(&repo, "stash", &["list"]).unwrap().stdout;
+    assert_eq!(String::from_utf8(listed).unwrap().lines().count(), 1);
+
+    // Undo puts them back, the stash gone.
+    click_when_enabled(&mut harness, "Undo");
+    wait_for_label(&mut harness, "Undid stashing the changes.");
+    assert_eq!(read(&repo, "notes.txt").as_deref(), Some("two\n"));
+    let listed = sandbox.run(&repo, "stash", &["list"]).unwrap().stdout;
+    assert_eq!(listed, b"");
+}

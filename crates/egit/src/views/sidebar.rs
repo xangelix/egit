@@ -1374,10 +1374,7 @@ fn adding_ask(drawing: &Drawing<'_>, section: Section) -> Option<Ask> {
                 fetch: true,
             }))
         }
-        Section::Stashes => Some(Ask::Dialog(Dialog::Stash {
-            message: String::new(),
-            untracked: true,
-        })),
+        Section::Stashes => Some(Ask::Dialog(Dialog::stash(Vec::new()))),
         Section::Worktrees => {
             let head = drawing.shared.head_commit()?;
             Some(Ask::Dialog(Dialog::AddWorktree {

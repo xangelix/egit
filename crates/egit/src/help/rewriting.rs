@@ -898,11 +898,18 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "stash-changes",
         group: Group::Stashes,
         title: "Stashing the changes",
-        on: &["Stash the changes…", "Stash the changes"],
+        on: &[
+            "Stash the changes…",
+            "Stash the changes",
+            "Stash this file…",
+            "Stash the folder's changes…",
+            "Stash the changes to *",
+        ],
         what: "Asks for an optional message, then saves every uncommitted change in a new stash \
                (the latest, stash@{0}) and puts the work tree and index back to HEAD. The \
-               branch doesn't move.",
-        git: "git stash push (--include-untracked, --message as given)",
+               branch doesn't move. From a file's or folder's menu in the working tree, only \
+               its changes go (staged or not, untracked too); the rest stay.",
+        git: "git stash push (--include-untracked, --message as given; -- <paths> for some files)",
         cases: &[
             (
                 "Disabled?",
@@ -915,6 +922,10 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "Submodules?",
                 "Their changes inside aren't stashed: only a moved submodule commit is.",
+            ),
+            (
+                "Stash a file in conflict?",
+                "git can't: resolve it (and stage it) first.",
             ),
         ],
     },

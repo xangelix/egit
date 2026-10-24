@@ -633,8 +633,9 @@ writes paths), never `OsStrExt`.
     `Stopped` (an operation left with nothing to resolve); `reset` (`ResetMode`: soft, mixed,
     hard, keep: uncommitted changes kept, nothing moved when they're in the way).
   - `stash.rs` — `stashes` (`stash list -z`, `%gd %H %ct %gs`: index, commit, time, git's
-    message), `stash_push` (a message, untracked files with `--include-untracked`; whether
-    anything was stashed, from `refs/stash` before and after, as `--quiet` says nothing),
+    message), `stash_push` (a message, untracked files with `--include-untracked`; only some
+    paths' changes when named, literal, on standard input, untracked ones among them too;
+    whether anything was stashed, from `refs/stash` before and after, as `--quiet` says nothing),
     `stash_apply` (and pop; `Integrated::Conflicts` keeps a popped stash) and `stash_drop`,
     each refused (`StashError::Stale`) unless `stash@{n}` is still the stash listed;
     `stash_store` (a dropped stash's commit put back as the latest, `stash store`).
@@ -1754,7 +1755,9 @@ writes paths), never `OsStrExt`.
     folders (the first list's header choosing; each folder a button too, "Stage the folder
     src", every file it holds), a file clicked opened in the `FileView`, a right click opening
     its row's menu (an `egui::Popup` at the pointer, over the list's files as they were then:
-    stage or unstage it or the folder, "Discard changes…" or "Discard the folder's changes…",
+    stage or unstage it or the folder, stash its changes alone ("Stash this file…", "Stash the
+    folder's changes…": the stash dialog naming them, `Task::Stash`'s `paths`; none in
+    conflict), "Discard changes…" or "Discard the folder's changes…",
     for what git doesn't track an Ignore submenu (`ignore_menu`: this file, every file of its
     extension, its folder, or this folder; under a header each for .gitignore and
     info/exclude; `RowMenu::untracked` worked out once as it opens), Show changes, Open file

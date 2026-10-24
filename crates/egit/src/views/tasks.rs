@@ -663,6 +663,20 @@ const fn pull_mode(task: &Task) -> Option<PullMode> {
 }
 
 /// How `task` ended, in words.
+/// What a stash put aside: every change, or those to some files.
+fn stashed_text(task: &Task) -> String {
+    match task {
+        Task::Stash { paths, .. } if let [path] = paths.as_slice() => {
+            format!("Stashed the changes to {}.", path.to_str_lossy())
+        }
+        Task::Stash { paths, .. } if !paths.is_empty() => format!(
+            "Stashed the changes to {} files.",
+            crate::format::count(u64::try_from(paths.len()).unwrap_or(u64::MAX))
+        ),
+        _ => "Stashed your changes.".to_owned(),
+    }
+}
+
 fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String {
     const CONFLICTS: &str = "resolve the conflicts, stage them, then Continue.";
     let Some(task) = task else {
@@ -675,7 +689,7 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
         (_, Outcome::Pushed(pushed)) => pushed_text(pushed),
         (_, Outcome::Aborted) => "Aborted: everything is as it was before.".to_owned(),
         (_, Outcome::Continued) => "Carried on.".to_owned(),
-        (_, Outcome::Stashed(true)) => "Stashed your changes.".to_owned(),
+        (task, Outcome::Stashed(true)) => stashed_text(task),
         (_, Outcome::Stashed(false)) => "There were no changes to stash.".to_owned(),
         (Task::CreatePullRequest(open), Outcome::Opened(opened)) => {
             let kind = open.repository.host().kind();

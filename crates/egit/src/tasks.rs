@@ -169,10 +169,11 @@ pub(crate) enum Task {
         remote: BString,
         tag: BString,
     },
-    /// Stash the work tree's changes.
+    /// Stash the work tree's changes (only those at `paths`, when any are named).
     Stash {
         message: String,
         untracked: bool,
+        paths: Vec<BString>,
     },
     /// Apply a stash (`pop`: then drop it).
     ApplyStash {
@@ -1113,7 +1114,7 @@ fn pulling(
             mode,
             untracked: true,
         } => {
-            let stashed = stash_push(git, repository, "Before pulling", true, cancel)
+            let stashed = stash_push(git, repository, ("Before pulling", true), &[], cancel)
                 .map(Outcome::Stashed)
                 .or_else(failed("Your changes couldn't be stashed"))?;
             if stashed == Outcome::Cancelled {
@@ -1467,7 +1468,7 @@ fn references(
     match task {
         Task::Switch(to) => switched(to),
         Task::StashAndSwitch(to) => {
-            let stashed = stash_push(git, repository, "Before switching", true, cancel)
+            let stashed = stash_push(git, repository, ("Before switching", true), &[], cancel)
                 .map(Outcome::Stashed)
                 .or_else(failed("Your changes couldn't be stashed"))?;
             if stashed == Outcome::Cancelled {
@@ -1709,8 +1710,13 @@ fn stashing(
         }
     };
     match task {
-        Task::Stash { message, untracked } => {
-            stash_push(git, repository, message, *untracked, cancel)
+        Task::Stash {
+            message,
+            untracked,
+            paths,
+        } => {
+            let paths: Vec<&BStr> = paths.iter().map(|path| path.as_bstr()).collect();
+            stash_push(git, repository, (message, *untracked), &paths, cancel)
                 .map(Outcome::Stashed)
                 .or_else(failed("Your changes couldn't be stashed"))
         }

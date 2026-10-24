@@ -462,18 +462,49 @@ fn tags_are_made_annotated_or_light_and_deleted() {
 }
 
 #[test]
+fn some_files_alone_are_stashed() {
+    let sandbox = Sandbox::new().unwrap();
+    let path = two_branches(&sandbox);
+    let repository = open(&sandbox, &path);
+    let git = sandbox.git();
+    std::fs::write(path.join("f"), "changed\n").unwrap();
+    // Named like a pattern, untracked: taken as it is (not `a.log`, which the pattern would
+    // match), without `untracked`.
+    std::fs::write(path.join("[a].log"), "new\n").unwrap();
+    std::fs::write(path.join("a.log"), "untracked, kept\n").unwrap();
+    let paths = [BStr::new("[a].log")];
+    assert!(stash_push(git, &repository, ("Some", false), &paths, &cancel()).unwrap());
+    assert!(!path.join("[a].log").exists());
+    assert_eq!(
+        std::fs::read_to_string(path.join("f")).unwrap(),
+        "changed\n"
+    );
+    assert!(path.join("a.log").exists());
+    let listed = stashes(git, &repository, &cancel()).unwrap();
+    assert_eq!(listed[0].message, "On main: Some");
+    assert_eq!(
+        stash_apply(git, &repository, &listed[0], true, &cancel()).unwrap(),
+        Integrated::Done
+    );
+    assert_eq!(
+        std::fs::read_to_string(path.join("[a].log")).unwrap(),
+        "new\n"
+    );
+}
+
+#[test]
 fn stashes_are_made_listed_applied_popped_and_dropped() {
     let sandbox = Sandbox::new().unwrap();
     let path = two_branches(&sandbox);
     let repository = open(&sandbox, &path);
     let git = sandbox.git();
-    assert!(!stash_push(git, &repository, "", false, &cancel()).unwrap());
+    assert!(!stash_push(git, &repository, ("", false), &[], &cancel()).unwrap());
     assert_eq!(stashes(git, &repository, &cancel()).unwrap(), []);
 
     std::fs::write(path.join("f"), "changed\n").unwrap();
-    assert!(stash_push(git, &repository, "First", false, &cancel()).unwrap());
+    assert!(stash_push(git, &repository, ("First", false), &[], &cancel()).unwrap());
     std::fs::write(path.join("new"), "untracked\n").unwrap();
-    assert!(stash_push(git, &repository, "", true, &cancel()).unwrap());
+    assert!(stash_push(git, &repository, ("", true), &[], &cancel()).unwrap());
     assert!(!path.join("new").exists());
     let listed = stashes(git, &repository, &cancel()).unwrap();
     assert_eq!(listed.len(), 2);

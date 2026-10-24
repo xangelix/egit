@@ -1119,10 +1119,7 @@ fn queued_commands(shared: &Shared<'_>, view: &mut HistoryView, pane: &mut TaskP
             RepoCommand::WorkTree => view.select_work(),
             RepoCommand::PullRequests => view.show_pull_request(None),
             RepoCommand::Stash => {
-                view.tasks.dialog = Some(super::dialogs::Dialog::Stash {
-                    message: String::new(),
-                    untracked: true,
-                });
+                view.tasks.dialog = Some(super::dialogs::Dialog::stash(Vec::new()));
             }
             RepoCommand::ApplyPatches => carry_out(Ask::ApplyFiles, shared, view, pane.actions),
             RepoCommand::PastePatch => view.show_patch(PatchSource::Pasted),
@@ -4494,6 +4491,9 @@ fn work_details(
         }
         Some(WorkEvent::AskDiscard(discard)) => {
             view.tasks.dialog = Some(super::dialogs::Dialog::Discard(discard));
+        }
+        Some(WorkEvent::AskStash(paths)) => {
+            view.tasks.dialog = Some(super::dialogs::Dialog::stash(paths));
         }
         Some(WorkEvent::Ignore(ignore)) => {
             actions.push(Action::Task(shared.id, crate::tasks::Task::Ignore(ignore)));

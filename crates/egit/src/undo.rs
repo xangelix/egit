@@ -106,11 +106,12 @@ pub(crate) enum Change {
     TagMade { name: BString, at: ObjectId },
     /// A tag removed from `was`.
     TagRemoved { name: BString, was: ObjectId },
-    /// The changes stashed as `id`.
+    /// The changes stashed as `id` (those at `paths`, when any are named).
     Stashed {
         id: ObjectId,
         message: String,
         untracked: bool,
+        paths: Vec<BString>,
     },
     /// The stash `id` dropped.
     StashDropped { id: ObjectId, message: String },
@@ -459,9 +460,13 @@ fn redo(
                 .map_err(|_| moved_on(format!("{name} moved since.")))?;
         }
         Change::Stashed {
-            message, untracked, ..
+            message,
+            untracked,
+            paths,
+            ..
         } => {
-            stash_push(git, repository, message, *untracked, cancel)
+            let named: Vec<&BStr> = paths.iter().map(|path| path.as_bstr()).collect();
+            stash_push(git, repository, (message, *untracked), &named, cancel)
                 .map_err(|error| failed(&error))?;
             let made = latest_stash(git, repository, cancel)?
                 .ok_or_else(|| moved_on("There was nothing to stash."))?;
@@ -469,6 +474,7 @@ fn redo(
                 id: made.id,
                 message: message.clone(),
                 untracked: *untracked,
+                paths: paths.clone(),
             });
         }
         Change::StashDropped { id, .. } => {
@@ -652,6 +658,7 @@ pub(crate) fn noted(
                     id: made.id,
                     message: "Before switching".to_owned(),
                     untracked: true,
+                    paths: Vec::new(),
                 });
             }
             match to {
@@ -691,6 +698,7 @@ pub(crate) fn noted(
                     id: made.id,
                     message: "Before pulling".to_owned(),
                     untracked: true,
+                    paths: Vec::new(),
                 });
             }
             // A soft or mixed reset is taken back the same way (its changes are uncommitted
@@ -801,12 +809,17 @@ fn noted_ref(
                 was: before.tag?,
             },
         ),
-        Task::Stash { message, untracked } => (
+        Task::Stash {
+            message,
+            untracked,
+            paths,
+        } => (
             "stashing the changes".to_owned(),
             Change::Stashed {
                 id: latest()?.id,
                 message: message.clone(),
                 untracked: *untracked,
+                paths: paths.clone(),
             },
         ),
         Task::DropStash(stash) => (

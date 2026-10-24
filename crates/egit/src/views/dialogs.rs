@@ -98,8 +98,13 @@ pub(crate) enum Dialog {
         paths: Vec<BString>,
         untracked: bool,
     },
-    /// The work tree's changes to stash: a message, and whether untracked files go too.
-    Stash { message: String, untracked: bool },
+    /// The work tree's changes to stash: a message, and whether untracked files go too; or
+    /// only those at some paths (untracked ones among them go too).
+    Stash {
+        message: String,
+        untracked: bool,
+        paths: Vec<BString>,
+    },
     /// Whether to drop a stash.
     DropStash(Stash),
     /// Whether to throw whole files' changes not staged away (untracked files deleted).
@@ -235,7 +240,11 @@ fn ask(ui: &mut Ui, dialog: &mut Dialog, pane: &TaskPane<'_>) -> Option<Answer> 
             paths,
             untracked,
         } => pull_stashing(ui, *mode, paths, *untracked),
-        Dialog::Stash { message, untracked } => stash(ui, message, untracked),
+        Dialog::Stash {
+            message,
+            untracked,
+            paths,
+        } => stash(ui, message, untracked, paths),
         Dialog::DropStash(stash) => confirm_danger(
             ui,
             &format!("Drop stash@{{{}}}?", stash.index),
@@ -984,6 +993,29 @@ fn pull_stashing(
     )
 }
 
+/// A path by name, or how many files: "notes.txt", "3 files".
+fn files_words(paths: &[BString]) -> String {
+    match paths {
+        [one] => one.to_str_lossy().into_owned(),
+        _ => format!(
+            "{} files",
+            crate::format::count(u64::try_from(paths.len()).unwrap_or(u64::MAX))
+        ),
+    }
+}
+
+impl Dialog {
+    /// Stashing the work tree's changes (every one, untracked files too, until unticked), or
+    /// only those at `paths`.
+    pub(super) const fn stash(paths: Vec<BString>) -> Self {
+        Self::Stash {
+            message: String::new(),
+            untracked: true,
+            paths,
+        }
+    }
+}
+
 /// Up to five paths by name, and how many more.
 pub(super) fn named_paths(paths: &[BString]) -> String {
     const NAMED: usize = 5;
@@ -998,16 +1030,40 @@ pub(super) fn named_paths(paths: &[BString]) -> String {
     named.join(", ")
 }
 
-/// The work tree's changes to stash: a message, and whether untracked files go too.
-fn stash(ui: &mut Ui, message: &mut String, untracked: &mut bool) -> Option<Answer> {
-    title(ui, "Stash your changes");
+/// The work tree's changes to stash: a message, and whether untracked files go too; or the
+/// changes at some paths, named.
+fn stash(
+    ui: &mut Ui,
+    message: &mut String,
+    untracked: &mut bool,
+    paths: &[BString],
+) -> Option<Answer> {
+    if paths.is_empty() {
+        title(ui, "Stash your changes");
+    } else {
+        title(ui, &format!("Stash the changes to {}", files_words(paths)));
+        let said = if paths.len() == 1 {
+            "Only its changes go into the stash, staged or not; the other changes stay.".to_owned()
+        } else {
+            format!(
+                "Only these go into the stash, whether staged, not staged, or not tracked: \
+                 {}. The other changes stay.",
+                named_paths(paths)
+            )
+        };
+        ui.add(egui::Label::new(muted(ui, said)).wrap());
+        ui.add_space(4.0);
+    }
     let entered = name_field(ui, "Message (optional)", message);
-    ui.add_space(4.0);
-    crate::widgets::checkbox(ui, untracked, "Files git doesn't track too");
+    if paths.is_empty() {
+        ui.add_space(4.0);
+        crate::widgets::checkbox(ui, untracked, "Files git doesn't track too");
+    }
     ui.add_space(12.0);
     let go = || Task::Stash {
         message: message.trim().to_owned(),
         untracked: *untracked,
+        paths: paths.to_vec(),
     };
     if entered {
         return Some(Answer::Run(go()));

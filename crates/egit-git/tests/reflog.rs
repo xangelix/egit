@@ -177,7 +177,7 @@ fn a_dropped_stash_is_stored_again() {
     let repository = open(&sandbox, &repo);
     let cancel = CancelToken::new();
     std::fs::write(repo.join("f"), "changed\n").unwrap();
-    assert!(stash_push(sandbox.git(), &repository, "Work", false, &cancel).unwrap());
+    assert!(stash_push(sandbox.git(), &repository, ("Work", false), &[], &cancel).unwrap());
     let stash = stashes(sandbox.git(), &repository, &cancel)
         .unwrap()
         .remove(0);
