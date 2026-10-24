@@ -137,8 +137,8 @@ pub(super) struct FileView {
     /// The status a work tree's file was last read for.
     status_seen: Option<Arc<Status>>,
     shown: Shown,
-    /// Whether the diff shows the whole file, not just what changed and a little around it.
-    whole: bool,
+    /// How its diff is read: whole or not, whitespace counted or not.
+    reading: Reading,
     /// Whether the diff's sides are shown side by side.
     split: bool,
     /// Whether a Git LFS pointer's own changes are shown, rather than what it stands for.
@@ -169,6 +169,16 @@ pub(super) struct FileView {
     pub(super) wanted: Option<FileWanted>,
     /// A dialog its bar asked for: whether to discard the file.
     pub(super) asked: Option<Dialog>,
+}
+
+/// How a file view's diff is read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Reading {
+    /// The whole file, not just what changed and a little around it.
+    whole: bool,
+    /// Lines differing only in whitespace counted as the same (no lines are staged from
+    /// such a diff: it isn't the file's).
+    ignore_space: bool,
 }
 
 /// Another way of looking at a file, asked from its bar.
@@ -219,7 +229,7 @@ impl FileView {
             Shown::Preview if !is_markdown(source.path()) => Shown::Diff,
             shown => shown,
         };
-        let whole = previous.is_some_and(|open| open.whole);
+        let reading = previous.map(|open| open.reading).unwrap_or_default();
         let split = previous.map_or(preferred.files.split_diffs, |open| open.split);
         let mut diff_grid = TextGrid::new(("diff", shared.id));
         let mut sides_grid = TextGrid::new(("sides", shared.id));
@@ -231,7 +241,7 @@ impl FileView {
             source,
             status_seen: None,
             shown,
-            whole,
+            reading,
             split,
             pointer: false,
             diff: Bind::new(true),
@@ -272,7 +282,8 @@ impl FileView {
             self.sides = Bind::new(true);
         }
         let options = DiffOptions {
-            context: if self.whole { WHOLE_FILE } else { 3 },
+            context: if self.reading.whole { WHOLE_FILE } else { 3 },
+            ignore_whitespace: self.reading.ignore_space,
             ..DiffOptions::default()
         };
         let (git, repository, cancel) = (
@@ -724,7 +735,14 @@ fn shown_controls(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) {
                 &mut file.split,
                 &[(false, "Unified"), (true, "Side by side")],
             );
-            if widgets::checkbox(ui, &mut file.whole, "Whole file").changed() {
+            if widgets::checkbox(ui, &mut file.reading.whole, "Whole file").changed() {
+                file.read_diff(shared);
+            }
+            if widgets::checkbox(ui, &mut file.reading.ignore_space, "Ignore whitespace")
+                .on_hover_text("Lines that differ only in spaces and tabs count as the same")
+                .changed()
+            {
+                file.diff_grid.clear_selection();
                 file.read_diff(shared);
             }
         }
@@ -868,7 +886,9 @@ fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut
                     file.asked = Some(Dialog::Discard(Discard::Files { tracked, untracked }));
                 }
             }
-            let hint = if file.split && file.shown == Shown::Diff {
+            let hint = if file.reading.ignore_space && file.shown == Shown::Diff {
+                "Lines are picked with whitespace shown (Ignore whitespace off).".to_owned()
+            } else if file.split && file.shown == Shown::Diff {
                 "Lines are picked in the unified diff (side by side off).".to_owned()
             } else if !has_lines && discards {
                 "Select lines in the diff to stage or discard only those.".to_owned()
@@ -925,7 +945,7 @@ fn discard_lines(
 /// The lines of the shown diff the selection picks (with `hunks`, all those of the hunks it
 /// reaches into): its diff, and which of its lines; `None` when it picks no change.
 fn picked(file: &mut FileView, hunks: bool) -> Option<(Arc<DiffDocument>, Vec<bool>)> {
-    if file.shown != Shown::Diff || file.split {
+    if file.shown != Shown::Diff || file.split || file.reading.ignore_space {
         return None;
     }
     let (_, lines) = file.diff_grid.selected_lines()?;
@@ -1549,6 +1569,9 @@ fn show_diff(
         }
         Some(Ok(diff)) if diff.changed() == (0, 0) => {
             let text = match work {
+                _ if file.reading.ignore_space => {
+                    "Nothing but whitespace changed (Ignore whitespace is on)."
+                }
                 Some(Uncommitted::Staged) => "Nothing staged in the file's text.",
                 Some(_) => "Nothing left to stage in the file's text.",
                 None => "Nothing changed in the file's text (only its mode, say).",
@@ -1621,7 +1644,7 @@ fn lines_menu(
         }
     }
     let mut asked = None;
-    let grid = &file.diff_grid;
+    let grid = (&file.diff_grid, file.reading.ignore_space);
     response.context_menu(|ui| {
         asked = lines_menu_items(ui, shared, (work, diff), grid);
     });
@@ -1640,15 +1663,20 @@ fn lines_menu_items(
     ui: &mut Ui,
     shared: &Shared<'_>,
     (work, diff): (&WorkFile, &Arc<DiffDocument>),
-    grid: &TextGrid,
+    (grid, ignoring): (&TextGrid, bool),
 ) -> Option<LinesAsked> {
     use super::actions::{danger_item, item};
+    // A diff ignoring whitespace isn't the file's: none of its lines are moved.
     let picked = |hunks: bool| {
-        let (_, lines) = grid.selected_lines()?;
+        let (_, lines) = grid.selected_lines().filter(|_| !ignoring)?;
         let picked = diff.changes_in(lines, hunks);
         picked.contains(&true).then(|| (Arc::clone(diff), picked))
     };
-    let none = Err("No changed line is selected");
+    let none = if ignoring {
+        Err("Whitespace is ignored: turn that off to pick lines")
+    } else {
+        Err("No changed line is selected")
+    };
     let allowed = |picked: &Option<_>| if picked.is_some() { Ok(()) } else { none };
     let (lines, hunks) = (picked(false), picked(true));
     let mut asked = None;

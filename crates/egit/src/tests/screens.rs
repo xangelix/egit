@@ -2300,6 +2300,41 @@ fn whole_file_shows_all_of_the_file_and_back() {
 }
 
 #[test]
+fn whitespace_is_ignored_in_a_diff_when_asked() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(&repo, "notes.txt", "a\nb\nc\n", "Write notes")
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "notes.txt", "a\n  b\nc\n", "Indent a note")
+        .unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness
+        .get_by_role_and_label(Role::Button, "Indent a note")
+        .click();
+    settle(&mut harness, "the commit's details", |app| {
+        app.state.repos[0].history_view.details_shown()
+    });
+    harness
+        .get_by_role_and_label(Role::Button, "notes.txt")
+        .click();
+    let shown = |lines| {
+        move |app: &mut EgitApp| app.state.repos[0].history_view.diff_lines() == Some(lines)
+    };
+    // A hunk header, a line either side, and the line removed and added.
+    settle(&mut harness, "the diff", shown(5));
+    harness.get_by_label("Ignore whitespace").click();
+    settle(&mut harness, "nothing but whitespace changed", shown(0));
+    render(&mut harness, "diff-ignoring-whitespace");
+    harness.get_by_label("Ignore whitespace").click();
+    settle(&mut harness, "the diff again", shown(5));
+}
+
+#[test]
 fn a_changed_file_opens_in_place_of_the_history() {
     let sandbox = Sandbox::new().unwrap();
     let mut harness = parser_change(&sandbox);

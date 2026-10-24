@@ -373,8 +373,8 @@ writes paths), never `OsStrExt`.
   - `diff.rs` — `file_diff`: one file's patch from `diff-tree -p` (plumbing, so no colour,
     prefix, external-diff, or textconv setting applies; `--no-textconv --full-index
     --src-prefix=a/ --dst-prefix=b/`; `GIT_LITERAL_PATHSPECS`; a rename's both paths;
-    `DiffOptions`: context (`WHOLE_FILE` for all of it) and the user's `diff.algorithm`, which
-    plumbing doesn't read). `uncommitted_diff`: a file's `Uncommitted` changes from `git
+    `DiffOptions`: context (`WHOLE_FILE` for all of it), the user's `diff.algorithm`, which
+    plumbing doesn't read, and `ignore_whitespace`, `--ignore-all-space`). `uncommitted_diff`: a file's `Uncommitted` changes from `git
     diff` (`Unstaged`; `Staged`, `--cached -M`, before the first commit too; `Untracked`,
     `--no-index` against `/dev/null`, which exits 1 when they differ), with every setting that
     changes the patch pinned (`--no-relative`, prefixes, colour, external diff, textconv); the
@@ -1716,7 +1716,8 @@ writes paths), never `OsStrExt`.
     change and Next change, Alt+↑ Alt+↓; or "Nothing changed in how it reads"), or the side
     there is; `markdown.rs`), Unified or Side by side, as segmented choices):
     its diff against the first parent (unified or side by side, with
-    "Whole file" for all of its context), or the file as the commit left it (as it was, if
+    "Whole file" for all of its context and "Ignore whitespace", `Reading`: no lines picked from
+    such a diff, as it isn't the file's), or the file as the commit left it (as it was, if
     deleted; read the first time it is asked for, `read_file`), or a placeholder for binary
     files, LFS pointers, submodules, and files over 256 MiB; an image (`pictures::is_image`:
     PNG, JPEG, GIF, WebP, BMP, ICO) shows its sides instead: before and after side by side (or

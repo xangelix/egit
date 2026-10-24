@@ -818,6 +818,23 @@ pub(super) const TOPICS: &[Topic] = &[
         )],
     },
     Topic {
+        id: "ignore-whitespace",
+        group: Group::Changes,
+        title: "Ignore whitespace",
+        on: &["Ignore whitespace"],
+        what: "Reads the diff again counting lines that differ only in spaces and tabs as the \
+               same, so a change re-indented or reformatted shows what really changed. Only \
+               how it is shown changes: the commit, or the file, stays as it is.",
+        git: "git diff --ignore-all-space",
+        cases: &[
+            (
+                "Can't stage lines?",
+                "A diff ignoring whitespace isn't the file's: turn it off to pick lines, or stage the whole file.",
+            ),
+            ("Nothing left?", "The change was whitespace alone."),
+        ],
+    },
+    Topic {
         id: "wrap-lines",
         group: Group::Changes,
         title: "Wrap lines",

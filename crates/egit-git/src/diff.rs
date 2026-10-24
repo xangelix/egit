@@ -68,6 +68,9 @@ pub struct DiffOptions {
     /// The diff algorithm (`myers`, `minimal`, `patience`, `histogram`), when the user chose one
     /// (`diff.algorithm`, which plumbing doesn't read).
     pub algorithm: Option<String>,
+    /// Lines differing only in whitespace count as the same (`--ignore-all-space`): such a
+    /// diff can't be applied back, so lines are never staged from it.
+    pub ignore_whitespace: bool,
 }
 
 impl Default for DiffOptions {
@@ -76,6 +79,7 @@ impl Default for DiffOptions {
         Self {
             context: 3,
             algorithm: None,
+            ignore_whitespace: false,
         }
     }
 }
@@ -125,6 +129,9 @@ pub fn uncommitted_diff(
         .cancel_token(cancel);
     if let Some(algorithm) = &options.algorithm {
         command = command.arg(format!("--diff-algorithm={algorithm}"));
+    }
+    if options.ignore_whitespace {
+        command = command.arg("--ignore-all-space");
     }
     let paths = paths.iter().map(|path| path.to_os_str_lossy());
     match which {
@@ -191,6 +198,9 @@ pub fn file_diff(
         .cancel_token(cancel);
     if let Some(algorithm) = &options.algorithm {
         command = command.arg(format!("--diff-algorithm={algorithm}"));
+    }
+    if options.ignore_whitespace {
+        command = command.arg("--ignore-all-space");
     }
     command = match parent {
         Some(parent) => command.arg(parent.to_string()).arg(commit.to_string()),

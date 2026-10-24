@@ -215,6 +215,51 @@ fn paths_are_never_patterns() {
     );
 }
 
+#[test]
+fn whitespace_alone_is_left_out_when_asked() {
+    let sandbox = sandbox();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox
+        .commit_file(&repo, "f", "a\nb  c\nd\n", "Add")
+        .unwrap();
+    sandbox
+        .commit_file(&repo, "f", "a\n  b c\nD\n", "Indent")
+        .unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let options = DiffOptions {
+        context: 0,
+        ignore_whitespace: true,
+        ..DiffOptions::default()
+    };
+    let diff = file_diff(
+        sandbox.git(),
+        &repository,
+        rev(&sandbox, &repo, "HEAD"),
+        Some(rev(&sandbox, &repo, "HEAD^")),
+        &[BStr::new("f")],
+        &options,
+        &CancelToken::new(),
+    )
+    .unwrap();
+    // The hunk header names the line before as its context, as git does.
+    assert_eq!(
+        shown(&diff),
+        ["@ 0 0 @@ -3 +3 @@ b  c", "- 3 0 d", "+ 0 3 D"]
+    );
+    // The work tree's too, untracked or not.
+    std::fs::write(repo.join("f"), "a\n  b c\n D\n").unwrap();
+    let unstaged = uncommitted_diff(
+        sandbox.git(),
+        &repository,
+        &[BStr::new("f")],
+        Uncommitted::Unstaged,
+        &options,
+        &CancelToken::new(),
+    )
+    .unwrap();
+    assert!(unstaged.lines.is_empty(), "{:?}", shown(&unstaged));
+}
+
 /// The diff of the uncommitted changes `which` to `paths`.
 fn uncommitted(sandbox: &Sandbox, repo: &Path, paths: &[&str], which: Uncommitted) -> FileDiff {
     let repository = Repository::discover(sandbox.git(), repo).unwrap();
