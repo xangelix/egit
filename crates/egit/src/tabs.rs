@@ -50,6 +50,84 @@ pub(crate) fn show(tree: &mut Tree<Pane>, pane: Pane) {
     }
 }
 
+/// Adds `pane` to the set of tabs new tabs join, before the first tab `goes_after` names (else
+/// last); brought to the front where `front` asks, so long as Home is there (nothing else was
+/// chosen meanwhile). Nothing happens to a pane there already, but that.
+pub(crate) fn insert(
+    tree: &mut Tree<Pane>,
+    pane: Pane,
+    goes_after: impl Fn(Pane) -> bool,
+    front: bool,
+) {
+    let front = front && self::front(tree) == Some(Pane::Home);
+    if let Some(there) = tree.tiles.find_pane(&pane) {
+        if front {
+            tree.make_active(|id, _| id == there);
+        }
+        return;
+    }
+    let Some(tabs) = tabs_container(tree) else {
+        show(tree, pane);
+        return;
+    };
+    let added = tree.tiles.insert_pane(pane);
+    let at = match tree.tiles.get(tabs) {
+        Some(Tile::Container(Container::Tabs(container))) => {
+            container.children.iter().position(|child| {
+                tree.tiles
+                    .get_pane(child)
+                    .is_some_and(|other| goes_after(*other))
+            })
+        }
+        _ => None,
+    };
+    if let Some(Tile::Container(Container::Tabs(container))) = tree.tiles.get_mut(tabs) {
+        match at {
+            Some(at) => container.children.insert(at, added),
+            None => container.children.push(added),
+        }
+        if front {
+            container.set_active(added);
+        }
+    }
+}
+
+/// For a tab reopened from the last close at `place` among them (`places`: those reopened so
+/// far), the tabs it goes before: those reopened from later places, and those opened since
+/// (Profile, Preferences, a repository opened this run); never Home.
+pub(crate) fn after_restored(
+    places: &std::collections::HashMap<RepoId, usize>,
+    place: usize,
+) -> impl Fn(Pane) -> bool + '_ {
+    move |pane| match pane {
+        Pane::Repo(other) => places.get(&other).is_none_or(|other| *other > place),
+        Pane::Profile | Pane::Preferences => true,
+        Pane::Home => false,
+    }
+}
+
+/// Every pane, in the order the tabs show them (a split's from its first part on).
+pub(crate) fn in_order(tree: &Tree<Pane>) -> Vec<Pane> {
+    let mut panes = Vec::new();
+    let mut pending: Vec<TileId> = tree.root().into_iter().collect();
+    // Depth first, each container's children in their order.
+    while let Some(id) = pending.pop() {
+        match tree.tiles.get(id) {
+            Some(Tile::Pane(pane)) => panes.push(*pane),
+            Some(Tile::Container(container)) => {
+                // Popped from the end: the first child last in.
+                let start = pending.len();
+                pending.extend(container.children().copied());
+                if let Some(children) = pending.get_mut(start..) {
+                    children.reverse();
+                }
+            }
+            None => {}
+        }
+    }
+    panes
+}
+
 /// The pane in front: of those showing, the first repository's, else the first.
 pub(crate) fn front(tree: &Tree<Pane>) -> Option<Pane> {
     let shown: Vec<Pane> = tree
@@ -340,5 +418,69 @@ const fn palette(visuals: &egui::Visuals) -> Palette {
         Palette::DARK
     } else {
         Palette::LIGHT
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    /// The tabs' panes in order, as names: `H` Home, `P` Preferences, a repository its number.
+    fn names(tree: &Tree<Pane>) -> Vec<String> {
+        in_order(tree)
+            .into_iter()
+            .map(|pane| match pane {
+                Pane::Home => "H".to_owned(),
+                Pane::Profile => "Pr".to_owned(),
+                Pane::Preferences => "P".to_owned(),
+                Pane::Repo(id) => id.to_string(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reopened_tabs_take_their_places_whichever_lands_first() {
+        // Places 0..4 saved; repository ids 10.. stand for them, landing scrambled, with
+        // Preferences and a repository of this run (99) opened meanwhile.
+        for landing in [[3, 0, 2, 1], [0, 1, 2, 3], [3, 2, 1, 0], [1, 3, 0, 2]] {
+            let mut tree = initial();
+            let mut places = HashMap::new();
+            for (step, place) in landing.into_iter().enumerate() {
+                if step == 1 {
+                    show(&mut tree, Pane::Preferences);
+                    show(&mut tree, Pane::Repo(99));
+                    show(&mut tree, Pane::Home);
+                }
+                let id = 10 + RepoId::try_from(place).unwrap();
+                places.insert(id, place);
+                insert(
+                    &mut tree,
+                    Pane::Repo(id),
+                    after_restored(&places, place),
+                    place == 2,
+                );
+            }
+            assert_eq!(
+                names(&tree),
+                ["H", "10", "11", "12", "13", "P", "99"],
+                "{landing:?}"
+            );
+            // Home was in front when the one in front landed: it is now.
+            assert_eq!(front(&tree), Some(Pane::Repo(12)), "{landing:?}");
+        }
+    }
+
+    #[test]
+    fn the_one_in_front_takes_the_front_only_from_home() {
+        let mut tree = initial();
+        let mut places = HashMap::new();
+        show(&mut tree, Pane::Repo(99));
+        places.insert(10, 0);
+        insert(&mut tree, Pane::Repo(10), after_restored(&places, 0), true);
+        // Opened since and in front: it stays so.
+        assert_eq!(front(&tree), Some(Pane::Repo(99)));
+        assert_eq!(names(&tree), ["H", "10", "99"]);
     }
 }

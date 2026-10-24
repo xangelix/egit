@@ -29,6 +29,8 @@ pub(crate) struct Settings {
     pub(crate) recent: Vec<Recent>,
     /// The repositories open when egit last closed, in tab order.
     pub(crate) open: Vec<OpenTab>,
+    /// Which of `open` was in front then, if one was (none: Home, Profile, or Preferences).
+    pub(crate) front: Option<usize>,
     /// The folder the last clone went into (the next goes there too).
     pub(crate) clone_folder: Option<StoredPath>,
     /// How the user likes egit.

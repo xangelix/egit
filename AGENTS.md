@@ -1072,7 +1072,11 @@ writes paths), never `OsStrExt`.
     then discovery; `Action::Opened` carries the git with the
     repository, kept as `RepoTab::git` (every repository action runs with its tab's git:
     `with_repo`), and trusting (`safe.directory`) runs there too. The tabs open at the last
-    close (`Settings::open`, `OpenTab`: a path, or a host and a path) come back. Profile edits are `ConfigChange`s
+    close (`Settings::open`, `OpenTab`: a path, or a host and a path, kept in the order the tab
+    bar shows them, dragged about or not, `tabs::in_order`; `Settings::front`, the one in front)
+    come back in that order: opened at once, each lands when it may (one over ssh last) and takes
+    its own place among them, before any opened since (`Restored`, `tabs::insert`,
+    `after_restored`); the one in front again, unless another was chosen meanwhile. Profile edits are `ConfigChange`s
     (set or unset a key, add or remove one of its values; a key may be named at run time, as
     `egit.<host>.sshHost` is: a `Cow`) written under the user's
     `WriteLock`, then the user's and every repository's settings are read again. Web pages go

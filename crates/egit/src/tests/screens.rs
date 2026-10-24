@@ -2538,15 +2538,68 @@ fn shown_branch(app: &mut EgitApp) -> Option<String> {
     }
 }
 
+/// Settings kept in memory, as eframe keeps them on disk.
+#[derive(Default)]
+struct Kept(std::collections::HashMap<String, String>);
+
+impl eframe::Storage for Kept {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).cloned()
+    }
+
+    fn set_string(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+
+    fn remove_string(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+
+    fn flush(&mut self) {}
+}
+
+/// The work trees of the repositories' tabs, in the order the tabs show them, and the one in
+/// front's.
+fn tabs_shown(app: &EgitApp) -> (Vec<PathBuf>, Option<PathBuf>) {
+    let work_tree = |id| {
+        app.state
+            .repos
+            .iter()
+            .find(|repo| repo.id == id)
+            .map(|repo| repo.repository.work_tree().to_owned())
+    };
+    let shown = crate::tabs::in_order(&app.tabs)
+        .into_iter()
+        .filter_map(|pane| match pane {
+            crate::tabs::Pane::Repo(id) => work_tree(id),
+            _ => None,
+        })
+        .collect();
+    let front = match crate::tabs::front(&app.tabs) {
+        Some(crate::tabs::Pane::Repo(id)) => work_tree(id),
+        _ => None,
+    };
+    (shown, front)
+}
+
 #[test]
-fn the_tabs_open_at_the_last_close_come_back() {
+fn the_tabs_open_at_the_last_close_come_back_in_their_order() {
     let sandbox = Sandbox::new().unwrap();
-    let repo = sandbox.init("kept").unwrap();
+    let (one, two, three) = (
+        sandbox.init("one").unwrap(),
+        sandbox.init("two").unwrap(),
+        sandbox.init("three").unwrap(),
+    );
+    let tab = |path: &Path| crate::settings::OpenTab::Here(path.into());
+    // Their order isn't the order they were made or are named in; the second was in front.
     let settings = Settings {
         open: vec![
-            crate::settings::OpenTab::Here(sandbox.path("deleted since").as_path().into()),
-            crate::settings::OpenTab::Here(repo.as_path().into()),
+            tab(&three),
+            tab(&sandbox.path("deleted since")),
+            tab(&one),
+            tab(&two),
         ],
+        front: Some(2),
         ..Settings::default()
     };
     let mut harness = harness_with_settings(
@@ -2555,11 +2608,41 @@ fn the_tabs_open_at_the_last_close_come_back() {
         egui::Theme::Dark,
         settings,
     );
-    settle(&mut harness, "the repository", repository_shown);
-    let app = harness.state();
-    assert_eq!(app.state.repos.len(), 1);
-    assert_eq!(app.state.repos[0].repository.work_tree(), repo);
-    assert_eq!(app.state.home.problem, None);
+    settle(&mut harness, "the repositories", |app| {
+        app.state.repos.len() == 3
+    });
+    harness.run_steps(2);
+    assert_eq!(
+        tabs_shown(harness.state()),
+        (
+            vec![three.clone(), one.clone(), two.clone()],
+            Some(one.clone())
+        )
+    );
+    assert_eq!(harness.state().state.home.problem, None);
+
+    // Kept as the tabs show them: dragged about (the last first), another in front.
+    let mut kept = Kept::default();
+    {
+        let app = harness.state_mut();
+        let first = app.state.repos[0].id;
+        let tabs = &mut app.tabs;
+        let root = tabs.root().unwrap();
+        if let Some(egui_tiles::Tile::Container(egui_tiles::Container::Tabs(container))) =
+            tabs.tiles.get_mut(root)
+        {
+            let last = container.children.pop().unwrap();
+            container.children.insert(1, last);
+        }
+        crate::tabs::show(tabs, crate::tabs::Pane::Repo(first));
+    }
+    eframe::App::save(harness.state_mut(), &mut kept);
+    let saved = Settings::load(Some(&kept));
+    let paths: Vec<PathBuf> = saved.open.iter().map(|tab| tab.location().path).collect();
+    assert_eq!(paths, [two, three, one]);
+    // The one in front (the first to land, whichever it was) kept as in front.
+    let in_front = saved.front.and_then(|at| paths.get(at)).cloned();
+    assert_eq!(in_front.as_ref(), tabs_shown(harness.state()).1.as_ref());
 }
 
 /// A commit's name in `repo`.

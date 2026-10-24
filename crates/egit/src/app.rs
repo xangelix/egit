@@ -68,8 +68,11 @@ pub(crate) struct AppState {
     opening: Vec<Opening>,
     /// Watches the files the user's configuration comes from (and which they are).
     user_watcher: Option<(Vec<PathBuf>, Watching)>,
-    /// Paths to open once git is ready.
-    waiting: Vec<Location>,
+    /// Paths to open once git is ready (and, for a tab open at the last close, where it goes).
+    waiting: Vec<(Location, Option<Restored>)>,
+    /// The places of the tabs reopened from the last close, among them: each goes back to its
+    /// own, whichever lands first.
+    restored: std::collections::HashMap<RepoId, usize>,
     pub(crate) actions: Vec<Action>,
     next_repo: RepoId,
     /// System fonts for characters egui's fonts lack.
@@ -98,6 +101,16 @@ pub(crate) struct AppState {
 /// there, reached first).
 struct Opening {
     job: Bind<(Repository, Git), OpenProblem>,
+    /// Where it goes back, when it was open at the last close.
+    restored: Option<Restored>,
+}
+
+/// A tab open when egit last closed, opened again: its place among those tabs, and whether it
+/// was in front. They open at once, landing in any order; each takes its own place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Restored {
+    place: usize,
+    front: bool,
 }
 
 /// What is done to a folder that didn't open, before it is opened again.
@@ -175,8 +188,9 @@ pub(crate) enum Action {
     /// Open the repository around a path on the computer repository tab `id`'s is on (one of
     /// its worktrees, a submodule).
     OpenBeside(RepoId, PathBuf),
-    /// A repository was found (with the git it is read with): show it.
-    Opened(Box<(Repository, Git)>),
+    /// A repository was found (with the git it is read with, and where its tab goes back when
+    /// it was open at the last close): show it.
+    Opened(Box<(Repository, Git, Option<Restored>)>),
     /// Add a path to `safe.directory` (on its computer), then open it.
     Trust(Location),
     /// Make a folder a repository (`git init`, on its computer), then open it.
@@ -333,14 +347,18 @@ impl EgitApp {
 
         // Repositories open when egit last closed come back (not those since removed), then
         // those asked for now.
-        let mut waiting: Vec<Location> = settings
+        let mut waiting: Vec<(Location, Option<Restored>)> = settings
             .open
             .iter()
-            .map(OpenTab::location)
+            .enumerate()
+            .map(|(place, tab)| {
+                let front = settings.front == Some(place);
+                (tab.location(), Some(Restored { place, front }))
+            })
             // Here, those still there; there, found out when reached.
-            .filter(|location| location.host.is_some() || location.path.is_dir())
+            .filter(|(location, _)| location.host.is_some() || location.path.is_dir())
             .collect();
-        waiting.extend(paths.into_iter().map(Location::here));
+        waiting.extend(paths.into_iter().map(|path| (Location::here(path), None)));
         let home_dir_for_agents = home_dir.clone();
         let mut state = AppState {
             git: Bind::new(true),
@@ -368,6 +386,7 @@ impl EgitApp {
             opening: Vec::new(),
             user_watcher: None,
             waiting,
+            restored: std::collections::HashMap::new(),
             actions: Vec::new(),
             next_repo: 0,
             focused: true,
@@ -464,8 +483,8 @@ impl EgitApp {
                 state.open(Location { host, path });
             }
             Action::Opened(opened) => {
-                let (repository, git) = *opened;
-                self.show_repository(ctx, repository, &git);
+                let (repository, git, restored) = *opened;
+                self.show_repository(ctx, (repository, &git), restored);
             }
             Action::Trust(location) => state.prepare(location, Prepare::Trust),
             Action::Init(location) => state.prepare(location, Prepare::Init),
@@ -493,7 +512,7 @@ impl EgitApp {
                     repo.tasks.cancel();
                 }
             }
-            Action::Closed(id) => state.repos.retain(|repo| repo.id != id),
+            Action::Closed(id) => state.closed(id),
             Action::SetTheme(choice) => {
                 state.settings.theme = choice;
                 theme::apply(ctx, choice);
@@ -552,7 +571,12 @@ impl EgitApp {
 
     /// Shows a repository found by discovery, read with `git` (here, or on the computer it is
     /// on): its tab, which is new unless it is open already.
-    fn show_repository(&mut self, ctx: &egui::Context, repository: Repository, git: &Git) {
+    fn show_repository(
+        &mut self,
+        ctx: &egui::Context,
+        (repository, git): (Repository, &Git),
+        restored: Option<Restored>,
+    ) {
         let state = &mut self.state;
         state.home.problem = None;
         let location = Location {
@@ -563,7 +587,9 @@ impl EgitApp {
         if let Some(open) = state.repos.iter().find(|repo| {
             repo.repository.work_tree() == repository.work_tree() && repo.git.host() == git.host()
         }) {
-            tabs::show(&mut self.tabs, Pane::Repo(open.id));
+            if restored.is_none() {
+                tabs::show(&mut self.tabs, Pane::Repo(open.id));
+            }
             return;
         }
         let id = state.next_repo;
@@ -574,7 +600,15 @@ impl EgitApp {
         let mut tab = RepoTab::new(id, repository, (git, here), run, ctx);
         tab.prefer(state.settings.preferences, Instant::now());
         state.repos.push(tab);
-        tabs::show(&mut self.tabs, Pane::Repo(id));
+        let Some(Restored { place, front }) = restored else {
+            tabs::show(&mut self.tabs, Pane::Repo(id));
+            return;
+        };
+        // Back in its place among the tabs reopened, before those opened since; in front if
+        // it was, unless another was brought there meanwhile (`tabs::insert`).
+        state.restored.insert(id, place);
+        let goes_after = tabs::after_restored(&state.restored, place);
+        tabs::insert(&mut self.tabs, Pane::Repo(id), goes_after, front);
     }
 }
 
@@ -744,8 +778,9 @@ impl AppState {
             if self.user_config.is_idle() {
                 self.refresh_user_config(&git);
             }
-            self.actions
-                .extend(self.waiting.drain(..).map(Action::Open));
+            for (location, restored) in std::mem::take(&mut self.waiting) {
+                self.open_as(location, restored);
+            }
             self.follow_changes(ctx, &git);
         }
 
@@ -754,12 +789,15 @@ impl AppState {
             let Some(result) = opening.job.take() else {
                 return true;
             };
-            finished.push(result);
+            finished.push((result, opening.restored));
             false
         });
-        for result in finished {
+        for (result, restored) in finished {
             match result {
-                Ok(opened) => self.actions.push(Action::Opened(Box::new(opened))),
+                Ok((repository, git)) => {
+                    let opened = (repository, git, restored);
+                    self.actions.push(Action::Opened(Box::new(opened)));
+                }
                 Err(problem) => self.home.problem = Some(problem),
             }
         }
@@ -968,9 +1006,15 @@ impl AppState {
     }
 
     fn open(&mut self, location: Location) {
+        self.open_as(location, None);
+    }
+
+    /// Opens the repository around `location` (a tab open at the last close where `restored`
+    /// says, which goes back to its place).
+    fn open_as(&mut self, location: Location, restored: Option<Restored>) {
         self.home.problem = None;
         let Some(git) = self.git() else {
-            self.waiting.push(location);
+            self.waiting.push((location, restored));
             return;
         };
         let Location { host, path } = location;
@@ -995,7 +1039,7 @@ impl AppState {
                 .map(|repository| (repository, git))
                 .map_err(|error| OpenProblem::from_discovery(&error, host.as_deref()))
         }));
-        self.opening.push(Opening { job });
+        self.opening.push(Opening { job, restored });
     }
 
     /// How git on another computer (`destination`, as ssh reaches it) is run: as git here is,
@@ -1009,6 +1053,12 @@ impl AppState {
             control: self.ssh.control.clone(),
         });
         options
+    }
+
+    /// Forgets the repository tab `id`, closed.
+    fn closed(&mut self, id: RepoId) {
+        self.repos.retain(|repo| repo.id != id);
+        self.restored.remove(&id);
     }
 
     /// Shows a work tree's file's changes in its repository's tab, or a file outside the work
@@ -1131,9 +1181,25 @@ impl eframe::App for EgitApp {
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        self.state.settings.open = self
-            .state
-            .repos
+        // In the order the tabs show them (dragged about, or not), and which was in front.
+        let shown: Vec<RepoId> = tabs::in_order(&self.tabs)
+            .into_iter()
+            .filter_map(|pane| match pane {
+                Pane::Repo(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let state = &mut self.state;
+        let mut open: Vec<&RepoTab> = shown
+            .iter()
+            .filter_map(|id| state.repos.iter().find(|repo| repo.id == *id))
+            .collect();
+        open.extend(state.repos.iter().filter(|repo| !shown.contains(&repo.id)));
+        let front = match tabs::front(&self.tabs) {
+            Some(Pane::Repo(id)) => open.iter().position(|repo| repo.id == id),
+            _ => None,
+        };
+        state.settings.open = open
             .iter()
             .map(|repo| {
                 OpenTab::from(&Location {
@@ -1142,7 +1208,8 @@ impl eframe::App for EgitApp {
                 })
             })
             .collect();
-        self.state.settings.save(storage);
+        state.settings.front = front;
+        state.settings.save(storage);
     }
 
     fn on_exit(&mut self) {
