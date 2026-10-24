@@ -59,7 +59,7 @@ use crate::history::{
 use crate::preferences::Preferences;
 use crate::problem::Problem;
 use crate::repo::{RepoId, RepoPanel};
-use crate::tables::ChangesTable;
+use crate::tables::{ChangeAsk, ChangesTable};
 use crate::tasks::{Task, Tasks};
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
@@ -3240,6 +3240,7 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
             view.tool = Some(Tool::Rebase(RebaseView::new(shared, from, reword)));
         }
         Ask::Open(url) => actions.push(Action::OpenUrl(url)),
+        Ask::Reveal(path, how) => actions.push(Action::Reveal(path, how)),
         Ask::Dropped { dragged, onto, at } => view.dropped = Some(Dropped { dragged, onto, at }),
         Ask::Preferences(preferences) => actions.push(Action::SetPreferences(preferences)),
         Ask::Scope(scope) => actions.push(Action::Scope(shared.id, scope)),
@@ -4542,13 +4543,13 @@ fn compare_details(
         view.compare = Some(Comparison::new(shared, &history.objects, to, from));
         return true;
     }
-    compared_files(ui, shared, view);
+    compared_files(ui, shared, &history.objects, view);
     true
 }
 
 /// A comparison's changed files, once read, each opening its diff from one commit to the
 /// other.
-fn compared_files(ui: &mut Ui, shared: &Shared<'_>, view: &mut HistoryView) {
+fn compared_files(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, view: &mut HistoryView) {
     let Some(compare) = view.compare.as_mut() else {
         return;
     };
@@ -4574,11 +4575,13 @@ fn compared_files(ui: &mut Ui, shared: &Shared<'_>, view: &mut HistoryView) {
     );
     ui.add_space(4.0);
     let counts = counts.and_then(Result::ok);
-    let picked = widgets::list_box(ui, |ui| {
+    let asked = widgets::list_box(ui, |ui| {
         let height = ui.available_height();
-        compare.changes.show(ui, &shown, counts.as_deref(), height)
+        compare
+            .changes
+            .show(ui, &shown, counts.as_deref(), (height, shared.here()))
     });
-    if let Some(index) = picked
+    if let Some(index) = change_asked(shared, objects, view, &shown, asked)
         && let Some(change) = shown.changes.get(index)
     {
         view.file = Some(FileView::open(
@@ -4672,11 +4675,12 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
     );
     ui.add_space(4.0);
     let counts = counts.and_then(Result::ok);
-    let picked = widgets::list_box(ui, |ui| {
+    let asked = widgets::list_box(ui, |ui| {
         let height = ui.available_height();
-        view.changes.show(ui, &shown, counts.as_deref(), height)
+        view.changes
+            .show(ui, &shown, counts.as_deref(), (height, shared.here()))
     });
-    if let Some(index) = picked
+    if let Some(index) = change_asked(shared, &history.objects, view, &shown, asked)
         && let Some(change) = shown.changes.get(index)
     {
         match &mut view.tool {
@@ -4698,6 +4702,45 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
         }
         view.select(&history.shown, row, Some(Align::Center));
     }
+}
+
+/// Carries out what a changed file's row asked of `shown`'s files (a commit's, or a
+/// comparison's): its blame or history in the commit table's place, the work tree's file
+/// revealed; returns the file whose changes are to be shown, for its caller to open.
+fn change_asked(
+    shared: &Shared<'_>,
+    objects: &Objects,
+    view: &mut HistoryView,
+    shown: &CommitDetails,
+    asked: Option<ChangeAsk>,
+) -> Option<usize> {
+    let (ChangeAsk::Show(entry)
+    | ChangeAsk::Blame(entry)
+    | ChangeAsk::History(entry)
+    | ChangeAsk::Reveal(entry, _)) = asked?;
+    let change = shown.changes.get(entry)?;
+    match asked? {
+        ChangeAsk::Show(entry) => return Some(entry),
+        ChangeAsk::Blame(_) => {
+            // A file the commit deleted is blamed as it was before.
+            let at = if change.kind == egit_git::ChangeKind::Deleted {
+                shown.commit.parents.first().copied()
+            } else {
+                Some(shown.id)
+            };
+            let path = change.path.clone();
+            view.open_tool(shared, objects, FileWanted::Blame { at, path });
+        }
+        ChangeAsk::History(_) => {
+            view.open_tool(shared, objects, FileWanted::History(change.path.clone()));
+        }
+        ChangeAsk::Reveal(_, how) => {
+            let work_tree = shared.repository.work_tree();
+            let path = crate::desktop::in_work_tree(work_tree, change.path.as_bstr());
+            view.asked = Some(Ask::Reveal(path, how));
+        }
+    }
+    None
 }
 
 /// The details of the commit `id`, asked for when they aren't yet; until they are read (or

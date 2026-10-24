@@ -40,6 +40,7 @@ mod work;
 
 pub(crate) use output::terminal_color;
 pub(crate) use tasks::{OUTCOME_LASTS, set_outcome_lasts};
+pub(crate) use work::ELSEWHERE;
 
 use egui::{ScrollArea, Ui};
 

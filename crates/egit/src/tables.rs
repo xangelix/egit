@@ -22,7 +22,7 @@ use crate::history::{ChangeCounts, CommitDetails};
 use crate::preferences::Preferences;
 use crate::settings::Recent;
 use crate::theme::Palette;
-use crate::tree_table::{TreeRow, TreeSource, TreeTable};
+use crate::tree_table::{TreeMenu, TreeRow, TreeSource, TreeTable};
 use crate::widgets::scope_name;
 
 /// A table of a configuration snapshot: its state starts over when the snapshot is replaced
@@ -419,6 +419,22 @@ pub(crate) struct ChangesTable {
     state: TableState,
     /// The same files as a tree of their folders, when the preferences ask for one.
     tree: TreeTable<CommitDetails>,
+    /// A row right-clicked: its menu, while open, and whether it opens this frame.
+    menu: Option<TreeMenu>,
+    open_menu: bool,
+}
+
+/// What a changed file's row asks: its entry, and what of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ChangeAsk {
+    /// Its changes, in the file view (a click).
+    Show(usize),
+    /// Its blame as the commit left it (or, deleted, as it was before).
+    Blame(usize),
+    /// The commits that changed it.
+    History(usize),
+    /// The work tree's file (as it is now), opened in its app or shown in its folder.
+    Reveal(usize, crate::desktop::Reveal),
 }
 
 impl TreeSource for CommitDetails {
@@ -448,36 +464,55 @@ impl ChangesTable {
             shown: None,
             state,
             tree,
+            menu: None,
+            open_menu: false,
         }
     }
 
     /// Shows the files `details`' commit changed, and the lines each gained and lost once
-    /// `counts` has them, `height` tall at most; returns the one clicked, if any.
+    /// `counts` has them, `height` tall at most; returns what a click or a row's menu asked
+    /// (the work tree's file revealed only where it is `here`).
     pub(crate) fn show(
+        &mut self,
+        ui: &mut Ui,
+        details: &Arc<CommitDetails>,
+        counts: Option<&ChangeCounts>,
+        (height, here): (f32, bool),
+    ) -> Option<ChangeAsk> {
+        if self.shown != Some(details.id) {
+            self.state = TableState::new(self.id.as_str(), details.changes.len());
+            self.shown = Some(details.id);
+            self.menu = None;
+        }
+        let clicked = self.rows(ui, details, counts, height);
+        let asked = self.row_menu(ui, details, here);
+        clicked.map(ChangeAsk::Show).or(asked)
+    }
+
+    /// The rows, as a list or a tree; returns the one clicked, and notes one right-clicked.
+    fn rows(
         &mut self,
         ui: &mut Ui,
         details: &Arc<CommitDetails>,
         counts: Option<&ChangeCounts>,
         height: f32,
     ) -> Option<usize> {
-        if self.shown != Some(details.id) {
-            self.state = TableState::new(self.id.as_str(), details.changes.len());
-            self.shown = Some(details.id);
-        }
         let counts = counts
             .filter(|counts| counts.id == details.id)
             .map(|counts| counts.files.as_slice());
         if Preferences::of(ui.ctx()).files.lists.is_tree() {
             let palette = Palette::of(ui.ctx());
-            return self
-                .tree
-                .show(ui, details, height, |ui, _, row, _| {
-                    if let TreeRow::File(entry) = row {
-                        lines_ui(ui, lines_of(counts, entry), palette);
-                    }
-                    None::<()>
-                })
-                .opened;
+            let shown = self.tree.show(ui, details, height, |ui, _, row, _| {
+                if let TreeRow::File(entry) = row {
+                    lines_ui(ui, lines_of(counts, entry), palette);
+                }
+                None::<()>
+            });
+            if let Some(menu) = shown.menu {
+                self.menu = Some(menu);
+                self.open_menu = true;
+            }
+            return shown.opened;
         }
         let provider = ChangeRows {
             changes: &details.changes,
@@ -496,11 +531,23 @@ impl ChangesTable {
                 Some(file_cell(ui, change, lines, text_color, palette))
             });
         match shown {
-            Ok(output) => output
-                .events
-                .iter()
-                .find(|event| matches!(event.kind, RowEventKind::Clicked | RowEventKind::Activated))
-                .map(|event| event.row_index),
+            Ok(output) => {
+                if let Some(right) = output
+                    .events
+                    .iter()
+                    .find(|event| event.kind == RowEventKind::SecondaryClicked)
+                {
+                    self.menu = Some(TreeMenu::File(right.row_index));
+                    self.open_menu = true;
+                }
+                output
+                    .events
+                    .iter()
+                    .find(|event| {
+                        matches!(event.kind, RowEventKind::Clicked | RowEventKind::Activated)
+                    })
+                    .map(|event| event.row_index)
+            }
             Err(error) => {
                 ui.label(
                     RichText::new(format!("The table couldn't be drawn: {error}"))
@@ -510,6 +557,83 @@ impl ChangesTable {
             }
         }
     }
+
+    /// A row's menu, while one is open: a file's changes, blame, and history, the work tree's
+    /// file opened or shown, its path copied; a folder's path copied.
+    fn row_menu(&mut self, ui: &Ui, details: &CommitDetails, here: bool) -> Option<ChangeAsk> {
+        use crate::views::actions::item;
+        let menu = self.menu.as_ref()?;
+        let open = std::mem::take(&mut self.open_menu);
+        let mut asked = None;
+        let shown = egui::Popup::new(
+            ui.id().with((&self.id, "row-menu")),
+            ui.ctx().clone(),
+            egui::PopupAnchor::PointerFixed,
+            ui.layer_id(),
+        )
+        .kind(egui::PopupKind::Menu)
+        .layout(Layout::top_down_justified(Align::Min))
+        .style(egui::containers::menu::menu_style)
+        .open_memory(open.then_some(egui::SetOpenCommand::Bool(true)))
+        .show(|ui| {
+            ui.set_min_width(220.0);
+            let (path, entry) = match menu {
+                TreeMenu::File(entry) => match details.changes.get(*entry) {
+                    Some(change) => (change.path.as_slice(), Some(*entry)),
+                    None => return,
+                },
+                TreeMenu::Folder { path, .. } => (path.as_slice(), None),
+            };
+            if let Some(entry) = entry {
+                asked = file_items(ui, entry, here);
+                ui.separator();
+            }
+            if item(ui, (crate::theme::icon::COPY, "Copy path"), Ok(())) {
+                ui.ctx().copy_text(path.to_str_lossy().into_owned());
+            }
+        });
+        if shown.is_none() {
+            self.menu = None;
+        }
+        asked
+    }
+}
+
+/// A changed file's menu's own items: its changes, blame, and history; the work tree's file
+/// opened or shown in its folder (only `here`: its apps and file manager are this computer's).
+fn file_items(ui: &mut Ui, entry: usize, here: bool) -> Option<ChangeAsk> {
+    use crate::desktop::Reveal;
+    use crate::theme::icon;
+    use crate::views::actions::item;
+    let mut asked = None;
+    for (glyph, words, ask) in [
+        (icon::FILE_TEXT, "Show changes", ChangeAsk::Show(entry)),
+        (icon::USER_LIST, "Blame", ChangeAsk::Blame(entry)),
+        (
+            icon::CLOCK_COUNTER_CLOCKWISE,
+            "File history",
+            ChangeAsk::History(entry),
+        ),
+    ] {
+        if item(ui, (glyph, words), Ok(())) {
+            asked = Some(ask);
+        }
+    }
+    ui.separator();
+    let revealing = if here {
+        Ok(())
+    } else {
+        Err(crate::views::ELSEWHERE)
+    };
+    for (glyph, words, how) in [
+        (icon::ARROW_SQUARE_OUT, "Open file", Reveal::Open),
+        (icon::FOLDER_OPEN, "Show in folder", Reveal::InFolder),
+    ] {
+        if item(ui, (glyph, words), revealing) {
+            asked = Some(ChangeAsk::Reveal(entry, how));
+        }
+    }
+    asked
 }
 
 /// The row height of egit's tables.

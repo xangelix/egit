@@ -1700,6 +1700,9 @@ writes paths), never `OsStrExt`.
     (`widgets::list_box`, `ChangesTable`, its tree a `TreeTable`), with the lines each gained
     and lost once counted
     (`Counting`: a job after the list, the previous one stopped; not in a partial clone);
+    a right click its menu (`ChangeAsk`: show changes, blame (a deleted file's as it was
+    before), file history, the work tree's file opened or shown in its folder, its path
+    copied; a folder's path; a comparison's alike: `change_asked`);
     clicking one opens a `FileView` (`views/file.rs`) in the commit table's place (Escape or
     "History" goes back; its bar: back, how the file changed and its path, at the right Open
     file and Show in folder (the work tree's file, as it is now), Blame, and File history
@@ -2364,7 +2367,7 @@ writes paths), never `OsStrExt`.
     own colour, no table-kit outline) and `list` (file lists: a narrow column of
     `status_cell`s, a coloured letter for how each file changed (`status_mark`: A, M, D, R, C,
     T, U, !), named by the word, the path filling the rest, no header). `SnapshotTable` and
-    `ChangesTable`, whose state
+    `ChangesTable` (its rows' menu its own: `ChangeAsk`), whose state
     starts over only when their snapshot or commit is replaced. A file's cell is named by its path ("old → new" for
     a rename); `file_cell` draws its counts at its right, so the narrow details panel needs no
     third column, and its (new) path in what is left, losing its start first, from a folder's

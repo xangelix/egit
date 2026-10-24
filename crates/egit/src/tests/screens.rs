@@ -2187,8 +2187,12 @@ fn a_file_is_blamed_and_its_history_followed() {
         let view = &mut app.state.repos[0].history_view;
         view.details_shown() && view.counts_shown()
     });
-    harness.get_by_role_and_label(Role::Button, "doc").click();
+    // From the file's row's menu in the details, this time.
+    harness
+        .get_by_role_and_label(Role::Button, "doc")
+        .click_secondary();
     wait_for_label(&mut harness, "File history");
+    render(&mut harness, "changed-file-menu");
     harness.get_by_label("File history").click();
     // Its commits as they are found (the history's bar says "4 commits" too).
     wait_for_label(&mut harness, "History of");

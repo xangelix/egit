@@ -927,7 +927,7 @@ fn list_ui(
 }
 
 /// Why a file on another computer isn't opened in an app, or shown in a folder.
-pub(super) const ELSEWHERE: &str = "It is on another computer: its apps and folders aren't here";
+pub(crate) const ELSEWHERE: &str = "It is on another computer: its apps and folders aren't here";
 
 /// A row's menu, while one is open: moving the file (or a folder's files) across, discarding
 /// it, looking at it, copying its path; and discarding every change not staged.

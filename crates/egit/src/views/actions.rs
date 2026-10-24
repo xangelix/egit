@@ -40,6 +40,8 @@ pub(super) enum Ask {
     },
     /// A web page, in the browser.
     Open(String),
+    /// A file or folder here, opened in its app or shown in its folder.
+    Reveal(std::path::PathBuf, crate::desktop::Reveal),
     /// A ref dragged onto another, at a point: what it can do is asked there.
     Dropped {
         dragged: Reference,
