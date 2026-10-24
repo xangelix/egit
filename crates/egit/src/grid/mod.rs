@@ -892,16 +892,22 @@ impl TextGrid {
         } else if pressed(Key::End) {
             self.scroll_sideways(measure, frame, f32::from(u16::MAX));
         } else if command(Key::A) {
-            let last = measure.lines().saturating_sub(1);
-            self.selection = Some(Selection {
-                pane: self.selection.map_or(0, |selection| selection.pane),
-                anchor: Spot::default(),
-                head: Spot {
-                    line: last,
-                    cell: measure.cells(last),
-                },
-            });
+            let selected = self.selection.map_or(0, |selection| selection.pane);
+            self.select_all(selected, measure);
         }
+    }
+
+    /// Selects every line of pane `pane`, measured as `measure` (as ⌘A does).
+    pub(crate) fn select_all(&mut self, pane: usize, measure: &Measure) {
+        let last = measure.lines().saturating_sub(1);
+        self.selection = Some(Selection {
+            pane,
+            anchor: Spot::default(),
+            head: Spot {
+                line: last,
+                cell: measure.cells(last),
+            },
+        });
     }
 
     /// Selects by dragging (scrolling a row a frame while dragged past the top or bottom); a

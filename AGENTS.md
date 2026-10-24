@@ -2099,7 +2099,10 @@ writes paths), never `OsStrExt`.
     sentences); then GitLab's refusal (a problem box, Dismiss), then the log in the text grid
     (find, select, copy) as `Folding` shows it, its top kept on its line as folds change,
     following its end while it rests there (`TextGrid::is_at_end`, `scroll_to_end`): scrolled
-    up it stays, "Follow the end" (or "Go to the end") over its bottom right; a click on a
+    up it stays, "Follow the end" (or "Go to the end") over its bottom right; a right click
+    its menu (`log_menu`: Copy what is selected, the line under the pointer selected first
+    where the click isn't on a selection; Select all, `TextGrid::select_all`; Copy the whole
+    log, every section unfolded); a click on a
     section's header folds or unfolds it (the pointer a hand there), Alt+↑ and Alt+↓ go to the
     section before or after (`neighbour`); its outline at its left (`log_outline.rs`, a
     resizable panel: each section not inside a folded one, stepped in by depth, its caret a
@@ -2634,6 +2637,7 @@ writes paths), never `OsStrExt`.
     (the fork's isn't fetched), then GitLab listing none to the account, read again; a running
     job's log (rendered): its sections' markers and the runner's timestamps out, its sections
     beside it with their times, one folded from its caret (its lines left out) and unfolded,
+    a line copied from its menu, then the whole log with a section folded,
     lines it writes coming as it runs, its end said and the following stopped, Escape back to the pipeline;
     jobs laid out by what they wait for and by stage (columns checked; both rendered), an
     earlier run's log from a job's menu and the latest's from the runs' menu, a retry GitLab

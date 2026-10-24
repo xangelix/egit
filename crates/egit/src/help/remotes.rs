@@ -1516,7 +1516,14 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "job-log",
         group: Group::Remotes,
         title: "A job's log",
-        on: &["Pipeline #*", "* #*", "Run #* · *", "Latest #* · *"],
+        on: &[
+            "Pipeline #*",
+            "* #*",
+            "Run #* · *",
+            "Latest #* · *",
+            "Select all",
+            "Copy the whole log",
+        ],
         what: "A job's log as its forge shows it, in the pipeline's place: its colours, each \
                line's time beside its number (where the runner writes them), progress lines as \
                their last state, and its sections' headers marked, each with how long it took \
@@ -1526,8 +1533,10 @@ pub(super) const TOPICS: &[Topic] = &[
                view following its end while it rests there: scrolled up, it stays put; back at \
                the end, it follows again. GitHub gives a job's log once the job has ended: \
                meanwhile its steps show as they go, each with how long it took. ⌘F (Ctrl+F) \
-               finds in it, a drag selects and ⌘C (Ctrl+C) copies. Escape, or the pipeline's \
-               button, goes back.",
+               finds in it, a drag selects and ⌘C (Ctrl+C) copies; a right click offers the same \
+               (Copy: what is selected, or the line under the pointer), Select all, and Copy the \
+               whole log (every section unfolded, whatever is folded on screen). Escape, or \
+               the pipeline's button, goes back.",
         git: "GitLab's REST API: GET /projects/:id/jobs/:job_id, and …/trace (a Range from what was read). GitHub's: GET /repos/:owner/:name/actions/jobs/:id (its steps), and …/logs (a redirect to a file of it, fetched without your token)",
         cases: &[
             (

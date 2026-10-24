@@ -703,6 +703,16 @@ impl HistoryView {
         }
     }
 
+    /// Where on screen the job's log drew the place before cell `cell` of its shown line
+    /// `line`, if it did.
+    #[cfg(test)]
+    pub(crate) fn job_log_spot(&self, line: u32, cell: u32) -> Option<egui::Pos2> {
+        match &self.tool {
+            Some(Tool::Job(view)) => view.spot(line, cell),
+            _ => None,
+        }
+    }
+
     /// The number of the job's run whose log shows.
     #[cfg(test)]
     pub(crate) fn job_run(&self) -> Option<u64> {

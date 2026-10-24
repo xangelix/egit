@@ -529,6 +529,7 @@ fn a_job_s_log_shows_and_follows_it_as_it_runs() {
             .is_some_and(|shown| shown.contains("Using docker image"))
     });
     render(&mut harness, "job-log");
+    copied_from_the_menu(&mut harness);
 
     // As it runs, what it writes comes; once it ends, it says so and stops.
     fake.state().repositories[0].pipelines[0].stages[1].2[0]
@@ -556,6 +557,79 @@ fn a_job_s_log_shows_and_follows_it_as_it_runs() {
             .job_log()
             .is_none()
     );
+}
+
+/// Right-clicks the job's log's line `line` (shown), then clicks `item` in the menu it opens;
+/// returns what the frame copied.
+fn copy_from_menu(
+    harness: &mut egui_kittest::Harness<'_, EgitApp>,
+    line: u32,
+    item: &str,
+) -> Option<String> {
+    let spot = harness.state().state.repos[0]
+        .history_view
+        .job_log_spot(line, 2)
+        .unwrap();
+    harness.hover_at(spot);
+    harness.run_steps(1);
+    for pressed in [true, false] {
+        harness.event(egui::Event::PointerButton {
+            pos: spot,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    wait_for_label(harness, item);
+    harness.get_by_label(item).click();
+    harness.step();
+    harness
+        .output()
+        .platform_output
+        .commands
+        .iter()
+        .find_map(|command| match command {
+            egui::OutputCommand::CopyText(text) => Some(text.clone()),
+            _ => None,
+        })
+}
+
+/// The job's log copied from its menu: a line right-clicked, and the whole log, folded
+/// sections and all.
+fn copied_from_the_menu(harness: &mut egui_kittest::Harness<'_, EgitApp>) {
+    let shown = harness.state().state.repos[0]
+        .history_view
+        .job_log_shown()
+        .unwrap();
+    let line = shown
+        .lines()
+        .position(|line| line.starts_with("Using docker image"))
+        .unwrap();
+    let copied = copy_from_menu(harness, u32::try_from(line).unwrap(), "Copy").unwrap();
+    assert!(copied.starts_with("Using docker image"), "{copied:?}");
+    assert_eq!(copied.lines().count(), 1, "{copied:?}");
+    // The whole log, whatever is folded: the first section folded first.
+    harness
+        .get_by_label("Fold Preparing the docker executor")
+        .click();
+    settle(harness, "the section folded", |app| {
+        app.state.repos[0]
+            .history_view
+            .job_log_shown()
+            .is_some_and(|shown| !shown.contains("Using docker image"))
+    });
+    let whole = copy_from_menu(harness, 0, "Copy the whole log").unwrap();
+    assert!(
+        whole.contains("Using docker image") && whole.contains("running 3 tests"),
+        "{whole:?}"
+    );
+    harness
+        .get_by_label("Unfold Preparing the docker executor")
+        .click();
+    harness.run_steps(2);
+    // The line the right click selected let go (Escape's first press does that alone).
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
 }
 
 /// A job of `stage` numbered `id`, as `status` says, waiting for `needs` (none: its stages).

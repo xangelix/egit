@@ -222,6 +222,12 @@ impl JobView {
         Some(String::from_utf8_lossy(shown.source().text().bytes()).into_owned())
     }
 
+    /// Where on screen the place before cell `cell` of shown line `line` was drawn, if it was.
+    #[cfg(test)]
+    pub(super) fn spot(&self, line: u32, cell: u32) -> Option<egui::Pos2> {
+        self.grid.spot_position(0, line, cell)
+    }
+
     /// The number of the run shown.
     pub(super) const fn run_shown(&self) -> u64 {
         self.run
@@ -844,11 +850,55 @@ fn log_view(
     {
         asked = Some(OutlineAsk::Go(line));
     }
+    log_menu(&response, view, &shown);
     follow_button(ui, view, response.rect, status.is_moving());
     if let Some(asked) = asked {
         carry_out(view, whole, asked);
     }
     view.shown = Some(shown);
+}
+
+/// The log's menu, on a right click: what is selected copied (the line under the pointer
+/// selected first, where the click isn't on a selection), everything shown selected, or the
+/// whole log copied, every section unfolded.
+fn log_menu(response: &egui::Response, view: &mut JobView, shown: &Shown) {
+    if response.secondary_clicked()
+        && let Some(pointer) = response.interact_pointer_pos()
+    {
+        let on_selection = view
+            .grid
+            .selected_lines()
+            .zip(view.grid.line_at(pointer))
+            .is_some_and(|((_, lines), line)| lines.contains(&line));
+        if !on_selection {
+            view.grid.select_line_at(pointer);
+        }
+    }
+    let source = shown.source();
+    let grid = &mut view.grid;
+    response.context_menu(|ui| {
+        use super::actions::item;
+        let selected = grid.selected_text(&[source]);
+        let allowed = if selected.is_some() {
+            Ok(())
+        } else {
+            Err("Nothing is selected")
+        };
+        if item(ui, (icon::COPY, "Copy"), allowed)
+            && let Some(text) = selected
+        {
+            ui.ctx().copy_text(text);
+        }
+        if item(ui, (icon::SELECTION_ALL, "Select all"), Ok(())) {
+            grid.select_all(0, source.measure());
+        }
+        ui.separator();
+        if item(ui, (icon::COPY_SIMPLE, "Copy the whole log"), Ok(())) {
+            let whole = crate::grid::GridSource::text(shown.whole()).bytes();
+            ui.ctx()
+                .copy_text(String::from_utf8_lossy(whole).into_owned());
+        }
+    });
 }
 
 /// The header of the section shown before (or after: `down`) whole line `top`, the first
