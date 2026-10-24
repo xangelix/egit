@@ -688,23 +688,37 @@ fn offers(
     let query = query.trim();
     let typed = Person::parse(query.as_bytes());
     let mut picked = None;
+    // A row each, as a list's: their avatar, name, and email from the left, how many commits
+    // at the right; the whole row picks them.
     let mut add = |ui: &mut Ui, person: &Person, detail: &str| {
         let (name, email) = (person.name.to_str_lossy(), person.email.to_str_lossy());
-        let text = format!("{name}  ·  {email}{detail}");
-        let row = ui.horizontal(|ui| {
-            widgets::avatar(ui, 20.0, (&name, &email), palette.surface);
-            ui.add(
-                egui::Button::new(text)
-                    .frame_when_inactive(false)
-                    .truncate()
-                    .min_size(egui::vec2(ui.available_width(), crate::theme::CONTROL)),
-            )
-        });
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), crate::theme::CONTROL),
+            egui::Sense::click(),
+        );
         let named = format!("{name} <{email}>");
-        row.inner
-            .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &named));
-        crate::help::note_topic(ui, row.inner.rect, "co-authors");
-        if row.inner.clicked() {
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &named));
+        let lit = response.hovered() || response.has_focus();
+        widgets::row_fill(ui, rect, f32::from(crate::theme::RADIUS_INNER), false, lit);
+        let mut row = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(rect.shrink2(egui::vec2(6.0, 0.0)))
+                .layout(Layout::left_to_right(Align::Center)),
+        );
+        widgets::avatar(&mut row, 20.0, (&name, &email), palette.surface);
+        row.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add(Label::new(muted(ui, detail)).selectable(false));
+            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                ui.add(Label::new(name.as_ref()).selectable(false));
+                ui.add(
+                    Label::new(muted(ui, email.as_ref()))
+                        .selectable(false)
+                        .truncate(),
+                );
+            });
+        });
+        crate::help::note_topic(ui, rect, "co-authors");
+        if response.clicked() {
             picked = Some(person.clone());
         }
     };
@@ -729,9 +743,9 @@ fn offers(
                     continue;
                 }
                 let commits = if author.commits == 1 {
-                    "  ·  1 commit".to_owned()
+                    "1 commit".to_owned()
                 } else {
-                    format!("  ·  {} commits", count(u64::from(author.commits)))
+                    format!("{} commits", count(u64::from(author.commits)))
                 };
                 add(ui, person, &commits);
                 shown = shown.saturating_add(1);

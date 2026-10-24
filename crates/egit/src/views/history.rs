@@ -1036,9 +1036,16 @@ fn drop_menu(
         .show(ctx, |ui| {
             egui::containers::menu::menu_style(ui.style_mut());
             Frame::menu(ui.style()).show(ui, |ui| {
-                ui.set_min_width(260.0);
-                actions::drop_items(ui, &menus, (&dropped.dragged, &dropped.onto), &mut |ask| {
-                    asked = Some(ask);
+                // As a context menu lays its items out: each as wide as the widest, so their
+                // hints line up at its right.
+                ui.with_layout(Layout::top_down_justified(Align::Min), |ui| {
+                    ui.set_min_width(260.0);
+                    actions::drop_items(
+                        ui,
+                        &menus,
+                        (&dropped.dragged, &dropped.onto),
+                        &mut |ask| asked = Some(ask),
+                    );
                 });
             });
         });
