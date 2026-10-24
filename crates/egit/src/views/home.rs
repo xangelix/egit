@@ -15,7 +15,7 @@ use egui_table_kit::table::TableKit;
 use super::clone::{self, CloneView};
 use crate::app::{Action, AppState};
 use crate::format::now;
-use crate::problem::{OpenProblem, Problem};
+use crate::problem::{OpenProblem, Problem, Remedy};
 use crate::settings::{Location, StoredPath};
 use crate::suggested::{Suggestion, suggest};
 use crate::tables::{RecentRows, SuggestedRows};
@@ -38,7 +38,8 @@ pub(crate) struct HomeView {
     /// The folder dialog, while it is open.
     pub(crate) picking: Bind<Option<PathBuf>, Problem>,
     /// Trusting a folder another user owns, before opening it.
-    pub(crate) trusting: Bind<crate::settings::Location, Problem>,
+    /// A folder trusted or made a repository, to open once done.
+    pub(crate) preparing: Bind<crate::settings::Location, Problem>,
     /// Cloning a repository.
     pub(crate) clone: CloneView,
     recent: RecentTable,
@@ -100,7 +101,7 @@ impl HomeView {
             there_path: String::new(),
             problem: None,
             picking: Bind::new(true),
-            trusting: Bind::new(true),
+            preparing: Bind::new(true),
             clone: CloneView::new(clone_folder, home, host),
             recent: RecentTable::default(),
             suggested: Suggested::default(),
@@ -191,7 +192,8 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
         let heading = widgets::heading(ui, "Open a repository");
         ui.label(muted(
             ui,
-            "Any folder inside a repository opens the whole repository.",
+            "Any folder inside a repository opens the whole repository; one outside any can \
+             be made a repository.",
         ));
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -229,21 +231,38 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
         if state.home.picking.is_pending() {
             widgets::working(ui, "Waiting for the folder dialog…");
         }
-        if state.is_opening() || state.home.trusting.is_pending() {
+        if state.is_opening() || state.home.preparing.is_pending() {
             widgets::working(ui, "Opening…");
         }
         if let Some(problem) = state.home.problem.clone() {
             ui.add_space(8.0);
             widgets::problem_box(ui, &problem.problem, |ui| {
-                if let Some(location) = &problem.trust
-                    && widgets::primary(ui, ready, "Trust this folder")
-                        .on_hover_text(format!(
+                let busy = state.home.preparing.is_pending();
+                let remedy = problem.remedy.as_ref().map(|remedy| match remedy {
+                    Remedy::Trust(location) => (
+                        "Trust this folder",
+                        format!(
                             "Adds {} to git's safe.directory setting",
                             location.path.display()
-                        ))
+                        ),
+                        Action::Trust(location.clone()),
+                    ),
+                    Remedy::Create(location) => (
+                        "Create a repository here",
+                        format!(
+                            "Runs git init in {}: nothing in it changes, and nothing is \
+                             committed yet",
+                            location.path.display()
+                        ),
+                        Action::Init(location.clone()),
+                    ),
+                });
+                if let Some((words, hover, action)) = remedy
+                    && widgets::primary(ui, ready && !busy, words)
+                        .on_hover_text(hover)
                         .clicked()
                 {
-                    state.actions.push(Action::Trust(location.clone()));
+                    state.actions.push(action);
                 }
                 if widgets::secondary(ui, true, "Dismiss").clicked() {
                     state.home.problem = None;

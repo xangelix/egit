@@ -331,10 +331,11 @@ fn a_typed_path_opens_its_repository() {
 }
 
 #[test]
-fn a_folder_outside_any_repository_says_so() {
+fn a_folder_outside_any_repository_says_so_and_is_made_one() {
     let sandbox = Sandbox::new().unwrap();
     let plain = sandbox.path("plain");
     std::fs::create_dir(&plain).unwrap();
+    std::fs::write(plain.join("notes.txt"), "kept\n").unwrap();
     let mut harness = harness(&sandbox);
     settle(&mut harness, "the profile", profile_loaded);
     open_path(&mut harness, &plain);
@@ -344,6 +345,17 @@ fn a_folder_outside_any_repository_says_so() {
     harness.get_by_label_contains("isn't inside a git repository");
     assert!(harness.query_by_label("Trust this folder").is_none());
     render(&mut harness, "home-not-a-repository");
+
+    // Made a repository, it opens: nothing committed, its file waiting to be.
+    harness.get_by_label("Create a repository here").click();
+    settle(&mut harness, "the repository", repository_shown);
+    settle(&mut harness, "the history", history_shown);
+    wait_for_label(&mut harness, "Stage notes.txt");
+    assert!(plain.join(".git").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(plain.join("notes.txt")).unwrap(),
+        "kept\n"
+    );
 }
 
 #[test]

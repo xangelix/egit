@@ -12,7 +12,8 @@ use std::fs;
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    DiscoverError, Head, ObjectFormat, Operation, Repository, Tracking, trust_directory,
+    DiscoverError, Head, ObjectFormat, Operation, Repository, Tracking, init_repository,
+    trust_directory,
 };
 
 fn sandbox() -> Sandbox {
@@ -90,6 +91,26 @@ fn outside_any_repository() {
         matches!(&error, DiscoverError::NotARepository { path } if *path == elsewhere),
         "{error:?}"
     );
+}
+
+#[test]
+fn a_folder_outside_any_repository_is_made_one() {
+    let sandbox = sandbox();
+    let folder = sandbox.path("new project");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("notes.txt"), "kept\n").unwrap();
+    init_repository(sandbox.git(), &folder).unwrap();
+    let found = Repository::discover(sandbox.git(), &folder).unwrap();
+    assert_eq!(found.work_tree(), folder);
+    let head = found.head_ref(sandbox.git()).unwrap();
+    assert_eq!(head.commit, None);
+    assert!(head.reference.is_some());
+    assert_eq!(
+        fs::read_to_string(folder.join("notes.txt")).unwrap(),
+        "kept\n"
+    );
+    // A file isn't a folder to make one in.
+    assert!(init_repository(sandbox.git(), &folder.join("notes.txt")).is_err());
 }
 
 #[test]

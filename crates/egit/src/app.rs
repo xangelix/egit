@@ -11,7 +11,8 @@ use std::time::{Duration, Instant};
 
 use egit_git::{
     ConfigPlace, ConfigSnapshot, ConfigTarget, Git, GitOptions, Host, NewCommit, Repository,
-    SshHost, add_config_value, set_config, trust_directory, unset_config, unset_config_value,
+    SshHost, add_config_value, init_repository, set_config, trust_directory, unset_config,
+    unset_config_value,
 };
 use egui::{CentralPanel, Frame, Panel, Ui};
 use egui_async::Bind;
@@ -99,6 +100,15 @@ struct Opening {
     job: Bind<(Repository, Git), OpenProblem>,
 }
 
+/// What is done to a folder that didn't open, before it is opened again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Prepare {
+    /// Trusted: added to `safe.directory`.
+    Trust,
+    /// Made a repository: `git init`.
+    Init,
+}
+
 /// How egit's ssh reaches other computers: the folder connections are shared through (an
 /// `SshSharing`'s), and ssh options of its own (none but in tests: a key and known hosts).
 #[derive(Clone, Debug, Default)]
@@ -169,6 +179,8 @@ pub(crate) enum Action {
     Opened(Box<(Repository, Git)>),
     /// Add a path to `safe.directory` (on its computer), then open it.
     Trust(Location),
+    /// Make a folder a repository (`git init`, on its computer), then open it.
+    Init(Location),
     /// Remove a repository from the recent ones.
     Forget(Location),
     /// Show the profile tab.
@@ -451,7 +463,8 @@ impl EgitApp {
                 let (repository, git) = *opened;
                 self.show_repository(ctx, repository, &git);
             }
-            Action::Trust(location) => state.trust(location),
+            Action::Trust(location) => state.prepare(location, Prepare::Trust),
+            Action::Init(location) => state.prepare(location, Prepare::Init),
             Action::Forget(location) => state.settings.forget(&location),
             Action::ShowProfile => tabs::show(&mut self.tabs, Pane::Profile),
             Action::SaveProfile(changes) => state.save_profile(changes),
@@ -760,8 +773,8 @@ impl AppState {
         if let Some((question, chosen)) = self.files.answered() {
             self.answered(question, chosen);
         }
-        if let Some(trusted) = self.home.trusting.take() {
-            match trusted {
+        if let Some(prepared) = self.home.preparing.take() {
+            match prepared {
                 Ok(location) => self.actions.push(Action::Open(location)),
                 Err(problem) => self.home.problem = Some(OpenProblem::from_problem(problem)),
             }
@@ -991,24 +1004,36 @@ impl AppState {
         options
     }
 
-    /// Adds `location` to `safe.directory` (on the computer it is on), then opens it.
-    fn trust(&mut self, location: Location) {
+    /// Adds `location` to `safe.directory`, or makes it a repository (on the computer it is
+    /// on), then opens it.
+    fn prepare(&mut self, location: Location, how: Prepare) {
         let Some(git) = self.git() else {
             return;
         };
         self.home.problem = None;
         let writes = self.user_writes.clone();
         let there = location.host.clone().map(|host| self.options_there(host));
-        self.home.trusting.request(jobs::blocking(move || {
-            let _queued = writes.hold();
-            let failed = |error| Problem::git("The folder couldn't be trusted", &error);
+        self.home.preparing.request(jobs::blocking(move || {
+            let failed = |error| {
+                let title = match how {
+                    Prepare::Trust => "The folder couldn't be trusted",
+                    Prepare::Init => "The repository couldn't be created",
+                };
+                Problem::git(title, &error)
+            };
             let git = match there {
                 None => git,
                 Some(options) => Git::new(options).map_err(failed)?,
             };
-            trust_directory(&git, &location.path)
-                .map(|()| location)
-                .map_err(failed)
+            match how {
+                Prepare::Trust => {
+                    let _queued = writes.hold();
+                    trust_directory(&git, &location.path)
+                }
+                Prepare::Init => init_repository(&git, &location.path),
+            }
+            .map(|()| location)
+            .map_err(failed)
         }));
     }
 

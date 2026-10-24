@@ -1338,6 +1338,27 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "home-init",
+        group: Group::Egit,
+        title: "Creating a repository",
+        on: &["Create a repository here"],
+        what: "Makes a folder that isn't inside any repository one: git adds a .git folder to it \
+               and nothing else. Its files stay as they are, untracked, until you stage and \
+               commit them; the branch is the one your init.defaultBranch setting names.",
+        git: "git init",
+        cases: &[
+            (
+                "Want it on GitHub or GitLab?",
+                "Create an empty repository there, add its address as a remote (the sidebar's \
+                 Remotes +), and push.",
+            ),
+            (
+                "Files that shouldn't be committed?",
+                "Ignore them from their row's menu before the first commit.",
+            ),
+        ],
+    },
+    Topic {
         id: "home-trust",
         group: Group::Egit,
         title: "Trusting a folder",

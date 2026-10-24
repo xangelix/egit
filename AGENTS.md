@@ -276,7 +276,7 @@ writes paths), never `OsStrExt`.
   - `object_id.rs` — `ObjectId` (SHA-1 or SHA-256, by length; never assume 40 digits) and
     `ObjectFormat` (`zero`, the name of no object).
   - `repo.rs` — `Repository::discover` (two `rev-parse`s; `DiscoverError` names not a
-    repository, `safe.directory` refusals (`trust_directory` adds one), bare repositories, and
+    repository (`init_repository` makes one: `git init` in it), `safe.directory` refusals (`trust_directory` adds one), bare repositories, and
     paths inside `.git`), `head` (`symbolic-ref`, then `for-each-ref` on that exact ref for the
     commit and `%(upstream:track)`, or `log -1` when detached), `head_ref` (`HeadRef`: just
     the branch's full name and the commit, by `symbolic-ref` and `rev-parse`, without the
@@ -2441,7 +2441,9 @@ writes paths), never `OsStrExt`.
     computer, its host), open tabs (`OpenTab`: a path here, or a host and a path; earlier
     settings' paths read as here),
     the clone folder; non-UTF-8 paths kept as
-    bytes), `problem.rs` (`Problem`, `OpenProblem` with its `safe.directory` remedy).
+    bytes), `problem.rs` (`Problem`, `OpenProblem` with its `Remedy`: trusting the folder
+    (`safe.directory`), or making it a repository, each then opened: `Action::Trust`,
+    `Action::Init`).
   - `tests/askpass_helper.rs` — the real `egit` executable (`CARGO_BIN_EXE_egit`) started by
     git as its helper through the server's link: credentials, and an SSH signing key's
     passphrase (asked as "Signing the commit"; the commit's signature then checked).

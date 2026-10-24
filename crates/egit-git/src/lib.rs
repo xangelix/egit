@@ -157,7 +157,7 @@ pub use remote::{
 pub use remote_setup::{add_remote, remove_remote, rename_remote, set_remote_url};
 pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, HeadRef, Operation, Repository, Tracking,
-    Upstream, trust_directory,
+    Upstream, init_repository, trust_directory,
 };
 pub use search::{CommitFilter, find_commits, resolve_commit};
 pub use signatures::{SignatureCheck, Verdict, check_signatures};

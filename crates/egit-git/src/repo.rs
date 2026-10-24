@@ -446,6 +446,21 @@ pub fn trust_directory(git: &Git, path: &Path) -> Result<(), GitError> {
         .map(drop)
 }
 
+/// Makes `folder` (one that exists, on the computer `git` runs on) a new repository with no
+/// commits (`git init`), its branch the one `init.defaultBranch` names. Pass the path
+/// [`DiscoverError::NotARepository`] names.
+///
+/// # Errors
+///
+/// When `folder` isn't a folder, or git can't write `.git` in it.
+pub fn init_repository(git: &Git, folder: &Path) -> Result<(), GitError> {
+    git.write("init")
+        .arg("--quiet")
+        .current_dir(folder)
+        .output()
+        .map(drop)
+}
+
 /// Where `HEAD` points.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Head {

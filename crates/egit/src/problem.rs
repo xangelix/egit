@@ -57,19 +57,35 @@ impl fmt::Display for Problem {
 pub(crate) struct OpenProblem {
     /// What went wrong.
     pub(crate) problem: Problem,
-    /// Where to add to `safe.directory` when git refused a repository another user owns (on
-    /// the computer it is on).
-    pub(crate) trust: Option<crate::settings::Location>,
+    /// What would let it open, when something would.
+    pub(crate) remedy: Option<Remedy>,
+}
+
+/// What lets a folder that didn't open open, on the computer it is on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Remedy {
+    /// Add it to `safe.directory`: git refused a repository another user owns.
+    Trust(crate::settings::Location),
+    /// Make it a repository (`git init`): it isn't inside one.
+    Create(crate::settings::Location),
 }
 
 impl OpenProblem {
     /// Why discovering a repository (on `host`, if another computer) failed.
     pub(crate) fn from_discovery(error: &DiscoverError, host: Option<&str>) -> Self {
         let title = "The repository couldn't be opened";
-        let (detail, trust) = match error {
+        let place = |path: &std::path::Path| crate::settings::Location {
+            host: host.map(str::to_owned),
+            path: path.to_path_buf(),
+        };
+        let (detail, remedy) = match error {
             DiscoverError::NotARepository { path } => (
-                format!("{} isn't inside a git repository.", path.display()),
-                None,
+                format!(
+                    "{} isn't inside a git repository. Create one there to start tracking \
+                     its files.",
+                    path.display()
+                ),
+                Some(Remedy::Create(place(path))),
             ),
             DiscoverError::DubiousOwnership { path } => (
                 format!(
@@ -77,7 +93,7 @@ impl OpenProblem {
                      (git's safe.directory setting).",
                     path.display()
                 ),
-                Some(path.clone()),
+                Some(Remedy::Trust(place(path))),
             ),
             DiscoverError::Bare { git_dir } => (
                 format!(
@@ -100,17 +116,14 @@ impl OpenProblem {
         };
         Self {
             problem: Problem::new(title, detail),
-            trust: trust.map(|path| crate::settings::Location {
-                host: host.map(str::to_owned),
-                path,
-            }),
+            remedy,
         }
     }
 
     pub(crate) const fn from_problem(problem: Problem) -> Self {
         Self {
             problem,
-            trust: None,
+            remedy: None,
         }
     }
 }
