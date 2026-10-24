@@ -53,7 +53,7 @@ fn a_long_message_scrolls_inside_its_field() {
     description.focus();
     description.type_text(&body);
     harness.run_steps(3);
-    let commit = harness.get_by_label("Commit 0 files");
+    let commit = harness.get_by_role_and_label(Role::Button, "Commit");
     assert!(
         commit.rect().bottom() < WINDOW_BOTTOM,
         "{:?}",

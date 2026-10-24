@@ -768,7 +768,13 @@ fn change_line(ui: &mut Ui, palette: Palette, file: &mut FileView) {
         ),
     };
     ui.label(RichText::new(change).color(palette.muted));
-    if let Some(Ok(diff)) = file.diff.read_as_ref() {
+    // Lines counted where they are lines: not a binary file's, an image's, or an LFS pointer's.
+    let image = crate::pictures::is_image(file.path());
+    if let Some(Ok(diff)) = file.diff.read_as_ref()
+        && !diff.is_binary()
+        && diff.lfs().is_none()
+        && !image
+    {
         let (added, removed) = diff.changed();
         ui.label(RichText::new(format!("+{added}")).color(palette.ok));
         ui.label(RichText::new(format!("−{removed}")).color(palette.danger));
@@ -835,7 +841,7 @@ fn work_bar(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView, actions: &mut
                 widgets::toolbar_separator(ui);
                 let button = |ui: &mut Ui, enabled: bool, words: &str| {
                     let allowed = enabled && can_discard.is_ok();
-                    let response = widgets::secondary(ui, allowed, words);
+                    let response = widgets::risky(ui, allowed, words);
                     match can_discard {
                         Err(why) if enabled => response.on_disabled_hover_text(why),
                         _ => response,

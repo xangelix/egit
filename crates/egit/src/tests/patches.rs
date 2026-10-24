@@ -245,6 +245,9 @@ fn a_pasted_diff_applies_as_changes_and_changes_become_patches() {
     harness
         .get_by_role_and_label(Role::Button, "Base")
         .click_secondary();
+    // In the menu's Copy.
+    wait_for_label(&mut harness, "Copy");
+    harness.get_by_label("Copy").click();
     wait_for_label(&mut harness, "Copy as a patch");
     harness.get_by_label("Copy as a patch").click();
     wait_for_label(

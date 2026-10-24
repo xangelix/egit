@@ -455,22 +455,34 @@ fn chip(ui: &mut Ui, attached: &mut crate::attachments::Attachment, palette: &Pa
 fn mode_menu(ui: &mut Ui, conversation: &mut Conversation, look: Look) {
     let mode = conversation.mode();
     let mut chosen = None;
-    widgets::tool_menu(ui, icon::SHIELD_CHECK, mode.name(), look, |ui| {
-        actions::menu_rows(ui);
-        actions::menu_header(ui, "Permission mode");
-        for offered in Mode::OFFERED {
-            let glyph = if offered == mode { icon::CHECK } else { "" };
-            let danger = offered == Mode::BypassPermissions;
-            if actions::described_item(
-                ui,
-                (glyph, offered.name()),
-                Ok(()),
-                (danger, about(offered)),
-            ) {
-                chosen = Some(offered);
-            }
-        }
-    });
+    // As wide whichever mode it says: the menus after it stay put as it changes.
+    let widest = Mode::OFFERED
+        .iter()
+        .map(|offered| widgets::tool_width(ui, (icon::SHIELD_CHECK, offered.name()), look, true))
+        .fold(0.0_f32, f32::max);
+    widgets::column(
+        ui,
+        (widest, crate::theme::CONTROL),
+        egui::Align::Min,
+        |ui| {
+            widgets::tool_menu(ui, icon::SHIELD_CHECK, mode.name(), look, |ui| {
+                actions::menu_rows(ui);
+                actions::menu_header(ui, "Permission mode");
+                for offered in Mode::OFFERED {
+                    let glyph = if offered == mode { icon::CHECK } else { "" };
+                    let danger = offered == Mode::BypassPermissions;
+                    if actions::described_item(
+                        ui,
+                        (glyph, offered.name()),
+                        Ok(()),
+                        (danger, about(offered)),
+                    ) {
+                        chosen = Some(offered);
+                    }
+                }
+            });
+        },
+    );
     if let Some(mode) = chosen {
         conversation.set_mode(mode);
     }

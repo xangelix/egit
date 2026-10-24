@@ -290,7 +290,7 @@ pub(crate) fn keys_text(mac: &'static str) -> Cow<'static, str> {
 pub(crate) const SWITCH_TO: &str = "Switch to ";
 
 /// Every shortcut, and what it does, as the Preferences tab lists them.
-const SHORTCUTS: [(&str, &str); 20] = [
+const SHORTCUTS: [(&str, &str); 26] = [
     ("⌘K, ⇧⌘P", "Show every command"),
     ("F1", "Help: every topic"),
     (
@@ -305,6 +305,8 @@ const SHORTCUTS: [(&str, &str); 20] = [
     ("⌘F", "Search the history (in a file or diff: find in it)"),
     ("⌘B", "Show or hide the sidebar"),
     ("⌥⌘F", "Filter the sidebar"),
+    ("⌘J", "Show or hide the output"),
+    ("⌘L", "Show or hide the agents"),
     ("⌘Z, ⇧⌘Z", "Undo, redo"),
     ("↑ ↓, PgUp PgDn, Home End", "Move through a list"),
     ("Escape", "Back to the history (from a file, the reflog, …)"),
@@ -320,6 +322,19 @@ const SHORTCUTS: [(&str, &str); 20] = [
     ("⌘+, ⌘−, ⌘0", "Larger text, smaller, as it was"),
     ("⌘C, ⌘A", "Copy, select all (in text)"),
     ("Enter, Shift+Enter", "Next, previous (in a search or find)"),
+    (
+        "⇧-click, ⌘-click",
+        "Pick a range of commits, or one more (the commit table)",
+    ),
+    ("⇧↑, ⇧↓", "Pick more commits above or below"),
+    (
+        "Alt+↑, Alt+↓",
+        "The change before or after (a Markdown preview); a section (a job's log)",
+    ),
+    (
+        "Tab, Enter",
+        "Complete a slash command (the agents' prompt)",
+    ),
 ];
 
 impl Command {

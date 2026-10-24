@@ -497,7 +497,9 @@ fn a_password_is_asked_in_the_window() {
     harness.run_steps(2);
     render(&mut harness, "prompt-password");
 
-    harness.get_by_role_and_label(Role::Button, "OK").click();
+    harness
+        .get_by_role_and_label(Role::Button, "Continue")
+        .click();
     harness.run_steps(2);
     assert_eq!(helper.join().unwrap().as_deref(), Some("correct horse"));
     settle(&mut harness, "the dialog to close", |app| {
@@ -547,9 +549,11 @@ fn a_host_question_is_answered_yes_or_no() {
     settle(&mut harness, "the question", |app| {
         app.state.prompts.waiting() == 1
     });
-    harness.get_by_label_contains("Your decision is needed");
+    harness.get_by_label_contains("Trust this host?");
     render(&mut harness, "prompt-host");
-    harness.get_by_role_and_label(Role::Button, "Yes").click();
+    harness
+        .get_by_role_and_label(Role::Button, "Trust and connect")
+        .click();
     harness.run_steps(2);
     assert_eq!(helper.join().unwrap().as_deref(), Some("yes"));
 }
@@ -2168,7 +2172,7 @@ fn a_file_is_blamed_and_its_history_followed() {
     harness
         .get_by_role_and_label(Role::Button, "Rename")
         .click();
-    wait_for_label(&mut harness, "egit tests · from notes");
+    wait_for_label(&mut harness, "from notes");
     wait_for_label(&mut harness, "Renamed from notes; its text unchanged.");
     // ↓ to the commit before, which changed the file's text.
     harness.key_press(egui::Key::ArrowDown);

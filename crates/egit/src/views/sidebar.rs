@@ -1068,6 +1068,73 @@ fn paint_line(
     ui.painter().galley(pos, galley, drawing.palette.text);
 }
 
+/// `tail` (a path, an address) cut from its start to fit after `before` in a row `depth`
+/// levels in: its end is what tells it apart ("…/egit-worktrees/side").
+fn fit_tail<'t>(
+    ui: &Ui,
+    drawing: &Drawing<'_>,
+    (rect, depth): (Rect, u8),
+    before: &[&str],
+    tail: &'t str,
+) -> std::borrow::Cow<'t, str> {
+    let start = icon_x(rect, depth) + INDENT;
+    let used: f32 = before
+        .iter()
+        .map(|text| {
+            ui.painter()
+                .layout_no_wrap(
+                    (*text).to_owned(),
+                    drawing.font.clone(),
+                    Color32::PLACEHOLDER,
+                )
+                .size()
+                .x
+        })
+        .sum();
+    let room = (rect.right() - 6.0 - start - used).max(0.0);
+    crate::tables::elided_start(ui, tail, &drawing.font, room)
+}
+
+/// A stash's message as people read it: git's "On main: …" or "WIP on main: 1234abcd …" taken
+/// off (the branch it was made on said apart), the words left.
+fn stash_words(message: &str) -> (&str, Option<&str>) {
+    let rest = message
+        .strip_prefix("WIP on ")
+        .or_else(|| message.strip_prefix("On "));
+    let Some((branch, words)) = rest.and_then(|rest| rest.split_once(": ")) else {
+        return (message, None);
+    };
+    // A WIP's words start with its commit's name: the subject is what tells it apart.
+    let words = if message.starts_with("WIP on ") {
+        words
+            .split_once(' ')
+            .filter(|(name, _)| name.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            .map_or(words, |(_, subject)| subject)
+    } else {
+        words
+    };
+    (words, Some(branch))
+}
+
+/// A remote's address as people say it: its host and path, without the scheme, the user, or
+/// `.git` (`git@github.com:owner/repo.git` is `github.com/owner/repo`); a local path as it is.
+fn short_url(url: &str) -> std::borrow::Cow<'_, str> {
+    if url.starts_with("file://") || url.starts_with('/') {
+        return std::borrow::Cow::Borrowed(url.strip_prefix("file://").unwrap_or(url));
+    }
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let rest = rest.split_once('@').map_or(rest, |(_, rest)| rest);
+    let rest = rest.strip_suffix(".git").unwrap_or(rest);
+    // An scp-like address's `host:path`, unless the colon starts a port.
+    let rest = match rest.split_once(':') {
+        Some((host, path)) if !path.starts_with(|c: char| c.is_ascii_digit()) => {
+            format!("{host}/{path}")
+        }
+        _ => rest.to_owned(),
+    };
+    std::borrow::Cow::Owned(rest)
+}
+
 /// Where a row's icon starts, `depth` levels in (a section's own icon at depth 0's).
 fn icon_x(rect: Rect, depth: u8) -> f32 {
     rect.left() + PAD + CARET + f32::from(depth) * INDENT
@@ -1446,6 +1513,9 @@ fn remote_row(
             .map(|entry| entry.text().to_string())
     });
     let palette = drawing.palette;
+    // Its address short, losing its start where it doesn't fit: its end names the repository.
+    let address = url.as_deref().map(short_url).unwrap_or_default();
+    let address = fit_tail(ui, drawing, (rect, 0), &[&shown, "  "], &address);
     paint_row(
         ui,
         drawing,
@@ -1455,7 +1525,7 @@ fn remote_row(
         &[
             (&shown, palette.text),
             ("  ", palette.muted),
-            (url.as_deref().unwrap_or(""), palette.muted),
+            (&address, palette.muted),
         ],
         Weight::SemiBold,
     );
@@ -1565,6 +1635,12 @@ fn eye(ui: &Ui, drawing: &Drawing<'_>, rect: Rect, id: Id, seen: bool) -> Respon
         ui.painter()
             .rect_filled(place.shrink2(vec2(0.0, 2.0)), RADIUS_INNER, palette.border);
     }
+    // Shown under the pointer (on its row) or the keyboard's focus, and always while hidden: a
+    // list of open eyes says nothing.
+    let row_hovered = ui.rect_contains_pointer(rect);
+    if seen && !row_hovered && !response.has_focus() {
+        return response;
+    }
     let (glyph, color) = match (seen, hovered) {
         (true, false) => (icon::EYE, palette.muted),
         (true, true) => (icon::EYE, palette.text),
@@ -1666,7 +1742,7 @@ fn ref_row(
     let (glyph, color) = match reference.kind {
         _ if current => (icon::CHECK_CIRCLE, palette.accent),
         RefKind::Branch => (icon::GIT_BRANCH, palette.accent),
-        RefKind::RemoteBranch => (icon::GIT_BRANCH, palette.muted),
+        RefKind::RemoteBranch => (icon::CLOUD, palette.muted),
         RefKind::Tag => (icon::TAG, palette.warn),
         RefKind::Other => (icon::BOOKMARK_SIMPLE, palette.muted),
     };
@@ -1728,18 +1804,33 @@ fn stash_row(
     );
     crate::help::note_topic(ui, rect, "stash");
     let palette = drawing.palette;
+    // Its message leads (git's "On main:" taken off, said after it); its place at the row's
+    // right, where every row's lines up.
+    let (message, branch) = stash_words(&stash.message);
+    let on = branch
+        .map(|branch| format!("  on {branch}"))
+        .unwrap_or_default();
+    let short = format!("@{{{}}}", stash.index);
+    let place_width = ui
+        .painter()
+        .layout_no_wrap(short.clone(), drawing.font.clone(), palette.muted)
+        .size()
+        .x;
     paint_row(
         ui,
         drawing,
-        (rect, 0.0),
+        (rect, place_width + 10.0),
         0,
         (icon::ARCHIVE, palette.muted),
-        &[
-            (&place, palette.muted),
-            ("  ", palette.muted),
-            (&stash.message, palette.text),
-        ],
+        &[(message, palette.text), (&on, palette.muted)],
         Weight::Regular,
+    );
+    ui.painter().text(
+        pos2(rect.right() - 6.0, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        &short,
+        drawing.font.clone(),
+        palette.muted,
     );
     let clicked = response.clicked();
     if clicked {
@@ -1748,8 +1839,11 @@ fn stash_row(
     let mut event = clicked.then_some(SidebarEvent::Show(stash.id));
     response.context_menu(|ui| {
         let idle = drawing.menus.idle();
-        for (label, pop) in [("Apply", false), ("Pop", true)] {
-            if actions::item(ui, (icon::TRAY_ARROW_UP, label), idle) {
+        for (glyph, label, pop) in [
+            (icon::TRAY_ARROW_UP, "Apply", false),
+            (icon::ARROW_LINE_UP, "Pop", true),
+        ] {
+            if actions::item(ui, (glyph, label), idle) {
                 event = Some(SidebarEvent::Ask(Ask::Task(Task::ApplyStash {
                     stash: stash.clone(),
                     pop,
@@ -1810,6 +1904,14 @@ fn worktree_row(
     } else {
         ""
     };
+    // Its folder losing its start where it doesn't fit: its end tells worktrees apart.
+    let fitted = fit_tail(
+        ui,
+        drawing,
+        (rect, 0),
+        &[&checked_out, &state, gone, "  "],
+        &folder,
+    );
     paint_row(
         ui,
         drawing,
@@ -1824,11 +1926,11 @@ fn worktree_row(
             (&state, palette.muted),
             (gone, palette.warn),
             ("  ", palette.muted),
-            (&folder, palette.muted),
+            (&fitted, palette.muted),
         ],
         Weight::Regular,
     );
-    let mut hover = folder;
+    let mut hover = folder.clone();
     if let Some(reason) = worktree.locked.as_ref().filter(|reason| !reason.is_empty()) {
         let _ = write!(hover, "\nLocked: {}", reason.to_str_lossy());
     }
@@ -2124,6 +2226,39 @@ pub(super) const HIDDEN_WIDTH: f32 = crate::widgets::HEAD;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remotes_addresses_are_said_short() {
+        assert_eq!(
+            short_url("git@github.com:owner/repo.git"),
+            "github.com/owner/repo"
+        );
+        assert_eq!(
+            short_url("https://gitlab.com/group/sub/project.git"),
+            "gitlab.com/group/sub/project"
+        );
+        assert_eq!(
+            short_url("ssh://git@host:2222/team/tool.git"),
+            "host:2222/team/tool"
+        );
+        assert_eq!(short_url("file:///tmp/repo.git"), "/tmp/repo.git");
+    }
+
+    #[test]
+    fn a_stash_s_words_lead_its_branch_said_apart() {
+        assert_eq!(
+            stash_words("On main: fix the parser"),
+            ("fix the parser", Some("main"))
+        );
+        assert_eq!(
+            stash_words("WIP on topic: 1234abcd Add the thing"),
+            ("Add the thing", Some("topic"))
+        );
+        assert_eq!(
+            stash_words("a message of its own"),
+            ("a message of its own", None)
+        );
+    }
 
     #[test]
     fn names_sort_as_people_read_them() {

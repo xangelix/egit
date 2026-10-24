@@ -3738,19 +3738,10 @@ impl TableDelegate for CommitRows<'_> {
         response.context_menu(|ui| {
             actions::commit_menu(ui, &menus, id, asked);
             ui.separator();
-            actions::menu_header(ui, "Copy");
-            if actions::item(ui, (icon::COPY, "Copy commit name"), Ok(())) {
-                ui.ctx().copy_text(id.to_string());
-            }
-            if let Some(summary) = summaries.peek(&id)
-                && actions::item(ui, (icon::COPY, "Copy subject"), Ok(()))
-            {
-                ui.ctx().copy_text(summary.subject.to_string());
-            }
-            ui.separator();
             let subject = summaries
                 .peek(&id)
                 .map(|summary| summary.subject.to_string());
+            actions::copy_menu(ui, &menus, (id, subject.as_deref()), asked);
             actions::patch_items(ui, &menus, id, subject.as_deref(), asked);
         });
     }

@@ -245,6 +245,11 @@ impl DiffDocument {
         self.lfs
     }
 
+    /// Whether it changes something other than lines of text (a binary file).
+    pub(crate) const fn is_binary(&self) -> bool {
+        self.binary
+    }
+
     /// How many lines were added, and removed.
     pub(crate) const fn changed(&self) -> (u32, u32) {
         (self.added, self.removed)

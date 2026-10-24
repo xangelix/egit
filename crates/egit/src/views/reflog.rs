@@ -381,23 +381,30 @@ fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut ReflogView, entries: &[Refl
                     .max_rect(rect.shrink2(egui::vec2(8.0, 0.0)))
                     .layout(egui::Layout::left_to_right(egui::Align::Center)),
             );
-            row.add_sized(
-                [64.0, ROW_HEIGHT],
-                egui::Label::new(muted(&row, format!("@{{{}}}", entry.index))).selectable(false),
+            // Columns as wide on every row, from the left: its place, how long ago, the commit,
+            // then what moved it and the commit's subject in what is left.
+            let place_width = crate::widgets::text_width(&row, "@{99999}");
+            crate::widgets::column(
+                &mut row,
+                (place_width, ROW_HEIGHT),
+                egui::Align::Min,
+                |ui| {
+                    ui.add(
+                        egui::Label::new(muted(ui, format!("@{{{}}}", entry.index)))
+                            .selectable(false),
+                    );
+                },
             );
             let age = u64::try_from(entry.time)
                 .map_or_else(|_| String::new(), |time| format::ago(time, now));
-            row.add_sized(
-                [110.0, ROW_HEIGHT],
-                egui::Label::new(muted(&row, age))
-                    .selectable(false)
-                    .truncate(),
-            );
-            row.add(
-                egui::Label::new(action.as_str())
-                    .truncate()
-                    .selectable(false),
-            );
+            let age_width = crate::widgets::text_width(&row, "11 months ago");
+            crate::widgets::column(&mut row, (age_width, ROW_HEIGHT), egui::Align::Min, |ui| {
+                ui.add(
+                    egui::Label::new(muted(ui, age))
+                        .selectable(false)
+                        .truncate(),
+                );
+            });
             // Not selectable: a click on it selects the row.
             row.add(
                 egui::Label::new(
@@ -406,6 +413,11 @@ fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut ReflogView, entries: &[Refl
                         .color(palette.muted),
                 )
                 .selectable(false),
+            );
+            row.add(
+                egui::Label::new(action.as_str())
+                    .truncate()
+                    .selectable(false),
             );
             row.add(
                 egui::Label::new(muted(&row, entry.subject.to_str_lossy()))

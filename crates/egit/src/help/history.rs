@@ -748,7 +748,7 @@ pub(super) const TOPICS: &[Topic] = &[
     Topic {
         id: "ok",
         group: Group::Egit,
-        title: "OK",
+        title: "Answering a prompt",
         on: &["OK"],
         what: "Hands git (or ssh, or a signing program) what you typed: a user name, a \
                password or token, a key's passphrase. egit passes it straight on and wipes it; \
@@ -770,11 +770,11 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "yes-no",
         group: Group::Egit,
         title: "Yes and No",
-        on: &["Yes", "No"],
+        on: &["Yes", "No", "Trust and connect", "Don't connect"],
         what: "Answers git's or ssh's question. Most often ssh's, connecting to a server for \
-               the first time: is this its key? Compare the fingerprint with the one the host \
-               publishes (GitHub and GitLab list theirs) before Yes: ssh then remembers it in \
-               ~/.ssh/known_hosts. No stops the command.",
+               the first time: trust this host? Compare the fingerprint with the one the host \
+               publishes (GitHub and GitLab list theirs) before Trust and connect: ssh then \
+               remembers it in ~/.ssh/known_hosts. Don't connect stops the command.",
         git: "",
         cases: &[(
             "ssh refuses: the host key changed?",

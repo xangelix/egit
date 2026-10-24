@@ -497,29 +497,21 @@ fn first_push(ui: &mut Ui, pane: &TaskPane<'_>, options: &mut PushOptions) -> Op
     let remotes = pane.remotes();
     let mut remote = options.remote.to_str_lossy().into_owned();
     let mut name = options.remote_branch.to_str_lossy().into_owned();
-    egui::Grid::new("first-push")
-        .num_columns(2)
-        .spacing([12.0, 8.0])
-        .show(ui, |ui| {
-            let remote_label = ui.label(muted(ui, "Remote"));
-            egui::ComboBox::from_id_salt("first-push-remote")
-                .selected_text(&remote)
-                .show_ui(ui, |ui| {
-                    for choice in &remotes {
-                        ui.selectable_value(&mut remote, choice.clone(), choice);
-                    }
-                })
-                .response
-                .labelled_by(remote_label.id);
-            ui.end_row();
-            let name_label = ui.label(muted(ui, "As"));
-            ui.add_sized(
-                [240.0, crate::widgets::TARGET + 2.0],
-                crate::widgets::line_field(&mut name),
-            )
-            .labelled_by(name_label.id);
-            ui.end_row();
-        });
+    // Laid out as every dialog's form: each label over its field, the field as wide as the
+    // dialog.
+    let remote_label = ui.label(muted(ui, "Remote"));
+    egui::ComboBox::from_id_salt("first-push-remote")
+        .selected_text(&remote)
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for choice in &remotes {
+                ui.selectable_value(&mut remote, choice.clone(), choice);
+            }
+        })
+        .response
+        .labelled_by(remote_label.id);
+    ui.add_space(8.0);
+    let entered = name_field(ui, "Its name there", &mut name);
     ui.add_space(8.0);
     ui.label(muted(
         ui,
@@ -529,6 +521,9 @@ fn first_push(ui: &mut Ui, pane: &TaskPane<'_>, options: &mut PushOptions) -> Op
     options.remote_branch = name.trim().to_owned().into();
     ui.add_space(12.0);
     let ready = !options.remote.is_empty() && !options.remote_branch.is_empty();
+    if entered && ready {
+        return Some(Answer::Run(Task::Push(options.clone())));
+    }
     buttons(ui, "Push", ready, || Task::Push(options.clone()))
 }
 
@@ -711,16 +706,19 @@ fn set_upstream(
         if widgets::primary(ui, known, "Set upstream").clicked() {
             answer = Some(Answer::Run(set(Some(upstream.trim()))));
         }
-        if let Some(had) = had
-            && widgets::secondary(ui, true, &format!("Forget {had}"))
-                .on_hover_text("Leave the branch without an upstream")
-                .clicked()
-        {
-            answer = Some(Answer::Run(set(None)));
-        }
         if widgets::secondary(ui, true, "Cancel").clicked() {
             answer = Some(Answer::Closed);
         }
+        // Forgetting it is another answer: at the row's other end, apart from the two.
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            if let Some(had) = had
+                && widgets::secondary(ui, true, &format!("Forget {had}"))
+                    .on_hover_text("Leave the branch without an upstream")
+                    .clicked()
+            {
+                answer = Some(Answer::Run(set(None)));
+            }
+        });
     });
     answer
 }

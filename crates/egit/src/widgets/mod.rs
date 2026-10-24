@@ -672,6 +672,22 @@ pub(crate) fn secondary(ui: &mut Ui, enabled: bool, text: &str) -> Response {
     response
 }
 
+/// A [`secondary`] button whose words are in the danger's colour: what loses work, beside other
+/// buttons (a menu's danger items alike), quieter than [`danger`]'s fill.
+pub(crate) fn risky(ui: &mut Ui, enabled: bool, text: &str) -> Response {
+    let words = if enabled {
+        RichText::new(text).color(Palette::of(ui.ctx()).danger)
+    } else {
+        RichText::new(text)
+    };
+    let response = ui.add_enabled(
+        enabled,
+        Button::new(words).wrap_mode(egui::TextWrapMode::Extend),
+    );
+    crate::help::note(ui, response.rect, text);
+    response
+}
+
 /// How a toolbar's button shows: its icon and words, or (where room is short) its icon alone,
 /// its words on hover. Named by its words either way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

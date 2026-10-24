@@ -521,6 +521,18 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
         can
     };
     let mut ask = |what| *asked = Some(what);
+    // Its page on the forge first: what people reach for most outside git.
+    if let Some(repository) = menus.forge.repositories.first() {
+        let forge = repository.host().kind().name();
+        if item(
+            ui,
+            (icon::ARROW_SQUARE_OUT, &format!("Open on {forge}")),
+            Ok(()),
+        ) {
+            ask(Ask::Open(repository.commit_url(id)));
+        }
+        ui.separator();
+    }
     here_items(ui, menus, id, other, &mut ask);
     ui.separator();
     into_items(ui, menus, id, (other, can), &mut ask);
@@ -547,24 +559,39 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             ask(Ask::Dialog(Dialog::HardReset { at: id }));
         }
     });
-    if let Some(repository) = menus.forge.repositories.first() {
-        ui.separator();
-        let forge = repository.host().kind().name();
-        if item(
-            ui,
-            (icon::ARROW_SQUARE_OUT, &format!("Open on {forge}")),
-            Ok(()),
-        ) {
-            ask(Ask::Open(repository.commit_url(id)));
+}
+
+/// What of a commit can be copied (a submenu): its name, its subject, a link to it on its
+/// forge, and it as a patch.
+pub(super) fn copy_menu(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    (id, subject): (ObjectId, Option<&str>),
+    asked: &mut Option<Ask>,
+) {
+    submenu(ui, (icon::COPY, "Copy"), |ui| {
+        if item(ui, (icon::COPY, "Copy commit name"), Ok(())) {
+            ui.ctx().copy_text(id.to_string());
         }
-        if item(
-            ui,
-            (icon::LINK, &format!("Copy link to this commit on {forge}")),
-            Ok(()),
-        ) {
-            ui.ctx().copy_text(repository.commit_url(id));
+        if let Some(subject) = subject
+            && item(ui, (icon::COPY, "Copy subject"), Ok(()))
+        {
+            ui.ctx().copy_text(subject.to_owned());
         }
-    }
+        if let Some(repository) = menus.forge.repositories.first() {
+            let forge = repository.host().kind().name();
+            if item(
+                ui,
+                (icon::LINK, &format!("Copy link to this commit on {forge}")),
+                Ok(()),
+            ) {
+                ui.ctx().copy_text(repository.commit_url(id));
+            }
+        }
+        if item(ui, (icon::COPY, "Copy as a patch"), menus.idle()) {
+            *asked = Some(Ask::Task(Task::CopyPatch(id)));
+        }
+    });
 }
 
 /// The actions picking several commits offers (their menu's), for this one alone, and how to
@@ -1651,7 +1678,8 @@ pub(super) fn ref_double_clicked(menus: &Menus<'_>, reference: &Reference) -> Op
         .map(|to| Ask::Task(Task::Switch(to)))
 }
 
-/// A commit's patches: saved, copied, or saved with the commits after it up to `HEAD`.
+/// A commit's patches: saved, or saved with the commits after it up to `HEAD` (copied, in
+/// [`copy_menu`]).
 pub(super) fn patch_items(
     ui: &mut Ui,
     menus: &Menus<'_>,
@@ -1665,9 +1693,6 @@ pub(super) fn patch_items(
             commit: id,
             name: patch_file_name(&subject),
         });
-    }
-    if item(ui, (icon::COPY, "Copy as a patch"), menus.idle()) {
-        *asked = Some(Ask::Task(Task::CopyPatch(id)));
     }
     if item(
         ui,
@@ -1849,8 +1874,11 @@ fn stash_row(
         ui.label(muted(ui, format!("stash@{{{}}}", stash.index)).small());
         ui.label(&stash.message);
         ui.separator();
-        for (label, pop) in [("Apply", false), ("Pop", true)] {
-            if item(ui, (icon::TRAY_ARROW_UP, label), busy) {
+        for (glyph, label, pop) in [
+            (icon::TRAY_ARROW_UP, "Apply", false),
+            (icon::ARROW_LINE_UP, "Pop", true),
+        ] {
+            if item(ui, (glyph, label), busy) {
                 *asked = Some(Ask::Task(Task::ApplyStash {
                     stash: stash.clone(),
                     pop,

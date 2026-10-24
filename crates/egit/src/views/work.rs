@@ -386,6 +386,8 @@ fn commit_form(
     let ready = !busy && !form.summary.trim().is_empty() && (staged > 0 || form.amend);
     let label = if form.amend {
         "Amend the last commit".to_owned()
+    } else if staged == 0 {
+        "Commit".to_owned()
     } else if staged == 1 {
         "Commit 1 file".to_owned()
     } else {
@@ -405,8 +407,17 @@ fn commit_form(
     let keys = crate::commands::keys_text("⌘Enter");
     let mut asked = None;
     ui.horizontal(|ui| {
+        // Why it can't yet, under the pointer.
+        let why = if busy {
+            "A task is running"
+        } else if staged == 0 && !form.amend {
+            "Stage the changes to commit first"
+        } else {
+            "Write a summary first"
+        };
         let button = widgets::primary(ui, ready, &label)
-            .on_hover_text(format!("Commit what is staged ({keys})"));
+            .on_hover_text(format!("Commit what is staged ({keys})"))
+            .on_disabled_hover_text(why);
         // Its keys beside it, not in it: its name stays its words.
         ui.label(muted(ui, keys.as_ref()).small());
         if button.clicked() || (shortcut && ready) {

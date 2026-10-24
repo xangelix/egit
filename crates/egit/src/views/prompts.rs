@@ -173,19 +173,30 @@ impl Prompts {
             .stroke(egui::Stroke::new(1.0, palette.border))
             .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CARD))
             .inner_margin(egui::Margin::same(20));
+        // ssh's question about a host it hasn't met: whether to trust it, its fingerprint in
+        // code's font, its "(yes/no/[fingerprint])" said by the buttons instead.
+        let host_key = kind == PromptKind::YesNo && prompt.text().contains("authenticity of host");
         let modal = Modal::new(Id::new("askpass")).frame(frame).show(ctx, |ui| {
             ui.set_width(480.0);
-            let (glyph, title) = title(kind);
+            let (glyph, title) = if host_key {
+                (icon::FINGERPRINT, "Trust this host?")
+            } else {
+                title(kind)
+            };
             widgets::panel_title(ui, format!("{glyph}  {title}"));
             if let Some(context) = prompt.context() {
                 ui.label(muted(ui, format!("While {}", lowercase_first(context))));
             }
             ui.add_space(8.0);
-            let question = ui.add(
-                egui::Label::new(prompt.text().trim_end())
-                    .selectable(true)
-                    .wrap(),
-            );
+            let question = if host_key {
+                host_question(ui, prompt.text())
+            } else {
+                ui.add(
+                    egui::Label::new(prompt.text().trim_end())
+                        .selectable(true)
+                        .wrap(),
+                )
+            };
             let topic = match kind {
                 PromptKind::Visible => "prompt-user",
                 PromptKind::Secret => "prompt-secret",
@@ -212,7 +223,10 @@ impl Prompts {
                         field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
                     ui.add_space(8.0);
                     widgets::buttons_row(ui, |ui| {
-                        if widgets::primary(ui, true, "OK").clicked() || entered {
+                        let go = widgets::primary(ui, true, "Continue");
+                        // Explained as answering a prompt, not an operation's Continue.
+                        crate::help::note_topic(ui, go.rect, "ok");
+                        if go.clicked() || entered {
                             decision = Some(Decision::Answer);
                         }
                         if widgets::secondary(ui, true, "Cancel").clicked() {
@@ -220,22 +234,9 @@ impl Prompts {
                         }
                     });
                 }
-                PromptKind::YesNo => widgets::buttons_row(ui, |ui| {
-                    if widgets::primary(ui, true, "Yes").clicked() {
-                        decision = Some(Decision::Say("yes"));
-                    }
-                    if widgets::secondary(ui, true, "No").clicked() {
-                        decision = Some(Decision::Say("no"));
-                    }
-                }),
-                PromptKind::Confirm => widgets::buttons_row(ui, |ui| {
-                    if widgets::primary(ui, true, "Allow").clicked() {
-                        decision = Some(Decision::Say(""));
-                    }
-                    if widgets::secondary(ui, true, "Deny").clicked() {
-                        decision = Some(Decision::Refuse);
-                    }
-                }),
+                PromptKind::YesNo | PromptKind::Confirm => {
+                    decision = choices(ui, kind, host_key);
+                }
                 PromptKind::Notice => {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -294,12 +295,58 @@ enum Decision {
     Refuse,
 }
 
+/// A yes-or-no question's buttons (a host to trust, a key to use); the decision, once taken.
+fn choices(ui: &mut egui::Ui, kind: PromptKind, host_key: bool) -> Option<Decision> {
+    let mut decision = None;
+    widgets::buttons_row(ui, |ui| {
+        let (yes, no, said) = match (kind, host_key) {
+            (PromptKind::Confirm, _) => ("Allow", "Deny", Decision::Say("")),
+            (_, true) => ("Trust and connect", "Don't connect", Decision::Say("yes")),
+            _ => ("Yes", "No", Decision::Say("yes")),
+        };
+        if widgets::primary(ui, true, yes).clicked() {
+            decision = Some(said);
+        }
+        if widgets::secondary(ui, true, no).clicked() {
+            decision = Some(if kind == PromptKind::Confirm {
+                Decision::Refuse
+            } else {
+                Decision::Say("no")
+            });
+        }
+    });
+    decision
+}
+
+/// ssh's question about a host it hasn't met (`text`), its own "(yes/no/[fingerprint])" left
+/// to the buttons: its words and fingerprint in code's font, and what to check before trusting
+/// it. The question's label (what the buttons answer).
+fn host_question(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let said: String = text
+        .lines()
+        .filter(|line| !line.starts_with("Are you sure you want to continue"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let question = ui.add(
+        egui::Label::new(egui::RichText::new(said).monospace())
+            .selectable(true)
+            .wrap(),
+    );
+    ui.add_space(4.0);
+    ui.label(muted(
+        ui,
+        "Compare the fingerprint with the one its owners publish: trusted, ssh remembers it \
+         (known_hosts), and asks again only if it ever changes.",
+    ));
+    question
+}
+
 /// The dialog's icon and title for a kind of question.
 const fn title(kind: PromptKind) -> (&'static str, &'static str) {
     match kind {
         PromptKind::Visible => (icon::USER, "A user name is needed"),
         PromptKind::Secret => (icon::LOCK_KEY, "A password or passphrase is needed"),
-        PromptKind::YesNo => (icon::QUESTION, "Your decision is needed"),
+        PromptKind::YesNo => (icon::QUESTION, "Answer git's question"),
         PromptKind::Confirm => (icon::KEY, "Allow the use of a key?"),
         PromptKind::Notice => (icon::FINGERPRINT, "Waiting for your security key"),
     }

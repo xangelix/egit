@@ -2,7 +2,6 @@
 //! following renames, listed as git finds them; the selected one's diff of the file below,
 //! from where the history shows that commit, or the file's blame there.
 
-use std::fmt::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -27,6 +26,9 @@ use crate::widgets::{self, muted};
 
 /// A row's height in the list.
 const ROW_HEIGHT: f32 = 24.0;
+
+/// The author's column's width.
+const AUTHOR: f32 = 140.0;
 
 /// The commits found so far, and whether the walk is done (or what went wrong).
 #[derive(Debug, Default)]
@@ -348,26 +350,34 @@ fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut FileHistoryView, count: usi
                 )
                 .selectable(false),
             );
+            // Columns as wide on every row: how long ago, who; the subject (and a rename's old
+            // path) in what is left.
             let age = u64::try_from(commit.time)
                 .map_or_else(|_| String::new(), |time| compact_age(time, now));
-            row.add_sized(
-                [36.0, ROW_HEIGHT],
-                egui::Label::new(muted(&row, age)).selectable(false),
-            );
+            let age_width = crate::widgets::text_width(&row, "12mo");
+            crate::widgets::column(&mut row, (age_width, ROW_HEIGHT), egui::Align::Max, |ui| {
+                ui.add(egui::Label::new(muted(ui, age)).selectable(false));
+            });
+            row.add_space(8.0);
+            crate::widgets::column(&mut row, (AUTHOR, ROW_HEIGHT), egui::Align::Min, |ui| {
+                ui.add(
+                    egui::Label::new(muted(ui, commit.author.as_str()))
+                        .truncate()
+                        .selectable(false),
+                );
+            });
             row.add(
                 egui::Label::new(subject.as_str())
                     .truncate()
                     .selectable(false),
             );
-            let mut note = commit.author.clone();
             if let Some(from) = &commit.from {
-                let _ = write!(note, " · from {}", from.to_str_lossy());
+                row.add(
+                    egui::Label::new(muted(&row, format!("from {}", from.to_str_lossy())))
+                        .truncate()
+                        .selectable(false),
+                );
             }
-            row.add(
-                egui::Label::new(muted(&row, note))
-                    .truncate()
-                    .selectable(false),
-            );
         }
     });
     drop(commits);

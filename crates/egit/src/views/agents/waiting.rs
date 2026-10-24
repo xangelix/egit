@@ -125,8 +125,20 @@ fn permission(
         );
     }
     let mut chosen = None;
+    // Enter, with nothing typed in the prompt, allows it once: the keys answer as the mouse does.
+    // Only while the prompt (or no text field) has the keys: Enter elsewhere is another field's.
+    let prompt = egui::Id::new(("agent-prompt", work_tree));
+    let keys_here = ui.memory(|memory| memory.has_focus(prompt)) || !ui.ctx().text_edit_focused();
+    let entered = keys_here
+        && view.draft.trim().is_empty()
+        && !ui.ctx().memory(|memory| memory.top_modal_layer().is_some())
+        && ui.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
     ui.horizontal_wrapped(|ui| {
-        if widgets::primary(ui, true, "Allow once").clicked() {
+        if widgets::primary(ui, true, "Allow once")
+            .on_hover_text("Allow it this once (Enter, with nothing typed)")
+            .clicked()
+            || entered
+        {
             chosen = Some(Chosen::Answer(allow(asked, false, None)));
         }
         if !asked.suggestions.is_empty()

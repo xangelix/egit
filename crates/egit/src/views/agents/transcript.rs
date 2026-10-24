@@ -128,7 +128,19 @@ fn push_rows(
         return;
     };
     let deeper = depth.saturating_add(1);
-    for child in under {
+    // A subagent's last words are its report: shown once, as the report.
+    let report = call.result.as_ref().map(|result| result.text.trim());
+    let said_again = |child: usize| {
+        matches!(
+            items.get(child).map(|item| &item.kind),
+            Some(ItemKind::Text(text)) if Some(text.trim()) == report
+        )
+    };
+    let shown = under
+        .last()
+        .filter(|last| said_again(**last))
+        .map_or(under.len(), |_| under.len().saturating_sub(1));
+    for child in under.iter().take(shown) {
         push_rows(rows, (*child, deeper), items, (children, open));
     }
     if call.result.is_some() {
@@ -482,10 +494,16 @@ fn turn(ui: &mut Ui, end: &TurnEnd, palette: &Palette) {
         );
         return;
     }
-    let seconds = f64::from(u32::try_from(end.duration_ms).unwrap_or(u32::MAX)) / 1000.0;
+    // Under a minute in tenths ("4.2 s"), longer as egit says durations ("2 min 23 s").
+    let took = if end.duration_ms < 60_000 {
+        let seconds = f64::from(u32::try_from(end.duration_ms).unwrap_or(u32::MAX)) / 1000.0;
+        format!("{seconds:.1} s")
+    } else {
+        crate::format::duration(end.duration_ms.checked_div(1000).unwrap_or(0))
+    };
     let tokens = end.input_tokens.saturating_add(end.output_tokens);
     let said = format!(
-        "{}  {seconds:.1} s · {} tokens · ≈ ${:.2}",
+        "{}  {took} · {} tokens · ≈ ${:.2}",
         icon::CHECK,
         crate::format::count(tokens),
         end.cost_usd

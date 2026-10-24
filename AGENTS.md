@@ -1761,7 +1761,8 @@ writes paths), never `OsStrExt`.
     at most, and whoever `Name <email>` typed names; each a `Co-authored-by` trailer), amend
     (a blank form takes the last commit's message, `read_message`, its co-author lines moved
     into the chips: git adds them back), sign off, sign (`commit.gpgSign` by default),
-    and the last commit's output (its hooks') or problem (git's whole complaint, and "Show the
+    (the button "Commit" while nothing is staged, saying why it can't on hover), and the last
+    commit's output (its hooks') or problem (git's whole complaint, and "Show the
     output"); where the repository has `pre-commit` or `commit-msg`, which run first and "Skip
     hooks" (`--no-verify`, this commit only); while a commit runs, the hooks running and for how
     long, "Show the output", and Cancel (its token: SIGTERM to git's group, its hooks with it). It clears
@@ -1836,12 +1837,14 @@ writes paths), never `OsStrExt`.
     ref, and in a drop's menu; the
     branch, `HEAD`, the configuration (its remotes read only when a menu needs them), the refs, whether a task runs or an operation is in progress,
     which disable what would change the branch, saying why): a commit's context menu (switch
-    there detached, create a branch or tag there, merge it in (or always with a merge commit,
+    there detached (its page on the forge first, "Open on GitHub"), create a branch or tag
+    there, merge it in (or always with a merge commit,
     "(no fast-forward)"; a branch's tip merged as the branch, a local one first, so git's message
     names it), rebase onto it, cherry-pick,
     revert, reset soft or mixed, hard after a dialog, a worktree there, its Bisect submenu (mark
-    it bad or good in the bisection's terms, starting one; skip it), copy a link to it on
-    its forge; and in the row's menu, its name, subject, or "Save as a patch…"), a ref badge's
+    it bad or good in the bisection's terms, starting one; skip it); and in the row's menu its
+    Copy submenu (`copy_menu`: its name, subject, a link to it on its forge, it as a patch)
+    and "Save as a patch…"), a ref badge's
     (switch to a branch, a remote's through its local one tracking it, unless one of that
     name exists; merge it in (or without fast-forward), rebase onto it (or onto it keeping
     merges), fast-forward the
@@ -1928,19 +1931,24 @@ writes paths), never `OsStrExt`.
     it; it unfolds what it matches and scrolls back to the top), then sections, each a header
     with its count (named "Branches: 5"; a click folds it; its menu; a "+" adding a remote, a
     stash, or a worktree): branches, folded into folders by their `/`s; remotes, each with its
-    branches (its menu: fetch, pruned or not, change its address, rename, remove, copy the
-    address, open on its forge); pull or merge requests (on a forge; a click shows one; while
+    address said short (`short_url`: `github.com/owner/repo`), losing its start where it
+    doesn't fit (`fit_tail`), and its branches (under a cloud, as in the graph; its menu: fetch,
+    pruned or not, change its address, rename, remove, copy the address, open on its forge); pull or merge requests (on a forge; a click shows one; while
     they want a sign-in, a row in the accent offering it, `sign_in_row`); tags
-    (folded at first); stashes (a click shows its commit in the details: `HistoryView::peek`,
+    (folded at first); stashes (their message leading, git's "On main:" said after it,
+    `stash_words`, their place at the row's right; a click shows its commit in the details:
+    `HistoryView::peek`,
     which the details show in place of the selection while the history doesn't have it; Apply,
-    Pop, Drop); worktrees (here, locked, missing marked; a double click or "Open in a tab";
+    Pop, Drop); worktrees (here, locked, missing marked; their folder losing its start; a
+    double click or "Open in a tab";
     Lock, Unlock, Remove; Open its folder); submodules (when there are any: path and recorded
     commit, or "not set up"; Update or Set up, Open in a tab, Open its folder). Each section's header is a band (its caret,
     icon, title in small capitals, and count in a pill: `widgets::section_galleys`,
     `paint_section`); a tree's levels step in by a whole icon (`INDENT`: a folder's or
     remote's children have their icons under its name), a guide running down from each
     level's icon, its caret hanging left of its icon (`paint_row`, `paint_caret`). A branch's
-    or remote branch's eye at its row's right (`eye`: open, or struck through while hidden;
+    or remote branch's eye at its row's right (`eye`: open under the pointer or the keyboard's
+    focus, else drawn only struck through, while hidden;
     named "Show <name> in the graph", a checkbox) hides it from the graph or shows it
     (`Scope::hidden`; the branch checked out has none: it always shows, marked with a check,
     its name leading); a ref's row selects its commit (or peeks at it), a branch's
@@ -1995,7 +2003,8 @@ writes paths), never `OsStrExt`.
     bar's Reflog: `HEAD`'s; a branch badge's "Show <name>'s reflog"): read in a job (10,000
     moves at most), read again when the history is (`follow`) or `HEAD` moves, the selection
     kept on its move (by commit and time). Each row (`show_rows`; ↑ ↓; named by what moved
-    it): its place, how long ago, what moved it, the commit and its subject. The selected
+    it): its place and how long ago (columns as wide on every row), the commit, what moved it,
+    and its subject. The selected
     move's commit shows in the details beside it (`peeked`, though no branch may reach it),
     its files opened in the reflog's place; "Show the commit" (when the history has it),
     "Create a branch here…" (not switched to: kept), "Reset <branch> to here" (soft, mixed,
@@ -2012,8 +2021,9 @@ writes paths), never `OsStrExt`.
     again), "Blaming… 1,200 of 5,000 lines" while git works; a line selected shows its
     commit below, with "Show the commit" (selected in the history) and "Blame before this
     commit" (its `previous` commit and path). The history:
-    `file_log`'s commits as they are found, newest first (`show_rows`; a rename's row says
-    "from <old path>"), ↑ ↓; the selected one's diff of the file below (`read_diff`, a pure
+    `file_log`'s commits as they are found, newest first (`show_rows`: the commit, how long ago
+    and who in columns as wide on every row, the subject; a rename's row says "from <old
+    path>"), ↑ ↓; the selected one's diff of the file below (`read_diff`, a pure
     rename said so), "Show the commit", and "Blame it here".
     `views/clone.rs` — Home's clone card (`CloneView`): the address, the computer it goes onto
     ("Onto": this one, or another, as ssh reaches it, offered as the last a repository was
@@ -2186,10 +2196,12 @@ writes paths), never `OsStrExt`.
     conversation on the reading background (a `Stack`, its margins inside what scrolls), its
     `Rows` made again only when the transcript, a fold, or whether Claude works changes: each
     top-level item, an open call's subagent items stepped in under it (a guide down each step)
-    and its report last (`Row::Report`), and while a turn runs a working row (its seconds;
+    and its report last (`Row::Report`; the subagent's last words left out where they are its
+    report), and while a turn runs a working row (its seconds;
     starting; "Waiting for your answer, below"); prompts in a box (their images' names), Claude's
     words as Markdown, thinking a line of its first words opening onto all of it, each turn's
-    end (time, tokens, estimated cost, a hairline after), notices (a warning's or failure's on
+    end (time, in tenths under a minute and as durations past it, tokens, estimated cost, a
+    hairline after), notices (a warning's or failure's on
     a tint); before the first prompt, what Claude does here and tips. `tools.rs`: a tool's
     line (`line`: caret, icon, verb, detail cut as suits it, a path losing its start
     (`tables::elided_start`), a note (an edit's "+2 −1", a plan's "1 of 3 done", an agent's
@@ -2209,7 +2221,8 @@ writes paths), never `OsStrExt`.
     blocks (`parts`, pulldown-cmark's offsets; one still streaming runs to the end, coloured
     once it has). `waiting.rs`: the oldest request over the prompt (how many more): a tool's
     permission in its own terms ("Claude wants to edit src/parser.rs", the command, the diff,
-    the file's content), why Claude Code asks, "Allow once", "Allow for this conversation" (its
+    the file's content), why Claude Code asks, "Allow once" (Enter too, with nothing typed,
+    while the prompt or no field has the keys), "Allow for this conversation" (its
     suggestions as rules), "Refuse…" (asking why: Enter or Refuse, Back); Claude's questions
     (choices described under their words, several where it takes several, one's own words;
     Answer, Don't answer); a plan ("Approve and accept edits", "Approve": the mode set first,
@@ -2219,7 +2232,8 @@ writes paths), never `OsStrExt`.
     at most; ↑ ↓, Tab or Enter completes, Escape dismisses, a click), "Ask Claude" and what
     Enter does as fits, the prompt (Enter sends, Shift+Enter a new line; queued while a turn
     runs), attaching images (`FileQuestion::AttachImages`), the mode's menu (each mode's words
-    on hover) and the model's, compact under 420 points, Send or Stop; who it runs as (the
+    on hover; as wide whichever it says, so the model's stays put) and the model's, compact
+    under 420 points, Send or Stop; who it runs as (the
     account's menu, chosen before it begins), who is signed in or an API key, what it has cost;
     nobody signed in, Claude Code's own login command for that folder, copied, and "Look
     again". Help: `help/agents.rs`.
@@ -2248,7 +2262,10 @@ writes paths), never `OsStrExt`.
     version and path, the theme, Commands and Preferences (quiet buttons: framed only under the
     pointer), a warning when questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
     `AskpassServer` and an `SshSharing` at launch and gives git their environment; questions queue and show one
-    at a time in a modal (`PromptKind` decides the field and buttons); the abandoned are
+    at a time in a modal (`PromptKind` decides the field and buttons: Continue for what is
+    typed; ssh's question about a host it hasn't met as "Trust this host?", its fingerprint in
+    code's font and what to check, Trust and connect or Don't connect, `host_question`); the
+    abandoned are
     dropped (checked every 250 ms while shown); answers are handed over off the interface
     thread (`jobs::detached`), then wiped, with the text field's own undo copy removed from
     egui's memory).
@@ -2367,7 +2384,8 @@ writes paths), never `OsStrExt`.
     every control has an edge: `field` behind what is typed, `border_strong` under the
     pointer), `widgets/` (the pieces every view is built from, so each looks and answers
     alike: titles (`page_title` 22, `panel_title` 16, `heading`), buttons by kind (`primary`,
-    `danger` for what loses something, `secondary`, `small`, `link`; a toolbar's quiet `tool`,
+    `danger` for what loses something, `risky` (a secondary's in the danger's colour, beside
+    others: discarding lines), `secondary`, `small`, `link`; a toolbar's quiet `tool`,
     `tool_menu` with its caret (`tool_menu_of` where its words are someone's: a help topic explains
     it), and `icon_tool`, named in words, `Look::Full` or `Compact`;
     words never wrap inside a button; `quiet` draws frameless buttons without an inactive
