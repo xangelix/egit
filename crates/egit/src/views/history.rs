@@ -251,6 +251,8 @@ struct WorkCounts {
 struct Counted {
     files: usize,
     staged: usize,
+    /// Those in conflict.
+    conflicts: usize,
 }
 
 impl WorkCounts {
@@ -264,6 +266,10 @@ impl WorkCounts {
         self.counts = Counted {
             files: status.len(),
             staged: status.entries().filter(|entry| entry.is_staged()).count(),
+            conflicts: status
+                .entries()
+                .filter(|entry| entry.kind == egit_git::EntryKind::Unmerged)
+                .count(),
         };
     }
 }
@@ -958,6 +964,12 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         config,
         stashes,
         refs: (history.shown.refs().shared(), history.shown.refs().read()),
+        conflicts: shared.work_status.map_or(0, |status| {
+            status
+                .entries()
+                .filter(|entry| entry.kind == egit_git::EntryKind::Unmerged)
+                .count()
+        }),
         tasks: &mut *tasks,
         actions: &mut *actions,
     };
@@ -1305,28 +1317,22 @@ fn submodules_banner(
         UiBuilder::new().id(Id::new(("submodules-banner", shared.id))),
         |ui| {
             ui.add_space(4.0);
-            Frame::new()
-                .fill(palette.warn.gamma_multiply(0.10))
-                .stroke(Stroke::new(1.0, palette.warn.gamma_multiply(0.7)))
-                .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
-                .inner_margin(Margin::symmetric(12, 6))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    crate::help::note_topic(ui, ui.max_rect(), "submodule-mend");
-                    ui.horizontal(|ui| {
-                        let headline = format!("{}  Submodules: {}", icon::PACKAGE, out.words());
-                        ui.add(
-                            Label::new(RichText::new(headline).color(palette.warn).semibold())
-                                .truncate(),
-                        );
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if widgets::icon_tool(ui, true, icon::X, "Dismiss").clicked() {
-                                view.submodules_dismissed = Some(out);
-                            }
-                            let show = widgets::secondary(ui, true, "Show them");
-                            crate::help::note_topic(ui, show.rect, "submodules-page");
-                            open_page = show.clicked();
-                            if widgets::primary(ui, !shared.busy, "Mend everything")
+            widgets::banner(ui, widgets::Tone::Warn, |ui| {
+                crate::help::note_topic(ui, ui.max_rect(), "submodule-mend");
+                ui.horizontal(|ui| {
+                    let headline = format!("{}  Submodules: {}", icon::PACKAGE, out.words());
+                    ui.add(
+                        Label::new(RichText::new(headline).color(palette.warn).semibold())
+                            .truncate(),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if widgets::icon_tool(ui, true, icon::X, "Dismiss").clicked() {
+                            view.submodules_dismissed = Some(out);
+                        }
+                        let show = widgets::secondary(ui, true, "Show them");
+                        crate::help::note_topic(ui, show.rect, "submodules-page");
+                        open_page = show.clicked();
+                        if widgets::primary(ui, !shared.busy, "Mend everything")
                             .on_hover_text(
                                 "Sync their addresses, then set up every one and bring it to the \
                                  commit recorded, nested ones too",
@@ -1335,9 +1341,9 @@ fn submodules_banner(
                         {
                             pane.start(Task::Submodules(crate::submodules::SubmoduleTask::Mend));
                         }
-                        });
                     });
                 });
+            });
         },
     );
     open_page
@@ -1370,64 +1376,58 @@ fn sign_in_banner(ui: &mut Ui, shared: &Shared<'_>, actions: &mut Vec<Action>) {
         UiBuilder::new().id(Id::new(("sign-in-banner", shared.id))),
         |ui| {
             ui.add_space(4.0);
-            Frame::new()
-                .fill(palette.accent.gamma_multiply(0.10))
-                .stroke(Stroke::new(1.0, palette.accent.gamma_multiply(0.7)))
-                .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
-                .inner_margin(Margin::symmetric(12, 8))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    crate::help::note_topic(ui, ui.max_rect(), "forge-sign-in");
-                    let headline = if refused {
-                        format!("{} refused the credentials git keeps for it.", host.name())
-                    } else {
+            widgets::banner(ui, widgets::Tone::Info, |ui| {
+                crate::help::note_topic(ui, ui.max_rect(), "forge-sign-in");
+                let headline = if refused {
+                    format!("{} refused the credentials git keeps for it.", host.name())
+                } else {
+                    format!(
+                        "Sign in to {} to see this repository's {}.",
+                        kind.name(),
+                        super::sign_in::what_is_read(kind)
+                    )
+                };
+                ui.add(
+                    Label::new(
+                        RichText::new(format!("{}  {headline}", icon::SIGN_IN))
+                            .color(palette.text)
+                            .semibold(),
+                    )
+                    .wrap(),
+                );
+                ui.add(
+                    Label::new(muted(
+                        ui,
                         format!(
-                            "Sign in to {} to see this repository's {}.",
-                            kind.name(),
-                            super::sign_in::what_is_read(kind)
-                        )
-                    };
-                    ui.add(
-                        Label::new(
-                            RichText::new(format!("{}  {headline}", icon::SIGN_IN))
-                                .color(palette.text)
-                                .semibold(),
-                        )
-                        .wrap(),
-                    );
-                    ui.add(
-                        Label::new(muted(
-                            ui,
-                            format!(
-                                "egit asks for a personal access token for {}, which your \
+                            "egit asks for a personal access token for {}, which your \
                              credential helper keeps for git too.",
-                                host.name()
-                            ),
+                            host.name()
+                        ),
+                    ))
+                    .wrap(),
+                );
+                ui.horizontal(|ui| {
+                    if widgets::primary(ui, true, "Sign in…").clicked() {
+                        actions.push(Action::SignIn {
+                            repo: Some(shared.id),
+                            host: host.clone(),
+                        });
+                    }
+                    if widgets::secondary(ui, true, "Not now")
+                        .on_hover_text(format!(
+                            "Hide this for {}: the top bar's Sign in to {} stays",
+                            host.name(),
+                            kind.name()
                         ))
-                        .wrap(),
-                    );
-                    ui.horizontal(|ui| {
-                        if widgets::primary(ui, true, "Sign in…").clicked() {
-                            actions.push(Action::SignIn {
-                                repo: Some(shared.id),
-                                host: host.clone(),
-                            });
-                        }
-                        if widgets::secondary(ui, true, "Not now")
-                            .on_hover_text(format!(
-                                "Hide this for {}: the top bar's Sign in to {} stays",
-                                host.name(),
-                                kind.name()
-                            ))
-                            .clicked()
-                        {
-                            ui.ctx().data_mut(|data| {
-                                data.get_persisted_mut_or_default::<Vec<String>>(sign_in_later_id())
+                        .clicked()
+                    {
+                        ui.ctx().data_mut(|data| {
+                            data.get_persisted_mut_or_default::<Vec<String>>(sign_in_later_id())
                                 .push(host.name().to_owned());
-                            });
-                        }
-                    });
+                        });
+                    }
                 });
+            });
         },
     );
 }
@@ -1442,13 +1442,7 @@ fn lfs_banner(ui: &mut Ui, shared: &Shared<'_>, pane: &mut TaskPane<'_>) -> bool
     let mut open_page = false;
     ui.scope_builder(UiBuilder::new().id(Id::new(("lfs-banner", shared.id))), |ui| {
         ui.add_space(4.0);
-        Frame::new()
-            .fill(palette.warn.gamma_multiply(0.12))
-            .stroke(Stroke::new(1.0, palette.warn))
-            .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
-            .inner_margin(Margin::symmetric(12, 8))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
+        widgets::banner(ui, widgets::Tone::Warn, |ui| {
                 crate::help::note_topic(ui, ui.max_rect(), "lfs");
                 let (headline, how) = match trouble {
                     crate::lfs::LfsTrouble::NotInstalled => (
@@ -2061,26 +2055,31 @@ fn commit_graph_offer(
     actions: &mut Vec<Action>,
 ) {
     let palette = shared.palette;
-    if history.shown.commit_graph() == Some(false) && history.shown.rows() >= OFFER_COMMIT_GRAPH_AT
+    // Not now: hidden for this repository from then on (kept in egui's memory).
+    let later_id = Id::new(("commit-graph-later", shared.repository.git_dir()));
+    let later = ui
+        .ctx()
+        .data_mut(|data| *data.get_persisted_mut_or(later_id, false));
+    if history.shown.commit_graph() == Some(false)
+        && history.shown.rows() >= OFFER_COMMIT_GRAPH_AT
+        && !later
     {
         ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            ui.label(
-                RichText::new(format!(
-                    "{}  Without a commit-graph file, git reads all of this history before \
-                     showing any of it.",
-                    icon::LIGHTNING
-                ))
-                .color(palette.warn),
-            );
-            let busy = writing.is_pending();
-            if widgets::secondary(ui, !busy, "Write a commit-graph").clicked() {
-                actions.push(Action::WriteCommitGraph(shared.id));
-            }
+        let busy = writing.is_pending();
+        let words = "Without a commit-graph file, git reads all of this history before showing \
+                     any of it.";
+        let dismissed = widgets::notice(ui, widgets::Tone::Warn, words, true, |ui| {
             if busy {
                 ui.spinner();
             }
+            if widgets::primary(ui, !busy, "Write a commit-graph").clicked() {
+                actions.push(Action::WriteCommitGraph(shared.id));
+            }
         });
+        if dismissed {
+            ui.ctx()
+                .data_mut(|data| data.insert_persisted(later_id, true));
+        }
         if let Some(problem) = writing.err_ref() {
             ui.label(RichText::new(problem.to_string()).color(palette.danger));
         }
@@ -3921,6 +3920,12 @@ impl CommitRows<'_> {
             self.view.select_work();
         }
         let detail = match (counts.staged, counts.files) {
+            // Conflicts first: what is left to do.
+            _ if counts.conflicts == 1 => "1 in conflict".to_owned(),
+            _ if counts.conflicts > 1 => format!(
+                "{} in conflict",
+                count(u64::try_from(counts.conflicts).unwrap_or(u64::MAX))
+            ),
             (0, _) => "none staged yet".to_owned(),
             (staged, files) if staged == files => "all staged".to_owned(),
             (staged, _) => format!(

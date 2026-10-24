@@ -443,6 +443,86 @@ pub(crate) fn muted(ui: &Ui, text: impl Into<String>) -> RichText {
     RichText::new(text).color(Palette::of(ui.ctx()).muted)
 }
 
+/// What a banner or a notice says, by its colour: something done, something to know, a warning,
+/// a problem.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tone {
+    Done,
+    Info,
+    Warn,
+    Danger,
+}
+
+impl Tone {
+    /// Its colour on `palette`.
+    pub(crate) const fn color(self, palette: Palette) -> Color32 {
+        match self {
+            Self::Done => palette.ok,
+            Self::Info => palette.accent,
+            Self::Warn => palette.warn,
+            Self::Danger => palette.danger,
+        }
+    }
+
+    /// Its icon.
+    pub(crate) const fn icon(self) -> &'static str {
+        match self {
+            Self::Done => crate::theme::icon::CHECK_CIRCLE,
+            Self::Info => crate::theme::icon::INFO,
+            Self::Warn => crate::theme::icon::WARNING,
+            Self::Danger => crate::theme::icon::WARNING_CIRCLE,
+        }
+    }
+}
+
+/// A banner: what stands until it is dealt with, or what just happened, in a box tinted by its
+/// tone, every banner alike (its edge, corners, and room inside).
+pub(crate) fn banner<R>(ui: &mut Ui, tone: Tone, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let color = tone.color(Palette::of(ui.ctx()));
+    Frame::new()
+        .fill(color.gamma_multiply(0.10))
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.6)))
+        .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
+        .inner_margin(Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui)
+        })
+        .inner
+}
+
+/// A notice of a line: its tone's icon and its words (wrapping in what is left), then at its
+/// right what `add_buttons` adds (laid from the right) and, where it can go, an × dismissing it.
+/// Whether it was dismissed.
+pub(crate) fn notice(
+    ui: &mut Ui,
+    tone: Tone,
+    words: impl Into<WidgetText>,
+    dismissable: bool,
+    add_buttons: impl FnOnce(&mut Ui),
+) -> bool {
+    let palette = Palette::of(ui.ctx());
+    let words = words.into();
+    banner(ui, tone, |ui| {
+        let mut dismissed = false;
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if dismissable {
+                    dismissed = icon_tool(ui, true, crate::theme::icon::X, "Dismiss")
+                        .on_hover_text("Dismiss")
+                        .clicked();
+                }
+                add_buttons(ui);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(RichText::new(tone.icon()).color(tone.color(palette)));
+                    ui.add(egui::Label::new(words).wrap());
+                });
+            });
+        });
+        dismissed
+    })
+}
+
 /// A chip: a few small words in a thin outline of their colour ("may fail", "Draft", a label),
 /// 18 points tall however tall its row, so chips read as marks rather than buttons.
 pub(crate) fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
@@ -1083,27 +1163,17 @@ pub(crate) const fn scope_name(scope: ConfigScope) -> &'static str {
 /// A problem, with git's words below the sentence; `add_actions` adds buttons beside them.
 pub(crate) fn problem_box(ui: &mut Ui, problem: &Problem, add_actions: impl FnOnce(&mut Ui)) {
     let palette = Palette::of(ui.ctx());
-    Frame::new()
-        .fill(palette.danger.gamma_multiply(0.08))
-        .stroke(Stroke::new(1.0, palette.danger.gamma_multiply(0.6)))
-        .corner_radius(CornerRadius::same(crate::theme::RADIUS_BOX))
-        .inner_margin(Margin::same(12))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                RichText::new(format!(
-                    "{}  {}",
-                    crate::theme::icon::WARNING_CIRCLE,
-                    problem.title
-                ))
+    banner(ui, Tone::Danger, |ui| {
+        ui.label(
+            RichText::new(format!("{}  {}", Tone::Danger.icon(), problem.title))
                 .color(palette.danger)
                 .semibold(),
-            );
-            if !problem.detail.is_empty() {
-                ui.add(egui::Label::new(problem.detail.as_str()).selectable(true));
-            }
-            ui.horizontal(add_actions);
-        });
+        );
+        if !problem.detail.is_empty() {
+            ui.add(egui::Label::new(problem.detail.as_str()).selectable(true));
+        }
+        ui.horizontal(add_actions);
+    });
 }
 
 /// A dialog's row of buttons, laid out from the right (the first added is the rightmost), as

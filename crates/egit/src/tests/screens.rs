@@ -1450,10 +1450,16 @@ fn a_pull_stopped_at_conflicts_is_shown_and_aborted() {
     open_path(&mut harness, &mine);
     settle(&mut harness, "the history", history_shown);
     click_when_enabled(&mut harness, &format!("{}  Pull", icon::ARROW_DOWN));
-    wait_for_label(
-        &mut harness,
-        &format!("{}  A merge is in progress.", icon::WARNING),
-    );
+    // The banner says how many files are in conflict once the status is read.
+    let banner = format!("{}  A merge is in progress", icon::WARNING);
+    for _ in 0..2_000 {
+        harness.step();
+        if harness.query_by_label_contains(&banner).is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    wait_for_label(&mut harness, "Show the conflicts");
     harness.get_by_label("Show the conflicts").click();
     wait_for_label(&mut harness, "Conflict");
     // The fetched commit shown too: the history is read again after the pull.
@@ -1466,10 +1472,7 @@ fn a_pull_stopped_at_conflicts_is_shown_and_aborted() {
     wait_for_label(&mut harness, "Aborted: everything is as it was before.");
     for _ in 0..2_000 {
         harness.step();
-        if harness
-            .query_by_label(&format!("{}  A merge is in progress.", icon::WARNING))
-            .is_none()
-        {
+        if harness.query_by_label_contains(&banner).is_none() {
             break;
         }
         std::thread::sleep(Duration::from_millis(5));

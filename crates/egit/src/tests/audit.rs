@@ -132,11 +132,17 @@ pub(crate) fn run(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<Strin
             // A sliver under a point (text runs flowing one after another, their edges
             // rounded apart) is no overlap anyone sees.
             let sliver = shared.width() < 1.0 || shared.height() < 1.0;
+            // What a layer above covers (a dialog over the history) shows nobody an overlap; its
+            // own shapes there aren't the elements' below either.
+            let covered = shown
+                .iter()
+                .any(|over| over.layer.order > a.layer.order && over.visible.contains_rect(shared));
             if a.layer == b.layer
                 && shared.is_positive()
                 && shared.area() > 4.0
                 && !nested
                 && !sliver
+                && !covered
             {
                 problems.push(format!(
                     "{screen}: drawn over each other: {} and {}",

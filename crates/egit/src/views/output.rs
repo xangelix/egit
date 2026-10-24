@@ -105,6 +105,11 @@ fn status(ui: &mut Ui, run: &Run, now: Instant, palette: Palette) {
             palette.warn,
             format!("{} · stopped after {seconds:.1} s", run.title),
         ),
+        Some(Ended::Asked) => (
+            Some(icon::QUESTION),
+            palette.muted,
+            format!("{} · waiting for your answer", run.title),
+        ),
         Some(Ended::Failed) => (
             Some(icon::X_CIRCLE),
             palette.danger,
@@ -155,10 +160,11 @@ fn actions(ui: &mut Ui, output: &mut Output, now: Instant) {
         format!("{} · {} · {}", run.title, how(run), ago_text(ago))
     };
     let mut chosen = picked;
-    // What it shows stays put as time passes: how long ago only in the list.
+    // Which run shows (how it stands is said beside the bar's left): what it shows stays put as
+    // time passes, how long ago only in the list.
     let selected = output
         .shown()
-        .map(|run| format!("{} · {}", run.title, how(run)))
+        .map(|run| run.title.clone())
         .unwrap_or_default();
     let combo = ComboBox::from_id_salt("output-runs")
         .width(220.0)
@@ -190,6 +196,7 @@ fn how(run: &Run) -> &'static str {
         None => "running",
         Some(Ended::Done) => "done",
         Some(Ended::Stopped) => "stopped",
+        Some(Ended::Asked) => "asked",
         Some(Ended::Failed) => "failed",
         Some(Ended::Cancelled) => "cancelled",
     }

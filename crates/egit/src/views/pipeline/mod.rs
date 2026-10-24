@@ -1145,25 +1145,17 @@ pub(super) fn unread(ui: &mut Ui, repo: crate::repo::RepoId, why: &str) -> bool 
     ui.scope_builder(
         egui::UiBuilder::new().id(Id::new(("pipelines-unread", repo))),
         |ui| {
-            Frame::new()
-                .fill(palette.warn.gamma_multiply(0.10))
-                .stroke(egui::Stroke::new(1.0, palette.warn.gamma_multiply(0.6)))
-                .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
-                .inner_margin(Margin::symmetric(12, 2))
-                .show(ui, |ui| {
-                    ui.set_width(ui.available_width());
-                    crate::help::note_topic(ui, ui.max_rect(), "pipeline-mark");
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        dismissed = widgets::icon_tool(ui, true, icon::X, "Dismiss").clicked();
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            ui.label(
-                                RichText::new(format!("{}  ", icon::WARNING)).color(palette.warn),
-                            );
-                            ui.add(egui::Label::new(muted(ui, why)).truncate())
-                                .on_hover_text(why);
-                        });
+            widgets::banner(ui, widgets::Tone::Warn, |ui| {
+                crate::help::note_topic(ui, ui.max_rect(), "pipeline-mark");
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    dismissed = widgets::icon_tool(ui, true, icon::X, "Dismiss").clicked();
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.label(RichText::new(format!("{}  ", icon::WARNING)).color(palette.warn));
+                        ui.add(egui::Label::new(muted(ui, why)).truncate())
+                            .on_hover_text(why);
                     });
                 });
+            });
         },
     );
     dismissed

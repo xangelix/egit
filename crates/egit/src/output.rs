@@ -23,9 +23,12 @@ const CLOSE_AFTER: Duration = Duration::from_millis(1500);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Ended {
     Done,
-    /// Refused or stopped part-way, as git may (diverged branches, changes in the way,
-    /// conflicts): what to do next is asked or shown elsewhere.
+    /// Refused or stopped part-way, as git may (conflicts, a push refused): what to do next is
+    /// shown elsewhere.
     Stopped,
+    /// Stopped to ask what to do (diverged branches, changes in the way, a branch not merged):
+    /// a dialog asks.
+    Asked,
     Failed,
     Cancelled,
 }

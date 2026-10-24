@@ -1488,7 +1488,8 @@ writes paths), never `OsStrExt`.
   - `output.rs` — a tab's output: `Run`s (a task or commit each: its title, `Transcript`, the
     hooks it was expected to run (`Task::hooks`, `commit_hooks`, among those installed), its
     start and end (`Ended`: done, stopped (refused or stopped part-way, `Outcome::stopped`:
-    asked or shown elsewhere, so the panel doesn't open for it), failed, cancelled), its
+    shown elsewhere, so the panel doesn't open for it), asked (stopped to ask what to do,
+    `Outcome::asks`: a dialog asks; "waiting for your answer", muted), failed, cancelled), its
     `CancelToken` while it runs), the last
     16 kept. `RepoTab::run_task` and `commit` begin one and give git its transcript;
     `follow` (each frame) opens the panel while the latest's hooks have run 0.4 s, or when it
@@ -1632,7 +1633,7 @@ writes paths), never `OsStrExt`.
     graph doesn't need): `CommitRows` is the `TableDelegate`; under the column titles, pinned
     as a second header row while there are changes not yet committed, the work in progress
     (`work_cell`: a hollow node on `HEAD`'s lane with a dashed line towards it, "3 uncommitted
-    files · 1 staged", counted once a status read (`WorkCounts`); a click shows the working
+    files · 1 staged" (or "· 1 in conflict": what is left to do, first), counted once a status read (`WorkCounts`); a click shows the working
     tree beside the history in place of a commit's details, as it always is before the first
     commit); `prepare`
     replays the visible rows' lanes once a frame (`GraphRows`, panned to the nodes on screen
@@ -1765,10 +1766,11 @@ writes paths), never `OsStrExt`.
     hooks" (`--no-verify`, this commit only); while a commit runs, the hooks running and for how
     long, "Show the output", and Cancel (its token: SIGTERM to git's group, its hooks with it). It clears
     once the tab's `commits_made` grows. A history of 10,000+ commits
-    without a commit-graph is offered one (`Action::WriteCommitGraph`).
+    without a commit-graph is offered one (`Action::WriteCommitGraph`; a notice, dismissed for
+    that repository, kept in egui's memory).
     `views/tasks.rs` — the task bar at the top bar's right: Push and Pull saying how far the
-    branch is from its upstream ("Push ↑1", "Pull ↓2"; the one with work the primary; Push
-    saying why not when it can't), Fetch, and the branch beside its upstream ("(not pushed
+    branch is from its upstream ("Push ↑1", "Pull ↓2"; the one with work the primary, Pull
+    while the branch is behind; Push saying why not when it can't), Fetch, and the branch beside its upstream ("(not pushed
     yet)" where there is a remote, "(gone)"), a menu: the branch switcher (`views/switcher.rs`:
     a filter typed into at once, smart case, the letters in order as the palette matches; the
     local branches, the one checked out marked, then the remotes' (each through the local
@@ -1778,14 +1780,17 @@ writes paths), never `OsStrExt`.
     button named as it reads, its icon too); while a task runs, Cancel, a spinner beside it,
     then its progress. Under the commit table (a bottom panel between the sidebar
     and the details, `history::notices_panel`, there only while it has something to say, so
-    nothing above the table moves) the last task's outcome (a line, the remote's notes, or a
-    problem box; one that went well goes by itself after `OUTCOME_LASTS`, 5 s of egui's clock,
+    nothing above the table moves) the last task's outcome (a `widgets::notice` in its tone,
+    the remote's notes, or a problem box; what stopped at conflicts left to the operation's
+    banner, which says it with what to do; one that went well goes by itself after `OUTCOME_LASTS`, 5 s of egui's clock,
     put forward while the pointer rests on it; a problem, or what stopped short, stays until
     dismissed; `set_outcome_lasts`: tests keep them all), a refused push explained by its
     reason (behind: "Force push…" or Pull; a lease that failed: nothing forced, fetch first),
     and what background fetches brought; under the top bar the banner
-    of an operation in progress (a stopped `git am`'s "Applying patches stopped at 2 of 5:
-    subject" and Show the patch; Show the conflicts, Continue, Skip, Abort…; a bisection's
+    of an operation in progress (how many files are in conflict, "A merge is in progress · 2
+    files in conflict", `TaskPane::conflicts`; a stopped `git am`'s "Applying patches stopped
+    at 2 of 5: subject" and Show the patch; Show the conflicts, Continue (once nothing is left
+    in conflict: git refuses before), Skip, Abort…; a bisection's
     state (a commit to mark bad or good; "About 3 more to test: 9 commits could be the first
     bad one" with Good, Bad, Skip for the commit checked out; the first bad commit found, and
     Show the commit; one among several) and Stop bisecting;
@@ -2393,7 +2398,10 @@ writes paths), never `OsStrExt`.
     fixed width in a row, its contents at its start, end, or centre: rows' columns line up, and
     what changes width moves nothing), `duration_width` (the longest duration's width, digits at
     their widest) and `text_width`, `row_fill` a list row's background (a selected
-    one lightens under the pointer), cards, origin labels, problem boxes; `avatar.rs`: someone
+    one lightens under the pointer), cards, origin labels, problem boxes; `banner` (every
+    banner and notice alike, tinted by its `Tone`: done, info, warning, danger) and `notice`
+    (a line of it: the tone's icon, its words wrapping in what its buttons leave, its buttons
+    and an × Dismiss at its right); `avatar.rs`: someone
     as their initials (their name's first and last words', else their email's) on a colour
     of the palette's `avatars` hashed from their email (FNV-1a, any case), so one person looks
     alike everywhere, or their picture once fetched (`avatars.rs`: a quad of its atlas on their
@@ -2421,8 +2429,8 @@ writes paths), never `OsStrExt`.
     adapter exists (`EGIT_GUI_RENDER=1` requires one, `0` skips). Look at them after any
     interface change. Every rendered screen first passes `src/tests/audit.rs` (after eshine's):
     no egui id clashes, no text or control drawn partly over another on the same layer (a
-    floating scroll bar aside: it lies over what it scrolls; and slivers under a point, text
-    runs flowing one after another),
+    floating scroll bar aside: it lies over what it scrolls; slivers under a point, text
+    runs flowing one after another; and what a layer above covers, a dialog over the history),
     nothing moving while idle, and every control named in words or numbers (link a field to
     its visible label with `labelled_by`), and every one-line field a control's height, its
     text centred top to bottom and 8 points from its side. `EGIT_GUI_RECTS=1` writes each

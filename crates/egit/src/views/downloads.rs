@@ -3,14 +3,13 @@
 //! the row's end, where it stays; once saved, where it went, Open, Show in folder, and Dismiss;
 //! failed, why. Each in a `Ui` of its own id, as they come and go.
 
-use egui::{Align, Id, Layout, RichText, Ui};
+use egui::{Align, Id, Layout, Ui};
 
 use super::history::Shared;
 use crate::app::{Action, DownloadAsk};
 use crate::desktop::Reveal;
 use crate::downloads::{Download, Stage};
 use crate::format;
-use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
 /// The help topic explaining downloads.
@@ -26,14 +25,13 @@ pub(super) fn any(shared: &Shared<'_>) -> bool {
 
 /// The tab's downloads, the oldest first.
 pub(super) fn notices(ui: &mut Ui, shared: &Shared<'_>, actions: &mut Vec<Action>) {
-    let palette = Palette::of(ui.ctx());
     for download in shared.forge.downloads.list() {
         ui.scope_builder(
             egui::UiBuilder::new()
                 .id(Id::new(("download", shared.id, download.id)))
                 .layout(Layout::top_down(Align::Min)),
             |ui| {
-                if let Some(asked) = notice(ui, shared, palette, download) {
+                if let Some(asked) = notice(ui, shared, download) {
                     actions.push(asked);
                 }
             },
@@ -42,12 +40,7 @@ pub(super) fn notices(ui: &mut Ui, shared: &Shared<'_>, actions: &mut Vec<Action
 }
 
 /// One download's notice; what it asked.
-fn notice(
-    ui: &mut Ui,
-    shared: &Shared<'_>,
-    palette: Palette,
-    download: &Download,
-) -> Option<Action> {
+fn notice(ui: &mut Ui, shared: &Shared<'_>, download: &Download) -> Option<Action> {
     let wanted = &download.wanted;
     let file = &wanted.artifact.file_name;
     let ask = |asked| Some(Action::Download(shared.id, asked));
@@ -87,25 +80,19 @@ fn notice(
         Stage::Saved => {
             let to = format::display_path(&download.to, shared.home);
             let mut asked = None;
-            ui.horizontal(|ui| {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if widgets::secondary(ui, true, "Dismiss").clicked() {
-                        asked = ask(DownloadAsk::Dismiss(download.id));
-                    }
-                    if widgets::secondary(ui, true, "Show in folder").clicked() {
-                        asked = Some(Action::Reveal(download.to.clone(), Reveal::InFolder));
-                    }
-                    if widgets::secondary(ui, true, "Open").clicked() {
-                        asked = Some(Action::Reveal(download.to.clone(), Reveal::Open));
-                    }
-                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                        ui.label(RichText::new(icon::CHECK_CIRCLE).color(palette.ok));
-                        let words = format!("Saved {file} to {to}");
-                        let said = ui.add(egui::Label::new(words).truncate());
-                        crate::help::note_topic(ui, said.rect, TOPIC);
-                    });
-                });
+            let words = format!("Saved {file} to {to}");
+            let dismissed = widgets::notice(ui, widgets::Tone::Done, words, true, |ui| {
+                if widgets::secondary(ui, true, "Show in folder").clicked() {
+                    asked = Some(Action::Reveal(download.to.clone(), Reveal::InFolder));
+                }
+                if widgets::secondary(ui, true, "Open").clicked() {
+                    asked = Some(Action::Reveal(download.to.clone(), Reveal::Open));
+                }
             });
+            crate::help::note_topic(ui, ui.min_rect(), TOPIC);
+            if dismissed {
+                asked = ask(DownloadAsk::Dismiss(download.id));
+            }
             asked
         }
         Stage::Failed(problem) => {

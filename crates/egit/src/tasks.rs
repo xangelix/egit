@@ -561,6 +561,18 @@ pub(crate) enum Outcome {
 impl Outcome {
     /// Whether git refused or stopped part-way (diverged branches, changes in the way,
     /// conflicts, a refused push): nothing failed, but it didn't go all the way either.
+    /// Whether it stopped to ask what to do next (a dialog asks): diverged branches, changes in
+    /// a pull's or switch's way, a branch not merged, a worktree with changes.
+    pub(crate) const fn asks(&self) -> bool {
+        matches!(
+            self,
+            Self::Pulled(Pulled::Diverged | Pulled::ChangesInTheWay { .. })
+                | Self::WouldOverwrite { .. }
+                | Self::NotMerged
+                | Self::WorktreeChanges
+        )
+    }
+
     pub(crate) fn stopped(&self) -> bool {
         match self {
             Self::Pulled(pulled) => !matches!(pulled, Pulled::Updated),

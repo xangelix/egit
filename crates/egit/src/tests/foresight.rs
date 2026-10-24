@@ -149,7 +149,10 @@ fn a_revert_that_would_conflict_changes_nothing_unless_asked() {
         .click();
     wait_for_label(
         &mut harness,
-        &format!("{}  A revert is in progress.", crate::theme::icon::WARNING),
+        &format!(
+            "{}  A revert is in progress · 1 file in conflict",
+            crate::theme::icon::WARNING
+        ),
     );
     harness.get_by_label("Abort…").click();
     wait_for_label(&mut harness, "Abort a revert?");

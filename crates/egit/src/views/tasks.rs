@@ -81,6 +81,8 @@ pub(crate) struct TaskPane<'a> {
     pub(crate) stashes: &'a [Stash],
     /// The refs, for the branch switcher, and which read of them they are.
     pub(crate) refs: (std::sync::Arc<[egit_git::Reference]>, u64),
+    /// How many files are in conflict (an operation's banner says, and waits for none).
+    pub(crate) conflicts: usize,
     pub(crate) tasks: &'a mut Tasks,
     pub(crate) actions: &'a mut Vec<Action>,
 }
@@ -242,7 +244,8 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         format!("{}  Push", icon::ARROW_UP)
     };
     let can_push = on_branch && has_remotes;
-    let push = if ahead > 0 {
+    // Pull leads while the branch is behind: a push would be refused until it isn't.
+    let push = if ahead > 0 && behind == 0 {
         widgets::primary(ui, can_push, &push_words)
     } else {
         widgets::secondary(ui, can_push, &push_words)
@@ -450,7 +453,6 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     if pane.tasks.is_busy() || view.seen == pane.tasks.started {
         return;
     }
-    let palette = Palette::of(ui.ctx());
     let started = pane.tasks.started;
     let result = pane
         .tasks
@@ -495,22 +497,27 @@ fn outcome_lines(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         Some(Ok(Outcome::Pushed(pushed))) if !pushed.succeeded() => {
             refused(ui, view, pane, &pushed, &mut dismiss);
         }
+        // What stopped at conflicts is said by the operation's banner, with what to do: once is
+        // enough.
+        Some(Ok(
+            Outcome::Integrated(Integrated::Conflicts | Integrated::Stopped)
+            | Outcome::Pulled(Pulled::Conflicts | Pulled::ChangesConflicted),
+        )) if !pane.operations.is_empty() => {}
         Some(Ok(outcome)) => {
             follow_up(ui, view, pane, &outcome);
             let text = ended(pane.tasks.task.as_ref(), &outcome, pane.home);
-            let color = match outcome {
-                Outcome::Cancelled => palette.muted,
+            let tone = match outcome {
+                Outcome::Cancelled => widgets::Tone::Info,
                 Outcome::Forwarded(Forwarded::NotFastForward)
                 | Outcome::Integrated(Integrated::Conflicts | Integrated::Stopped)
-                | Outcome::Pulled(Pulled::Conflicts | Pulled::ChangesConflicted) => palette.warn,
-                _ => palette.ok,
-            };
-            ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(text).color(color));
-                if widgets::secondary(ui, true, "Dismiss").clicked() {
-                    dismiss = true;
+                | Outcome::Pulled(Pulled::Conflicts | Pulled::ChangesConflicted) => {
+                    widgets::Tone::Warn
                 }
-            });
+                _ => widgets::Tone::Done,
+            };
+            if widgets::notice(ui, tone, text, true, |_| {}) {
+                dismiss = true;
+            }
             if let Outcome::Pushed(pushed) = &outcome {
                 notes(ui, pushed);
             }
@@ -1109,45 +1116,36 @@ pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent>
     } else {
         format!("{} new commits", format::count(brought.commits))
     };
-    let palette = Palette::of(ui.ctx());
     let mut event = None;
     own_ids(ui, "brought", pane.id, UiBuilder::new(), |ui| {
-        egui::Frame::new()
-            .fill(palette.accent.gamma_multiply(0.10))
-            .stroke(egui::Stroke::new(1.0, palette.accent.gamma_multiply(0.6)))
-            .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
-            .inner_margin(egui::Margin::symmetric(12, 2))
-            .show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                crate::help::note_topic(ui, ui.max_rect(), "fetched-notice");
-                // Its buttons from the right first; its words in what they leave, cut short.
-                ui.horizontal(|ui| {
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let dismiss = widgets::icon_tool(ui, true, icon::X, "Dismiss");
-                        if dismiss.clicked() {
-                            pane.tasks.brought = None;
-                        }
-                        let show = widgets::secondary(ui, true, "Show them");
-                        crate::help::note_topic(ui, show.rect, "fetched-notice");
-                        if show.clicked() {
-                            event = Some(TaskEvent::Commit(to));
-                        }
-                        if widgets::secondary(ui, true, &format!("{}  Pull", icon::ARROW_DOWN))
-                            .clicked()
-                        {
-                            pane.start(Task::Pull(PullMode::AsConfigured));
-                        }
-                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                            let headline = format!("{}  {commits} on {name}", icon::ARROW_DOWN);
-                            fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
-                            ui.add(egui::Label::new(RichText::new(headline).semibold()).truncate());
-                            ui.add(
-                                egui::Label::new(muted(ui, "fetched in the background")).truncate(),
-                            );
-                        });
+        widgets::banner(ui, widgets::Tone::Info, |ui| {
+            crate::help::note_topic(ui, ui.max_rect(), "fetched-notice");
+            // Its buttons from the right first; its words in what they leave, cut short.
+            ui.horizontal(|ui| {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let dismiss = widgets::icon_tool(ui, true, icon::X, "Dismiss");
+                    if dismiss.clicked() {
+                        pane.tasks.brought = None;
+                    }
+                    let show = widgets::secondary(ui, true, "Show them");
+                    crate::help::note_topic(ui, show.rect, "fetched-notice");
+                    if show.clicked() {
+                        event = Some(TaskEvent::Commit(to));
+                    }
+                    if widgets::secondary(ui, true, &format!("{}  Pull", icon::ARROW_DOWN))
+                        .clicked()
+                    {
+                        pane.start(Task::Pull(PullMode::AsConfigured));
+                    }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        let headline = format!("{}  {commits} on {name}", icon::ARROW_DOWN);
+                        fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
+                        ui.add(egui::Label::new(RichText::new(headline).semibold()).truncate());
+                        ui.add(egui::Label::new(muted(ui, "fetched in the background")).truncate());
                     });
                 });
             });
+        });
     });
     event
 }
@@ -1181,6 +1179,19 @@ fn operation_banner(
             progress.last,
             progress.subject
         ),
+        _ if pane.conflicts > 0 => format!(
+            "{}  {} is in progress · {} in conflict",
+            icon::WARNING,
+            operation_name(operation),
+            if pane.conflicts == 1 {
+                "1 file".to_owned()
+            } else {
+                format!(
+                    "{} files",
+                    format::count(u64::try_from(pane.conflicts).unwrap_or(u64::MAX))
+                )
+            }
+        ),
         _ => format!(
             "{}  {} is in progress.",
             icon::WARNING,
@@ -1188,63 +1199,68 @@ fn operation_banner(
         ),
     };
     let mut event = None;
-    egui::Frame::new()
-        .fill(palette.warn.gamma_multiply(0.12))
-        .stroke(egui::Stroke::new(1.0, palette.warn))
-        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
-        .inner_margin(egui::Margin::symmetric(12, 8))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            let topic = match operation {
-                Operation::Rebase => "rebase",
-                Operation::Merge => "merge",
-                Operation::Bisect => "bisect",
-                Operation::CherryPick => "cherry-pick",
-                Operation::Revert => "revert",
-                Operation::ApplyMailbox => "am-in-progress",
-            };
-            crate::help::note_topic(ui, ui.max_rect(), topic);
-            fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
-            ui.add(egui::Label::new(RichText::new(headline).color(palette.warn).semibold()).wrap());
-            if operation == Operation::Bisect {
-                event = bisect_banner(ui, pane);
-                return;
-            }
-            ui.add(
-                egui::Label::new(if operation == Operation::ApplyMailbox {
-                    "Resolve its conflicts (the files marked Conflict) and stage them, or apply \
+    widgets::banner(ui, widgets::Tone::Warn, |ui| {
+        let topic = match operation {
+            Operation::Rebase => "rebase",
+            Operation::Merge => "merge",
+            Operation::Bisect => "bisect",
+            Operation::CherryPick => "cherry-pick",
+            Operation::Revert => "revert",
+            Operation::ApplyMailbox => "am-in-progress",
+        };
+        crate::help::note_topic(ui, ui.max_rect(), topic);
+        fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
+        ui.add(egui::Label::new(RichText::new(headline).color(palette.warn).semibold()).wrap());
+        if operation == Operation::Bisect {
+            event = bisect_banner(ui, pane);
+            return;
+        }
+        ui.add(
+            egui::Label::new(if operation == Operation::ApplyMailbox {
+                "Resolve its conflicts (the files marked Conflict) and stage them, or apply \
                      the patch by hand; then Continue. Or Skip the patch, or Abort to go back \
                      to how things were."
-                } else {
-                    "Resolve the conflicts (the files marked Conflict), stage them, then \
+            } else {
+                "Resolve the conflicts (the files marked Conflict), stage them, then \
                      Continue; or Abort to go back to how things were."
-                })
-                .wrap(),
-            );
-            ui.horizontal_wrapped(|ui| {
-                if operation == Operation::ApplyMailbox
-                    && widgets::secondary(ui, true, "Show the patch").clicked()
-                {
-                    event = Some(TaskEvent::Patch);
-                }
-                if widgets::secondary(ui, true, "Show the conflicts").clicked() {
-                    event = Some(TaskEvent::WorkTree);
-                }
-                if widgets::primary(ui, !busy, "Continue").clicked() {
-                    pane.start(Task::Continue(operation));
-                }
-                if operation != Operation::Merge
-                    && widgets::secondary(ui, !busy, "Skip")
-                        .on_hover_text("Drop the commit (or patch) it stopped at, and carry on")
-                        .clicked()
-                {
-                    pane.start(Task::Skip(operation));
-                }
-                if widgets::secondary(ui, !busy, "Abort…").clicked() {
-                    view.dialog = Some(Dialog::Abort(operation));
-                }
-            });
+            })
+            .wrap(),
+        );
+        ui.horizontal_wrapped(|ui| {
+            if operation == Operation::ApplyMailbox
+                && widgets::secondary(ui, true, "Show the patch").clicked()
+            {
+                event = Some(TaskEvent::Patch);
+            }
+            if widgets::secondary(ui, true, "Show the conflicts").clicked() {
+                event = Some(TaskEvent::WorkTree);
+            }
+            // Continue once nothing is left in conflict (git refuses before).
+            let left = pane.conflicts;
+            let continuing = widgets::primary(ui, !busy && left == 0, "Continue");
+            let continuing = if left > 0 {
+                continuing.on_disabled_hover_text(
+                    "Resolve the conflicts and stage them first: git continues once none is \
+                         left",
+                )
+            } else {
+                continuing
+            };
+            if continuing.clicked() {
+                pane.start(Task::Continue(operation));
+            }
+            if operation != Operation::Merge
+                && widgets::secondary(ui, !busy, "Skip")
+                    .on_hover_text("Drop the commit (or patch) it stopped at, and carry on")
+                    .clicked()
+            {
+                pane.start(Task::Skip(operation));
+            }
+            if widgets::secondary(ui, !busy, "Abort…").clicked() {
+                view.dialog = Some(Dialog::Abort(operation));
+            }
         });
+    });
     event
 }
 
