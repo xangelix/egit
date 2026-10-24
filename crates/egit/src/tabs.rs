@@ -200,7 +200,26 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
         match pane {
             Pane::Repo(id) => match self.state.repos.iter().find(|repo| repo.id == id) {
                 Some(repo) => {
-                    button_response.on_hover_text(repo.repository.work_tree().display().to_string())
+                    let path = repo.repository.work_tree().display().to_string();
+                    // Its agents wanting the user, marked on its icon (seen from any tab).
+                    let attention = repo.agents.attention();
+                    if !attention.any() {
+                        return button_response.on_hover_text(path);
+                    }
+                    let palette = Palette::of(&button_response.ctx);
+                    let color = if attention.waiting > 0 {
+                        palette.warn
+                    } else {
+                        palette.accent
+                    };
+                    let tab = button_response.rect;
+                    let icon = egui::Rect::from_min_size(
+                        egui::pos2(tab.left() + 6.0, tab.center().y - 12.0),
+                        egui::vec2(20.0, 20.0),
+                    );
+                    let painter = button_response.ctx.layer_painter(button_response.layer_id);
+                    crate::widgets::attention_dot(&painter, icon, color);
+                    button_response.on_hover_text(format!("{path}\n{}", attention.words()))
                 }
                 None => button_response,
             },

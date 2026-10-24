@@ -2319,7 +2319,9 @@ writes paths), never `OsStrExt`.
     earlier ones Claude Code keeps for the work tree (`past`, read when the menu opens),
     `begin`, `resume` (its messages read in a job into the transcript; `resume` set), `close`,
     `warm` (the one shown started ahead of its first prompt, once: its `Info` said unasked),
-    `send` (a `Prompt` and its images). A `Conversation`: its transcript, permission requests
+    `send` (a `Prompt` and its images), `attention` (`Attention`: answers waiting in every
+    conversation, a turn ended unseen (`Conversation::seen` as its panel draws it), marked by
+    a dot on the Agents tool and on the tab's icon: `widgets::attention_dot`). A `Conversation`: its transcript, permission requests
     waiting, `Info`, mode (as asked, or as Claude Code last said it changed) and model;
     `has_begun` (a prompt sent, or resumed: its account settled), `turn_time`; its bridge
     started in a job (`start`), requests queued until it says it is ready (`deliver`), its

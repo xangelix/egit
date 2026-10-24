@@ -34,6 +34,10 @@ pub(super) const TOPICS: &[Topic] = &[
                 "Each conversation runs on its own: start another from the menu while one works. Each tab has its own, in its own work tree.",
             ),
             (
+                "A dot on Agents, or on the tab?",
+                "Claude wants you: orange, a question or a permission is waiting for your answer; green, a turn ended that you haven't seen. Showing the conversation clears the green one; answering, the orange.",
+            ),
+            (
                 "What does it cost?",
                 "Each turn's end says what Claude Code estimates it cost. On a Pro, Max, or Team plan it counts against the plan's usage, not a bill; with an API key, the Console bills it.",
             ),

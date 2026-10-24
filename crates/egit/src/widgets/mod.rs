@@ -523,6 +523,15 @@ pub(crate) fn notice(
     })
 }
 
+/// A dot at a control's top right corner, saying something there wants the user (an agent's
+/// question, a turn that ended unseen): `color` ringed in the panel's tone, so it reads over
+/// the control's own edge.
+pub(crate) fn attention_dot(painter: &egui::Painter, rect: egui::Rect, color: Color32) {
+    let palette = Palette::of(painter.ctx());
+    let center = egui::pos2(rect.right() - 5.0, rect.top() + 5.0);
+    painter.circle(center, 4.0, color, Stroke::new(1.5, palette.panel));
+}
+
 /// A chip: a few small words in a thin outline of their colour ("may fail", "Draft", a label),
 /// 18 points tall however tall its row, so chips read as marks rather than buttons.
 pub(crate) fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {

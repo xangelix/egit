@@ -147,8 +147,23 @@ fn a_conversation_with_claude_runs_in_the_panel() {
         .click_accesskit();
     wait_for_label(&mut harness, "hi (always)");
 
-    // A question, answered.
+    // A question, answered: first the panel hidden, the question marked on the Agents tool
+    // and the tab, then shown again.
     ask(&mut harness, "ask");
+    wait_for_label(&mut harness, "Claude asks");
+    harness
+        .get_by_role_and_label(Role::Button, "Agents")
+        .click_accesskit();
+    harness.run_steps(2);
+    let attention = harness.state().state.repos[0].agents.attention();
+    assert_eq!(
+        (attention.waiting, attention.words().as_str()),
+        (1, "Claude is waiting for your answer")
+    );
+    render(&mut harness, "agents-attention");
+    harness
+        .get_by_role_and_label(Role::Button, "Agents")
+        .click_accesskit();
     wait_for_label(&mut harness, "Claude asks");
     choice(&harness, "Two").click_accesskit();
     harness.run_steps(2);

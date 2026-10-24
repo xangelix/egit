@@ -106,6 +106,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
         there,
         journal: &repo.journal,
         agents_shown: repo.agents.shown,
+        agents_attention: repo.agents.attention(),
         actions,
     };
     match repo.panel {
@@ -188,6 +189,7 @@ struct Panels<'a> {
     there: Option<(&'a str, Option<&'static str>)>,
     journal: &'a Journal,
     agents_shown: bool,
+    agents_attention: crate::agents::Attention,
     actions: &'a mut Vec<Action>,
 }
 
@@ -231,7 +233,7 @@ fn history(ui: &mut Ui, panels: &mut Panels<'_>) {
             forge: &*panels.forge,
             home: panels.home,
             journal: panels.journal,
-            agents_shown: panels.agents_shown,
+            agents: (panels.agents_shown, panels.agents_attention),
             lists: Lists {
                 stashes,
                 worktrees: panels.worktrees.read_as_ref(),
@@ -613,4 +615,8 @@ fn agents_panel(
         .show(ui, |ui| {
             super::agents::panel(ui, (setup, agents), around, actions);
         });
+    // Drawn, the conversation shown is seen: a turn it ended no longer calls for attention.
+    if let Some(conversation) = agents.current() {
+        conversation.seen();
+    }
 }

@@ -143,8 +143,8 @@ pub(crate) struct HistoryPane<'a> {
     pub(crate) home: Option<&'a Path>,
     /// What egit did here, to take back, and what it took back, to do again.
     pub(crate) journal: &'a Journal,
-    /// Whether its agents' panel shows.
-    pub(crate) agents_shown: bool,
+    /// Whether its agents' panel shows, and what they want of the user.
+    pub(crate) agents: (bool, crate::agents::Attention),
     /// The stashes, worktrees, submodules, and configuration, for the sidebar.
     pub(crate) lists: Lists<'a>,
     pub(crate) actions: &'a mut Vec<Action>,
@@ -930,7 +930,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         forge,
         home,
         journal,
-        agents_shown,
+        agents: (agents_shown, agents_attention),
         lists,
         actions,
     } = pane;
@@ -958,6 +958,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         home,
         journal,
         agents_shown,
+        agents_attention,
         lfs: lists.lfs.and_then(Result::ok),
         submodules: lists.submodules.and_then(Result::ok),
         submodule_states: lists.submodule_states.and_then(Result::ok),
@@ -1807,6 +1808,8 @@ pub(super) struct Shared<'a> {
     journal: &'a Journal,
     /// Whether its agents' panel shows.
     agents_shown: bool,
+    /// What its agents want of the user (marked on the Agents tool).
+    agents_attention: crate::agents::Attention,
     /// Its Git LFS, once read.
     pub(super) lfs: Option<&'a Arc<crate::lfs::LfsState>>,
     /// Its submodules, and where they stand (nested ones too), once read.
@@ -2530,13 +2533,26 @@ fn search_button(ui: &mut Ui, view: &mut HistoryView, look: Look) {
 
 /// Shows or hides the agents' panel at the tab's right.
 fn agents_button(ui: &mut Ui, shared: &Shared<'_>, look: Look, actions: &mut Vec<Action>) {
-    if widgets::tool(ui, icon::ROBOT, "Agents", shared.agents_shown, look)
-        .on_hover_text(format!(
+    let attention = shared.agents_attention;
+    let tool = widgets::tool(ui, icon::ROBOT, "Agents", shared.agents_shown, look);
+    // What they want of the user, marked at its corner: an answer, or a turn ended unseen.
+    if attention.any() {
+        let color = if attention.waiting > 0 {
+            shared.palette.warn
+        } else {
+            shared.palette.accent
+        };
+        widgets::attention_dot(ui.painter(), tool.rect, color);
+    }
+    let hover = if attention.any() {
+        attention.words()
+    } else {
+        format!(
             "Claude Code, working in this repository beside you ({})",
             crate::commands::keys_text("⌘L")
-        ))
-        .clicked()
-    {
+        )
+    };
+    if tool.on_hover_text(hover).clicked() {
         actions.push(Action::ToggleAgents(shared.id));
     }
 }

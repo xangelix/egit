@@ -515,6 +515,16 @@ impl RepoAgents {
         }
     }
 
+    /// What its conversations want of the user.
+    pub(crate) fn attention(&self) -> Attention {
+        self.conversations
+            .iter()
+            .fold(Attention::default(), |attention, conversation| Attention {
+                waiting: attention.waiting.saturating_add(conversation.waiting.len()),
+                ended: attention.ended || conversation.ended_unseen.is_some(),
+            })
+    }
+
     /// Lists the past conversations again.
     pub(crate) fn list_past(&mut self, launch: Option<Launch>, work_tree: &Path) {
         let Some(launch) = launch else {
@@ -663,6 +673,34 @@ pub(crate) struct Conversation {
     turn_began: Option<std::time::Instant>,
     /// What its view keeps (the draft, what is folded open, heights).
     pub(crate) view: crate::views::agents::ConversationView,
+    /// When a turn ended, while it hasn't been shown since.
+    ended_unseen: Option<std::time::Instant>,
+}
+
+/// What a tab's agents want of the user: answers they wait for, and turns that ended unseen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Attention {
+    /// Questions and permissions waiting for an answer, in every conversation.
+    pub(crate) waiting: usize,
+    /// Whether a turn ended in a conversation not shown since.
+    pub(crate) ended: bool,
+}
+
+impl Attention {
+    /// Whether they want anything.
+    pub(crate) const fn any(self) -> bool {
+        self.waiting > 0 || self.ended
+    }
+
+    /// What they want, in words.
+    pub(crate) fn words(self) -> String {
+        match self.waiting {
+            0 if self.ended => "Claude finished: see what it did".to_owned(),
+            0 => String::new(),
+            1 => "Claude is waiting for your answer".to_owned(),
+            waiting => format!("Claude is waiting for {waiting} answers"),
+        }
+    }
 }
 
 /// A bridge started in a job.
@@ -695,7 +733,13 @@ impl Conversation {
             warmed: false,
             turn_began: None,
             view: crate::views::agents::ConversationView::default(),
+            ended_unseen: None,
         }
+    }
+
+    /// Notes that it was shown: a turn that ended is seen.
+    pub(crate) const fn seen(&mut self) {
+        self.ended_unseen = None;
     }
 
     /// Whether nothing has happened in it yet (it may have started, ahead of a prompt).
@@ -930,8 +974,12 @@ impl Conversation {
             .as_ref()
             .map(|events| events.try_iter().collect())
             .unwrap_or_default();
+        let busy = self.transcript.busy();
         for event in events {
             self.event(event);
+        }
+        if busy && !self.transcript.busy() {
+            self.ended_unseen = Some(std::time::Instant::now());
         }
         // Claude Code changed mode itself (a plan approved, say): the menu follows.
         let reported = self.transcript.mode();
