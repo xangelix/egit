@@ -491,8 +491,9 @@ pub(super) const TOPICS: &[Topic] = &[
         group: Group::Inside,
         title: "Copying its path",
         on: &["Copy its path"],
-        what: "Copies the folder's path to the clipboard: a worktree's full path on this \
-               machine, or a submodule's path inside this repository, as git writes it.",
+        what: "Copies the folder's path to the clipboard: a repository's or a worktree's full \
+               path on the computer it is on, or a submodule's path inside this repository, as \
+               git writes it.",
         git: "",
         cases: &[],
     },

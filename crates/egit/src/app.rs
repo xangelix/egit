@@ -207,6 +207,10 @@ pub(crate) enum Action {
     SetPreferences(Preferences),
     /// Show the preferences' tab.
     ShowPreferences,
+    /// Show Home's tab (opening, cloning, and the recent repositories).
+    ShowHome,
+    /// Close a tab, or every tab but one (never Home's).
+    CloseTabs(tabs::Closing),
     /// Open the command palette.
     ShowPalette,
     /// Help, every topic.
@@ -494,6 +498,14 @@ impl EgitApp {
             }
             Action::SetPreferences(preferences) => state.prefer(ctx, preferences),
             Action::ShowPreferences => tabs::show(&mut self.tabs, Pane::Preferences),
+            Action::ShowHome => tabs::show(&mut self.tabs, Pane::Home),
+            Action::CloseTabs(closing) => {
+                for pane in tabs::close(&mut self.tabs, closing) {
+                    if let Pane::Repo(id) = pane {
+                        state.actions.push(Action::Closed(id));
+                    }
+                }
+            }
             Action::ShowPalette => self.run(Command::Palette),
             Action::ShowHelp => self.run(Command::Help),
             Action::SignIn { repo, host } => state.open_sign_in(repo, host),
@@ -527,19 +539,7 @@ impl EgitApp {
                     repo.agents.shown = !repo.agents.shown;
                 }
             }
-            Action::ShowWorkFile(id, path) => {
-                if let Some(repo) = state.repo_mut(id) {
-                    match path.strip_prefix(repo.repository.work_tree()) {
-                        Ok(relative) => {
-                            repo.panel = RepoPanel::History;
-                            repo.history_view
-                                .show_work_file(egit_git::git_path(relative));
-                        }
-                        // Outside the work tree: its app.
-                        Err(_) => state.opener.reveal(path, crate::desktop::Reveal::Open),
-                    }
-                }
-            }
+            Action::ShowWorkFile(id, path) => state.show_work_file(id, path),
             Action::OpenPatches(id, files) => {
                 if let Some(repo) = state.repo_mut(id) {
                     repo.history_view.show_patches(files);
@@ -1002,6 +1002,22 @@ impl AppState {
             control: self.ssh.control.clone(),
         });
         options
+    }
+
+    /// Shows a work tree's file's changes in its repository's tab, or a file outside the work
+    /// tree in its app.
+    fn show_work_file(&mut self, id: RepoId, path: PathBuf) {
+        let Some(repo) = self.repo_mut(id) else {
+            return;
+        };
+        match path.strip_prefix(repo.repository.work_tree()) {
+            Ok(relative) => {
+                repo.panel = RepoPanel::History;
+                repo.history_view
+                    .show_work_file(egit_git::git_path(relative));
+            }
+            Err(_) => self.opener.reveal(path, crate::desktop::Reveal::Open),
+        }
     }
 
     /// Adds `location` to `safe.directory`, or makes it a repository (on the computer it is

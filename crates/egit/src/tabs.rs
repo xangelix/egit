@@ -72,6 +72,41 @@ pub(crate) fn close_front(tree: &mut Tree<Pane>) -> Option<Pane> {
     Some(pane)
 }
 
+/// Which tabs to close.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Closing {
+    /// This one.
+    This(Pane),
+    /// Every one but this (and Home).
+    Others(Pane),
+}
+
+/// Closes the tabs `closing` names (never Home's); returns the panes closed.
+pub(crate) fn close(tree: &mut Tree<Pane>, closing: Closing) -> Vec<Pane> {
+    let closed: Vec<Pane> = match closing {
+        Closing::This(pane) => vec![pane],
+        Closing::Others(kept) => tree
+            .tiles
+            .tiles()
+            .filter_map(|tile| match tile {
+                Tile::Pane(pane) if *pane != kept => Some(*pane),
+                _ => None,
+            })
+            .collect(),
+    };
+    closed
+        .into_iter()
+        .filter(|pane| *pane != Pane::Home)
+        .filter(|pane| {
+            let found = tree.tiles.find_pane(pane);
+            if let Some(id) = found {
+                tree.remove_recursively(id);
+            }
+            found.is_some()
+        })
+        .collect()
+}
+
 /// Brings the `n`th tab (from 1) of the main set of tabs to the front, if there is one.
 pub(crate) fn show_nth(tree: &mut Tree<Pane>, n: usize) {
     let Some(tabs) = tabs_container(tree) else {
@@ -152,14 +187,42 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
         button_response: egui::Response,
     ) -> egui::Response {
         crate::widgets::tab_hover(&button_response);
-        match tiles.get_pane(&tile_id) {
-            Some(Pane::Repo(id)) => match self.state.repos.iter().find(|repo| repo.id == *id) {
+        let Some(pane) = tiles.get_pane(&tile_id).copied() else {
+            return button_response;
+        };
+        // A middle click closes it, as a browser's tab.
+        if pane != Pane::Home && button_response.middle_clicked() {
+            self.state
+                .actions
+                .push(Action::CloseTabs(Closing::This(pane)));
+        }
+        button_response.context_menu(|ui| self.tab_menu(ui, pane));
+        match pane {
+            Pane::Repo(id) => match self.state.repos.iter().find(|repo| repo.id == id) {
                 Some(repo) => {
                     button_response.on_hover_text(repo.repository.work_tree().display().to_string())
                 }
                 None => button_response,
             },
             _ => button_response,
+        }
+    }
+
+    /// A "+" after the tabs: Home, where repositories are opened, cloned, and made.
+    fn top_bar_right_ui(
+        &mut self,
+        _tiles: &Tiles<Pane>,
+        ui: &mut Ui,
+        _tile_id: TileId,
+        _tabs: &egui_tiles::Tabs,
+        _scroll_offset: &mut f32,
+    ) {
+        ui.add_space(4.0);
+        if crate::widgets::icon_tool(ui, true, icon::PLUS, "Open or clone a repository")
+            .on_hover_text("Home: open, clone, or create a repository")
+            .clicked()
+        {
+            self.state.actions.push(Action::ShowHome);
         }
     }
 
@@ -217,6 +280,38 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
             palette.panel
         } else {
             palette.recess
+        }
+    }
+}
+
+impl Behavior<'_> {
+    /// A tab's menu: close it or the others; a repository's path copied, its folder opened.
+    fn tab_menu(&mut self, ui: &mut Ui, pane: Pane) {
+        let actions = &mut self.state.actions;
+        // Home stays open.
+        if pane != Pane::Home && views::actions::shortcut_item(ui, (icon::X, "Close the tab"), "⌘W")
+        {
+            actions.push(Action::CloseTabs(Closing::This(pane)));
+        }
+        if views::actions::item(ui, (icon::X_SQUARE, "Close the other tabs"), Ok(())) {
+            actions.push(Action::CloseTabs(Closing::Others(pane)));
+        }
+        let Pane::Repo(id) = pane else {
+            return;
+        };
+        let Some(repo) = self.state.repos.iter().find(|repo| repo.id == id) else {
+            return;
+        };
+        ui.separator();
+        let path = repo.repository.work_tree().to_path_buf();
+        if views::actions::item(ui, (icon::COPY, "Copy its path"), Ok(())) {
+            ui.ctx().copy_text(path.display().to_string());
+        }
+        // Its folder opens here only: one on another computer has none here to open.
+        if repo.git.host().ssh().is_none()
+            && views::actions::item(ui, (icon::FOLDER_OPEN, "Open its folder"), Ok(()))
+        {
+            actions.push(Action::Reveal(path, crate::desktop::Reveal::Open));
         }
     }
 }

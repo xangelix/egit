@@ -663,6 +663,27 @@ pub(super) const TOPICS: &[Topic] = &[
         )],
     },
     Topic {
+        id: "tabs",
+        group: Group::Egit,
+        title: "Tabs",
+        on: &[
+            "Close the tab",
+            "Close the other tabs",
+            "Open or clone a repository",
+        ],
+        what: "Each open repository has a tab of its own beside Home, Profile, and Preferences. \
+               A middle click or ⌘W closes one (Home stays), its menu closes the others, copies \
+               a repository's path, or opens its folder, and + goes Home to open, clone, or \
+               create another. Tabs drag beside each other to show two at once; ⌘1 … ⌘9 bring \
+               one forward.",
+        git: "",
+        cases: &[(
+            "Does closing a tab stop what it was doing?",
+            "Yes: a task under way (a fetch, a push) is cancelled as Cancel would, and so are \
+             downloads. The tabs open when egit closes open again next time.",
+        )],
+    },
+    Topic {
         id: "help-window",
         group: Group::Egit,
         title: "Help",

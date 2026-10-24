@@ -1074,7 +1074,10 @@ writes paths), never `OsStrExt`.
   - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Preferences,
     Repo(id)}` (a repository's on another computer titled with it, "repo · devbox", under a
     globe); `show` focuses or adds a tab; `front` (the tab in front), `close_front`,
-    `show_nth` (⌘W, ⌘1 … ⌘9); Home can't be closed; closing a repository's tab pushes `Closed`.
+    `show_nth` (⌘W, ⌘1 … ⌘9), `close` (`Closing`: a tab, or every other; `Action::CloseTabs`:
+    a middle click, a tab's menu); Home can't be closed; closing a repository's tab pushes
+    `Closed`. A tab's menu: close it or the others, a repository's path copied, its folder
+    opened (here only); a "+" after the tabs goes Home (`Action::ShowHome`).
     Tabs underline under the pointer (`widgets::tab_hover`; egui_tiles' don't answer it), and
     their close button is 24 points. The selected tab is the chrome's tone, joining what it
     shows below; the bar and the other tabs are deeper (`Palette::recess`).

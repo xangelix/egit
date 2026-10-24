@@ -3,7 +3,7 @@
 //! long ago, a file's diff side by side, no background fetch), kept in the settings; and the
 //! palette (⌘K) narrowing commands as letters are typed, saying why one can't run, running one
 //! by Enter (the reflog, a switch to a branch), and the application's own shortcuts (⌘B, ⌘,,
-//! ⌘W, ⌘1).
+//! ⌘W, ⌘1); then the tabs' menu, their +, and a middle click closing one.
 
 use egit_git::testing::Sandbox;
 use egui::accesskit::Role;
@@ -18,6 +18,7 @@ use super::screens::{
 };
 use crate::app::EgitApp;
 use crate::preferences::{Dates, FetchEvery};
+use crate::tabs::Pane;
 use crate::theme::icon;
 
 fn opened(sandbox: &Sandbox, repo: &std::path::Path) -> Harness<'static, EgitApp> {
@@ -134,4 +135,35 @@ fn the_palette_runs_commands_and_the_shortcuts_reach_them() {
     );
     harness.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
     wait_for_label(&mut harness, "Open a repository");
+
+    // The tabs' own ways: the others closed from a tab's menu, + going Home, and a middle
+    // click closing a repository's.
+    let tab = format!("{}  project", icon::GIT_BRANCH);
+    harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
+    wait_for_label(&mut harness, "Keyboard shortcuts");
+    harness.get_by_label(&tab).click_secondary();
+    wait_for_label(&mut harness, "Close the other tabs");
+    render(&mut harness, "tab-menu");
+    harness.get_by_label("Close the other tabs").click();
+    harness.run_steps(2);
+    let tabs = &harness.state().tabs;
+    assert!(tabs.tiles.find_pane(&Pane::Preferences).is_none(), "closed");
+    assert!(tabs.tiles.find_pane(&Pane::Home).is_some(), "Home stays");
+    harness.get_by_label(&tab).click();
+    wait_for_label(&mut harness, "Hide the sidebar");
+    harness.get_by_label("Open or clone a repository").click();
+    wait_for_label(&mut harness, "Open a repository");
+    let at = harness.get_by_label(&tab).rect().center();
+    for pressed in [true, false] {
+        harness.input_mut().events.push(egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        harness.step();
+    }
+    harness.run_steps(2);
+    assert!(harness.query_by_label(&tab).is_none(), "closed");
+    assert!(harness.state().state.repos.is_empty());
 }
