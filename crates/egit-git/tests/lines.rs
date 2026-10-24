@@ -238,7 +238,7 @@ fn run(direction: Direction) {
         std::fs::write(repo.join("f"), &edited).unwrap();
         let options = DiffOptions {
             context,
-            algorithm: None,
+            ..DiffOptions::default()
         };
         let diff = uncommitted_diff(
             sandbox.git(),
