@@ -48,7 +48,7 @@ it.
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
 | 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
-| 37 | egit in a browser: WebAssembly, git through a relay | under way: the relay, its protocol, and egit in a browser (a repository's history, work tree, and diffs; patches saved and chosen, artifacts delivered, through the browser); fonts and the page's tests to come |
+| 37 | egit in a browser: WebAssembly, git through a relay | under way: the relay, its protocol, and egit in a browser (a repository's history, work tree, and diffs; patches saved and chosen, artifacts delivered, through the browser; fonts from the relay's computer); the page's tests to come |
 
 ## Toolchain & commands
 
@@ -1801,7 +1801,10 @@ compile.
     monospace, then regular weights; in a collection the face covering most, monospace and in
     the user's `LANG` first; outlines required, so no colour bitmaps) and adds what it finds as
     lowest-priority fallbacks to every family (monospace, and each weight). Kept fonts are leaked once into `'static`
-    slices: egui copies owned font data on every rebuild of its fonts, but borrows static.
+    slices: egui copies owned font data on every rebuild of its fonts, but borrows static. In a
+    browser (`Source::There`), the relay's computer's: listed there by one `find` of the same
+    folders (`FONTS_THERE`, NUL-separated, ranked alike), each read through git's computer's
+    files, the language the browser's (`cjk_of` reads `ja_JP.UTF-8` and `zh-Hant-TW` alike).
   - `views/history.rs` — the history's chrome (the top bar, the sidebar, the details: `chrome`,
     the panel tone) around the commit table on the window's background. The top bar: Undo and
     Redo, then the views and menus as quiet tools

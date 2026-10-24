@@ -11,11 +11,19 @@
 //! read while looked through and dropped unless kept; a kept font lives as long as the window, so
 //! its bytes are leaked once into a `'static` slice, which egui borrows (owned font data, it
 //! copies on every rebuild of its fonts).
+//!
+//! In a browser, whose page reads none of its computer's fonts, they are the relay's computer's
+//! ([`Source::There`]): listed there by one `find`, each read through git's computer's files;
+//! the language is the browser's.
 
 use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+use bstr::ByteSlice as _;
+use egit_git::Git;
 
 use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use egui::{Context, FontData, FontFamily, FontId, Id, Ui};
@@ -34,6 +42,35 @@ const MAX_KEPT: usize = 4;
 /// The deepest a font directory is searched.
 const MAX_DEPTH: usize = 8;
 
+/// The most a listing of the fonts there may be.
+const MOST_LISTED: usize = 4 << 20;
+
+/// Lists the font files on git's computer, each ended by a NUL: those in its font directories
+/// (`$XDG_DATA_HOME`, `~/.fonts`, each of `$XDG_DATA_DIRS`; macOS's), as [`font_dirs`] finds them
+/// here, at most [`MAX_DEPTH`] deep.
+const FONTS_THERE: &str = r#"set -f
+list() {
+  [ -d "$1" ] && find -L "$1" -maxdepth 8 -type f \( -iname '*.ttf' -o -iname '*.otf' \
+    -o -iname '*.ttc' -o -iname '*.otc' \) -print0 2>/dev/null
+}
+list "${XDG_DATA_HOME:-$HOME/.local/share}/fonts"
+list "$HOME/.fonts"
+IFS=:
+for dir in ${XDG_DATA_DIRS:-/usr/local/share:/usr/share}; do list "$dir/fonts"; done
+list /System/Library/Fonts
+list /Library/Fonts
+list "$HOME/Library/Fonts"
+exit 0
+"#;
+
+/// Where the window's fonts are.
+#[derive(Clone, Debug)]
+enum Source {
+    /// On this computer.
+    Here,
+    /// In a browser: on its relay's computer, read through its git.
+    There(Git),
+}
 /// Characters drawn without a glyph, shared through the context.
 #[derive(Clone, Debug, Default)]
 struct Missing(Arc<Mutex<BTreeSet<char>>>);
@@ -102,8 +139,8 @@ impl Default for Fallbacks {
 
 impl Fallbacks {
     /// Adds the fonts a finished lookup kept; starts one for the characters noted since, when
-    /// none is under way.
-    pub(crate) fn poll(&mut self, ctx: &Context) {
+    /// none is under way. In a browser, the fonts are where `git` runs, once it does.
+    pub(crate) fn poll(&mut self, ctx: &Context, git: Option<&Git>) {
         if let Some(found) = self.lookup.take() {
             match found {
                 Ok(fonts) => {
@@ -118,6 +155,14 @@ impl Fallbacks {
         if self.lookup.is_pending() {
             return;
         }
+        let source = if crate::desktop::IN_BROWSER {
+            match git {
+                Some(git) => Source::There(git.clone()),
+                None => return,
+            }
+        } else {
+            Source::Here
+        };
         let missing = ctx.data_mut(|data| {
             data.get_temp_mut_or_default::<Missing>(missing_id())
                 .clone()
@@ -130,8 +175,9 @@ impl Fallbacks {
             return;
         }
         let kept = self.kept.clone();
-        self.lookup
-            .request(jobs::blocking(async move { Ok(look_for(wanted, &kept)) }));
+        self.lookup.request(jobs::blocking(async move {
+            Ok(look_for(wanted, &kept, &source).await)
+        }));
     }
 }
 
@@ -154,19 +200,31 @@ fn add(ctx: &Context, font: &Kept) {
     ctx.add_font(FontInsert::new(&name, data, families));
 }
 
-/// Looks through the system's fonts for faces with glyphs for `wanted`, keeping up to
+/// Looks through the fonts of `source` for faces with glyphs for `wanted`, keeping up to
 /// [`MAX_KEPT`] (the files of `kept` aren't read again).
-fn look_for(mut wanted: BTreeSet<char>, kept: &HashSet<(PathBuf, u32)>) -> Vec<Kept> {
-    let language = cjk_language();
+async fn look_for(
+    mut wanted: BTreeSet<char>,
+    kept: &HashSet<(PathBuf, u32)>,
+    source: &Source,
+) -> Vec<Kept> {
+    let language = cjk_of(&locale());
     let mut found = Vec::new();
-    for path in candidates() {
+    let candidates = match source {
+        Source::Here => candidates(),
+        Source::There(git) => candidates_there(git).await,
+    };
+    for path in candidates {
         if wanted.is_empty() || found.len() >= MAX_KEPT {
             break;
         }
         if kept.iter().any(|(kept, _)| *kept == path) {
             continue;
         }
-        let Ok(bytes) = std::fs::read(&path) else {
+        let read = match source {
+            Source::Here => std::fs::read(&path),
+            Source::There(git) => git.files().read(&path).await,
+        };
+        let Ok(bytes) = read else {
             continue;
         };
         let Some((index, covered)) = best_face(&bytes, &wanted, language) else {
@@ -241,20 +299,34 @@ fn best_face(bytes: &[u8], wanted: &BTreeSet<char>, language: &str) -> Option<(u
     best.map(|best| (best.index, best.covered))
 }
 
-/// Which CJK face a collection should offer first, from the user's language: `JP`, `KR`,
-/// `SC`, `TC`, `HK`, or none.
-fn cjk_language() -> &'static str {
-    let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+/// The user's language: the browser's (`ja-JP`), or the environment's (`ja_JP.UTF-8`).
+fn locale() -> String {
+    #[cfg(target_arch = "wasm32")]
+    return crate::web::language();
+    #[cfg(not(target_arch = "wasm32"))]
+    ["LC_ALL", "LC_CTYPE", "LANG"]
         .iter()
         .find_map(|key| std::env::var(key).ok().filter(|value| !value.is_empty()))
-        .unwrap_or_default();
-    match locale.get(..5).unwrap_or(&locale) {
-        "zh_TW" | "zh_MO" => "TC",
-        "zh_HK" => "HK",
-        _ if locale.starts_with("zh") => "SC",
-        _ if locale.starts_with("ko") => "KR",
-        _ if locale.starts_with("ja") => "JP",
-        _ => "",
+        .unwrap_or_default()
+}
+
+/// Which CJK face a collection should offer first for `locale` (`ja_JP.UTF-8`, `zh-Hant-TW`):
+/// `JP`, `KR`, `SC`, `TC`, `HK`, or none.
+fn cjk_of(locale: &str) -> &'static str {
+    let locale = locale.to_ascii_lowercase().replace('-', "_");
+    let is = |prefix: &str| locale.starts_with(prefix);
+    if is("zh_hk") || is("zh_hant_hk") {
+        "HK"
+    } else if is("zh_tw") || is("zh_mo") || is("zh_hant") {
+        "TC"
+    } else if is("zh") {
+        "SC"
+    } else if is("ko") {
+        "KR"
+    } else if is("ja") {
+        "JP"
+    } else {
+        ""
     }
 }
 
@@ -265,6 +337,38 @@ fn candidates() -> Vec<PathBuf> {
     for dir in font_dirs() {
         collect_fonts(&dir, 0, &mut seen, &mut files);
     }
+    files.sort_by_cached_key(|path| (rank(path), path.clone()));
+    files
+}
+
+/// Every font file on git's computer (another), best candidates first; none where they can't
+/// be listed.
+async fn candidates_there(git: &Git) -> Vec<PathBuf> {
+    let listed = async {
+        let mut running = git.run_there(
+            OsStr::new("sh"),
+            &[OsStr::new("-c"), OsStr::new(FONTS_THERE)],
+            None,
+            (&[], &[]),
+            false,
+        )?;
+        let listed = running.read_to_end(MOST_LISTED).await?;
+        running.wait().await?;
+        std::io::Result::Ok(listed)
+    };
+    let listed = match listed.await {
+        Ok(listed) => listed,
+        Err(error) => {
+            tracing::warn!(%error, "the fonts where git runs couldn't be listed");
+            return Vec::new();
+        }
+    };
+    let mut seen = HashSet::new();
+    let mut files: Vec<PathBuf> = listed
+        .split_str("\0")
+        .filter(|path| !path.is_empty() && seen.insert(*path))
+        .map(|path| path.to_path_lossy().into_owned())
+        .collect();
     files.sort_by_cached_key(|path| (rank(path), path.clone()));
     files
 }
@@ -419,6 +523,64 @@ mod tests {
         assert!(ranked("NotoSans-Regular.ttf") < ranked("Ubuntu-R.ttf"));
         assert!(ranked("Ubuntu-R.ttf") < ranked("NotoSansCJK-Bold.ttc"));
         assert!(ranked("NotoSansCJK-Regular.ttc") < ranked("NotoSerifCJK-Regular.ttc"));
+    }
+
+    #[test]
+    fn the_language_picks_a_collection_s_face_written_either_way() {
+        assert_eq!(cjk_of("ja_JP.UTF-8"), "JP");
+        assert_eq!(cjk_of("ja"), "JP");
+        assert_eq!(cjk_of("ko-KR"), "KR");
+        assert_eq!(cjk_of("zh_CN.UTF-8"), "SC");
+        assert_eq!(cjk_of("zh-Hans"), "SC");
+        assert_eq!(cjk_of("zh-TW"), "TC");
+        assert_eq!(cjk_of("zh-Hant"), "TC");
+        assert_eq!(cjk_of("zh_HK.UTF-8"), "HK");
+        assert_eq!(cjk_of("zh-Hant-HK"), "HK");
+        assert_eq!(cjk_of("en_US.UTF-8"), "");
+        assert_eq!(cjk_of(""), "");
+    }
+
+    /// Listed where git runs (here too, through `sh`), as [`candidates`] lists them here.
+    #[test]
+    fn the_fonts_where_git_runs_are_listed_there_best_first() {
+        use egit_git::Wait as _;
+
+        let sandbox = egit_git::testing::Sandbox::new().unwrap();
+        let (data, shared) = (sandbox.path("data"), sandbox.path("shared"));
+        let files = [
+            data.join("fonts/a/Ubuntu-R.ttf"),
+            data.join("fonts/NotoSansCJK-Regular.ttc"),
+            data.join("fonts/notes.txt"),
+            shared.join("fonts/b c/DejaVuSansMono.otf"),
+            sandbox.home().join(".fonts/MyFont-Bold.TTF"),
+        ];
+        for file in &files {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, b"font").unwrap();
+        }
+        let git = sandbox
+            .git_with([
+                ("XDG_DATA_HOME", data.into_os_string()),
+                (
+                    "XDG_DATA_DIRS",
+                    format!("{}:/nowhere", shared.display()).into(),
+                ),
+            ])
+            .unwrap();
+        let listed = candidates_there(&git).wait();
+        let names: Vec<_> = listed
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "NotoSansCJK-Regular.ttc",
+                "DejaVuSansMono.otf",
+                "Ubuntu-R.ttf",
+                "MyFont-Bold.TTF"
+            ]
+        );
     }
 
     #[test]

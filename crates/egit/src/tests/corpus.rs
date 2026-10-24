@@ -78,7 +78,7 @@ fn shown_as(bytes: Vec<u8>, path: Option<&str>, wrap: bool) -> Harness<'static, 
     let builder = if rendering() { builder.wgpu() } else { builder };
     let harness = builder.build_ui_state(
         |ui, shown: &mut Shown| {
-            shown.fonts.poll(ui.ctx());
+            shown.fonts.poll(ui.ctx(), None);
             shown.grid.show(ui, &shown.source);
         },
         Shown {

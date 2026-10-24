@@ -63,6 +63,13 @@ pub(crate) fn note_typing(typing: bool) {
     TYPING.store(typing, Ordering::Relaxed);
 }
 
+/// The browser's language (`ja-JP`), or none.
+pub(crate) fn language() -> String {
+    web_sys::window()
+        .and_then(|window| window.navigator().language())
+        .unwrap_or_default()
+}
+
 /// Whether the browser runs on a Mac (its ⌘ is egit's command key, and named so).
 pub(crate) fn is_mac() -> bool {
     static MAC: OnceLock<bool> = OnceLock::new();

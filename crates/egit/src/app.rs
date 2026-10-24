@@ -792,7 +792,8 @@ impl AppState {
         for setup in self.agents_there.values_mut() {
             setup.poll();
         }
-        self.fonts.poll(ctx);
+        let git = self.git.ok_ref().cloned();
+        self.fonts.poll(ctx, git.as_ref());
         crate::avatars::poll(ctx);
         // Back from an editor or a terminal: what the user did there is what they look for.
         let focused = ctx.input(|input| input.focused);
