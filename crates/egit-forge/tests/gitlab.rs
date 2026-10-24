@@ -22,7 +22,7 @@ use egit_forge::{
     ForgeKind, ForgeRepository, JobLog, LogRead, Mergeable, NewPullRequest, PipelineListing,
     ReviewDecision, ReviewState, ci_act, create_pull_request, download_artifact, job,
     pipeline_details, pipelines, pull_request_details, pull_requests, read_log, repository_info,
-    ssh_host,
+    ssh_host, start_pipeline, workflows,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -595,6 +595,30 @@ fn a_pipeline_s_jobs_are_retried_cancelled_and_started_their_earlier_runs_kept()
         act(CiAction::RetryPipeline(9_000)),
         Err(ForgeError::Forbidden { .. })
     ));
+}
+
+#[test]
+fn a_pipeline_is_started_on_a_branch() {
+    let (fake, _sandbox, account, project) = setup(0, TOKEN);
+    fake.state().repositories[0].pipelines = fake_pipelines(2);
+    let cancel = CancelToken::new();
+    // A project has no workflows to choose: its pipeline runs .gitlab-ci.yml.
+    assert_eq!(workflows(&account, &project, &cancel).unwrap(), []);
+    let made = start_pipeline(&account, &project, (None, "topic"), &cancel).unwrap();
+    assert_eq!(made, Some(3));
+    let mut listed = Vec::new();
+    pipelines(&account, &project, 10, &cancel, &mut |page| {
+        listed.extend(page);
+    })
+    .unwrap();
+    let newest = &listed[0];
+    assert_eq!(
+        (newest.iid, newest.git_ref.as_deref(), newest.status),
+        (3, Some("topic"), CiStatus::Created)
+    );
+    // Refused to an account that may only read.
+    fake.state().read_only = true;
+    assert!(start_pipeline(&account, &project, (None, "topic"), &cancel).is_err());
 }
 
 #[test]

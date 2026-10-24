@@ -1036,6 +1036,13 @@ fn gitlab_rest(request: &Recorded, state: &mut FakeState) -> Answer {
     };
     let decoded = |encoded: &str| encoded.replace("%2F", "/").replace("%2f", "/");
     if request.method == "POST"
+        && let Some(project) = rest.strip_suffix("/pipeline")
+    {
+        let reference = request.body["ref"].as_str().unwrap_or_default();
+        return start_pipeline(&decoded(project), reference, None, state)
+            .map_or_else(not_found, |made| created_pipeline(&made));
+    }
+    if request.method == "POST"
         && let Some(answer) = gitlab_ci_action(&decoded, rest, state)
     {
         return answer;
@@ -1306,6 +1313,130 @@ fn github_find_job<'a>(
     })
 }
 
+/// A pipeline GitLab made, as its REST API answers.
+fn created_pipeline(made: &FakePipeline) -> Answer {
+    let made = json!({ "id": made.id, "iid": made.iid, "ref": made.git_ref, "status": "created" });
+    (201, Vec::new(), made.to_string())
+}
+
+/// GitHub's workflows: listed (those its runs are of, each once), one's runs (on a branch), and
+/// a run of one started (`workflow_dispatch`); none for another request.
+fn github_workflows(
+    request: &Recorded,
+    (path, resource): (&str, &str),
+    state: &mut FakeState,
+) -> Option<Answer> {
+    let parts: Vec<&str> = resource.split('/').collect();
+    if request.method == "POST" {
+        let ["actions", "workflows", workflow, "dispatches"] = parts.as_slice() else {
+            return None;
+        };
+        let reference = request.body["ref"].as_str().unwrap_or_default();
+        let read_only = state.read_only;
+        let made = workflow
+            .parse()
+            .ok()
+            .and_then(|workflow| start_pipeline(path, reference, Some(workflow), state));
+        return Some(match made {
+            Some(_) => (204, Vec::new(), String::new()),
+            None if read_only => (
+                403,
+                Vec::new(),
+                json!({ "message": "Must have admin rights to Repository." }).to_string(),
+            ),
+            None => (
+                422,
+                Vec::new(),
+                json!({ "message": "Workflow does not have 'workflow_dispatch' trigger" })
+                    .to_string(),
+            ),
+        });
+    }
+    let repository = state
+        .repositories
+        .iter()
+        .find(|repository| repository.path.eq_ignore_ascii_case(path))?;
+    let runs = &repository.pipelines;
+    let answer = match parts.as_slice() {
+        ["actions", "workflows"] => {
+            let mut seen: Vec<&(String, u64, String)> = Vec::new();
+            for run in runs {
+                if !seen.iter().any(|known| known.1 == run.workflow.1) {
+                    seen.push(&run.workflow);
+                }
+            }
+            let listed: Vec<Value> = seen
+                .iter()
+                .map(|(name, id, file)| {
+                    json!({ "id": id, "name": name, "path": file, "state": "active" })
+                })
+                .collect();
+            json!({ "total_count": listed.len(), "workflows": listed })
+        }
+        ["actions", "workflows", workflow, "runs"] => {
+            let branch = query(&request.path, "branch");
+            let listed: Vec<Value> = runs
+                .iter()
+                .filter(|run| run.workflow.1.to_string() == *workflow)
+                .filter(|run| branch.is_none_or(|branch| run.git_ref == branch))
+                .map(|run| github_run(repository, run, state))
+                .collect();
+            json!({ "total_count": listed.len(), "workflow_runs": listed })
+        }
+        _ => return None,
+    };
+    Some((200, Vec::new(), answer.to_string()))
+}
+
+/// A new pipeline of the repository at `path` on `reference` (a GitHub run of `workflow`, the
+/// one its newest run is of), waiting to start, listed first: GitLab's REST `POST …/pipeline`
+/// and GitHub's dispatch (`read_only` refuses both, as `None`).
+fn start_pipeline(
+    path: &str,
+    reference: &str,
+    workflow: Option<u64>,
+    state: &mut FakeState,
+) -> Option<FakePipeline> {
+    if state.read_only || reference.is_empty() {
+        return None;
+    }
+    let repository = find(state, path)?;
+    let runs = &repository.pipelines;
+    let of = workflow.map_or_else(
+        || ((String::new(), 0, String::new()), runs.first()),
+        |workflow| {
+            let newest = runs.iter().find(|run| run.workflow.1 == workflow);
+            (
+                newest.map(|run| run.workflow.clone()).unwrap_or_default(),
+                newest,
+            )
+        },
+    );
+    let ((name, id, file), newest) = of;
+    if workflow.is_some() && newest.is_none() {
+        return None;
+    }
+    let made = FakePipeline {
+        id: runs.iter().map(|run| run.id).max().unwrap_or(9_000) + 1,
+        iid: runs.iter().map(|run| run.iid).max().unwrap_or(0) + 1,
+        workflow: (name, id, file),
+        // The commit its ref's newest pipeline ran on, else the newest's (the fake knows no
+        // branches).
+        sha: runs
+            .iter()
+            .find(|run| run.git_ref == reference)
+            .or_else(|| runs.first())
+            .map(|run| run.sha.clone())
+            .unwrap_or_default(),
+        git_ref: reference.to_owned(),
+        status: "CREATED".to_owned(),
+        created: "2024-05-02T10:00:00Z".to_owned(),
+        ..FakePipeline::default()
+    };
+    repository.pipelines.insert(0, made.clone());
+    Some(made)
+}
+
 /// A query's parameter's value.
 fn query<'a>(path: &'a str, name: &str) -> Option<&'a str> {
     path.split_once('?')?
@@ -1329,6 +1460,9 @@ fn github_actions(request: &Recorded, state: &mut FakeState) -> Option<Answer> {
         json!({ "message": "Not Found" }).to_string(),
     );
     let read_only = state.read_only;
+    if let Some(answer) = github_workflows(request, (&path, resource), state) {
+        return Some(answer);
+    }
     if request.method == "POST" && resource.starts_with("actions/") {
         if read_only {
             return Some((

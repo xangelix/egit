@@ -887,6 +887,11 @@ writes paths), never `OsStrExt`.
     name (none where it is scheduled by stage), `JobActions` (retry, cancel, play: GitLab's
     say), whether the account may (`updateBuild`), its `EarlierRun`s, the newest first, its
     `artifacts` (a GitLab job's)).
+    `start_pipeline`: one started on a branch or tag, GitLab's (`POST /projects/:id/pipeline`,
+    its `iid` returned) or a run of a GitHub workflow (`workflow_dispatch`: `POST
+    …/actions/workflows/:id/dispatches`, the run looked for a second apart a few times by its
+    workflow's runs on the branch, its id returned once seen); `workflows`, a GitHub
+    repository's active ones (`WorkflowFile`: number, name, file; none for GitLab).
     `ci_act`: a `CiAction` asked of GitLab by REST (`POST …/pipelines/:id/retry` or `cancel`,
     `…/jobs/:id/retry`, `cancel`, `play`), or of GitHub (`…/actions/runs/:id/rerun-failed-jobs`,
     `rerun`, `cancel`, `…/actions/jobs/:id/rerun`; none for a job's cancel or play), returning
@@ -906,7 +911,9 @@ writes paths), never `OsStrExt`.
     a workflow's run: its `workflow` name, id, and file, `attempt`; its jobs' `steps`): runs a
     page, a run, its jobs of every attempt, a job, its log a redirect to its file at
     `/blob/job/<id>` served without the token (there once the job has ended), the
-    repository's `permissions`, re-runs, cancelling (409 with nothing under way); artifacts:
+    repository's `permissions`, re-runs, cancelling (409 with nothing under way); pipelines started (GitLab's REST, GitHub's
+    workflows listed from its runs', a dispatch making a run, 422 for a workflow it hasn't,
+    `start_pipeline`: listed first); artifacts:
     a GitLab job's (`FakeJob::artifacts`: its file type, name, and contents; listed in GraphQL
     with its log's trace, an archive a redirect to `/blob/artifact/gl/<job>/<type>`, a report
     served at once), a GitHub run's (`FakeArtifact`: its digest the contents' unless given,

@@ -25,7 +25,7 @@ use egit_forge::{
     Account, ArtifactKind, CheckState, CiAction, CiStatus, ForgeError, ForgeHost, ForgeKind,
     ForgeRepository, JobLog, LogRead, NewPullRequest, ReviewDecision, ReviewState, Workflow,
     ci_act, create_pull_request, download_artifact, job, pipeline_details, pipelines,
-    pull_request_details, pull_requests, read_log, repository_info,
+    pull_request_details, pull_requests, read_log, repository_info, start_pipeline, workflows,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId};
@@ -419,6 +419,52 @@ fn workflow_runs_are_pipelines_each_workflow_a_series_of_its_own() {
     assert_eq!(read[2].iid, 7001);
     assert_eq!(read[2].git_ref.as_deref(), Some("main"));
     assert!(read[2].url.ends_with("/octo/tool/actions/runs/7001"));
+}
+
+#[test]
+fn a_workflow_s_run_is_started_on_a_branch_and_found() {
+    let (fake, _sandbox, account, repository) = setup(0, TOKEN);
+    with_runs(&fake);
+    let cancel = CancelToken::new();
+    // The workflows, by name.
+    let listed: Vec<(u64, String, String)> = workflows(&account, &repository, &cancel)
+        .unwrap()
+        .into_iter()
+        .map(|workflow| (workflow.id, workflow.name, workflow.path))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            (11, "CI".to_owned(), ".github/workflows/ci.yml".to_owned()),
+            (
+                12,
+                "Docs".to_owned(),
+                ".github/workflows/docs.yml".to_owned()
+            ),
+        ]
+    );
+    // Docs run on topic: GitHub makes the run a moment later, found and given back.
+    let made = start_pipeline(&account, &repository, (Some(12), "topic"), &cancel).unwrap();
+    assert_eq!(made, Some(7004));
+    let mut read = Vec::new();
+    pipelines(&account, &repository, 500, &cancel, |page| {
+        read.extend(page);
+    })
+    .unwrap();
+    assert_eq!(
+        (read[0].iid, read[0].git_ref.as_deref(), read[0].series),
+        (7004, Some("topic"), 12)
+    );
+    // A workflow it can't start (no workflow_dispatch, or none such): GitHub's words.
+    let refused = start_pipeline(&account, &repository, (Some(99), "topic"), &cancel);
+    assert!(
+        refused
+            .as_ref()
+            .is_err_and(|error| error.to_string().contains("workflow_dispatch")),
+        "{refused:?}"
+    );
+    // On GitHub, a run is of a workflow.
+    assert!(start_pipeline(&account, &repository, (None, "topic"), &cancel).is_err());
 }
 
 #[test]

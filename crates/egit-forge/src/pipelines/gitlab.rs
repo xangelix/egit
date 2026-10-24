@@ -145,6 +145,31 @@ pub(super) fn ci_act(
     Ok(created.id)
 }
 
+/// A pipeline GitLab made: its number within its project.
+#[derive(Deserialize)]
+struct Made {
+    iid: Option<u64>,
+}
+
+/// Starts a pipeline of `repository` on `reference` (REST: `POST /projects/:id/pipeline`);
+/// returns its number within the project.
+pub(super) fn start(
+    account: &Account,
+    repository: &ForgeRepository,
+    reference: &str,
+    cancel: &CancelToken,
+) -> Result<Option<u64>, ForgeError> {
+    let what = format!("{}'s new pipeline on {reference}", repository.path());
+    let url = account.host().rest_url(&format!(
+        "/projects/{}/pipeline",
+        crate::gitlab::encoded(repository.path())
+    ));
+    let body = serde_json::json!({ "ref": reference }).to_string();
+    let answer = account.send(&url, Some(body.as_bytes()), cancel)?;
+    let made: Made = read_answer(account, &answer, &what)?;
+    Ok(made.iid)
+}
+
 const PIPELINES: &str = "query Pipelines($path: ID!, $first: Int!, $after: String) { \
     project(fullPath: $path) { pipelines(first: $first, after: $after) { pageInfo { \
     hasNextPage endCursor } nodes { id iid sha ref status warnings createdAt path } } } }";

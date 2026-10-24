@@ -432,6 +432,63 @@ pub fn ci_act(
     }
 }
 
+/// A GitHub repository's workflow (`.github/workflows/<file>`): runs of it are started on a
+/// branch where its file says `on: workflow_dispatch`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WorkflowFile {
+    /// Its number.
+    pub id: u64,
+    /// Its name ("CI"), or its file's where it has none.
+    pub name: String,
+    /// Its file, from the repository's top.
+    pub path: String,
+}
+
+/// `repository`'s active workflows, by name (GitHub's: `GET …/actions/workflows`); none for a
+/// GitLab project, whose pipelines run from `.gitlab-ci.yml`.
+///
+/// # Errors
+///
+/// When the forge refuses or can't be reached.
+pub fn workflows(
+    account: &Account,
+    repository: &ForgeRepository,
+    cancel: &CancelToken,
+) -> Result<Vec<WorkflowFile>, ForgeError> {
+    match repository.host().kind() {
+        ForgeKind::GitLab => Ok(Vec::new()),
+        ForgeKind::GitHub => github::workflows(account, repository, cancel),
+    }
+}
+
+/// Starts a pipeline on `reference` (a branch or tag): GitLab's (`POST /projects/:id/pipeline`),
+/// its number (`iid`) returned; or a run of GitHub's `workflow` (`workflow_dispatch`).
+///
+/// GitHub makes the run a moment later: it is looked for a second apart a few times, its id
+/// returned once seen.
+///
+/// # Errors
+///
+/// When the forge refuses (no permission; a workflow without `workflow_dispatch`, which GitHub
+/// says) or can't be reached; on GitHub, without a workflow.
+pub fn start_pipeline(
+    account: &Account,
+    repository: &ForgeRepository,
+    (workflow, reference): (Option<u64>, &str),
+    cancel: &CancelToken,
+) -> Result<Option<u64>, ForgeError> {
+    match (repository.host().kind(), workflow) {
+        (ForgeKind::GitLab, _) => gitlab::start(account, repository, reference, cancel),
+        (ForgeKind::GitHub, Some(workflow)) => {
+            github::dispatch(account, repository, (workflow, reference), cancel)
+        }
+        (ForgeKind::GitHub, None) => Err(crate::answer::not_found(
+            account,
+            format!("{}'s workflow to run", repository.full_name()),
+        )),
+    }
+}
+
 /// `jobs` grouped into stages by `key` (a group's key and its stage's name), in the order each
 /// group first comes; each stage's status the most telling of its jobs' ([`CiStatus::weight`]).
 fn grouped(jobs: Vec<Job>, mut key: impl FnMut(&Job) -> (String, String)) -> Vec<Stage> {

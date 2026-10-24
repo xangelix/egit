@@ -508,6 +508,95 @@ pub(super) fn ci_act(
     }
 }
 
+/// A page of workflows.
+#[derive(Deserialize)]
+struct WorkflowsPage {
+    #[serde(default)]
+    workflows: Vec<RestWorkflow>,
+}
+
+/// A workflow as GitHub's REST API gives it.
+#[derive(Deserialize)]
+struct RestWorkflow {
+    id: u64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    state: String,
+}
+
+/// `repository`'s active workflows, by name (`GET …/actions/workflows`, a hundred at most).
+pub(super) fn workflows(
+    account: &Account,
+    repository: &ForgeRepository,
+    cancel: &CancelToken,
+) -> Result<Vec<super::WorkflowFile>, ForgeError> {
+    let what = format!("{}'s workflows", repository.full_name());
+    let url = rest(
+        account,
+        repository,
+        &format!("/actions/workflows?per_page={PAGE}"),
+    );
+    let page: WorkflowsPage = get(account, &url, &what, cancel)?;
+    let mut found: Vec<super::WorkflowFile> = page
+        .workflows
+        .into_iter()
+        .filter(|workflow| workflow.state == "active")
+        .map(|workflow| super::WorkflowFile {
+            id: workflow.id,
+            name: if workflow.name.is_empty() {
+                workflow.path.clone()
+            } else {
+                workflow.name
+            },
+            path: workflow.path,
+        })
+        .collect();
+    found.sort_by(|one, other| one.name.cmp(&other.name));
+    Ok(found)
+}
+
+/// Starts a run of `workflow` on `reference` (`POST …/actions/workflows/:id/dispatches`), then
+/// looks for it a second apart a few times (GitHub makes it a moment later): its id, once seen.
+pub(super) fn dispatch(
+    account: &Account,
+    repository: &ForgeRepository,
+    (workflow, reference): (u64, &str),
+    cancel: &CancelToken,
+) -> Result<Option<u64>, ForgeError> {
+    let what = format!("{}'s run of workflow {workflow}", repository.full_name());
+    let newest = || -> Result<Option<u64>, ForgeError> {
+        let url = rest(
+            account,
+            repository,
+            &format!(
+                "/actions/workflows/{workflow}/runs?per_page=1&branch={}",
+                crate::gitlab::encoded(reference)
+            ),
+        );
+        let runs: RunsPage = get(account, &url, &what, cancel)?;
+        Ok(runs.workflow_runs.first().map(|run| run.id))
+    };
+    let before = newest()?;
+    let body = serde_json::json!({ "ref": reference }).to_string();
+    let url = rest(
+        account,
+        repository,
+        &format!("/actions/workflows/{workflow}/dispatches"),
+    );
+    let answer = account.send(&url, Some(body.as_bytes()), cancel)?;
+    succeeded(account, &answer, &what)?;
+    for _ in 0..LOOKS_FOR_RERUN {
+        std::thread::sleep(Duration::from_secs(1));
+        if let Some(made) = newest()?.filter(|made| Some(*made) != before) {
+            return Ok(Some(made));
+        }
+    }
+    Ok(None)
+}
+
 /// The run of `job` its re-run made, once its run's latest attempt has one; none found after a
 /// few looks.
 fn rerun_of(
