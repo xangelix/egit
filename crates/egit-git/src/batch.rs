@@ -1,7 +1,7 @@
 //! A git process kept running for one of git's batch protocols (`cat-file --batch-command`):
 //! requests go to its standard input, answers come from its standard output.
 
-use std::io::{self, BufReader};
+use std::io::{self, BufRead as _, BufReader, Read as _, Write as _};
 use std::process::{Child, ChildStdin, ExitStatus};
 use std::thread::JoinHandle;
 
@@ -54,20 +54,52 @@ impl GitProcess {
         self.subcommand
     }
 
-    /// Where requests go.
+    /// Sends `request` to git, all of it, at once.
     ///
     /// # Errors
     ///
-    /// When the input was closed already.
-    pub fn input(&mut self) -> io::Result<&mut ChildStdin> {
-        self.stdin
+    /// When the input was closed already, or git stopped reading.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "here it blocks; through a relay it will await"
+    )]
+    pub async fn send(&mut self, request: &[u8]) -> io::Result<()> {
+        let input = self
+            .stdin
             .as_mut()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "git's input is closed"))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "git's input is closed"))?;
+        input.write_all(request)?;
+        input.flush()
     }
 
-    /// Where answers come from.
-    pub const fn output(&mut self) -> &mut BufReader<GitStdout> {
-        &mut self.stdout
+    /// Reads git's answer into `buffer` up to `byte` and through it, saying how much was read
+    /// (0 once git stopped answering).
+    ///
+    /// # Errors
+    ///
+    /// When its output can't be read.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "here it blocks; through a relay it will await"
+    )]
+    pub async fn read_until(&mut self, byte: u8, buffer: &mut Vec<u8>) -> io::Result<usize> {
+        self.stdout.read_until(byte, buffer)
+    }
+
+    /// Fills `buffer` with what git answers next.
+    ///
+    /// # Errors
+    ///
+    /// When its output can't be read, or ends first.
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "here it blocks; through a relay it will await"
+    )]
+    pub async fn read_exact(&mut self, buffer: &mut [u8]) -> io::Result<()> {
+        self.stdout.read_exact(buffer)
     }
 
     /// Closes git's input, waits for it to finish what it was asked, and reaps it.
@@ -75,7 +107,12 @@ impl GitProcess {
     /// # Errors
     ///
     /// [`GitError::Failed`] when git exits unsuccessfully, [`GitError::Io`] when waiting fails.
-    pub fn finish(mut self) -> Result<(), GitError> {
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "here it blocks; through a relay it will await"
+    )]
+    pub async fn finish(mut self) -> Result<(), GitError> {
         drop(self.stdin.take());
         let (status, stderr) = self.reap();
         match status {

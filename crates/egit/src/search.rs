@@ -423,8 +423,8 @@ pub(crate) fn start(asked: Asked<'_>, ctx: &egui::Context) -> Search {
         cancel: cancel.clone(),
     };
     let ctx = ctx.clone();
-    jobs::detached(move || {
-        let ended = job.run();
+    jobs::detached(async move {
+        let ended = job.run().await;
         if !job.cancel.is_cancelled() {
             *job.found.end.lock() = Some(ended);
         }
@@ -447,7 +447,7 @@ struct Job {
 }
 
 impl Job {
-    fn run(&self) -> Result<(), Problem> {
+    async fn run(&self) -> Result<(), Problem> {
         let fold_case = !matches_case(&self.query);
         match self.kind {
             SearchKind::Message | SearchKind::Author => {
@@ -468,7 +468,7 @@ impl Job {
                 } else {
                     CommitFilter::Author { text, fold_case }
                 };
-                self.through_git(filter)
+                self.through_git(filter).await
             }
             SearchKind::Path => {
                 if !self.every_tree {
@@ -479,9 +479,9 @@ impl Job {
                     ));
                 }
                 let path = self.query.trim().trim_matches('/');
-                self.through_git(CommitFilter::Path(BStr::new(path)))
+                self.through_git(CommitFilter::Path(BStr::new(path))).await
             }
-            SearchKind::Commit => self.names_or_refs(),
+            SearchKind::Commit => self.names_or_refs().await,
         }
     }
 
@@ -549,7 +549,7 @@ impl Job {
     }
 
     /// Has git find the commits, and marks their rows.
-    fn through_git(&self, filter: CommitFilter<'_>) -> Result<(), Problem> {
+    async fn through_git(&self, filter: CommitFilter<'_>) -> Result<(), Problem> {
         let index = self.index.get_or_init(|| RowIndex::build(&self.names));
         find_commits(&self.git, &self.repository, filter, &self.cancel, |id| {
             if let Some(row) = index.row_of(&self.names, id.as_bytes()) {
@@ -557,11 +557,12 @@ impl Job {
             }
             ControlFlow::Continue(())
         })
+        .await
         .map_err(|error| searched(&error))
     }
 
     /// The rows whose commits' names start as the query does, else the commit git makes of it.
-    fn names_or_refs(&self) -> Result<(), Problem> {
+    async fn names_or_refs(&self) -> Result<(), Problem> {
         let query = self.query.trim();
         let index = self.index.get_or_init(|| RowIndex::build(&self.names));
         if let Some(digits) = abbreviated_name(query, self.names.width()) {
@@ -570,8 +571,9 @@ impl Job {
         if self.found.count() > 0 {
             return Ok(());
         }
-        let resolved =
-            resolve_commit(&self.git, &self.repository, query).map_err(|error| searched(&error))?;
+        let resolved = resolve_commit(&self.git, &self.repository, query)
+            .await
+            .map_err(|error| searched(&error))?;
         if let Some(row) = resolved.and_then(|id| index.row_of(&self.names, id.as_bytes())) {
             self.found.mark(row);
         }

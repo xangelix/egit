@@ -21,12 +21,12 @@ use crate::repository::ForgeRepository;
 ///
 /// The newest first, a page at a time (each handed to `found` as it lands), up to `limit` of
 /// them.
-pub(super) fn pipelines(
+pub(super) async fn pipelines(
     account: &Account,
     repository: &ForgeRepository,
     limit: u32,
     cancel: &CancelToken,
-    found: &mut dyn FnMut(Vec<Pipeline>),
+    found: &mut (dyn FnMut(Vec<Pipeline>) + Send),
 ) -> Result<PipelineListing, ForgeError> {
     let mut after: Option<String> = None;
     let mut read = 0_u32;
@@ -44,7 +44,8 @@ pub(super) fn pipelines(
             &json!({ "path": repository.path(), "first": first, "after": after }),
             repository.path(),
             cancel,
-        )?;
+        )
+        .await?;
         // A project whose pipelines this account can't see (or that has CI/CD off) has none.
         let Some(connection) = data
             .project
@@ -88,7 +89,7 @@ pub(super) fn pipelines(
 }
 
 /// Reads pipeline `iid` of `repository` whole.
-pub(super) fn pipeline_details(
+pub(super) async fn pipeline_details(
     account: &Account,
     repository: &ForgeRepository,
     iid: u64,
@@ -101,7 +102,8 @@ pub(super) fn pipeline_details(
         &json!({ "path": repository.path(), "iid": iid.to_string() }),
         &what,
         cancel,
-    )?;
+    )
+    .await?;
     let node = data
         .project
         .and_then(|project| project.pipeline)
@@ -122,7 +124,7 @@ struct Created {
 /// `…/jobs/:id/retry`, `…/cancel`, `…/play`); returns the run a job's retry made, or the job
 /// asked of. Running every job of a pipeline again is GitHub's alone: GitLab's retry runs
 /// those that failed.
-pub(super) fn ci_act(
+pub(super) async fn ci_act(
     account: &Account,
     repository: &ForgeRepository,
     action: CiAction,
@@ -140,7 +142,7 @@ pub(super) fn ci_act(
         "/projects/{}/{kind}/{id}/{verb}",
         crate::gitlab::encoded(repository.path())
     ));
-    let answer = account.send(&url, Some(b"{}"), cancel)?;
+    let answer = account.send(&url, Some(b"{}"), cancel).await?;
     let created: Created = read_answer(account, &answer, &what)?;
     Ok(created.id)
 }
@@ -153,7 +155,7 @@ struct Made {
 
 /// Starts a pipeline of `repository` on `reference` (REST: `POST /projects/:id/pipeline`);
 /// returns its number within the project.
-pub(super) fn start(
+pub(super) async fn start(
     account: &Account,
     repository: &ForgeRepository,
     reference: &str,
@@ -165,7 +167,7 @@ pub(super) fn start(
         crate::gitlab::encoded(repository.path())
     ));
     let body = serde_json::json!({ "ref": reference }).to_string();
-    let answer = account.send(&url, Some(body.as_bytes()), cancel)?;
+    let answer = account.send(&url, Some(body.as_bytes()), cancel).await?;
     let made: Made = read_answer(account, &answer, &what)?;
     Ok(made.iid)
 }

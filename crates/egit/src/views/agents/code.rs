@@ -62,7 +62,7 @@ impl Highlights {
             let done = Arc::clone(&self.done);
             let (language, code) = (language.to_owned(), code.to_owned());
             let (dark, default, ctx) = (palette.dark, palette.text, ctx.clone());
-            crate::jobs::detached(move || {
+            crate::jobs::detached(async move {
                 let colored = crate::syntax::highlight_snippet(&language, &code, dark, default);
                 done.lock().insert(key, Arc::new(colored));
                 ctx.request_repaint();

@@ -276,9 +276,9 @@ impl GitCommand {
     ///
     /// [`GitError::Failed`] when git exits unsuccessfully, and any error of
     /// [`Self::output_unchecked`].
-    pub fn output(self) -> Result<Completed, GitError> {
+    pub async fn output(self) -> Result<Completed, GitError> {
         let subcommand = self.subcommand;
-        let completed = self.output_unchecked()?;
+        let completed = self.output_unchecked().await?;
         if completed.status.success() {
             Ok(completed)
         } else {
@@ -300,7 +300,7 @@ impl GitCommand {
     /// [`GitError::Cancelled`] when cancelled before git succeeded,
     /// [`GitError::OutputTooLarge`] past [`Self::stdout_limit`], [`GitError::Launch`] when git
     /// can't be started, and [`GitError::Io`] when the pipes to it fail.
-    pub fn output_unchecked(self) -> Result<Completed, GitError> {
+    pub async fn output_unchecked(self) -> Result<Completed, GitError> {
         let mut delays = LOCK_RETRY_DELAYS.iter();
         loop {
             let completed = self.collect_once()?;
@@ -319,7 +319,7 @@ impl GitCommand {
                 ?delay,
                 "another git holds a lock; trying again"
             );
-            if self.cancel.clone().unwrap_or_default().sleep(delay) {
+            if self.cancel.clone().unwrap_or_default().sleep(delay).await {
                 return Err(self.cancelled());
             }
         }
@@ -331,7 +331,12 @@ impl GitCommand {
     /// # Errors
     ///
     /// The errors of [`Self::output_unchecked`].
-    pub fn secret_output(mut self) -> Result<SecretOutput, GitError> {
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "here it blocks; through a relay it will await"
+    )]
+    pub async fn secret_output(mut self) -> Result<SecretOutput, GitError> {
         // Nothing of it in a transcript.
         self.secret = true;
         let (attempt, stdout) = self.run_once(|stdout| {
@@ -375,7 +380,12 @@ impl GitCommand {
     ///
     /// [`GitError::Failed`] when git exits unsuccessfully (unless the consumer stopped it), and
     /// the errors of [`Self::output_unchecked`] other than the size limit.
-    pub fn stream(
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "here it blocks; through a relay it will await"
+    )]
+    pub async fn stream(
         self,
         mut consume: impl FnMut(&[u8]) -> ControlFlow<()>,
     ) -> Result<Streamed, GitError> {
@@ -421,7 +431,12 @@ impl GitCommand {
     ///
     /// [`GitError::Cancelled`] when the token is already cancelled, [`GitError::Launch`] when
     /// git can't be started, and [`GitError::Io`] when its pipes or helper can't be set up.
-    pub fn spawn(self) -> Result<GitProcess, GitError> {
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "here it blocks; through a relay it will await"
+    )]
+    pub async fn spawn(self) -> Result<GitProcess, GitError> {
         if self.cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
             return Err(self.cancelled());
         }

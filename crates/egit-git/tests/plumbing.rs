@@ -19,13 +19,13 @@ use std::path::{Path, PathBuf};
 use bstr::{BStr, BString};
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, ObjectId, Progress, RemoveWorktreeError, Repository, add_remote, fetch_remote,
-    history_tips, lock_worktree, prune_worktrees, remove_remote, remove_worktree, rename_remote,
-    set_remote_url, submodules, unlock_worktree, update_submodules, worktrees,
+    CancelToken, ObjectId, Progress, RemoveWorktreeError, Repository, Wait as _, add_remote,
+    fetch_remote, history_tips, lock_worktree, prune_worktrees, remove_remote, remove_worktree,
+    rename_remote, set_remote_url, submodules, unlock_worktree, update_submodules, worktrees,
 };
 
 fn open(sandbox: &Sandbox, path: &Path) -> Repository {
-    Repository::discover(sandbox.git(), path).unwrap()
+    Repository::discover(sandbox.git(), path).wait().unwrap()
 }
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> Option<ObjectId> {
@@ -69,7 +69,7 @@ fn worktrees_are_listed_locked_removed_and_pruned() {
         .unwrap();
     let repository = open(&sandbox, &repo);
     let cancel = CancelToken::new();
-    let list = || worktrees(sandbox.git(), &repository).unwrap();
+    let list = || worktrees(sandbox.git(), &repository).wait().unwrap();
 
     let listed = list();
     assert_eq!(listed.len(), 3);
@@ -83,36 +83,45 @@ fn worktrees_are_listed_locked_removed_and_pruned() {
     assert!(listed.iter().all(|worktree| !worktree.bare));
 
     // Locked: not removed, until unlocked.
-    lock_worktree(sandbox.git(), &repository, &beside, "on a drive", &cancel).unwrap();
+    lock_worktree(sandbox.git(), &repository, &beside, "on a drive", &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(list()[1].locked, Some(BString::from("on a drive")));
     assert!(matches!(
-        remove_worktree(sandbox.git(), &repository, &beside, false, &cancel),
+        remove_worktree(sandbox.git(), &repository, &beside, false, &cancel).wait(),
         Err(RemoveWorktreeError::Locked)
     ));
-    unlock_worktree(sandbox.git(), &repository, &beside, &cancel).unwrap();
+    unlock_worktree(sandbox.git(), &repository, &beside, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(list()[1].locked, None);
 
     // Changes in it: removed only when forced.
     std::fs::write(beside.join("f"), "changed\n").unwrap();
     assert!(matches!(
-        remove_worktree(sandbox.git(), &repository, &beside, false, &cancel),
+        remove_worktree(sandbox.git(), &repository, &beside, false, &cancel).wait(),
         Err(RemoveWorktreeError::Changes)
     ));
     assert!(beside.exists());
-    remove_worktree(sandbox.git(), &repository, &beside, true, &cancel).unwrap();
+    remove_worktree(sandbox.git(), &repository, &beside, true, &cancel)
+        .wait()
+        .unwrap();
     assert!(!beside.exists());
     assert_eq!(list().len(), 2);
 
     // Its folder gone: prunable, then pruned.
     std::fs::remove_dir_all(&detached).unwrap();
     assert!(list()[1].prunable.is_some());
-    prune_worktrees(sandbox.git(), &repository, &cancel).unwrap();
+    prune_worktrees(sandbox.git(), &repository, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(list().len(), 1);
 }
 
 #[test]
 fn remotes_are_added_renamed_pointed_elsewhere_fetched_and_removed() {
     let sandbox = Sandbox::new().unwrap();
+    let git = sandbox.git();
     let upstream = sandbox.init("upstream").unwrap();
     sandbox.commit_file(&upstream, "f", "one\n", "One").unwrap();
     let other = sandbox.init("other").unwrap();
@@ -128,33 +137,26 @@ fn remotes_are_added_renamed_pointed_elsewhere_fetched_and_removed() {
             .map(|out| String::from_utf8(out.stdout).unwrap().trim().to_owned())
     };
 
-    add_remote(
-        sandbox.git(),
-        &repository,
-        "origin",
-        &url(&upstream),
-        &cancel,
-    )
-    .unwrap();
+    add_remote(git, &repository, "origin", &url(&upstream), &cancel)
+        .wait()
+        .unwrap();
     assert!(
-        add_remote(sandbox.git(), &repository, "origin", &url(&other), &cancel).is_err(),
+        add_remote(git, &repository, "origin", &url(&other), &cancel)
+            .wait()
+            .is_err(),
         "taken"
     );
-    add_remote(sandbox.git(), &repository, "other", &url(&other), &cancel).unwrap();
+    add_remote(git, &repository, "other", &url(&other), &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(says(&sandbox, &repo, "remote", &[]), "origin\nother");
 
     // Fetched alone: the other remote's branches stay unfetched.
     let progress = Progress::new();
     let origin = BStr::new("origin");
-    fetch_remote(
-        sandbox.git(),
-        &repository,
-        origin,
-        false,
-        &progress,
-        &cancel,
-    )
-    .unwrap();
+    fetch_remote(git, &repository, origin, false, &progress, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(
         rev(&sandbox, &repo, "refs/remotes/origin/main"),
         rev(&sandbox, &upstream, "main")
@@ -165,7 +167,9 @@ fn remotes_are_added_renamed_pointed_elsewhere_fetched_and_removed() {
     sandbox
         .run(&repo, "switch", &["--quiet", "--track", "origin/main"])
         .unwrap();
-    rename_remote(sandbox.git(), &repository, origin, "upstream", &cancel).unwrap();
+    rename_remote(git, &repository, origin, "upstream", &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(rev(&sandbox, &repo, "refs/remotes/origin/main"), None);
     assert_eq!(
         rev(&sandbox, &repo, "refs/remotes/upstream/main"),
@@ -175,43 +179,31 @@ fn remotes_are_added_renamed_pointed_elsewhere_fetched_and_removed() {
 
     // Pointed elsewhere, for fetching and for pushing.
     let renamed = BStr::new("upstream");
-    set_remote_url(
-        sandbox.git(),
-        &repository,
-        renamed,
-        &url(&other),
-        false,
-        &cancel,
-    )
-    .unwrap();
+    set_remote_url(git, &repository, renamed, &url(&other), false, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(config("remote.upstream.url"), Some(url(&other)));
-    set_remote_url(
-        sandbox.git(),
-        &repository,
-        renamed,
-        &url(&upstream),
-        true,
-        &cancel,
-    )
-    .unwrap();
+    set_remote_url(git, &repository, renamed, &url(&upstream), true, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(config("remote.upstream.pushurl"), Some(url(&upstream)));
     assert_eq!(config("remote.upstream.url"), Some(url(&other)));
 
     // Removed, with its branches.
     let removed = BStr::new("other");
-    fetch_remote(
-        sandbox.git(),
-        &repository,
-        removed,
-        false,
-        &progress,
-        &cancel,
-    )
-    .unwrap();
-    remove_remote(sandbox.git(), &repository, removed, &cancel).unwrap();
+    fetch_remote(git, &repository, removed, false, &progress, &cancel)
+        .wait()
+        .unwrap();
+    remove_remote(git, &repository, removed, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(rev(&sandbox, &repo, "refs/remotes/other/main"), None);
     assert_eq!(says(&sandbox, &repo, "remote", &[]), "upstream");
-    assert!(remove_remote(sandbox.git(), &repository, removed, &cancel).is_err());
+    assert!(
+        remove_remote(git, &repository, removed, &cancel)
+            .wait()
+            .is_err()
+    );
 }
 
 #[test]
@@ -224,7 +216,9 @@ fn a_remote_fetched_alone_is_pruned_when_asked() {
     let repository = open(&sandbox, &repo);
     let (cancel, progress) = (CancelToken::new(), Progress::new());
     let url = format!("file://{}", other.display());
-    add_remote(sandbox.git(), &repository, "other", &url, &cancel).unwrap();
+    add_remote(sandbox.git(), &repository, "other", &url, &cancel)
+        .wait()
+        .unwrap();
     let remote = BStr::new("other");
     fetch_remote(
         sandbox.git(),
@@ -234,6 +228,7 @@ fn a_remote_fetched_alone_is_pruned_when_asked() {
         &progress,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert!(rev(&sandbox, &repo, "refs/remotes/other/gone").is_some());
     sandbox.run(&other, "branch", &["-D", "gone"]).unwrap();
@@ -245,12 +240,15 @@ fn a_remote_fetched_alone_is_pruned_when_asked() {
         &progress,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert!(
         rev(&sandbox, &repo, "refs/remotes/other/gone").is_some(),
         "kept unless pruned"
     );
-    fetch_remote(sandbox.git(), &repository, remote, true, &progress, &cancel).unwrap();
+    fetch_remote(sandbox.git(), &repository, remote, true, &progress, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(rev(&sandbox, &repo, "refs/remotes/other/gone"), None);
     assert!(rev(&sandbox, &repo, "refs/remotes/other/main").is_some());
 }
@@ -298,7 +296,7 @@ fn submodules_are_listed_and_brought_to_their_commits() {
         )
         .unwrap();
     let repository = open(&sandbox, &repo);
-    let listed = submodules(sandbox.git(), &repository).unwrap();
+    let listed = submodules(sandbox.git(), &repository).wait().unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name, "lib");
     assert_eq!(listed[0].path, "vendor/lib one");
@@ -316,7 +314,7 @@ fn submodules_are_listed_and_brought_to_their_commits() {
         )
         .unwrap();
     let cloned = open(&sandbox, &clone);
-    let listed = submodules(sandbox.git(), &cloned).unwrap();
+    let listed = submodules(sandbox.git(), &cloned).wait().unwrap();
     assert!(!listed[0].initialized);
     assert!(!clone.join("vendor/lib one/lib").exists());
     let cancel = CancelToken::new();
@@ -327,8 +325,9 @@ fn submodules_are_listed_and_brought_to_their_commits() {
         &Progress::new(),
         &cancel,
     )
+    .wait()
     .unwrap();
-    assert!(submodules(sandbox.git(), &cloned).unwrap()[0].initialized);
+    assert!(submodules(sandbox.git(), &cloned).wait().unwrap()[0].initialized);
     assert_eq!(
         std::fs::read_to_string(clone.join("vendor/lib one/lib")).unwrap(),
         "one\n"
@@ -338,7 +337,9 @@ fn submodules_are_listed_and_brought_to_their_commits() {
     let plain = sandbox.init("plain").unwrap();
     sandbox.commit_file(&plain, "f", "f\n", "Start").unwrap();
     assert_eq!(
-        submodules(sandbox.git(), &open(&sandbox, &plain)).unwrap(),
+        submodules(sandbox.git(), &open(&sandbox, &plain))
+            .wait()
+            .unwrap(),
         Vec::new()
     );
 }
@@ -359,7 +360,9 @@ fn a_walk_with_branches_hidden_starts_from_the_others() {
     let cancel = CancelToken::new();
     let tips = |hidden: &[&str]| {
         let hidden: Vec<BString> = hidden.iter().map(|name| BString::from(*name)).collect();
-        let mut tips = history_tips(sandbox.git(), &repository, &hidden, &cancel).unwrap();
+        let mut tips = history_tips(sandbox.git(), &repository, &hidden, &cancel)
+            .wait()
+            .unwrap();
         tips.sort_unstable();
         tips
     };

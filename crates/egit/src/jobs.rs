@@ -1,6 +1,7 @@
 //! Work off the interface's thread.
 //!
-//! Every git command runs as a job: a closure on Tokio's blocking pool, whose result reaches the
+//! Every git command runs as a job: a future on Tokio's blocking pool, polled there to its end
+//! (git's functions block on its pipes while they are polled), whose result reaches the
 //! interface through an `egui-async` `Bind` polled each frame. The interface thread never waits
 //! for git. The application owns one runtime ([`install_runtime`]); its blocking pool is capped,
 //! so opening many repositories at once queues git processes rather than starting them all.
@@ -8,9 +9,10 @@
 //! Commands that write to a repository take its [`WriteLock`] inside their job, so they run one
 //! at a time, in order; reads never wait for it.
 
+use std::future::Future;
 use std::sync::{Arc, OnceLock};
 
-use parking_lot::{Mutex, MutexGuard};
+use tokio::sync::{Mutex, MutexGuard};
 
 use crate::problem::Problem;
 
@@ -42,14 +44,15 @@ pub(crate) fn install_runtime() -> std::io::Result<()> {
     Ok(())
 }
 
-/// Runs `work` on the blocking pool; the future resolves to its result.
-pub(crate) async fn blocking<T, E, F>(work: F) -> Result<T, E>
+/// Runs `work` to its end on the blocking pool; the future resolves to its result.
+pub(crate) async fn blocking<T, E>(
+    work: impl Future<Output = Result<T, E>> + Send + 'static,
+) -> Result<T, E>
 where
     T: Send + 'static,
     E: From<Problem> + Send + 'static,
-    F: FnOnce() -> Result<T, E> + Send + 'static,
 {
-    tokio::task::spawn_blocking(work)
+    tokio::task::spawn_blocking(move || egit_git::block_on(work))
         .await
         .unwrap_or_else(|error| {
             tracing::error!(%error, "a job failed");
@@ -57,12 +60,13 @@ where
         })
 }
 
-/// Runs `work` on the blocking pool without waiting for it (or here, without a runtime).
-pub(crate) fn detached(work: impl FnOnce() + Send + 'static) {
+/// Runs `work` to its end on the blocking pool without waiting for it (or here, without a
+/// runtime).
+pub(crate) fn detached(work: impl Future<Output = ()> + Send + 'static) {
     match RUNTIME.get() {
         // The handle is dropped: the work runs to its end on its own.
-        Some(runtime) => drop(runtime.spawn_blocking(work)),
-        None => work(),
+        Some(runtime) => drop(runtime.spawn_blocking(move || egit_git::block_on(work))),
+        None => egit_git::block_on(work),
     }
 }
 
@@ -72,7 +76,7 @@ pub(crate) struct WriteLock(Arc<Mutex<()>>);
 
 impl WriteLock {
     /// Waits for the commands queued before, inside a job (never on the interface's thread).
-    pub(crate) fn hold(&self) -> MutexGuard<'_, ()> {
-        self.0.lock()
+    pub(crate) async fn hold(&self) -> MutexGuard<'_, ()> {
+        self.0.lock().await
     }
 }

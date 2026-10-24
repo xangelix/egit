@@ -15,7 +15,7 @@ use crate::error::ForgeError;
 use crate::http::Answer;
 
 /// Runs a GraphQL query, reading its data or its errors.
-pub(crate) fn graphql<T: DeserializeOwned>(
+pub(crate) async fn graphql<T: DeserializeOwned>(
     account: &Account,
     query: &str,
     variables: &serde_json::Value,
@@ -24,7 +24,7 @@ pub(crate) fn graphql<T: DeserializeOwned>(
 ) -> Result<T, ForgeError> {
     let body = json!({ "query": query, "variables": variables }).to_string();
     let url = account.host().graphql_url();
-    let answer = account.send(&url, Some(body.as_bytes()), cancel)?;
+    let answer = account.send(&url, Some(body.as_bytes()), cancel).await?;
     let (remaining, reset) = (answer.remaining, answer.reset);
     let reply: GraphQlReply<T> = read_answer(account, &answer, what)?;
     // The query's name ("query Pipelines(…"), for the log.

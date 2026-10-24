@@ -286,7 +286,7 @@ impl Pipelines {
         {
             let (names, marks) = (history.names(), Arc::clone(&self.shown));
             let mut counting = Bind::new(true);
-            counting.request(jobs::blocking(move || {
+            counting.request(jobs::blocking(async move {
                 let mut commits: Vec<&[u8]> = marks
                     .by_commit
                     .iter()
@@ -413,7 +413,7 @@ impl Pipelines {
         let previous = live.then(|| Arc::clone(&self.shown));
         let limit = if live { LIVE } else { LIMIT };
         let cancel = self.cancel.clone();
-        self.reading.request(jobs::blocking(move || {
+        self.reading.request(jobs::blocking(async move {
             read(
                 &repositories,
                 &accounts,
@@ -421,6 +421,7 @@ impl Pipelines {
                 (limit, live),
                 &cancel,
             )
+            .await
         }));
     }
 }
@@ -434,7 +435,7 @@ impl Drop for Pipelines {
 /// Reads each project's newest `limit` pipelines (`live`: the newest page, merged into
 /// `previous`'s marks), saying how each project went (a full read). Fails only when cancelled;
 /// a read in which no project could be read says why.
-fn read(
+async fn read(
     repositories: &[ForgeRepository],
     accounts: &[Arc<Account>],
     previous: Option<&Marks>,
@@ -462,7 +463,8 @@ fn read(
         let before = found.len();
         let pages = pipelines(account, repository, limit, cancel, |page| {
             found.extend(page.into_iter().map(|pipeline| (index, pipeline)));
-        });
+        })
+        .await;
         let project = repository.full_name();
         match pages {
             Ok(listing) => {

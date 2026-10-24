@@ -93,14 +93,19 @@ impl Account {
     ///
     /// [`ForgeError::NotSignedIn`] when the user declined, [`ForgeError::Refused`] when the
     /// host refused the credential (the helpers forget it), and any failure to reach the host.
-    pub fn sign_in(&self, context: &str, cancel: &CancelToken) -> Result<SignedIn, ForgeError> {
+    pub async fn sign_in(
+        &self,
+        context: &str,
+        cancel: &CancelToken,
+    ) -> Result<SignedIn, ForgeError> {
         let credential = self
-            .fill(Asking::As(context), None, cancel)?
+            .fill(Asking::As(context), None, cancel)
+            .await?
             .ok_or_else(|| self.not_signed_in())?;
         self.state.lock().credential = Some(Arc::clone(&credential));
-        let login = crate::api::viewer(self, cancel)?;
+        let login = crate::api::viewer(self, cancel).await?;
         self.state.lock().login = Some(login.clone());
-        let kept = self.is_kept(&credential, cancel);
+        let kept = self.is_kept(&credential, cancel).await;
         Ok(SignedIn {
             login,
             kept,
@@ -116,7 +121,7 @@ impl Account {
     ///
     /// [`ForgeError::Refused`] when the host refuses it (or it can't be a token: empty, or
     /// holding a line break), and any failure to reach the host.
-    pub fn sign_in_with_token(
+    pub async fn sign_in_with_token(
         &self,
         token: &str,
         cancel: &CancelToken,
@@ -136,7 +141,7 @@ impl Account {
             }),
             probing: true,
         };
-        let login = crate::api::viewer(&checking, cancel)?;
+        let login = crate::api::viewer(&checking, cancel).await?;
         let credential =
             Arc::new(Credential::given(self.place(Some(&login)), token).ok_or_else(refused)?);
         *self.state.lock() = State {
@@ -144,8 +149,8 @@ impl Account {
             login: Some(login.clone()),
             ..State::default()
         };
-        self.keep(&credential);
-        let kept = self.is_kept(&credential, cancel);
+        self.keep(&credential).await;
+        let kept = self.is_kept(&credential, cancel).await;
         Ok(SignedIn {
             login,
             kept,
@@ -171,11 +176,11 @@ impl Account {
     ///
     /// [`ForgeError::Refused`] when the host refuses what the helpers keep (they forget it),
     /// and any failure to reach the host.
-    pub fn who(&self, cancel: &CancelToken) -> Result<Option<String>, ForgeError> {
+    pub async fn who(&self, cancel: &CancelToken) -> Result<Option<String>, ForgeError> {
         if let Some(login) = self.login() {
             return Ok(Some(login));
         }
-        match crate::api::viewer(self, cancel) {
+        match crate::api::viewer(self, cancel).await {
             Ok(login) => Ok(Some(login)),
             Err(ForgeError::NotSignedIn { .. }) => Ok(None),
             Err(error) => Err(error),
@@ -188,15 +193,15 @@ impl Account {
     /// # Errors
     ///
     /// When git's helpers fail.
-    pub fn sign_out(&self, cancel: &CancelToken) -> Result<(), ForgeError> {
+    pub async fn sign_out(&self, cancel: &CancelToken) -> Result<(), ForgeError> {
         let known = self.state.lock().credential.clone();
         let credential = match known {
             Some(credential) => Some(credential),
-            None => self.fill(Asking::Never, None, cancel)?,
+            None => self.fill(Asking::Never, None, cancel).await?,
         };
         *self.state.lock() = State::default();
         if let Some(credential) = credential {
-            reject_credential(&self.git, self.repository.as_deref(), &credential)?;
+            reject_credential(&self.git, self.repository.as_deref(), &credential).await?;
         }
         Ok(())
     }
@@ -209,47 +214,47 @@ impl Account {
     /// Sends `body` to `url` (a GET without one) with the credential, filled without asking
     /// when there is none yet; a refused credential is forgotten, an accepted one kept by the
     /// helpers.
-    pub(crate) fn send(
+    pub(crate) async fn send(
         &self,
         url: &str,
         body: Option<&[u8]>,
         cancel: &CancelToken,
     ) -> Result<Answer, ForgeError> {
-        let credential = self.credential(cancel)?;
+        let credential = self.credential(cancel).await?;
         let answer = self.http.send(url, body, credential.password())?;
-        self.answered(&credential, answer.status)?;
+        self.answered(&credential, answer.status).await?;
         Ok(answer)
     }
 
     /// GETs `url` with the credential as [`Self::send`] does, its body handed to `sink` a part
     /// at a time as it comes, with its status and `Content-Range` (`from`: a range of it;
     /// `limit`: the most read).
-    pub(crate) fn stream(
+    pub(crate) async fn stream(
         &self,
         url: &str,
         (from, limit): (Option<u64>, u64),
         sink: &mut Sink<'_>,
         cancel: &CancelToken,
     ) -> Result<Streamed, ForgeError> {
-        let credential = self.credential(cancel)?;
+        let credential = self.credential(cancel).await?;
         let streamed = self
             .http
             .stream(url, credential.password(), (from, limit), sink)?;
-        self.answered(&credential, streamed.status)?;
+        self.answered(&credential, streamed.status).await?;
         Ok(streamed)
     }
 
     /// GETs `url`, one of the host's, for a download (an artifact), with the credential,
     /// handing its body to `sink` until it says to stop; a redirect said, not followed.
-    pub(crate) fn download(
+    pub(crate) async fn download(
         &self,
         url: &str,
-        sink: &mut dyn FnMut(&[u8]) -> bool,
+        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
         cancel: &CancelToken,
     ) -> Result<Streamed, ForgeError> {
-        let credential = self.credential(cancel)?;
+        let credential = self.credential(cancel).await?;
         let streamed = self.http.download(url, Some(credential.password()), sink)?;
-        self.answered(&credential, streamed.status)?;
+        self.answered(&credential, streamed.status).await?;
         Ok(streamed)
     }
 
@@ -258,7 +263,7 @@ impl Account {
     pub(crate) fn download_public(
         &self,
         url: &str,
-        sink: &mut dyn FnMut(&[u8]) -> bool,
+        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
         cancel: &CancelToken,
     ) -> Result<Streamed, ForgeError> {
         if cancel.is_cancelled() {
@@ -290,20 +295,23 @@ impl Account {
     }
 
     /// The credential to send: the one known, else filled without asking.
-    fn credential(&self, cancel: &CancelToken) -> Result<Arc<Credential>, ForgeError> {
+    async fn credential(&self, cancel: &CancelToken) -> Result<Arc<Credential>, ForgeError> {
         let known = self.state.lock().credential.clone();
         let credential = if let Some(credential) = known {
             credential
         } else {
-            let filled = self.fill(Asking::Never, None, cancel)?.ok_or_else(|| {
-                if self.state.lock().refused {
-                    ForgeError::Refused {
-                        host: self.host().name().to_owned(),
+            let filled = self
+                .fill(Asking::Never, None, cancel)
+                .await?
+                .ok_or_else(|| {
+                    if self.state.lock().refused {
+                        ForgeError::Refused {
+                            host: self.host().name().to_owned(),
+                        }
+                    } else {
+                        self.not_signed_in()
                     }
-                } else {
-                    self.not_signed_in()
-                }
-            })?;
+                })?;
             let mut state = self.state.lock();
             Arc::clone(state.credential.get_or_insert(filled))
         };
@@ -314,15 +322,15 @@ impl Account {
     }
 
     /// Takes in how the host answered `credential`: refused, it is forgotten; accepted, kept.
-    fn answered(&self, credential: &Arc<Credential>, status: u16) -> Result<(), ForgeError> {
+    async fn answered(&self, credential: &Arc<Credential>, status: u16) -> Result<(), ForgeError> {
         if status == 401 {
-            self.forget(credential);
+            self.forget(credential).await;
             return Err(ForgeError::Refused {
                 host: self.host().name().to_owned(),
             });
         }
         if (200..300).contains(&status) {
-            self.keep(credential);
+            self.keep(credential).await;
         }
         Ok(())
     }
@@ -342,64 +350,77 @@ impl Account {
     }
 
     /// The credential git's helpers (or the user) give, for `username` (`None`: whichever).
-    fn fill(
+    async fn fill(
         &self,
         asking: Asking<'_>,
         username: Option<&str>,
         cancel: &CancelToken,
     ) -> Result<Option<Arc<Credential>>, ForgeError> {
         let place = self.place(username);
-        let filled = fill_credential(&self.git, self.repository.as_deref(), place, asking, cancel)?;
+        let filled =
+            fill_credential(&self.git, self.repository.as_deref(), place, asking, cancel).await?;
         Ok(filled.map(Arc::new))
     }
 
     /// Whether git's helpers give `credential` back (none keeps one where none is set up).
-    fn is_kept(&self, credential: &Credential, cancel: &CancelToken) -> bool {
+    async fn is_kept(&self, credential: &Credential, cancel: &CancelToken) -> bool {
         let username = Some(credential.username()).filter(|name| !name.is_empty());
         self.fill(Asking::Never, username, cancel)
+            .await
             .ok()
             .flatten()
             .is_some_and(|kept| kept.password() == credential.password())
     }
 
     /// Has the helpers keep `credential`, once.
-    fn keep(&self, credential: &Arc<Credential>) {
-        let mut state = self.state.lock();
-        let current = state
-            .credential
-            .as_ref()
-            .is_some_and(|known| Arc::ptr_eq(known, credential));
-        if !current || state.approved || self.probing {
+    async fn keep(&self, credential: &Arc<Credential>) {
+        // Noted here first, in a scope of its own: the lock is never held while git runs.
+        let approving = {
+            let mut state = self.state.lock();
+            let current = state
+                .credential
+                .as_ref()
+                .is_some_and(|known| Arc::ptr_eq(known, credential));
+            let approving = current && !state.approved && !self.probing;
+            if approving {
+                state.approved = true;
+                state.refused = false;
+            }
+            approving
+        };
+        if !approving {
             return;
         }
-        state.approved = true;
-        state.refused = false;
-        drop(state);
-        if let Err(error) = approve_credential(&self.git, self.repository.as_deref(), credential) {
+        if let Err(error) =
+            approve_credential(&self.git, self.repository.as_deref(), credential).await
+        {
             tracing::warn!(%error, host = self.host().name(), "the credential couldn't be kept");
         }
     }
 
     /// Has the helpers forget `credential`, and forgets it here (unless another replaced it),
     /// remembering that the host refused it.
-    fn forget(&self, credential: &Arc<Credential>) {
-        let mut state = self.state.lock();
-        if state
-            .credential
-            .as_ref()
-            .is_some_and(|known| Arc::ptr_eq(known, credential))
+    async fn forget(&self, credential: &Arc<Credential>) {
         {
-            *state = State {
-                refused: true,
-                ..State::default()
-            };
+            let mut state = self.state.lock();
+            if state
+                .credential
+                .as_ref()
+                .is_some_and(|known| Arc::ptr_eq(known, credential))
+            {
+                *state = State {
+                    refused: true,
+                    ..State::default()
+                };
+            }
         }
-        drop(state);
         // A token being checked was never theirs to forget.
         if self.probing {
             return;
         }
-        if let Err(error) = reject_credential(&self.git, self.repository.as_deref(), credential) {
+        if let Err(error) =
+            reject_credential(&self.git, self.repository.as_deref(), credential).await
+        {
             tracing::warn!(%error, host = self.host().name(), "the credential couldn't be forgotten");
         }
     }

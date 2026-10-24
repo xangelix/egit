@@ -39,23 +39,27 @@ pub(crate) async fn read_states(
     git: Git,
     repository: Arc<Repository>,
 ) -> Result<Arc<Standing>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         if !git
             .files()
             .is_file(&repository.work_tree().join(".gitmodules"))
+            .await
         {
             return Ok(Arc::default());
         }
         let failed = |error| Problem::git("Where the submodules stand couldn't be read", &error);
-        let states =
-            submodule_status(&git, &repository, true, &CancelToken::new()).map_err(failed)?;
+        let states = submodule_status(&git, &repository, true, &CancelToken::new())
+            .await
+            .map_err(failed)?;
         let moved: Vec<&SubmoduleStatus> = states
             .iter()
             .filter(|state| state.checkout == Checkout::Elsewhere)
             .collect();
         let mut behind = Vec::new();
         if !moved.is_empty() {
-            let modules = egit_git::submodules(&git, &repository).map_err(failed)?;
+            let modules = egit_git::submodules(&git, &repository)
+                .await
+                .map_err(failed)?;
             for state in moved {
                 // Nested ones record theirs in their parents: not looked into here.
                 let Some(module) = modules.iter().find(|module| module.path == state.path) else {
@@ -63,6 +67,7 @@ pub(crate) async fn read_states(
                 };
                 let details =
                     submodule_details(&git, &repository, state.path.as_ref(), module.recorded)
+                        .await
                         .map_err(failed)?;
                 if details.behind > 0 || !details.has_recorded {
                     behind.push(state.path.clone());
@@ -209,10 +214,11 @@ pub(crate) async fn read_details(
     path: BString,
     recorded: ObjectId,
 ) -> Result<Arc<(SubmoduleDetails, Option<Vec<(ObjectId, BString)>>)>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let failed = |error| Problem::git("The submodule couldn't be read", &error);
-        let details =
-            submodule_details(&git, &repository, path.as_ref(), recorded).map_err(failed)?;
+        let details = submodule_details(&git, &repository, path.as_ref(), recorded)
+            .await
+            .map_err(failed)?;
         let commits = match details.head {
             Some(head) if head != recorded && details.has_recorded => submodule_commits(
                 &git,
@@ -221,6 +227,7 @@ pub(crate) async fn read_details(
                 (Some(recorded), head),
                 100,
             )
+            .await
             .map_err(failed)?,
             _ => None,
         };
@@ -237,18 +244,23 @@ pub(crate) async fn read_move(
     path: BString,
     (from, to): (Option<ObjectId>, Option<ObjectId>),
 ) -> Result<Arc<Moved>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let failed = |error| Problem::git("The submodule's commits couldn't be read", &error);
         let to = match to {
             Some(to) => Some(to),
-            None => from
-                .map(|from| submodule_details(&git, &repository, path.as_ref(), from))
-                .transpose()
-                .map_err(failed)?
-                .and_then(|details| details.head),
+            None => match from {
+                Some(from) => {
+                    submodule_details(&git, &repository, path.as_ref(), from)
+                        .await
+                        .map_err(failed)?
+                        .head
+                }
+                None => None,
+            },
         };
         let commits = match to {
             Some(to) => submodule_commits(&git, &repository, path.as_ref(), (from, to), 200)
+                .await
                 .map_err(failed)?,
             None => None,
         };
@@ -371,7 +383,7 @@ impl SubmoduleTask {
 }
 
 /// Runs a submodule task.
-pub(crate) fn run(
+pub(crate) async fn run(
     git: &Git,
     repository: &Repository,
     task: &SubmoduleTask,
@@ -383,45 +395,56 @@ pub(crate) fn run(
     }
     let result = match task {
         SubmoduleTask::Update { paths: chosen, to } => {
-            update_submodules_to(git, repository, &paths(chosen), *to, progress, cancel)
+            update_submodules_to(git, repository, &paths(chosen), *to, progress, cancel).await
         }
         SubmoduleTask::Sync(chosen) => {
-            change_submodules(git, repository, &paths(chosen), &SubmoduleChange::Sync)
+            change_submodules(git, repository, &paths(chosen), &SubmoduleChange::Sync).await
         }
-        SubmoduleTask::Mend => change_submodules(git, repository, &[], &SubmoduleChange::Sync)
-            .and_then(|()| {
-                update_submodules_to(git, repository, &[], UpdateTo::Recorded, progress, cancel)
-            }),
-        SubmoduleTask::Deinit { path, force } => change_submodules(
-            git,
-            repository,
-            &[path.as_ref()],
-            &SubmoduleChange::Deinit { force: *force },
-        ),
-        SubmoduleTask::Add { url, path, branch } => add_submodule(
-            git,
-            repository,
-            url,
-            path.as_ref(),
-            branch.as_deref(),
-            progress,
-            cancel,
-        ),
+        SubmoduleTask::Mend => {
+            match change_submodules(git, repository, &[], &SubmoduleChange::Sync).await {
+                Ok(()) => {
+                    let all = UpdateTo::Recorded;
+                    update_submodules_to(git, repository, &[], all, progress, cancel).await
+                }
+                Err(error) => Err(error),
+            }
+        }
+        SubmoduleTask::Deinit { path, force } => {
+            change_submodules(
+                git,
+                repository,
+                &[path.as_ref()],
+                &SubmoduleChange::Deinit { force: *force },
+            )
+            .await
+        }
+        SubmoduleTask::Add { url, path, branch } => {
+            add_submodule(
+                git,
+                repository,
+                url,
+                path.as_ref(),
+                branch.as_deref(),
+                progress,
+                cancel,
+            )
+            .await
+        }
         SubmoduleTask::Remove { path, force } => {
-            remove_submodule(git, repository, path.as_ref(), *force)
+            remove_submodule(git, repository, path.as_ref(), *force).await
         }
         SubmoduleTask::SetUrl { path, url } => {
-            set_submodule_url(git, repository, path.as_ref(), url)
+            set_submodule_url(git, repository, path.as_ref(), url).await
         }
         SubmoduleTask::SetBranch { path, branch } => {
-            set_submodule_branch(git, repository, path.as_ref(), branch.as_deref())
+            set_submodule_branch(git, repository, path.as_ref(), branch.as_deref()).await
         }
         SubmoduleTask::Recurse(on) => {
             let target = ConfigTarget::Repository(repository.work_tree());
             if *on {
-                set_config(git, target, "submodule.recurse", "true")
+                set_config(git, target, "submodule.recurse", "true").await
             } else {
-                unset_config(git, target, "submodule.recurse")
+                unset_config(git, target, "submodule.recurse").await
             }
         }
     };

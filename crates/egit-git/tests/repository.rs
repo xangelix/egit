@@ -12,7 +12,7 @@ use std::fs;
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    DiscoverError, Head, ObjectFormat, Operation, Repository, Tracking, init_repository,
+    DiscoverError, Head, ObjectFormat, Operation, Repository, Tracking, Wait as _, init_repository,
     trust_directory,
 };
 
@@ -29,7 +29,7 @@ fn discovers_a_repository_from_anywhere_inside_it() {
     fs::write(deep.join("file.txt"), "text").unwrap();
 
     for start in [repo.clone(), deep.clone(), deep.join("file.txt")] {
-        let found = Repository::discover(sandbox.git(), &start).unwrap();
+        let found = Repository::discover(sandbox.git(), &start).wait().unwrap();
         assert_eq!(found.work_tree(), repo);
         assert_eq!(found.git_dir(), repo.join(".git"));
         assert_eq!(found.common_dir(), repo.join(".git"));
@@ -54,7 +54,7 @@ fn a_linked_worktree_has_its_own_git_dir() {
         )
         .unwrap();
 
-    let found = Repository::discover(sandbox.git(), &linked).unwrap();
+    let found = Repository::discover(sandbox.git(), &linked).wait().unwrap();
     assert_eq!(found.work_tree(), linked);
     assert_eq!(found.common_dir(), repo.join(".git"));
     assert_eq!(found.git_dir(), repo.join(".git/worktrees/linked"));
@@ -73,9 +73,9 @@ fn reads_sha256_repositories() {
         .commit_file(&repo, "file", "one\n", "first")
         .unwrap();
 
-    let found = Repository::discover(sandbox.git(), &repo).unwrap();
+    let found = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     assert_eq!(found.object_format(), ObjectFormat::Sha256);
-    let Head::Branch(branch) = found.head(sandbox.git()).unwrap() else {
+    let Head::Branch(branch) = found.head(sandbox.git()).wait().unwrap() else {
         panic!("not on a branch");
     };
     assert_eq!(branch.commit.unwrap().id.format(), ObjectFormat::Sha256);
@@ -86,7 +86,9 @@ fn outside_any_repository() {
     let sandbox = sandbox();
     let elsewhere = sandbox.path("elsewhere");
     fs::create_dir(&elsewhere).unwrap();
-    let error = Repository::discover(sandbox.git(), &elsewhere).unwrap_err();
+    let error = Repository::discover(sandbox.git(), &elsewhere)
+        .wait()
+        .unwrap_err();
     assert!(
         matches!(&error, DiscoverError::NotARepository { path } if *path == elsewhere),
         "{error:?}"
@@ -99,10 +101,10 @@ fn a_folder_outside_any_repository_is_made_one() {
     let folder = sandbox.path("new project");
     fs::create_dir(&folder).unwrap();
     fs::write(folder.join("notes.txt"), "kept\n").unwrap();
-    init_repository(sandbox.git(), &folder).unwrap();
-    let found = Repository::discover(sandbox.git(), &folder).unwrap();
+    init_repository(sandbox.git(), &folder).wait().unwrap();
+    let found = Repository::discover(sandbox.git(), &folder).wait().unwrap();
     assert_eq!(found.work_tree(), folder);
-    let head = found.head_ref(sandbox.git()).unwrap();
+    let head = found.head_ref(sandbox.git()).wait().unwrap();
     assert_eq!(head.commit, None);
     assert!(head.reference.is_some());
     assert_eq!(
@@ -110,7 +112,11 @@ fn a_folder_outside_any_repository_is_made_one() {
         "kept\n"
     );
     // A file isn't a folder to make one in.
-    assert!(init_repository(sandbox.git(), &folder.join("notes.txt")).is_err());
+    assert!(
+        init_repository(sandbox.git(), &folder.join("notes.txt"))
+            .wait()
+            .is_err()
+    );
 }
 
 #[test]
@@ -119,11 +125,15 @@ fn refuses_bare_repositories_and_git_dirs() {
     let bare = sandbox.path("bare.git");
     fs::create_dir(&bare).unwrap();
     sandbox.run(&bare, "init", &["--quiet", "--bare"]).unwrap();
-    let error = Repository::discover(sandbox.git(), &bare).unwrap_err();
+    let error = Repository::discover(sandbox.git(), &bare)
+        .wait()
+        .unwrap_err();
     assert!(matches!(error, DiscoverError::Bare { .. }), "{error:?}");
 
     let repo = sandbox.init("repo").unwrap();
-    let error = Repository::discover(sandbox.git(), &repo.join(".git")).unwrap_err();
+    let error = Repository::discover(sandbox.git(), &repo.join(".git"))
+        .wait()
+        .unwrap_err();
     assert!(
         matches!(error, DiscoverError::InsideGitDir { .. }),
         "{error:?}"
@@ -138,14 +148,14 @@ fn a_repository_another_user_owns_opens_once_trusted() {
         .git_with([("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")])
         .unwrap();
 
-    let error = Repository::discover(&suspicious, &repo).unwrap_err();
+    let error = Repository::discover(&suspicious, &repo).wait().unwrap_err();
     let DiscoverError::DubiousOwnership { path } = error else {
         panic!("{error:?}");
     };
     assert_eq!(path, repo);
 
-    trust_directory(sandbox.git(), &path).unwrap();
-    let found = Repository::discover(&suspicious, &repo).unwrap();
+    trust_directory(sandbox.git(), &path).wait().unwrap();
+    let found = Repository::discover(&suspicious, &repo).wait().unwrap();
     assert_eq!(found.work_tree(), repo);
 }
 
@@ -153,8 +163,8 @@ fn a_repository_another_user_owns_opens_once_trusted() {
 fn head_on_a_branch_without_commits() {
     let sandbox = sandbox();
     let repo = sandbox.init("repo").unwrap();
-    let found = Repository::discover(sandbox.git(), &repo).unwrap();
-    let Head::Branch(branch) = found.head(sandbox.git()).unwrap() else {
+    let found = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let Head::Branch(branch) = found.head(sandbox.git()).wait().unwrap() else {
         panic!("not on a branch");
     };
     assert_eq!(branch.name, "main");
@@ -176,8 +186,8 @@ fn head_on_a_branch_with_commits() {
     // A branch whose name extends HEAD's must not be mistaken for it.
     sandbox.run(&repo, "branch", &["main-other"]).unwrap();
 
-    let found = Repository::discover(sandbox.git(), &repo).unwrap();
-    let Head::Branch(branch) = found.head(sandbox.git()).unwrap() else {
+    let found = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let Head::Branch(branch) = found.head(sandbox.git()).wait().unwrap() else {
         panic!("not on a branch");
     };
     assert_eq!(branch.name, "main");
@@ -201,8 +211,8 @@ fn head_detached() {
         .run(&repo, "checkout", &["--quiet", "--detach", "HEAD~1"])
         .unwrap();
 
-    let found = Repository::discover(sandbox.git(), &repo).unwrap();
-    let Head::Detached(commit) = found.head(sandbox.git()).unwrap() else {
+    let found = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let Head::Detached(commit) = found.head(sandbox.git()).wait().unwrap() else {
         panic!("not detached");
     };
     assert_eq!(commit.subject, "First");
@@ -234,9 +244,9 @@ fn head_tracks_its_upstream() {
             &["--quiet", "--set-upstream", "origin", "main"],
         )
         .unwrap();
-    let found = Repository::discover(sandbox.git(), &repo).unwrap();
+    let found = Repository::discover(sandbox.git(), &repo).wait().unwrap();
 
-    let upstream_of = |found: &Repository| match found.head(sandbox.git()).unwrap() {
+    let upstream_of = |found: &Repository| match found.head(sandbox.git()).wait().unwrap() {
         Head::Branch(branch) => branch.upstream.unwrap(),
         Head::Detached(_) => panic!("not on a branch"),
     };
@@ -287,8 +297,8 @@ fn notices_operations_stopped_on_conflicts() {
     sandbox
         .commit_file(&repo, "file", "theirs\n", "Theirs")
         .unwrap();
-    let found = Repository::discover(sandbox.git(), &repo).unwrap();
-    assert_eq!(found.operations(sandbox.git()).unwrap(), []);
+    let found = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    assert_eq!(found.operations(sandbox.git()).wait().unwrap(), []);
 
     let merge = sandbox
         .git()
@@ -296,8 +306,11 @@ fn notices_operations_stopped_on_conflicts() {
         .arg("main")
         .current_dir(&repo)
         .output();
-    assert!(merge.is_err(), "the merge should stop on a conflict");
-    assert_eq!(found.operations(sandbox.git()).unwrap(), [Operation::Merge]);
+    assert!(merge.wait().is_err(), "the merge should stop on a conflict");
+    assert_eq!(
+        found.operations(sandbox.git()).wait().unwrap(),
+        [Operation::Merge]
+    );
     sandbox.run(&repo, "merge", &["--abort"]).unwrap();
 
     let pick = sandbox
@@ -306,9 +319,12 @@ fn notices_operations_stopped_on_conflicts() {
         .arg("main")
         .current_dir(&repo)
         .output();
-    assert!(pick.is_err(), "the cherry-pick should stop on a conflict");
+    assert!(
+        pick.wait().is_err(),
+        "the cherry-pick should stop on a conflict"
+    );
     assert_eq!(
-        found.operations(sandbox.git()).unwrap(),
+        found.operations(sandbox.git()).wait().unwrap(),
         [Operation::CherryPick]
     );
     sandbox.run(&repo, "cherry-pick", &["--abort"]).unwrap();
@@ -319,11 +335,14 @@ fn notices_operations_stopped_on_conflicts() {
         .arg("main")
         .current_dir(&repo)
         .output();
-    assert!(rebase.is_err(), "the rebase should stop on a conflict");
+    assert!(
+        rebase.wait().is_err(),
+        "the rebase should stop on a conflict"
+    );
     assert_eq!(
-        found.operations(sandbox.git()).unwrap(),
+        found.operations(sandbox.git()).wait().unwrap(),
         [Operation::Rebase]
     );
     sandbox.run(&repo, "rebase", &["--abort"]).unwrap();
-    assert_eq!(found.operations(sandbox.git()).unwrap(), []);
+    assert_eq!(found.operations(sandbox.git()).wait().unwrap(), []);
 }

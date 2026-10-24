@@ -380,16 +380,20 @@ pub const fn has_pipelines(kind: ForgeKind) -> bool {
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s, from the page that failed (the pages before it were handed over).
-pub fn pipelines(
+pub async fn pipelines(
     account: &Account,
     repository: &ForgeRepository,
     limit: u32,
     cancel: &CancelToken,
-    mut found: impl FnMut(Vec<Pipeline>),
+    mut found: impl FnMut(Vec<Pipeline>) + Send,
 ) -> Result<PipelineListing, ForgeError> {
     match repository.host().kind() {
-        ForgeKind::GitLab => gitlab::pipelines(account, repository, limit, cancel, &mut found),
-        ForgeKind::GitHub => github::pipelines(account, repository, limit, cancel, &mut found),
+        ForgeKind::GitLab => {
+            gitlab::pipelines(account, repository, limit, cancel, &mut found).await
+        }
+        ForgeKind::GitHub => {
+            github::pipelines(account, repository, limit, cancel, &mut found).await
+        }
     }
 }
 
@@ -399,15 +403,15 @@ pub fn pipelines(
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub fn pipeline_details(
+pub async fn pipeline_details(
     account: &Account,
     repository: &ForgeRepository,
     iid: u64,
     cancel: &CancelToken,
 ) -> Result<PipelineDetails, ForgeError> {
     match repository.host().kind() {
-        ForgeKind::GitLab => gitlab::pipeline_details(account, repository, iid, cancel),
-        ForgeKind::GitHub => github::pipeline_details(account, repository, iid, cancel),
+        ForgeKind::GitLab => gitlab::pipeline_details(account, repository, iid, cancel).await,
+        ForgeKind::GitHub => github::pipeline_details(account, repository, iid, cancel).await,
     }
 }
 
@@ -420,15 +424,15 @@ pub fn pipeline_details(
 /// a token without the scope: GitLab's `api`, GitHub's `repo` or Actions' write);
 /// [`ForgeError::NotFound`] where the forge has no such action (GitHub's for a job but a
 /// re-run).
-pub fn ci_act(
+pub async fn ci_act(
     account: &Account,
     repository: &ForgeRepository,
     action: CiAction,
     cancel: &CancelToken,
 ) -> Result<Option<u64>, ForgeError> {
     match repository.host().kind() {
-        ForgeKind::GitLab => gitlab::ci_act(account, repository, action, cancel),
-        ForgeKind::GitHub => github::ci_act(account, repository, action, cancel),
+        ForgeKind::GitLab => gitlab::ci_act(account, repository, action, cancel).await,
+        ForgeKind::GitHub => github::ci_act(account, repository, action, cancel).await,
     }
 }
 
@@ -450,14 +454,14 @@ pub struct WorkflowFile {
 /// # Errors
 ///
 /// When the forge refuses or can't be reached.
-pub fn workflows(
+pub async fn workflows(
     account: &Account,
     repository: &ForgeRepository,
     cancel: &CancelToken,
 ) -> Result<Vec<WorkflowFile>, ForgeError> {
     match repository.host().kind() {
         ForgeKind::GitLab => Ok(Vec::new()),
-        ForgeKind::GitHub => github::workflows(account, repository, cancel),
+        ForgeKind::GitHub => github::workflows(account, repository, cancel).await,
     }
 }
 
@@ -471,16 +475,16 @@ pub fn workflows(
 ///
 /// When the forge refuses (no permission; a workflow without `workflow_dispatch`, which GitHub
 /// says) or can't be reached; on GitHub, without a workflow.
-pub fn start_pipeline(
+pub async fn start_pipeline(
     account: &Account,
     repository: &ForgeRepository,
     (workflow, reference): (Option<u64>, &str),
     cancel: &CancelToken,
 ) -> Result<Option<u64>, ForgeError> {
     match (repository.host().kind(), workflow) {
-        (ForgeKind::GitLab, _) => gitlab::start(account, repository, reference, cancel),
+        (ForgeKind::GitLab, _) => gitlab::start(account, repository, reference, cancel).await,
         (ForgeKind::GitHub, Some(workflow)) => {
-            github::dispatch(account, repository, (workflow, reference), cancel)
+            github::dispatch(account, repository, (workflow, reference), cancel).await
         }
         (ForgeKind::GitHub, None) => Err(crate::answer::not_found(
             account,

@@ -70,7 +70,7 @@ pub enum Moves {
 ///
 /// When git fails (no such file there, say), is cancelled, or prints something that isn't
 /// blame.
-pub fn blame(
+pub async fn blame(
     git: &Git,
     repository: &Repository,
     at: Option<ObjectId>,
@@ -107,7 +107,8 @@ pub fn blame(
     command
         .arg("--")
         .arg(path.to_os_str_lossy())
-        .stream(|chunk| lines.feed(chunk, &mut handle))?;
+        .stream(|chunk| lines.feed(chunk, &mut handle))
+        .await?;
     if malformed {
         return Err(GitError::unexpected("blame", "incremental blame"));
     }
@@ -237,7 +238,7 @@ pub struct FileCommit {
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints something that isn't a commit.
-pub fn file_log(
+pub async fn file_log(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -283,7 +284,8 @@ pub fn file_log(
             }
             record.extend_from_slice(rest);
             ControlFlow::Continue(())
-        })?;
+        })
+        .await?;
     if !take(&record) || malformed {
         return Err(GitError::unexpected(
             "log",

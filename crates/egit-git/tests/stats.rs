@@ -17,7 +17,9 @@ use std::path::Path;
 
 use bstr::{BStr, BString};
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, ObjectId, Repository, commit_lines, map_contacts, tree_files};
+use egit_git::{
+    CancelToken, ObjectId, Repository, Wait as _, commit_lines, map_contacts, tree_files,
+};
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
     let out = sandbox.run(repo, "rev-parse", &[name]).unwrap();
@@ -42,7 +44,7 @@ fn a_commit_s_files_are_listed_with_their_sizes() {
     sandbox
         .run(&repo, "commit", &["--quiet", "-m", "Files"])
         .unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let listed = |sizes: bool| {
         let mut found: Vec<(BString, Option<u64>)> = Vec::new();
         tree_files(
@@ -53,6 +55,7 @@ fn a_commit_s_files_are_listed_with_their_sizes() {
             &CancelToken::new(),
             |path, size| found.push((path.to_owned(), size)),
         )
+        .wait()
         .unwrap();
         found.sort();
         found
@@ -107,7 +110,7 @@ fn each_commit_s_lines_are_counted_as_git_counts_them() {
             &["--quiet", "--no-ff", "-m", "Merge", "side"],
         )
         .unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let commits = ["HEAD", "HEAD~1", "HEAD~2", "HEAD~3"].map(|name| rev(&sandbox, &repo, name));
     let mut counted: Vec<(BString, u64, u64)> = Vec::new();
     commit_lines(
@@ -121,6 +124,7 @@ fn each_commit_s_lines_are_counted_as_git_counts_them() {
             ControlFlow::Continue(())
         },
     )
+    .wait()
     .unwrap();
     let ada = BString::from("ada@example.com");
     let me = BString::from("tests@egit.invalid");
@@ -147,6 +151,7 @@ fn each_commit_s_lines_are_counted_as_git_counts_them() {
             ControlFlow::Break(())
         },
     )
+    .wait()
     .unwrap();
     assert_eq!(seen, 1);
 
@@ -160,6 +165,7 @@ fn each_commit_s_lines_are_counted_as_git_counts_them() {
         ],
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(
         mapped,

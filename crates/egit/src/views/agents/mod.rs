@@ -127,7 +127,7 @@ impl ConversationView {
         }
         let paths: Vec<PathBuf> = paths.into_iter().take(room).collect();
         self.attach_problem = None;
-        self.attaching.request(crate::jobs::blocking(move || {
+        self.attaching.request(crate::jobs::blocking(async move {
             crate::attachments::read(&paths)
         }));
     }

@@ -17,13 +17,13 @@ use crate::repo::Repository;
 /// # Errors
 ///
 /// When git fails (an index another git holds the lock of, say) or is cancelled.
-pub fn stage(
+pub async fn stage(
     git: &Git,
     repository: &Repository,
     paths: &[&BStr],
     cancel: &CancelToken,
 ) -> Result<(), GitError> {
-    with_paths(git, repository, "add", &["--all"], paths, cancel)
+    with_paths(git, repository, "add", &["--all"], paths, cancel).await
 }
 
 /// Unstages `paths`, leaving the work tree alone (`git reset`).
@@ -35,17 +35,17 @@ pub fn stage(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn unstage(
+pub async fn unstage(
     git: &Git,
     repository: &Repository,
     paths: &[&BStr],
     cancel: &CancelToken,
 ) -> Result<(), GitError> {
-    with_paths(git, repository, "reset", &["--quiet"], paths, cancel)
+    with_paths(git, repository, "reset", &["--quiet"], paths, cancel).await
 }
 
 /// Runs `subcommand` with `args` on `paths`, given on standard input (nothing for no paths).
-pub(crate) fn with_paths(
+pub(crate) async fn with_paths(
     git: &Git,
     repository: &Repository,
     subcommand: &'static str,
@@ -71,5 +71,6 @@ pub(crate) fn with_paths(
         .stdin(stdin)
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }

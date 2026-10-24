@@ -13,7 +13,7 @@ use std::path::Path;
 
 use bstr::BStr;
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, Repository, Status, stage, unstage};
+use egit_git::{CancelToken, Repository, Status, Wait as _, stage, unstage};
 
 fn sandbox() -> Sandbox {
     Sandbox::new().expect("a sandbox")
@@ -56,7 +56,7 @@ fn changed(sandbox: &Sandbox) -> std::path::PathBuf {
 fn stages_changed_deleted_and_new_files_by_their_names() {
     let sandbox = sandbox();
     let repo = changed(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
 
     stage(
@@ -65,6 +65,7 @@ fn stages_changed_deleted_and_new_files_by_their_names() {
         &paths(&["kept", "gone", "new\tone [x]"]),
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(
         short(&sandbox, &repo),
@@ -72,10 +73,14 @@ fn stages_changed_deleted_and_new_files_by_their_names() {
     );
 
     // A path is never a pattern: `*` names the file called `*`, untouched here.
-    stage(sandbox.git(), &repository, &paths(&["*"]), &cancel).unwrap();
+    stage(sandbox.git(), &repository, &paths(&["*"]), &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(short(&sandbox, &repo).len(), 4);
     // And no paths stage nothing.
-    stage(sandbox.git(), &repository, &[], &cancel).unwrap();
+    stage(sandbox.git(), &repository, &[], &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(short(&sandbox, &repo).len(), 4);
 }
 
@@ -94,11 +99,13 @@ fn unstages_back_to_head_leaving_the_work_tree() {
         .unwrap();
     sandbox.run(&repo, "add", &["--all"]).unwrap();
     sandbox.run(&repo, "mv", &["old name", "new name"]).unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
 
     // No paths would otherwise be everything: they unstage nothing.
-    unstage(sandbox.git(), &repository, &[], &cancel).unwrap();
+    unstage(sandbox.git(), &repository, &[], &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(
         short(&sandbox, &repo),
         [
@@ -117,6 +124,7 @@ fn unstages_back_to_head_leaving_the_work_tree() {
         &paths(&["kept", "gone", "new\tone [x]", "new name", "old name"]),
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(
         short(&sandbox, &repo),
@@ -129,7 +137,9 @@ fn unstages_back_to_head_leaving_the_work_tree() {
             "?? new name",
         ]
     );
-    let status = Status::read(sandbox.git(), &repository, &cancel).unwrap();
+    let status = Status::read(sandbox.git(), &repository, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(
         status.entries().filter(|entry| entry.is_staged()).count(),
         1
@@ -142,7 +152,7 @@ fn unstages_in_a_repository_without_commits() {
     let repo = sandbox.init("repo").unwrap();
     std::fs::write(repo.join("first"), "x\n").unwrap();
     sandbox.run(&repo, "add", &["first"]).unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
 
     unstage(
         sandbox.git(),
@@ -150,6 +160,7 @@ fn unstages_in_a_repository_without_commits() {
         &paths(&["first"]),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(short(&sandbox, &repo), ["?? first"]);
 }

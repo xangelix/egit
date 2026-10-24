@@ -61,7 +61,7 @@ impl Git {
     /// started, [`GitError::UnknownVersion`] when it doesn't report a version, and
     /// [`GitError::Unsupported`] when it is older than [`GitVersion::MINIMUM`]; on another
     /// computer, [`GitError::NoHome`] when it doesn't say where its home folder is.
-    pub fn new(options: GitOptions) -> Result<Self, GitError> {
+    pub async fn new(options: GitOptions) -> Result<Self, GitError> {
         let (program, remote) = match &options.host {
             Host::Local => match options.program {
                 Some(program) => (program, None),
@@ -96,7 +96,7 @@ impl Git {
             inner: Arc::new(inner.clone()),
             transcript: None,
         };
-        let reported = unchecked.read("version").output()?;
+        let reported = unchecked.read("version").output().await?;
         let version =
             GitVersion::parse(&reported.stdout).map_err(|_| GitError::UnknownVersion {
                 program: inner.program.clone(),
@@ -110,6 +110,7 @@ impl Git {
                 unchecked
                     .files()
                     .home_there(ssh)
+                    .await
                     .map_err(|source| GitError::NoHome { source })?,
             );
         }

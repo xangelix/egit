@@ -191,12 +191,12 @@ pub(crate) fn learn_ssh_host(git: Git, host: ForgeHost, run: &ForgeRun, waker: e
         .lock()
         .get(host.name())
         .map(|(_, signed)| signed.clone());
-    jobs::detached(move || {
+    jobs::detached(async move {
         let account = Account::new(git, None, host.clone());
         if let Some(signed) = &signed {
             account.adopt(signed);
         }
-        match egit_forge::ssh_host(&account, &CancelToken::new()) {
+        match egit_forge::ssh_host(&account, &CancelToken::new()).await {
             Ok(Some(ssh)) => {
                 tracing::debug!(host = host.name(), ssh, "the name a GitLab's ssh is on");
                 if !ssh.eq_ignore_ascii_case(host.hostname()) {
@@ -419,8 +419,9 @@ impl RepoForge {
         );
         let written = written_urls(config);
         let (git, repository) = (git.clone(), Arc::clone(repository));
-        self.resolving.request(jobs::blocking(move || {
+        self.resolving.request(jobs::blocking(async move {
             let urls = remote_urls(&git, &repository)
+                .await
                 .map_err(|error| Problem::git("The remotes couldn't be read", &error))?;
             // An ssh alias as the computer the repository is on resolves it.
             let alias = |alias: &str| resolve_ssh_alias_on(&git, alias);
@@ -548,10 +549,10 @@ impl RepoForge {
             return;
         }
         let cancel = self.cancel.clone();
-        self.workflows.request(jobs::blocking(move || {
+        self.workflows.request(jobs::blocking(async move {
             let mut found = Vec::new();
             for (index, repository, account) in wanted {
-                match egit_forge::workflows(&account, &repository, &cancel) {
+                match egit_forge::workflows(&account, &repository, &cancel).await {
                     Ok(listed) => found.extend(listed.into_iter().map(|file| (index, file))),
                     Err(error) => tracing::debug!(
                         repository = %repository.full_name(),
@@ -882,7 +883,7 @@ impl RepoForge {
         let accounts = self.accounts.clone();
         let (cancel, waker) = (self.cancel.clone(), self.waker.clone());
         into.lock().totals = vec![None; repositories.len()];
-        jobs::detached(move || {
+        jobs::detached(async move {
             // A host that needs signing in fails the same way for each of its repositories.
             let mut failed_hosts: Vec<&ForgeHost> = Vec::new();
             for (index, repository) in repositories.iter().enumerate() {
@@ -906,7 +907,8 @@ impl RepoForge {
                         }));
                     drop(found);
                     waker.request_repaint();
-                });
+                })
+                .await;
                 if let Err(error) = read {
                     if matches!(error, ForgeError::Cancelled) {
                         return;

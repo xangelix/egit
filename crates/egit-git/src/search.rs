@@ -44,7 +44,7 @@ pub enum CommitFilter<'a> {
 /// # Errors
 ///
 /// When git fails, prints something that isn't a commit's name, or is cancelled.
-pub fn find_commits(
+pub async fn find_commits(
     git: &Git,
     repository: &Repository,
     filter: CommitFilter<'_>,
@@ -84,7 +84,9 @@ pub fn find_commits(
             &mut each,
         )
     };
-    command.stream(|chunk| lines.feed(chunk, &mut handle))?;
+    command
+        .stream(|chunk| lines.feed(chunk, &mut handle))
+        .await?;
     if malformed {
         return Err(GitError::unexpected(
             "rev-list",
@@ -100,7 +102,7 @@ pub fn find_commits(
 /// # Errors
 ///
 /// When git can't be run.
-pub fn resolve_commit(
+pub async fn resolve_commit(
     git: &Git,
     repository: &Repository,
     name: &str,
@@ -113,7 +115,8 @@ pub fn resolve_commit(
         .args(["--verify", "--quiet"])
         .arg(format!("{name}^{{commit}}"))
         .current_dir(repository.work_tree())
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if !resolved.status.success() {
         return Ok(None);
     }

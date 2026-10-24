@@ -705,8 +705,10 @@ impl AppState {
 
     fn detect_git(&mut self) {
         let options = self.git_options.clone();
-        self.git.request(jobs::blocking(move || {
-            Git::new(options).map_err(|error| Problem::new("egit can't use git", error.to_string()))
+        self.git.request(jobs::blocking(async move {
+            Git::new(options)
+                .await
+                .map_err(|error| Problem::new("egit can't use git", error.to_string()))
         }));
     }
 
@@ -998,8 +1000,9 @@ impl AppState {
 
     fn refresh_user_config(&mut self, git: &Git) {
         let git = git.clone();
-        self.user_config.request(jobs::blocking(move || {
+        self.user_config.request(jobs::blocking(async move {
             ConfigSnapshot::read(&git, ConfigPlace::User)
+                .await
                 .map(Arc::new)
                 .map_err(|error| Problem::git("Your git settings couldn't be read", &error))
         }));
@@ -1020,13 +1023,13 @@ impl AppState {
         let Location { host, path } = location;
         let there = host.map(|destination| self.options_there(destination));
         let mut job = Bind::new(true);
-        job.request(jobs::blocking(move || {
+        job.request(jobs::blocking(async move {
             // There, git is reached first (logging in, its version checked).
             let (git, host) = match there {
                 None => (git, None),
                 Some(options) => {
                     let destination = options.host.ssh().map(|ssh| ssh.destination.clone());
-                    let reached = reach(options).map_err(OpenProblem::from_problem)?;
+                    let reached = reach(options).await.map_err(OpenProblem::from_problem)?;
                     (reached, destination)
                 }
             };
@@ -1036,6 +1039,7 @@ impl AppState {
                 None => path,
             };
             Repository::discover(&git, &path)
+                .await
                 .map(|repository| (repository, git))
                 .map_err(|error| OpenProblem::from_discovery(&error, host.as_deref()))
         }));
@@ -1086,7 +1090,7 @@ impl AppState {
         self.home.problem = None;
         let writes = self.user_writes.clone();
         let there = location.host.clone().map(|host| self.options_there(host));
-        self.home.preparing.request(jobs::blocking(move || {
+        self.home.preparing.request(jobs::blocking(async move {
             let failed = |error| {
                 let title = match how {
                     Prepare::Trust => "The folder couldn't be trusted",
@@ -1096,14 +1100,14 @@ impl AppState {
             };
             let git = match there {
                 None => git,
-                Some(options) => Git::new(options).map_err(failed)?,
+                Some(options) => Git::new(options).await.map_err(failed)?,
             };
             match how {
                 Prepare::Trust => {
-                    let _queued = writes.hold();
-                    trust_directory(&git, &location.path)
+                    let _queued = writes.hold().await;
+                    trust_directory(&git, &location.path).await
                 }
-                Prepare::Init => init_repository(&git, &location.path),
+                Prepare::Init => init_repository(&git, &location.path).await,
             }
             .map(|()| location)
             .map_err(failed)
@@ -1115,19 +1119,21 @@ impl AppState {
             return;
         };
         let writes = self.user_writes.clone();
-        self.profile.saving.request(jobs::blocking(move || {
-            let _queued = writes.hold();
+        self.profile.saving.request(jobs::blocking(async move {
+            let _queued = writes.hold().await;
             for change in changes {
                 let target = ConfigTarget::Global;
                 let written = match &change {
                     ConfigChange::Set {
                         key,
                         value: Some(value),
-                    } => set_config(&git, target, key, value),
-                    ConfigChange::Set { key, value: None } => unset_config(&git, target, key),
-                    ConfigChange::Add { key, value } => add_config_value(&git, target, key, value),
+                    } => set_config(&git, target, key, value).await,
+                    ConfigChange::Set { key, value: None } => unset_config(&git, target, key).await,
+                    ConfigChange::Add { key, value } => {
+                        add_config_value(&git, target, key, value).await
+                    }
                     ConfigChange::Remove { key, value } => {
-                        unset_config_value(&git, target, key, value)
+                        unset_config_value(&git, target, key, value).await
                     }
                 };
                 written.map_err(|error| Problem::git("Your settings couldn't be saved", &error))?;
@@ -1344,9 +1350,9 @@ fn sooner(a: Option<Duration>, b: Option<Duration>) -> Option<Duration> {
 
 /// Git on another computer, reached as `options` say (logging in, its version checked, its
 /// home folder read). Blocks: in a job.
-pub(crate) fn reach(options: GitOptions) -> Result<Git, Problem> {
+pub(crate) async fn reach(options: GitOptions) -> Result<Git, Problem> {
     let destination = options.host.ssh().map(|ssh| ssh.destination.clone());
-    Git::new(options).map_err(|error| {
+    Git::new(options).await.map_err(|error| {
         Problem::new(
             format!(
                 "{} couldn't be reached",

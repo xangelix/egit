@@ -17,12 +17,12 @@ use std::path::Path;
 use bstr::BStr;
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, HeadRef, ObjectId, Repository, ResetMode, create_ref, delete_ref, ref_target,
-    reflog, reset, stash_drop, stash_push, stash_store, stashes,
+    CancelToken, HeadRef, ObjectId, Repository, ResetMode, Wait as _, create_ref, delete_ref,
+    ref_target, reflog, reset, stash_drop, stash_push, stash_store, stashes,
 };
 
 fn open(sandbox: &Sandbox, path: &Path) -> Repository {
-    Repository::discover(sandbox.git(), path).unwrap()
+    Repository::discover(sandbox.git(), path).wait().unwrap()
 }
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -44,6 +44,7 @@ fn reflogs_say_where_refs_have_been_newest_first() {
             limit,
             &cancel,
         )
+        .wait()
         .unwrap()
     };
     assert_eq!(read("HEAD", 100), Vec::new(), "no commit yet");
@@ -91,7 +92,7 @@ fn head_and_refs_are_read_where_they_are() {
     let sandbox = Sandbox::new().unwrap();
     let repo = sandbox.init("repo").unwrap();
     let repository = open(&sandbox, &repo);
-    let head = || repository.head_ref(sandbox.git()).unwrap();
+    let head = || repository.head_ref(sandbox.git()).wait().unwrap();
     let main = || Some(bstr::BString::from("refs/heads/main"));
     assert_eq!(
         head(),
@@ -128,7 +129,11 @@ fn head_and_refs_are_read_where_they_are() {
     sandbox
         .run(&repo, "tag", &["--annotate", "--message", "First", "v1"])
         .unwrap();
-    let target = |name: &str| ref_target(sandbox.git(), &repository, BStr::new(name)).unwrap();
+    let target = |name: &str| {
+        ref_target(sandbox.git(), &repository, BStr::new(name))
+            .wait()
+            .unwrap()
+    };
     assert_eq!(
         target("refs/tags/v1"),
         Some(rev(&sandbox, &repo, "refs/tags/v1"))
@@ -152,7 +157,11 @@ fn a_reset_keeping_changes_moves_only_when_they_are_not_in_the_way() {
     // A change to `g`, which the last commit made: in the way of going back past it.
     std::fs::write(repo.join("g"), "changed\n").unwrap();
     let first = rev(&sandbox, &repo, "HEAD~2");
-    assert!(reset(sandbox.git(), &repository, first, ResetMode::Keep, &cancel).is_err());
+    assert!(
+        reset(sandbox.git(), &repository, first, ResetMode::Keep, &cancel)
+            .wait()
+            .is_err()
+    );
     assert_eq!(
         std::fs::read_to_string(repo.join("g")).unwrap(),
         "changed\n"
@@ -163,7 +172,9 @@ fn a_reset_keeping_changes_moves_only_when_they_are_not_in_the_way() {
         .unwrap();
     std::fs::write(repo.join("h"), "untracked\n").unwrap();
     let second = rev(&sandbox, &repo, "HEAD~1");
-    reset(sandbox.git(), &repository, second, ResetMode::Keep, &cancel).unwrap();
+    reset(sandbox.git(), &repository, second, ResetMode::Keep, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(rev(&sandbox, &repo, "HEAD"), second);
     assert!(!repo.join("g").exists(), "the commit's file went with it");
     assert!(repo.join("h").exists());
@@ -177,13 +188,20 @@ fn a_dropped_stash_is_stored_again() {
     let repository = open(&sandbox, &repo);
     let cancel = CancelToken::new();
     std::fs::write(repo.join("f"), "changed\n").unwrap();
-    assert!(stash_push(sandbox.git(), &repository, ("Work", false), &[], &cancel).unwrap());
+    assert!(
+        stash_push(sandbox.git(), &repository, ("Work", false), &[], &cancel)
+            .wait()
+            .unwrap()
+    );
     let stash = stashes(sandbox.git(), &repository, &cancel)
+        .wait()
         .unwrap()
         .remove(0);
-    stash_drop(sandbox.git(), &repository, &stash, &cancel).unwrap();
+    stash_drop(sandbox.git(), &repository, &stash, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(
-        stashes(sandbox.git(), &repository, &cancel).unwrap(),
+        stashes(sandbox.git(), &repository, &cancel).wait().unwrap(),
         Vec::new()
     );
     stash_store(
@@ -193,8 +211,9 @@ fn a_dropped_stash_is_stored_again() {
         "On main: Work",
         &cancel,
     )
+    .wait()
     .unwrap();
-    let again = stashes(sandbox.git(), &repository, &cancel).unwrap();
+    let again = stashes(sandbox.git(), &repository, &cancel).wait().unwrap();
     assert_eq!(again.len(), 1);
     assert_eq!(again[0].id, stash.id);
     assert_eq!(again[0].message, "On main: Work");
@@ -210,17 +229,25 @@ fn refs_are_made_and_removed_only_where_expected() {
     let cancel = CancelToken::new();
     let (one, two) = (rev(&sandbox, &repo, "HEAD~1"), rev(&sandbox, &repo, "HEAD"));
     let name = BStr::new("refs/tags/kept");
-    create_ref(sandbox.git(), &repository, name, one, &cancel).unwrap();
+    create_ref(sandbox.git(), &repository, name, one, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(rev(&sandbox, &repo, "kept"), one);
     assert!(
-        create_ref(sandbox.git(), &repository, name, two, &cancel).is_err(),
+        create_ref(sandbox.git(), &repository, name, two, &cancel)
+            .wait()
+            .is_err(),
         "it exists"
     );
     assert!(
-        delete_ref(sandbox.git(), &repository, name, two, &cancel).is_err(),
+        delete_ref(sandbox.git(), &repository, name, two, &cancel)
+            .wait()
+            .is_err(),
         "it isn't there"
     );
-    delete_ref(sandbox.git(), &repository, name, one, &cancel).unwrap();
+    delete_ref(sandbox.git(), &repository, name, one, &cancel)
+        .wait()
+        .unwrap();
     let gone = sandbox.run(&repo, "rev-parse", &["--verify", "--quiet", "kept"]);
     assert!(gone.is_err());
 }

@@ -99,7 +99,7 @@ impl Find {
         self.current = None;
         let query = self.query.clone().into_bytes();
         let fold = !matches_case(&self.query);
-        self.found.request(jobs::blocking(move || {
+        self.found.request(jobs::blocking(async move {
             let mut capped = false;
             let panes = texts
                 .iter()

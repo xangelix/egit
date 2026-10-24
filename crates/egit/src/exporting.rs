@@ -96,7 +96,7 @@ fn plural(count: usize, one: &str, many: &str) -> String {
 }
 
 /// Exports `commits` (the newest first, as a history lists them) as `export` says.
-pub(crate) fn run(
+pub(crate) async fn run(
     git: &Git,
     repository: &Repository,
     commits: &[ObjectId],
@@ -105,11 +105,13 @@ pub(crate) fn run(
 ) -> Result<Outcome, Problem> {
     let made = match export {
         Export::Patches(folder) => format_series_into(git, repository, commits, folder, cancel)
+            .await
             .map(|written| (written.len(), None)),
         Export::CopyPatches => format_series(git, repository, commits, cancel)
+            .await
             .map(|series| (series.patches, Some(series.text))),
         Export::OnePatch(file) => {
-            let combined = match combined_patch(git, repository, commits, cancel) {
+            let combined = match combined_patch(git, repository, commits, cancel).await {
                 Ok(combined) => combined,
                 Err(error) => return combine_failed(error),
             };
@@ -125,11 +127,12 @@ pub(crate) fn run(
                     )
                 });
         }
-        Export::CopyOnePatch => match combined_patch(git, repository, commits, cancel) {
+        Export::CopyOnePatch => match combined_patch(git, repository, commits, cancel).await {
             Ok(patch) => Ok((commits.len(), Some(patch))),
             Err(error) => return combine_failed(error),
         },
         Export::CopyChangelog(forge) => list_commits(git, repository, commits, cancel)
+            .await
             .map(|listed| changelog(&listed, forge.as_ref()))
             .map(|(text, lines)| (lines, Some(text.into_bytes()))),
     };

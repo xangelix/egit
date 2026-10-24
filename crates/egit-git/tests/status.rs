@@ -13,7 +13,7 @@ use std::path::Path;
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, Change, Conflict, EntryKind, ObjectId, Repository, Status, StatusEntry,
+    CancelToken, Change, Conflict, EntryKind, ObjectId, Repository, Status, StatusEntry, Wait as _,
 };
 
 fn sandbox() -> Sandbox {
@@ -21,8 +21,10 @@ fn sandbox() -> Sandbox {
 }
 
 fn status(sandbox: &Sandbox, repo: &Path) -> Status {
-    let repository = Repository::discover(sandbox.git(), repo).unwrap();
-    Status::read(sandbox.git(), &repository, &CancelToken::new()).unwrap()
+    let repository = Repository::discover(sandbox.git(), repo).wait().unwrap();
+    Status::read(sandbox.git(), &repository, &CancelToken::new())
+        .wait()
+        .unwrap()
 }
 
 /// The entry for `path`.

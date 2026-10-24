@@ -114,7 +114,7 @@ pub enum DiscardError {
 /// # Errors
 ///
 /// When git fails (a path in conflict, say) or is cancelled, or a file can't be read to keep.
-pub fn discard_files(
+pub async fn discard_files(
     git: &Git,
     repository: &Repository,
     tracked: &[&BStr],
@@ -128,9 +128,10 @@ pub fn discard_files(
         &paths,
         Keeping::Store { limit: true },
         cancel,
-    )?;
-    crate::stage::with_paths(git, repository, "restore", &["--worktree"], tracked, cancel)?;
-    remove_untracked(git, repository, untracked, cancel)?;
+    )
+    .await?;
+    crate::stage::with_paths(git, repository, "restore", &["--worktree"], tracked, cancel).await?;
+    remove_untracked(git, repository, untracked, cancel).await?;
     let Some(before) = before else {
         return Ok(None);
     };
@@ -140,7 +141,8 @@ pub fn discard_files(
         &paths,
         Keeping::Store { limit: false },
         cancel,
-    )?
+    )
+    .await?
     else {
         return Ok(None);
     };
@@ -170,7 +172,7 @@ pub fn discard_files(
 /// [`DiscardError::Stale`] when the index or the file changed since the diff was read (nothing
 /// is written then), [`DiscardError::NotLines`] for a symbolic link or a submodule, and
 /// otherwise when git fails or the file can't be written.
-pub fn discard_lines(
+pub async fn discard_lines(
     git: &Git,
     repository: &Repository,
     (path, diff): (&BStr, &FileDiff),
@@ -186,7 +188,11 @@ pub fn discard_lines(
     if expected.is_some_and(|entry| matches!(entry.mode, LINK | SUBMODULE)) {
         return Err(DiscardError::NotLines(path.to_owned()));
     }
-    if index_entry_at(git, repository, path, cancel).map_err(lines)? != expected {
+    if index_entry_at(git, repository, path, cancel)
+        .await
+        .map_err(lines)?
+        != expected
+    {
         return Err(stale());
     }
     let work_tree = repository.work_tree();
@@ -194,6 +200,7 @@ pub fn discard_lines(
     let found = git
         .files()
         .look(&[&full])
+        .await
         .map_err(|source| io_error(path, source))?
         .pop()
         .unwrap_or(Entry::Nothing);
@@ -206,14 +213,14 @@ pub fn discard_lines(
     let (_, shown) = diff.blobs.ok_or_else(stale)?;
     let now = match found {
         Entry::Nothing => None,
-        _ => Some(stored_blob(git, repository, path, cancel)?),
+        _ => Some(stored_blob(git, repository, path, cancel).await?),
     };
     let gone = shown == shown.format().zero();
     if (gone && now.is_some()) || (!gone && now != Some(shown)) {
         return Err(stale());
     }
     let base = match expected {
-        Some(entry) => blob(git, work_tree, entry.id, cancel)?,
+        Some(entry) => blob(git, work_tree, entry.id, cancel).await?,
         None => Vec::new(),
     };
     let content =
@@ -224,9 +231,10 @@ pub fn discard_lines(
         &[path],
         Keeping::Store { limit: false },
         cancel,
-    )?
+    )
+    .await?
     .and_then(|kept| kept.into_iter().next().flatten());
-    let stored = hash_bytes(git, work_tree, content, true, cancel)?;
+    let stored = hash_bytes(git, work_tree, content, true, cancel).await?;
     let mut filters = OsString::from("--path=");
     filters.push(path.to_os_str_lossy());
     let written = git
@@ -237,11 +245,14 @@ pub fn discard_lines(
         .current_dir(work_tree)
         .stdout_limit(BLOB_LIMIT)
         .cancel_token(cancel)
-        .output()?
+        .output()
+        .await?
         .stdout;
-    write_file(git, &full, &written, mode).map_err(|source| io_error(path, source))?;
+    write_file(git, &full, &written, mode)
+        .await
+        .map_err(|source| io_error(path, source))?;
     let after = KeptFile {
-        id: hash_bytes(git, work_tree, written, true, cancel)?,
+        id: hash_bytes(git, work_tree, written, true, cancel).await?,
         mode,
     };
     Ok(DiscardedFile {
@@ -258,7 +269,7 @@ pub fn discard_lines(
 ///
 /// [`DiscardError::Stale`] when one isn't (nothing is written then), and otherwise when git
 /// fails or a file can't be written.
-pub fn put_back(
+pub async fn put_back(
     git: &Git,
     repository: &Repository,
     files: &[DiscardedFile],
@@ -274,7 +285,8 @@ pub fn put_back(
     let stale = |file: Option<&DiscardedFile>| {
         DiscardError::Stale(file.map(|file| file.path.clone()).unwrap_or_default())
     };
-    let now = keep(git, repository, &paths, Keeping::Hash, cancel)?
+    let now = keep(git, repository, &paths, Keeping::Hash, cancel)
+        .await?
         .ok_or_else(|| stale(files.first()))?;
     if let Some((file, _)) = files
         .iter()
@@ -287,38 +299,45 @@ pub fn put_back(
     for file in files.iter().filter(|file| sides(file).1.is_none()) {
         git.files()
             .remove_if_there(&work_tree.join(file.path.to_path_lossy()))
+            .await
             .map_err(|source| io_error(file.path.as_bstr(), source))?;
     }
-    let mut writing = files.iter().filter_map(|file| Some((file, sides(file).1?)));
-    let ids: Vec<ObjectId> = writing.clone().map(|(_, kept)| kept.id).collect();
-    if ids.is_empty() {
+    let writing: Vec<_> = files
+        .iter()
+        .filter_map(|file| Some((file, sides(file).1?)))
+        .collect();
+    if writing.is_empty() {
         return Ok(());
     }
     let mut failed = None;
-    ObjectReader::start(git, work_tree)?.read(&ids, |_, object| {
-        let Some((file, kept)) = writing.next() else {
-            return;
-        };
-        let written = object.map_or_else(
-            || {
-                Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "its kept copy is gone",
-                ))
-            },
-            |object| {
+    let mut reader = ObjectReader::start(git, work_tree).await?;
+    for (file, kept) in writing {
+        // One at a time, each written before the next is read: Undo puts back few files.
+        let mut data = None;
+        reader
+            .read(&[kept.id], |_, object| {
+                data = object.map(|object| object.data.to_vec());
+            })
+            .await?;
+        let written = match data {
+            None => Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "its kept copy is gone",
+            )),
+            Some(data) => {
                 write_file(
                     git,
                     &work_tree.join(file.path.to_path_lossy()),
-                    object.data,
+                    &data,
                     kept.mode,
                 )
-            },
-        );
+                .await
+            }
+        };
         if let Err(source) = written {
             failed.get_or_insert_with(|| io_error(file.path.as_bstr(), source));
         }
-    })?;
+    }
     failed.map_or(Ok(()), Err)
 }
 
@@ -346,7 +365,7 @@ enum Keeping {
 /// Each of `paths` (from the work tree's top) as it is now, kept as `keeping` says: `None`
 /// where nothing is; all `None` when one is a folder, or (with a limit) there are too many or
 /// one is too large.
-fn keep(
+async fn keep(
     git: &Git,
     repository: &Repository,
     paths: &[&BStr],
@@ -370,6 +389,7 @@ fn keep(
     let found = git
         .files()
         .look(&fulls.iter().map(PathBuf::as_path).collect::<Vec<_>>())
+        .await
         .map_err(|source| io_error(paths.first().copied().unwrap_or_default(), source))?;
     // Read by one `hash-object` together, but those it can't take one per line.
     let mut listed: Vec<(usize, &BStr, u32)> = Vec::new();
@@ -384,7 +404,7 @@ fn keep(
             Entry::Folder => return Ok(None),
             Entry::File { size, .. } if limit && size > KEEP_BYTES => return Ok(None),
             Entry::Link(target) => {
-                let id = hash_bytes(git, work_tree, target, store, cancel)?;
+                let id = hash_bytes(git, work_tree, target, store, cancel).await?;
                 *slot = Some(KeptFile { id, mode: LINK });
             }
             Entry::File { executable, .. } => {
@@ -393,8 +413,9 @@ fn keep(
                     let bytes = git
                         .files()
                         .read(full)
+                        .await
                         .map_err(|source| io_error(path, source))?;
-                    let id = hash_bytes(git, work_tree, bytes, store, cancel)?;
+                    let id = hash_bytes(git, work_tree, bytes, store, cancel).await?;
                     *slot = Some(KeptFile { id, mode });
                 } else {
                     listed.push((index, *path, mode));
@@ -408,7 +429,8 @@ fn keep(
         listed.iter().map(|(_, path, _)| *path),
         store,
         cancel,
-    )?;
+    )
+    .await?;
     if ids.len() != listed.len() {
         return Err(GitError::unexpected("hash-object", "a name for each file").into());
     }
@@ -422,7 +444,7 @@ fn keep(
 
 /// The blobs of the files at `paths` as they are (`--stdin-paths`, one a line; written into
 /// the object store when `store`).
-fn hash_paths<'p>(
+async fn hash_paths<'p>(
     git: &Git,
     work_tree: &Path,
     paths: impl Iterator<Item = &'p BStr>,
@@ -447,7 +469,8 @@ fn hash_paths<'p>(
         .current_dir(work_tree)
         .stdin(stdin)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     hashed
         .stdout
         .lines()
@@ -459,7 +482,7 @@ fn hash_paths<'p>(
 }
 
 /// The blob of `bytes` as they are (written into the object store when `store`).
-fn hash_bytes(
+async fn hash_bytes(
     git: &Git,
     work_tree: &Path,
     bytes: Vec<u8>,
@@ -476,14 +499,15 @@ fn hash_bytes(
         .current_dir(work_tree)
         .stdin(bytes)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     ObjectId::from_hex(hashed.stdout.trim_ascii())
         .ok_or_else(|| GitError::unexpected("hash-object", "an object name"))
 }
 
 /// The blob the work tree's file at `path` would be stored as: through its clean filters, as
 /// `git add` makes it (and as a diff names its side).
-fn stored_blob(
+async fn stored_blob(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -495,13 +519,14 @@ fn stored_blob(
         .arg(path.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     ObjectId::from_hex(hashed.stdout.trim_ascii())
         .ok_or_else(|| GitError::unexpected("hash-object", "an object name"))
 }
 
 /// A blob's bytes.
-fn blob(
+async fn blob(
     git: &Git,
     work_tree: &Path,
     id: ObjectId,
@@ -514,19 +539,20 @@ fn blob(
         .current_dir(work_tree)
         .stdout_limit(BLOB_LIMIT)
         .cancel_token(cancel)
-        .output()?
+        .output()
+        .await?
         .stdout)
 }
 
 /// Removes the untracked files at `paths` (`git clean`: it removes nothing tracked, or
 /// ignored), a few at a time.
-fn remove_untracked(
+async fn remove_untracked(
     git: &Git,
     repository: &Repository,
     paths: &[&BStr],
     cancel: &CancelToken,
 ) -> Result<(), GitError> {
-    let clean = |chunk: &[&BStr]| {
+    let clean = async |chunk: &[&BStr]| {
         git.write("clean")
             .args(["--force", "--quiet", "--"])
             .args(chunk.iter().map(|path| path.to_os_str_lossy()))
@@ -535,18 +561,19 @@ fn remove_untracked(
             .current_dir(repository.work_tree())
             .cancel_token(cancel)
             .output()
+            .await
             .map(drop)
     };
     let (mut start, mut bytes) = (0, 0_usize);
     for (index, path) in paths.iter().enumerate() {
         if index > start && bytes.saturating_add(path.len()) > CLEAN_BYTES {
-            clean(paths.get(start..index).unwrap_or_default())?;
+            clean(paths.get(start..index).unwrap_or_default()).await?;
             (start, bytes) = (index, 0);
         }
         bytes = bytes.saturating_add(path.len()).saturating_add(1);
     }
     match paths.get(start..) {
-        Some(rest) if !rest.is_empty() => clean(rest),
+        Some(rest) if !rest.is_empty() => clean(rest).await,
         _ => Ok(()),
     }
 }
@@ -558,7 +585,7 @@ const fn mode_of(executable: bool) -> u32 {
 
 /// Puts `bytes` at `full` with `mode`, never seen half written: a file (executable as `mode`
 /// says) or a symbolic link (see [`Files::put`](crate::Files::put)).
-fn write_file(git: &Git, full: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
+async fn write_file(git: &Git, full: &Path, bytes: &[u8], mode: u32) -> io::Result<()> {
     let put = if mode == LINK {
         Put::Link
     } else {
@@ -566,7 +593,7 @@ fn write_file(git: &Git, full: &Path, bytes: &[u8], mode: u32) -> io::Result<()>
             executable: mode == EXECUTABLE,
         }
     };
-    git.files().put(full, bytes, put)
+    git.files().put(full, bytes, put).await
 }
 
 /// An error of the work tree's, with its path.

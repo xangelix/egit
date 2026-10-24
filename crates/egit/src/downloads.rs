@@ -112,7 +112,8 @@ impl Downloads {
         let started = std::thread::Builder::new()
             .name("artifact download".to_owned())
             .spawn(move || {
-                let stage = match save(&going, (&account, &repository), &waker) {
+                let saved = egit_git::block_on(save(&going, (&account, &repository), &waker));
+                let stage = match saved {
                     Ok(()) => Stage::Saved,
                     Err(problem) => Stage::Failed(problem),
                 };
@@ -159,20 +160,22 @@ fn part_of(to: &Path) -> PathBuf {
 }
 
 /// Downloads `download` into its part, then renames it into place; the part removed otherwise.
-fn save(
+async fn save(
     download: &Download,
     (account, repository): (&Account, &ForgeRepository),
     waker: &egui::Context,
 ) -> Result<(), Problem> {
     let part = part_of(&download.to);
-    let written = write(download, (account, repository), (&part, waker)).and_then(|()| {
-        std::fs::rename(&part, &download.to).map_err(|error| {
-            Problem::new(
-                "The artifact couldn't be saved",
-                format!("{}: {error}", download.to.display()),
-            )
-        })
-    });
+    let written = write(download, (account, repository), (&part, waker))
+        .await
+        .and_then(|()| {
+            std::fs::rename(&part, &download.to).map_err(|error| {
+                Problem::new(
+                    "The artifact couldn't be saved",
+                    format!("{}: {error}", download.to.display()),
+                )
+            })
+        });
     if written.is_err() {
         let _ = std::fs::remove_file(&part);
     }
@@ -180,7 +183,7 @@ fn save(
 }
 
 /// Streams `download` into the file `part`.
-fn write(
+async fn write(
     download: &Download,
     (account, repository): (&Account, &ForgeRepository),
     (part, waker): (&Path, &egui::Context),
@@ -213,7 +216,8 @@ fn write(
             }
             true
         },
-    );
+    )
+    .await;
     if let Some(error) = failed {
         return Err(not_saved(&error));
     }

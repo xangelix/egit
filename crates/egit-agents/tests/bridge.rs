@@ -24,6 +24,8 @@ use egit_agents::protocol::{Answer, Event, Image, Mode, PermissionRequest, Reque
 use egit_agents::sessions::{list_sessions, session_history};
 use egit_agents::{Bridge, ItemKind, Launch, Prompt, ToolResult, Transcript};
 
+use egit_git::Wait as _;
+
 /// How to run the bridge against the stand-in, where Node is installed.
 fn launch() -> Option<Launch> {
     let Ok(node) = egit_agents::install::find_node() else {
@@ -328,6 +330,7 @@ fn the_bridge_runs_on_another_computer_its_key_sent() {
         host: egit_git::Host::Ssh(host),
         ..sandbox.options()
     })
+    .wait()
     .unwrap();
     launch.there = Some(there);
     let key = Secrets(vec![(

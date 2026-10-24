@@ -97,8 +97,10 @@ fn agents(ui: &mut Ui, state: &mut AppState) {
             if account.kind == crate::agents::AccountKind::ApiKey
                 && let Some(git) = state.git.ok_ref().cloned()
             {
-                crate::jobs::detached(move || {
-                    if let Err(error) = egit_git::erase_credential(&git, None, account.place()) {
+                crate::jobs::detached(async move {
+                    if let Err(error) =
+                        egit_git::erase_credential(&git, None, account.place()).await
+                    {
                         tracing::warn!(%error, "an API key couldn't be erased");
                     }
                 });

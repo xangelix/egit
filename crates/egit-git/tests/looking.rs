@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    Follow, Git, GitOptions, Host, INOTIFYWAIT, Looked, Looking, Repository, Seen,
+    Follow, Git, GitOptions, Host, INOTIFYWAIT, Looked, Looking, Repository, Seen, Wait as _,
     look_at_folders_there, look_there,
 };
 
@@ -48,7 +48,7 @@ fn there(sandbox: &Sandbox, tmp: &Path) -> Option<Git> {
     options
         .env
         .push(("TMPDIR".into(), tmp.as_os_str().to_owned()));
-    Some(Git::new(options).unwrap())
+    Some(Git::new(options).wait().unwrap())
 }
 
 /// Whether `inotifywait` is installed (here is there); when it must be and isn't, fails.
@@ -100,7 +100,7 @@ fn running(marker: &OsStr) -> bool {
 }
 
 fn repository(git: &Git, path: &Path) -> Repository {
-    Repository::discover(git, path).unwrap()
+    Repository::discover(git, path).wait().unwrap()
 }
 
 /// Follows the repository as `follow` says; what changed comes through the receiver.

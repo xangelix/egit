@@ -445,7 +445,7 @@ fn follow_suggested(state: &mut AppState) -> Option<Arc<[Suggestion]>> {
         && let Some(git) = git
     {
         let asked = known.clone();
-        suggested.found.request(crate::jobs::blocking(move || {
+        suggested.found.request(crate::jobs::blocking(async move {
             Ok(Arc::from(suggest(&git, &asked)))
         }));
         suggested.known = known;

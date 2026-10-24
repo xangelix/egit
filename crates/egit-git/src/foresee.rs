@@ -52,20 +52,20 @@ impl Foreseen {
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn foresee_merge(
+pub async fn foresee_merge(
     git: &Git,
     repository: &Repository,
     head: ObjectId,
     other: ObjectId,
     cancel: &CancelToken,
 ) -> Result<Foreseen, GitError> {
-    if reaches(git, repository, head, other, cancel)? {
+    if reaches(git, repository, head, other, cancel).await? {
         return Ok(Foreseen::UpToDate);
     }
-    if reaches(git, repository, other, head, cancel)? {
+    if reaches(git, repository, other, head, cancel).await? {
         return Ok(Foreseen::FastForward);
     }
-    let merged = merge_tree(git, repository, None, (head, other), cancel)?;
+    let merged = merge_tree(git, repository, None, (head, other), cancel).await?;
     Ok(merged.foreseen(None))
 }
 
@@ -75,7 +75,7 @@ pub fn foresee_merge(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn foresee_pick(
+pub async fn foresee_pick(
     git: &Git,
     repository: &Repository,
     head: ObjectId,
@@ -83,7 +83,7 @@ pub fn foresee_pick(
     cancel: &CancelToken,
 ) -> Result<Option<Foreseen>, GitError> {
     // A merge's changes are those against its first parent, as egit picks and reverts them.
-    let Some(parent) = first_parent(git, repository, commit, cancel)? else {
+    let Some(parent) = first_parent(git, repository, commit, cancel).await? else {
         return Ok(None);
     };
     let (base, theirs) = if revert {
@@ -91,8 +91,10 @@ pub fn foresee_pick(
     } else {
         (parent, commit)
     };
-    let merged = merge_tree(git, repository, Some(base), (head, theirs), cancel)?;
-    if merged.conflicts.is_empty() && Some(merged.tree) == tree_of(git, repository, head, cancel)? {
+    let merged = merge_tree(git, repository, Some(base), (head, theirs), cancel).await?;
+    if merged.conflicts.is_empty()
+        && Some(merged.tree) == tree_of(git, repository, head, cancel).await?
+    {
         return Ok(Some(Foreseen::Empty));
     }
     Ok(Some(merged.foreseen(None)))
@@ -104,17 +106,17 @@ pub fn foresee_pick(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn foresee_rebase(
+pub async fn foresee_rebase(
     git: &Git,
     repository: &Repository,
     head: ObjectId,
     onto: ObjectId,
     cancel: &CancelToken,
 ) -> Result<Foreseen, GitError> {
-    if reaches(git, repository, head, onto, cancel)? {
+    if reaches(git, repository, head, onto, cancel).await? {
         return Ok(Foreseen::UpToDate);
     }
-    if reaches(git, repository, onto, head, cancel)? {
+    if reaches(git, repository, onto, head, cancel).await? {
         return Ok(Foreseen::FastForward);
     }
     let range = format!("{onto}..{head}");
@@ -123,7 +125,8 @@ pub fn foresee_rebase(
         .args(["--count", "--no-merges", &range])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let count = counted
         .stdout
         .trim_ascii()
@@ -139,18 +142,19 @@ pub fn foresee_rebase(
         .args(["--reverse", "--no-merges", "--parents", &range])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let mut current = onto;
     for line in listed.stdout.lines() {
         let mut names = line.fields_with(|c| c == ' ').map(ObjectId::from_hex);
         let (Some(Some(commit)), Some(Some(parent))) = (names.next(), names.next()) else {
             return Err(GitError::unexpected("rev-list", "a commit and its parent"));
         };
-        let merged = merge_tree(git, repository, Some(parent), (current, commit), cancel)?;
+        let merged = merge_tree(git, repository, Some(parent), (current, commit), cancel).await?;
         if !merged.conflicts.is_empty() {
             return Ok(merged.foreseen(Some(commit)));
         }
-        current = commit_of(git, repository, merged.tree, cancel)?;
+        current = commit_of(git, repository, merged.tree, cancel).await?;
     }
     Ok(Foreseen::Clean)
 }
@@ -177,7 +181,7 @@ impl Merged {
 /// `theirs` merged into `ours` (`merge-tree --write-tree`, from `base` when given): the tree
 /// and the files in conflict. Nothing is fetched (`GIT_NO_LAZY_FETCH`, where git honours it)
 /// and nothing asked.
-fn merge_tree(
+async fn merge_tree(
     git: &Git,
     repository: &Repository,
     base: Option<ObjectId>,
@@ -197,7 +201,8 @@ fn merge_tree(
         .non_interactive()
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     // 1: conflicts.
     if !matches!(merged.status.code(), Some(0 | 1)) {
         return Err(GitError::failed("merge-tree", merged.status, merged.stderr));
@@ -216,7 +221,7 @@ fn merge_tree(
 }
 
 /// Whether `ancestor` is in `of`'s history (`merge-base --is-ancestor`).
-fn reaches(
+async fn reaches(
     git: &Git,
     repository: &Repository,
     of: ObjectId,
@@ -228,7 +233,8 @@ fn reaches(
         .args(["--is-ancestor", &ancestor.to_string(), &of.to_string()])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     match reached.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -241,7 +247,7 @@ fn reaches(
 }
 
 /// `commit`'s first parent, if it has one.
-fn first_parent(
+async fn first_parent(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -252,7 +258,8 @@ fn first_parent(
         .args(["--parents", "-n", "1", &commit.to_string()])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     Ok(listed
         .stdout
         .fields_with(|c| c.is_ascii_whitespace())
@@ -261,7 +268,7 @@ fn first_parent(
 }
 
 /// `commit`'s tree.
-fn tree_of(
+async fn tree_of(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -272,7 +279,8 @@ fn tree_of(
         .args(["--verify", "--quiet", &format!("{commit}^{{tree}}")])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     Ok(found
         .status
         .success()

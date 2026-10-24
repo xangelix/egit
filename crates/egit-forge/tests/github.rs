@@ -28,7 +28,7 @@ use egit_forge::{
     pull_request_details, pull_requests, read_log, repository_info, start_pipeline, workflows,
 };
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, ObjectId};
+use egit_git::{CancelToken, ObjectId, Wait as _};
 
 const TOKEN: &str = "t0ken";
 
@@ -84,6 +84,7 @@ fn pull_requests_come_a_page_at_a_time() {
     pull_requests(&account, &repository, 1_000, &CancelToken::new(), |page| {
         pages.push(page);
     })
+    .wait()
     .unwrap();
     let sizes: Vec<usize> = pages.iter().map(|page| page.pulls.len()).collect();
     assert_eq!(sizes, [100, 100, 50]);
@@ -116,6 +117,7 @@ fn reading_stops_at_the_limit() {
     pull_requests(&account, &repository, 120, &CancelToken::new(), |page| {
         read += page.pulls.len();
     })
+    .wait()
     .unwrap();
     assert_eq!(read, 120);
     let firsts: Vec<u64> = fake
@@ -144,7 +146,9 @@ fn a_pull_request_s_details_and_the_repository_are_read() {
         ];
         drop(state);
     }
-    let details = pull_request_details(&account, &repository, 3, &CancelToken::new()).unwrap();
+    let details = pull_request_details(&account, &repository, 3, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(details.body, "Fixes everything.");
     assert_eq!(details.checks.len(), 2);
     assert_eq!(details.checks[0].state, CheckState::Success);
@@ -152,11 +156,13 @@ fn a_pull_request_s_details_and_the_repository_are_read() {
     assert_eq!(details.reviews[0].state, ReviewState::Approved);
     assert_eq!(details.labels, ["bug"]);
     assert!(matches!(
-        pull_request_details(&account, &repository, 99, &CancelToken::new()),
+        pull_request_details(&account, &repository, 99, &CancelToken::new()).wait(),
         Err(ForgeError::NotFound { .. })
     ));
 
-    let info = repository_info(&account, &repository, &CancelToken::new()).unwrap();
+    let info = repository_info(&account, &repository, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(info.default_branch.as_deref(), Some("main"));
     let (parent, default) = info.parent.unwrap();
     assert_eq!(parent.path(), "upstream/tool");
@@ -175,14 +181,16 @@ fn a_pull_request_is_opened_and_a_second_for_its_branch_refused() {
         base_branch: "main".to_owned(),
         draft: true,
     };
-    let opened = create_pull_request(&account, &repository, &new, &CancelToken::new()).unwrap();
+    let opened = create_pull_request(&account, &repository, &new, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(opened.number, 2);
     let sent = fake.state().requests.last().unwrap().body.clone();
     assert_eq!(sent["head"], "ada:feature");
     assert_eq!(sent["base"], "main");
     assert_eq!(sent["title"], "Add a feature");
     assert_eq!(sent["draft"], true);
-    match create_pull_request(&account, &repository, &new, &CancelToken::new()) {
+    match create_pull_request(&account, &repository, &new, &CancelToken::new()).wait() {
         Err(ForgeError::Status {
             status: 422,
             message,
@@ -195,16 +203,16 @@ fn a_pull_request_is_opened_and_a_second_for_its_branch_refused() {
 #[test]
 fn a_refused_credential_is_forgotten() {
     let (_fake, sandbox, account, repository) = setup(1, "wrong");
-    let result = pull_requests(&account, &repository, 100, &CancelToken::new(), |_| {});
+    let result = pull_requests(&account, &repository, 100, &CancelToken::new(), |_| {}).wait();
     assert!(matches!(result, Err(ForgeError::Refused { .. })));
     let kept = std::fs::read_to_string(sandbox.path("credentials")).unwrap();
     assert!(!kept.contains("wrong"), "{kept}");
     // Then there is none, and nothing asks: still refused, saying why there is none.
-    let result = pull_requests(&account, &repository, 100, &CancelToken::new(), |_| {});
+    let result = pull_requests(&account, &repository, 100, &CancelToken::new(), |_| {}).wait();
     assert!(matches!(result, Err(ForgeError::Refused { .. })));
     // A fresh account (a new session) has none, and isn't signed in.
     let fresh = Account::new(sandbox.git().clone(), None, repository.host().clone());
-    let result = pull_requests(&fresh, &repository, 100, &CancelToken::new(), |_| {});
+    let result = pull_requests(&fresh, &repository, 100, &CancelToken::new(), |_| {}).wait();
     assert!(matches!(result, Err(ForgeError::NotSignedIn { .. })));
 }
 
@@ -214,13 +222,14 @@ fn signing_in_says_who_and_keeps_the_credential() {
     std::fs::write(sandbox.path("credentials"), "").unwrap();
     // Nothing kept, and the prompt (unanswerable here) declined: not signed in.
     assert!(matches!(
-        account.sign_in("Signing in", &CancelToken::new()),
+        account.sign_in("Signing in", &CancelToken::new()).wait(),
         Err(ForgeError::NotSignedIn { .. })
     ));
     let (fake, sandbox, account, _repository) = setup(0, TOKEN);
     assert_eq!(
         account
             .sign_in("Signing in", &CancelToken::new())
+            .wait()
             .unwrap()
             .login,
         "ada"
@@ -240,11 +249,11 @@ fn rate_limits_and_missing_repositories_say_so() {
     let (fake, _sandbox, account, repository) = setup(1, TOKEN);
     let other = ForgeRepository::new(repository.host().clone(), "octo/missing").unwrap();
     assert!(matches!(
-        pull_requests(&account, &other, 100, &CancelToken::new(), |_| {}),
+        pull_requests(&account, &other, 100, &CancelToken::new(), |_| {}).wait(),
         Err(ForgeError::NotFound { .. })
     ));
     fake.state().rate_limited = true;
-    match pull_requests(&account, &repository, 100, &CancelToken::new(), |_| {}) {
+    match pull_requests(&account, &repository, 100, &CancelToken::new(), |_| {}).wait() {
         Err(ForgeError::RateLimited { reset, .. }) => assert_eq!(reset, Some(1_700_000_000)),
         other => panic!("{other:?}"),
     }
@@ -257,7 +266,7 @@ fn a_cancelled_read_stops() {
     cancel.cancel();
     let account = Arc::new(account);
     assert!(matches!(
-        pull_requests(&account, &repository, 100, &cancel, |_| {}),
+        pull_requests(&account, &repository, 100, &cancel, |_| {}).wait(),
         Err(ForgeError::Cancelled)
     ));
 }
@@ -282,6 +291,7 @@ fn signing_in_asks_the_user_and_has_the_helper_keep_what_worked() {
     assert_eq!(
         account
             .sign_in("Signing in", &CancelToken::new())
+            .wait()
             .unwrap()
             .login,
         "ada"
@@ -396,6 +406,7 @@ fn workflow_runs_are_pipelines_each_workflow_a_series_of_its_own() {
     pipelines(&account, &repository, 500, &CancelToken::new(), |page| {
         read.extend(page);
     })
+    .wait()
     .unwrap();
     let said: Vec<(String, u64, CiStatus, u8)> = read
         .iter()
@@ -428,6 +439,7 @@ fn a_workflow_s_run_is_started_on_a_branch_and_found() {
     let cancel = CancelToken::new();
     // The workflows, by name.
     let listed: Vec<(u64, String, String)> = workflows(&account, &repository, &cancel)
+        .wait()
         .unwrap()
         .into_iter()
         .map(|workflow| (workflow.id, workflow.name, workflow.path))
@@ -444,19 +456,22 @@ fn a_workflow_s_run_is_started_on_a_branch_and_found() {
         ]
     );
     // Docs run on topic: GitHub makes the run a moment later, found and given back.
-    let made = start_pipeline(&account, &repository, (Some(12), "topic"), &cancel).unwrap();
+    let made = start_pipeline(&account, &repository, (Some(12), "topic"), &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(made, Some(7004));
     let mut read = Vec::new();
     pipelines(&account, &repository, 500, &cancel, |page| {
         read.extend(page);
     })
+    .wait()
     .unwrap();
     assert_eq!(
         (read[0].iid, read[0].git_ref.as_deref(), read[0].series),
         (7004, Some("topic"), 12)
     );
     // A workflow it can't start (no workflow_dispatch, or none such): GitHub's words.
-    let refused = start_pipeline(&account, &repository, (Some(99), "topic"), &cancel);
+    let refused = start_pipeline(&account, &repository, (Some(99), "topic"), &cancel).wait();
     assert!(
         refused
             .as_ref()
@@ -464,14 +479,20 @@ fn a_workflow_s_run_is_started_on_a_branch_and_found() {
         "{refused:?}"
     );
     // On GitHub, a run is of a workflow.
-    assert!(start_pipeline(&account, &repository, (None, "topic"), &cancel).is_err());
+    assert!(
+        start_pipeline(&account, &repository, (None, "topic"), &cancel)
+            .wait()
+            .is_err()
+    );
 }
 
 #[test]
 fn a_run_is_read_whole_its_matrix_together_and_laid_over_by_its_workflow() {
     let (fake, _sandbox, account, repository) = setup(0, TOKEN);
     with_runs(&fake);
-    let mut details = pipeline_details(&account, &repository, 7001, &CancelToken::new()).unwrap();
+    let mut details = pipeline_details(&account, &repository, 7001, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(details.pipeline.title(), "CI #57");
     assert!(!details.ordered_stages && details.can_update);
     assert!(details.actions.retry && details.actions.rerun && !details.actions.cancel);
@@ -542,7 +563,7 @@ fn a_job_s_steps_and_log_are_read_the_log_through_github_s_redirect() {
     let (fake, _sandbox, account, repository) = setup(0, TOKEN);
     with_runs(&fake);
     let cancel = CancelToken::new();
-    let failed = job(&account, &repository, 603, &cancel).unwrap();
+    let failed = job(&account, &repository, 603, &cancel).wait().unwrap();
     assert_eq!(failed.status, CiStatus::Failed);
     assert_eq!(failed.duration, Some(42.0));
     assert_eq!(
@@ -566,6 +587,7 @@ fn a_job_s_steps_and_log_are_read_the_log_through_github_s_redirect() {
             log.feed(bytes);
         },
     )
+    .wait()
     .unwrap();
     assert!(matches!(read, LogRead::Read { ranged: false, .. }));
     let parts = log.parts();
@@ -584,7 +606,9 @@ fn a_job_s_steps_and_log_are_read_the_log_through_github_s_redirect() {
     assert_eq!(file.authorization, None);
     drop(state);
     // A job under way has no log yet; an earlier attempt's is there.
-    let missing = read_log(&account, &repository, (621, 0, true), &cancel, &mut |_| {}).unwrap();
+    let missing = read_log(&account, &repository, (621, 0, true), &cancel, &mut |_| {})
+        .wait()
+        .unwrap();
     assert_eq!(missing, LogRead::Missing);
     let mut first = Vec::new();
     read_log(
@@ -596,6 +620,7 @@ fn a_job_s_steps_and_log_are_read_the_log_through_github_s_redirect() {
             first.extend_from_slice(bytes);
         },
     )
+    .wait()
     .unwrap();
     assert_eq!(first, b"the first attempt\n");
 }
@@ -605,9 +630,14 @@ fn runs_are_re_run_and_cancelled_and_a_job_s_new_run_found() {
     let (fake, _sandbox, account, repository) = setup(0, TOKEN);
     with_runs(&fake);
     let cancel = CancelToken::new();
-    let read = |id| pipeline_details(&account, &repository, id, &CancelToken::new()).unwrap();
+    let read = |id| {
+        pipeline_details(&account, &repository, id, &CancelToken::new())
+            .wait()
+            .unwrap()
+    };
     // A job re-run: its new run found in the run's new attempt.
     let again = ci_act(&account, &repository, CiAction::RetryJob(603), &cancel)
+        .wait()
         .unwrap()
         .unwrap();
     assert_ne!(again, 603);
@@ -628,6 +658,7 @@ fn runs_are_re_run_and_cancelled_and_a_job_s_new_run_found() {
         CiAction::CancelPipeline(7003),
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(read(7003).pipeline.status, CiStatus::Canceled);
     ci_act(
@@ -636,6 +667,7 @@ fn runs_are_re_run_and_cancelled_and_a_job_s_new_run_found() {
         CiAction::RetryPipeline(7003),
         &cancel,
     )
+    .wait()
     .unwrap();
     let retried = read(7003);
     assert_eq!(retried.pipeline.status, CiStatus::Running);
@@ -646,11 +678,12 @@ fn runs_are_re_run_and_cancelled_and_a_job_s_new_run_found() {
         CiAction::RerunPipeline(7002),
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(read(7002).pipeline.attempt, 2);
     // GitHub has no single job's cancel, nor a manual job; and a reader may not.
     assert!(matches!(
-        ci_act(&account, &repository, CiAction::CancelJob(601), &cancel),
+        ci_act(&account, &repository, CiAction::CancelJob(601), &cancel).wait(),
         Err(ForgeError::NotFound { .. })
     ));
     fake.state().read_only = true;
@@ -660,7 +693,8 @@ fn runs_are_re_run_and_cancelled_and_a_job_s_new_run_found() {
             &repository,
             CiAction::RerunPipeline(7002),
             &cancel
-        ),
+        )
+        .wait(),
         Err(ForgeError::Forbidden { .. })
     ));
 }
@@ -671,7 +705,9 @@ fn a_token_given_is_checked_kept_under_its_login_and_signed_out() {
     let file = sandbox.path("credentials");
     // A mistyped token: refused, and what the helper kept stays.
     assert!(matches!(
-        account.sign_in_with_token("mistyped", &CancelToken::new()),
+        account
+            .sign_in_with_token("mistyped", &CancelToken::new())
+            .wait(),
         Err(ForgeError::Refused { .. })
     ));
     assert!(std::fs::read_to_string(&file).unwrap().contains(":old@"));
@@ -679,6 +715,7 @@ fn a_token_given_is_checked_kept_under_its_login_and_signed_out() {
     // The right one: whose the host says, kept under that login.
     let signed = account
         .sign_in_with_token(&format!(" {TOKEN}\n"), &CancelToken::new())
+        .wait()
         .unwrap();
     assert_eq!(signed.login, "ada");
     assert!(signed.kept);
@@ -688,7 +725,7 @@ fn a_token_given_is_checked_kept_under_its_login_and_signed_out() {
             .contains(&format!("ada:{TOKEN}@"))
     );
     assert_eq!(
-        account.who(&CancelToken::new()).unwrap().as_deref(),
+        account.who(&CancelToken::new()).wait().unwrap().as_deref(),
         Some("ada")
     );
 
@@ -696,16 +733,18 @@ fn a_token_given_is_checked_kept_under_its_login_and_signed_out() {
     let host = ForgeHost::parse(ForgeKind::GitHub, &fake.host_entry()).unwrap();
     let other = Account::new(sandbox.git().clone(), None, host.clone());
     other.adopt(&signed);
-    pull_requests(&other, &repository, 10, &CancelToken::new(), |_| {}).unwrap();
+    pull_requests(&other, &repository, 10, &CancelToken::new(), |_| {})
+        .wait()
+        .unwrap();
 
     // Signed out: the helper forgets it, and nobody is signed in.
-    account.sign_out(&CancelToken::new()).unwrap();
+    account.sign_out(&CancelToken::new()).wait().unwrap();
     assert!(!std::fs::read_to_string(&file).unwrap().contains(TOKEN));
     other.signed_out();
     // The old one, for the same login, was replaced when the new one was kept.
     assert!(!std::fs::read_to_string(&file).unwrap().contains(":old@"));
     let fresh = Account::new(sandbox.git().clone(), None, host);
-    assert_eq!(fresh.who(&CancelToken::new()).unwrap(), None);
+    assert_eq!(fresh.who(&CancelToken::new()).wait().unwrap(), None);
 }
 
 #[test]
@@ -716,10 +755,13 @@ fn a_token_no_helper_keeps_lasts_until_egit_quits() {
     let account = Account::new(bare.git().clone(), None, host);
     let signed = account
         .sign_in_with_token(TOKEN, &CancelToken::new())
+        .wait()
         .unwrap();
     assert!(!signed.kept);
     // Signed in all the same, for as long as the account lasts.
-    pull_requests(&account, &repository, 10, &CancelToken::new(), |_| {}).unwrap();
+    pull_requests(&account, &repository, 10, &CancelToken::new(), |_| {})
+        .wait()
+        .unwrap();
 }
 
 #[test]
@@ -748,7 +790,9 @@ fn a_run_s_artifacts_are_listed_and_downloaded_their_digest_checked() {
             ..FakeArtifact::default()
         },
     ];
-    let details = pipeline_details(&account, &repository, 7001, &CancelToken::new()).unwrap();
+    let details = pipeline_details(&account, &repository, 7001, &CancelToken::new())
+        .wait()
+        .unwrap();
     let artifacts = &details.artifacts;
     assert_eq!(
         artifacts
@@ -778,6 +822,7 @@ fn a_run_s_artifacts_are_listed_and_downloaded_their_digest_checked() {
                 true
             },
         )
+        .wait()
         .map(|_| String::from_utf8(bytes).unwrap())
     };
     assert_eq!(download(2).unwrap(), "PK the linux build");

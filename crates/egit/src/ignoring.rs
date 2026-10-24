@@ -92,7 +92,7 @@ pub(crate) fn folder_of(path: &BStr) -> Option<&BStr> {
 }
 
 /// Adds the pattern, then asks git whether the path is ignored now.
-pub(crate) fn run(
+pub(crate) async fn run(
     git: &Git,
     repository: &Repository,
     asked: &Ignore,
@@ -104,10 +104,13 @@ pub(crate) fn run(
         error => Problem::new(title.clone(), format!("{error}.")),
     };
     let pattern = asked.pattern().map_err(problem)?;
-    let ignored = ignore(git, repository, asked.place, &[pattern], cancel).map_err(problem)?;
+    let ignored = ignore(git, repository, asked.place, &[pattern], cancel)
+        .await
+        .map_err(problem)?;
     let checked = asked.checked();
     // A check that fails says nothing either way: the pattern is written.
     let listed = ignored_paths(git, repository, &[checked.as_bstr()], cancel)
+        .await
         .is_ok_and(|found| found.is_empty());
     Ok(Outcome::Ignored { ignored, listed })
 }

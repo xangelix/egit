@@ -47,8 +47,9 @@ pub struct Submodule {
 /// # Errors
 ///
 /// When git fails or prints something unexpected.
-pub fn submodules(git: &Git, repository: &Repository) -> Result<Vec<Submodule>, GitError> {
-    let declared = config_entries(git, repository, &["--file", ".gitmodules"], "^submodule\\.")?;
+pub async fn submodules(git: &Git, repository: &Repository) -> Result<Vec<Submodule>, GitError> {
+    let declared =
+        config_entries(git, repository, &["--file", ".gitmodules"], "^submodule\\.").await?;
     // Each name's path, address, and branch, in the order `.gitmodules` gives them.
     let mut named: Vec<Declared> = Vec::new();
     for (key, value) in declared {
@@ -86,10 +87,11 @@ pub fn submodules(git: &Git, repository: &Repository) -> Result<Vec<Submodule>, 
     if paths.is_empty() {
         return Ok(Vec::new());
     }
-    let recorded = gitlinks(git, repository, &paths)?;
+    let recorded = gitlinks(git, repository, &paths).await?;
     // Each name set up here, and the address it was set up with.
     let initialized: Vec<(BString, BString)> =
-        config_entries(git, repository, &["--local"], "^submodule\\..*\\.url$")?
+        config_entries(git, repository, &["--local"], "^submodule\\..*\\.url$")
+            .await?
             .into_iter()
             .filter_map(|(key, value)| {
                 key.strip_prefix(b"submodule.")
@@ -138,7 +140,7 @@ struct Declared {
 
 /// The keys matching `pattern` and their values in the configuration `place` names (`-z
 /// --get-regexp`: `key\nvalue\0` each); none when nothing matches or the file is missing.
-fn config_entries(
+async fn config_entries(
     git: &Git,
     repository: &Repository,
     place: &[&str],
@@ -149,7 +151,8 @@ fn config_entries(
         .args(place)
         .args(["-z", "--get-regexp", pattern])
         .current_dir(repository.work_tree())
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     match listed.status.code() {
         Some(0) => {}
         // Nothing matched, or no such file.
@@ -169,7 +172,7 @@ fn config_entries(
 
 /// The commits the index records for those of `paths` that are submodules (`ls-files -s -z`,
 /// literal paths), the first stage of each when in conflict.
-fn gitlinks(
+async fn gitlinks(
     git: &Git,
     repository: &Repository,
     paths: &[&BString],
@@ -180,7 +183,8 @@ fn gitlinks(
         .args(paths.iter().map(|path| path.to_os_str_lossy()))
         .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(repository.work_tree())
-        .output()?;
+        .output()
+        .await?;
     let mut found: Vec<(BString, ObjectId)> = Vec::new();
     for record in listed
         .stdout
@@ -211,14 +215,14 @@ fn gitlinks(
 /// # Errors
 ///
 /// When git fails (a submodule can't be fetched, has changes in the way) or is cancelled.
-pub fn update_submodules(
+pub async fn update_submodules(
     git: &Git,
     repository: &Repository,
     paths: &[&BStr],
     progress: &Progress,
     cancel: &CancelToken,
 ) -> Result<(), GitError> {
-    update_submodules_to(git, repository, paths, UpdateTo::Recorded, progress, cancel)
+    update_submodules_to(git, repository, paths, UpdateTo::Recorded, progress, cancel).await
 }
 
 /// Where an update takes submodules.
@@ -239,7 +243,7 @@ pub enum UpdateTo {
 /// # Errors
 ///
 /// When git fails (a submodule can't be fetched, has changes in the way) or is cancelled.
-pub fn update_submodules_to(
+pub async fn update_submodules_to(
     git: &Git,
     repository: &Repository,
     paths: &[&BStr],
@@ -262,6 +266,7 @@ pub fn update_submodules_to(
         .progress(progress)
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -297,7 +302,7 @@ pub struct SubmoduleStatus {
 /// # Errors
 ///
 /// When git fails or prints something unexpected.
-pub fn submodule_status(
+pub async fn submodule_status(
     git: &Git,
     repository: &Repository,
     recursive: bool,
@@ -311,7 +316,7 @@ pub fn submodule_status(
     if recursive {
         command = command.arg("--recursive");
     }
-    let listed = command.output()?;
+    let listed = command.output().await?;
     listed
         .stdout
         .lines()
@@ -371,7 +376,7 @@ pub struct SubmoduleDetails {
 /// # Errors
 ///
 /// When git fails in it.
-pub fn submodule_details(
+pub async fn submodule_details(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -384,7 +389,7 @@ pub fn submodule_details(
             .current_dir(&inside)
             .output_unchecked()
     };
-    let head = read(&["--verify", "--quiet", "HEAD"])?;
+    let head = read(&["--verify", "--quiet", "HEAD"]).await?;
     let head = head
         .status
         .success()
@@ -394,13 +399,15 @@ pub fn submodule_details(
         .read("symbolic-ref")
         .args(["--quiet", "--short", "HEAD"])
         .current_dir(&inside)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     let branch = branch
         .status
         .success()
         .then(|| BString::from(branch.stdout.trim_ascii()));
     let recorded_name = format!("{recorded}^{{commit}}");
-    let has_recorded = read(&["--verify", "--quiet", "--end-of-options", &recorded_name])?
+    let has_recorded = read(&["--verify", "--quiet", "--end-of-options", &recorded_name])
+        .await?
         .status
         .success();
     let (mut ahead, mut behind) = (0, 0);
@@ -414,7 +421,8 @@ pub fn submodule_details(
             .arg(format!("{head}...{recorded}"))
             .arg("--")
             .current_dir(&inside)
-            .output()?;
+            .output()
+            .await?;
         let mut counts = counted
             .stdout
             .trim_ascii()
@@ -441,7 +449,7 @@ pub fn submodule_details(
 /// # Errors
 ///
 /// When git can't be run.
-pub fn submodule_commits(
+pub async fn submodule_commits(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -449,7 +457,12 @@ pub fn submodule_commits(
     limit: usize,
 ) -> Result<Option<Vec<(ObjectId, BString)>>, GitError> {
     let inside = repository.work_tree().join(path.to_path_lossy());
-    if !git.files().exists(&inside.join(".git")).unwrap_or(false) {
+    if !git
+        .files()
+        .exists(&inside.join(".git"))
+        .await
+        .unwrap_or(false)
+    {
         return Ok(None);
     }
     let mut command = git
@@ -460,7 +473,11 @@ pub fn submodule_commits(
     if let Some(from) = from {
         command = command.arg(format!("^{from}"));
     }
-    let listed = command.arg("--").current_dir(&inside).output_unchecked()?;
+    let listed = command
+        .arg("--")
+        .current_dir(&inside)
+        .output_unchecked()
+        .await?;
     if !listed.status.success() {
         return Ok(None);
     }
@@ -497,7 +514,7 @@ pub enum SubmoduleChange {
 /// # Errors
 ///
 /// When git fails (a deinit of a submodule with changes, unforced).
-pub fn change_submodules(
+pub async fn change_submodules(
     git: &Git,
     repository: &Repository,
     paths: &[&BStr],
@@ -524,6 +541,7 @@ pub fn change_submodules(
         .arg("--")
         .args(paths.iter().map(|path| path.to_os_str_lossy()))
         .output()
+        .await
         .map(drop)
 }
 
@@ -533,7 +551,7 @@ pub fn change_submodules(
 /// # Errors
 ///
 /// When git fails: a path taken, an address it can't clone.
-pub fn add_submodule(
+pub async fn add_submodule(
     git: &Git,
     repository: &Repository,
     url: &str,
@@ -557,6 +575,7 @@ pub fn add_submodule(
         .arg(url)
         .arg(path.to_os_str_lossy())
         .output()
+        .await
         .map(drop)
 }
 
@@ -569,7 +588,7 @@ pub fn add_submodule(
 /// # Errors
 ///
 /// When git fails: changes in it, unforced.
-pub fn remove_submodule(
+pub async fn remove_submodule(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -578,11 +597,13 @@ pub fn remove_submodule(
     if git
         .files()
         .is_file(&repository.work_tree().join(".gitmodules"))
+        .await
     {
         git.write("add")
             .args(["--", ".gitmodules"])
             .current_dir(repository.work_tree())
-            .output()?;
+            .output()
+            .await?;
     }
     let mut command = git
         .write("rm")
@@ -596,6 +617,7 @@ pub fn remove_submodule(
         .arg("--")
         .arg(path.to_os_str_lossy())
         .output()
+        .await
         .map(drop)
 }
 
@@ -605,7 +627,7 @@ pub fn remove_submodule(
 /// # Errors
 ///
 /// When git fails.
-pub fn set_submodule_url(
+pub async fn set_submodule_url(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -617,6 +639,7 @@ pub fn set_submodule_url(
         .arg(url)
         .current_dir(repository.work_tree())
         .output()
+        .await
         .map(drop)
 }
 
@@ -626,7 +649,7 @@ pub fn set_submodule_url(
 /// # Errors
 ///
 /// When git fails.
-pub fn set_submodule_branch(
+pub async fn set_submodule_branch(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -644,6 +667,7 @@ pub fn set_submodule_branch(
         .arg("--")
         .arg(path.to_os_str_lossy())
         .output()
+        .await
         .map(drop)
 }
 

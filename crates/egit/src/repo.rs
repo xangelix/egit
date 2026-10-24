@@ -273,14 +273,14 @@ impl RepoTab {
             self.writes.clone(),
         );
         let journal = self.journal.inbox();
-        self.committing.request(jobs::blocking(move || {
-            let _queued = writes.hold();
+        self.committing.request(jobs::blocking(async move {
+            let _queued = writes.hold().await;
             let head = || Place::read(&git, &repository);
-            let before = head();
-            let made = create_commit(&git, &repository, &commit, &cancel);
+            let before = head().await;
+            let made = create_commit(&git, &repository, &commit, &cancel).await;
             if made.is_ok() {
                 let subject = commit.message.lines().next().unwrap_or_default().trim();
-                if let Some(undo) = undo::committed(before, head(), subject, commit.amend) {
+                if let Some(undo) = undo::committed(before, head().await, subject, commit.amend) {
                     journal.lock().push(Landed::Done(undo));
                 }
             }
@@ -408,8 +408,9 @@ impl RepoTab {
     /// Reads which hooks the repository has (again).
     pub(crate) fn refresh_hooks(&mut self, git: &Git) {
         let (git, repository) = (git.clone(), Arc::clone(&self.repository));
-        self.hooks.request(jobs::blocking(move || {
+        self.hooks.request(jobs::blocking(async move {
             installed_hooks(&git, &repository)
+                .await
                 .map_err(|error| Problem::git("The repository's hooks couldn't be read", &error))
         }));
     }
@@ -607,11 +608,13 @@ impl RepoTab {
             Arc::clone(&self.repository),
             self.writes.clone(),
         );
-        self.writing_commit_graph.request(jobs::blocking(move || {
-            let _queued = writes.hold();
-            write_commit_graph(&git, &repository, &CancelToken::new())
-                .map_err(|error| Problem::git("The commit-graph couldn't be written", &error))
-        }));
+        self.writing_commit_graph
+            .request(jobs::blocking(async move {
+                let _queued = writes.hold().await;
+                write_commit_graph(&git, &repository, &CancelToken::new())
+                    .await
+                    .map_err(|error| Problem::git("The commit-graph couldn't be written", &error))
+            }));
     }
 
     /// Reads the stash list, the worktrees, and the submodules again (what is shown stays until
@@ -619,20 +622,23 @@ impl RepoTab {
     pub(crate) fn refresh_lists(&mut self, git: &Git) {
         let read = |repository: &Arc<Repository>| (git.clone(), Arc::clone(repository));
         let (git_, repository) = read(&self.repository);
-        self.stashes.request(jobs::blocking(move || {
+        self.stashes.request(jobs::blocking(async move {
             stashes(&git_, &repository, &CancelToken::new())
+                .await
                 .map(Into::into)
                 .map_err(|error| Problem::git("The stashes couldn't be read", &error))
         }));
         let (git_, repository) = read(&self.repository);
-        self.worktrees.request(jobs::blocking(move || {
+        self.worktrees.request(jobs::blocking(async move {
             worktrees(&git_, &repository)
+                .await
                 .map(Into::into)
                 .map_err(|error| Problem::git("The worktrees couldn't be read", &error))
         }));
         let (git_, repository) = read(&self.repository);
-        self.submodules.request(jobs::blocking(move || {
+        self.submodules.request(jobs::blocking(async move {
             submodules(&git_, &repository)
+                .await
                 .map(Into::into)
                 .map_err(|error| Problem::git("The submodules couldn't be read", &error))
         }));
@@ -640,8 +646,10 @@ impl RepoTab {
         self.submodule_states
             .request(crate::submodules::read_states(git_, repository));
         let (git_, repository) = read(&self.repository);
-        self.lfs.request(jobs::blocking(move || {
-            crate::lfs::read_lfs(&git_, &repository, crate::lfs::Reading::WhereUsed).map(Arc::new)
+        self.lfs.request(jobs::blocking(async move {
+            crate::lfs::read_lfs(&git_, &repository, crate::lfs::Reading::WhereUsed)
+                .await
+                .map(Arc::new)
         }));
     }
 
@@ -673,17 +681,22 @@ impl RepoTab {
     /// Reads where `HEAD` points and what is in progress.
     pub(crate) fn refresh_status(&mut self, git: &Git) {
         let (git, repository) = (git.clone(), Arc::clone(&self.repository));
-        self.status.request(jobs::blocking(move || {
+        self.status.request(jobs::blocking(async move {
             let head = repository
                 .head(&git)
+                .await
                 .map_err(|error| Problem::git("Where HEAD points couldn't be read", &error))?;
             let unreadable = |error: std::io::Error| {
                 Problem::new("The repository's state couldn't be read", error.to_string())
             };
-            let operations = repository.operations(&git).map_err(unreadable)?;
-            let applying = repository.mailbox_progress(&git).map_err(unreadable)?;
+            let operations = repository.operations(&git).await.map_err(unreadable)?;
+            let applying = repository
+                .mailbox_progress(&git)
+                .await
+                .map_err(unreadable)?;
             let bisect = if operations.contains(&Operation::Bisect) {
                 bisection(&git, &repository)
+                    .await
                     .map_err(|error| Problem::git("The bisection couldn't be read", &error))?
             } else {
                 None
@@ -704,8 +717,9 @@ impl RepoTab {
         // `core.hooksPath` may have changed.
         self.refresh_hooks(git);
         let (git, repository) = (git.clone(), Arc::clone(&self.repository));
-        self.config.request(jobs::blocking(move || {
+        self.config.request(jobs::blocking(async move {
             ConfigSnapshot::read(&git, ConfigPlace::Repository(repository.work_tree()))
+                .await
                 .map(Arc::new)
                 .map_err(|error| Problem::git("The repository's settings couldn't be read", &error))
         }));

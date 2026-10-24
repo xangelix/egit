@@ -38,7 +38,7 @@ pub enum WorktreeFrom<'a> {
 ///
 /// When git refuses (the folder isn't empty, the branch is checked out elsewhere or exists
 /// already) or is cancelled.
-pub fn add_worktree(
+pub async fn add_worktree(
     git: &Git,
     repository: &Repository,
     path: &Path,
@@ -68,6 +68,7 @@ pub fn add_worktree(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -95,12 +96,13 @@ pub struct Worktree {
 /// # Errors
 ///
 /// When git fails or prints what isn't a work tree.
-pub fn worktrees(git: &Git, repository: &Repository) -> Result<Vec<Worktree>, GitError> {
+pub async fn worktrees(git: &Git, repository: &Repository) -> Result<Vec<Worktree>, GitError> {
     let listed = git
         .read("worktree")
         .args(["list", "--porcelain", "-z"])
         .current_dir(repository.work_tree())
-        .output()?;
+        .output()
+        .await?;
     parse_worktrees(&listed.stdout)
 }
 
@@ -169,7 +171,7 @@ pub enum RemoveWorktreeError {
 /// # Errors
 ///
 /// When it has changes (unless forced) or is locked, or git fails or is cancelled.
-pub fn remove_worktree(
+pub async fn remove_worktree(
     git: &Git,
     repository: &Repository,
     path: &Path,
@@ -185,7 +187,8 @@ pub fn remove_worktree(
         .arg(path)
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if done.status.success() {
         return Ok(());
     }
@@ -205,7 +208,7 @@ pub fn remove_worktree(
 /// # Errors
 ///
 /// When it is locked already, or git fails or is cancelled.
-pub fn lock_worktree(
+pub async fn lock_worktree(
     git: &Git,
     repository: &Repository,
     path: &Path,
@@ -222,6 +225,7 @@ pub fn lock_worktree(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -230,7 +234,7 @@ pub fn lock_worktree(
 /// # Errors
 ///
 /// When it isn't locked, or git fails or is cancelled.
-pub fn unlock_worktree(
+pub async fn unlock_worktree(
     git: &Git,
     repository: &Repository,
     path: &Path,
@@ -242,6 +246,7 @@ pub fn unlock_worktree(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -250,7 +255,7 @@ pub fn unlock_worktree(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn prune_worktrees(
+pub async fn prune_worktrees(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
@@ -260,6 +265,7 @@ pub fn prune_worktrees(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 

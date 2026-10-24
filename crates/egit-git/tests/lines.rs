@@ -17,7 +17,7 @@ use bstr::{BStr, ByteSlice as _};
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, DiffLineKind, DiffOptions, Direction, FileDiff, LinesError, Repository, Status,
-    Uncommitted, apply_lines, uncommitted_diff, write_index_content,
+    Uncommitted, Wait as _, apply_lines, uncommitted_diff, write_index_content,
 };
 
 /// Cases each way.
@@ -201,7 +201,12 @@ fn git_apply(sandbox: &Sandbox, repo: &Path, patch: &[u8], context: u32) {
     if context == 0 {
         command = command.arg("--unidiff-zero");
     }
-    if let Err(error) = command.current_dir(repo).stdin(patch.to_vec()).output() {
+    if let Err(error) = command
+        .current_dir(repo)
+        .stdin(patch.to_vec())
+        .output()
+        .wait()
+    {
         panic!("{error}: {:?}", BStr::new(patch));
     }
 }
@@ -211,7 +216,7 @@ fn git_apply(sandbox: &Sandbox, repo: &Path, patch: &[u8], context: u32) {
 fn run(direction: Direction) {
     let sandbox = Sandbox::new().unwrap();
     let repo = sandbox.init("repo").unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
     let mut random = Random(0x9E37_79B9_7F4A_7C15);
     let mut skipped = 0;
@@ -248,6 +253,7 @@ fn run(direction: Direction) {
             &options,
             &cancel,
         )
+        .wait()
         .unwrap();
         let picks: Vec<bool> = diff.lines.iter().map(|_| random.chance(50)).collect();
         let picked = |index: usize| picks[index];
@@ -305,9 +311,11 @@ fn writes_content_over_the_index_entry_it_was_made_from() {
         .commit_file(&repo, "f", "one\ntwo\n", "Add")
         .unwrap();
     std::fs::write(repo.join("f"), "one\nTWO\nthree\n").unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
-    let status = Status::read(sandbox.git(), &repository, &cancel).unwrap();
+    let status = Status::read(sandbox.git(), &repository, &cancel)
+        .wait()
+        .unwrap();
     let entry = status.entry(0).unwrap().index();
 
     let diff = uncommitted_diff(
@@ -318,6 +326,7 @@ fn writes_content_over_the_index_entry_it_was_made_from() {
         &DiffOptions::default(),
         &cancel,
     )
+    .wait()
     .unwrap();
     // Only the new last line.
     let last = diff.lines.len() - 1;
@@ -334,6 +343,7 @@ fn writes_content_over_the_index_entry_it_was_made_from() {
         content,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(index_content(&sandbox, &repo), b"one\ntwo\nthree\n");
 
@@ -347,7 +357,7 @@ fn writes_content_over_the_index_entry_it_was_made_from() {
         b"other\n".to_vec(),
         &cancel,
     );
-    assert!(matches!(stale, Err(LinesError::Stale)));
+    assert!(matches!(stale.wait(), Err(LinesError::Stale)));
     assert_eq!(index_content(&sandbox, &repo), b"one\ntwo\nthree\n");
 
     // A file not yet tracked is written where nothing was.
@@ -360,6 +370,7 @@ fn writes_content_over_the_index_entry_it_was_made_from() {
         &DiffOptions::default(),
         &cancel,
     )
+    .wait()
     .unwrap();
     let content = apply_lines(b"", &diff, Direction::Stage, |index| index == 2).unwrap();
     write_index_content(
@@ -371,6 +382,7 @@ fn writes_content_over_the_index_entry_it_was_made_from() {
         content,
         &cancel,
     )
+    .wait()
     .unwrap();
     let staged = sandbox.run(&repo, "cat-file", &["blob", ":new"]).unwrap();
     assert_eq!(staged.stdout, b"b\n");

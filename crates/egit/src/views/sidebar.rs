@@ -522,7 +522,7 @@ impl Sidebar {
                     .collect()
             });
             let shared = refs.shared();
-            self.sorting.request(jobs::blocking(move || {
+            self.sorting.request(jobs::blocking(async move {
                 Ok(Arc::new(sort(shared, configured)))
             }));
             self.sorting_for = Some((refs.read(), lists.config.cloned()));
@@ -604,7 +604,7 @@ impl Sidebar {
         self.filtered = false;
         if in_a_job {
             let generation = self.generation;
-            self.making.request(jobs::blocking(move || {
+            self.making.request(jobs::blocking(async move {
                 Ok((generation, Self::make_rows(&input)))
             }));
         } else {

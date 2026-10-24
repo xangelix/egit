@@ -18,8 +18,8 @@ use std::path::{Path, PathBuf};
 use bstr::BStr;
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, CommitFilter, ConfigPlace, ConfigSnapshot, ObjectId, Repository, find_commits,
-    resolve_commit,
+    CancelToken, CommitFilter, ConfigPlace, ConfigSnapshot, ObjectId, Repository, Wait as _,
+    find_commits, resolve_commit,
 };
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -29,7 +29,7 @@ fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
 
 /// What `filter` finds, sorted.
 fn found(sandbox: &Sandbox, repo: &Path, filter: CommitFilter<'_>) -> Vec<ObjectId> {
-    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), repo).wait().unwrap();
     let mut found = Vec::new();
     find_commits(
         sandbox.git(),
@@ -41,6 +41,7 @@ fn found(sandbox: &Sandbox, repo: &Path, filter: CommitFilter<'_>) -> Vec<Object
             ControlFlow::Continue(())
         },
     )
+    .wait()
     .unwrap();
     found.sort_unstable();
     found
@@ -164,8 +165,12 @@ fn paths_find_the_commits_that_changed_them_as_git_log_lists_them() {
 fn names_resolve_to_their_commits() {
     let sandbox = Sandbox::new().unwrap();
     let repo = searched(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
-    let resolve = |name| resolve_commit(sandbox.git(), &repository, name).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let resolve = |name| {
+        resolve_commit(sandbox.git(), &repository, name)
+            .wait()
+            .unwrap()
+    };
     let main = rev(&sandbox, &repo, "main");
     assert_eq!(resolve("main"), Some(main));
     assert_eq!(resolve("HEAD~1"), Some(rev(&sandbox, &repo, "main~1")));
@@ -195,6 +200,7 @@ fn a_partial_clone_has_every_tree_when_it_left_out_only_blobs() {
     sandbox.commit_file(&repo, "a", "a\n", "One").unwrap();
     let every_tree = || {
         ConfigSnapshot::read(sandbox.git(), ConfigPlace::Repository(&repo))
+            .wait()
             .unwrap()
             .has_every_tree()
     };

@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 
 use egit_forge::ForgeKind;
 use egit_forge::testing::{FakeForge, FakePull, FakeRepository};
+use egit_git::Wait as _;
 use egit_git::testing::Sandbox;
 use egit_text::{Options, Text};
 use egui::accesskit::Role;
@@ -393,6 +394,7 @@ fn mass_rename(sandbox: &Sandbox) -> std::path::PathBuf {
         .current_dir(&repo)
         .stdin(stream)
         .output()
+        .wait()
         .unwrap();
     sandbox
         .run(&repo, "symbolic-ref", &["HEAD", "refs/heads/main"])
@@ -576,7 +578,7 @@ fn corpus_merge() {
     crate::jobs::install_runtime().unwrap();
     let sandbox = Sandbox::new().unwrap();
     let path = sandbox.init("repo").unwrap();
-    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).wait().unwrap();
     let ids = sides().map(|text| {
         let hashed = sandbox
             .git()
@@ -585,6 +587,7 @@ fn corpus_merge() {
             .current_dir(&path)
             .stdin(text)
             .output()
+            .wait()
             .unwrap();
         ObjectId::from_hex(hashed.stdout.trim_ascii()).unwrap()
     });
@@ -600,7 +603,8 @@ fn corpus_merge() {
         incoming: entry(ids[2]),
     };
     let started = Instant::now();
-    let merge = egit_git::merge_sides(sandbox.git(), &repository, &sides, &CancelToken::new());
+    let merge =
+        egit_git::merge_sides(sandbox.git(), &repository, &sides, &CancelToken::new()).wait();
     let Ok(Merge::Text(merged)) = merge else {
         panic!("not merged: {merge:?}");
     };
@@ -686,6 +690,7 @@ fn long_branch(sandbox: &Sandbox) -> std::path::PathBuf {
         .current_dir(&repo)
         .stdin(stream)
         .output()
+        .wait()
         .unwrap();
     sandbox
         .run(&repo, "symbolic-ref", &["HEAD", "refs/heads/main"])
@@ -833,6 +838,7 @@ fn rewritten(sandbox: &Sandbox) -> std::path::PathBuf {
         .current_dir(&repo)
         .stdin(stream)
         .output()
+        .wait()
         .unwrap();
     sandbox
         .run(&repo, "symbolic-ref", &["HEAD", "refs/heads/main"])
@@ -1231,6 +1237,7 @@ fn many_refs(sandbox: &Sandbox) -> std::path::PathBuf {
         .current_dir(&repo)
         .stdin(stream)
         .output()
+        .wait()
         .unwrap();
     for args in [
         &["symbolic-ref", "HEAD", "refs/heads/main"][..],

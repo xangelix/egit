@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, CloneOptions, FetchOptions, GitError, Operation, Progress, PullMode, Pulled,
-    PushFlag, PushOptions, Repository, abort_operation, clone, continue_operation, count_between,
-    fetch, fetch_refspecs, pull, push, remote_urls, remotes,
+    PushFlag, PushOptions, Repository, Wait as _, abort_operation, clone, continue_operation,
+    count_between, fetch, fetch_refspecs, pull, push, remote_urls, remotes,
 };
 
 /// A bare repository, `origin.git`, allowing partial clones, with `main` holding a commit; and
@@ -65,8 +65,11 @@ fn cloned(sandbox: &Sandbox, url: &str, name: &str) -> (PathBuf, Repository) {
         &Progress::new(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
-    let repository = Repository::discover(sandbox.git(), &destination).unwrap();
+    let repository = Repository::discover(sandbox.git(), &destination)
+        .wait()
+        .unwrap();
     (destination, repository)
 }
 
@@ -97,6 +100,7 @@ fn clones_reporting_progress_whole_or_partial() {
         &progress,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert!(whole.join("file7").exists());
     let report = progress.report();
@@ -121,6 +125,7 @@ fn clones_reporting_progress_whole_or_partial() {
         &Progress::new(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     let filter = sandbox
         .run(&partial, "config", &["remote.origin.partialclonefilter"])
@@ -135,7 +140,8 @@ fn clones_reporting_progress_whole_or_partial() {
         CloneOptions::default(),
         &Progress::new(),
         &CancelToken::new(),
-    );
+    )
+    .wait();
     assert!(matches!(again, Err(GitError::Failed(_))));
     let cancel = CancelToken::new();
     cancel.cancel();
@@ -146,7 +152,8 @@ fn clones_reporting_progress_whole_or_partial() {
         CloneOptions::default(),
         &Progress::new(),
         &cancel,
-    );
+    )
+    .wait();
     assert!(matches!(cancelled, Err(GitError::Cancelled { .. })));
 }
 
@@ -188,7 +195,8 @@ fn a_clone_cancelled_midway_leaves_nothing_behind() {
         CloneOptions::default(),
         &Progress::new(),
         &cancel,
-    );
+    )
+    .wait();
     cancelling.join().unwrap();
     assert!(
         matches!(cancelled, Err(GitError::Cancelled { .. })),
@@ -211,7 +219,10 @@ fn fetches_every_remote_and_prunes_what_is_gone() {
         )
         .unwrap();
     let (mine, repository) = cloned(&sandbox, &url, "mine");
-    assert_eq!(remotes(sandbox.git(), &repository).unwrap(), ["origin"]);
+    assert_eq!(
+        remotes(sandbox.git(), &repository).wait().unwrap(),
+        ["origin"]
+    );
     assert!(
         sandbox
             .run(
@@ -242,6 +253,7 @@ fn fetches_every_remote_and_prunes_what_is_gone() {
         &Progress::new(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert!(
         sandbox
@@ -272,6 +284,7 @@ fn pulls_forward_and_asks_when_branches_diverged() {
             &Progress::new(),
             &CancelToken::new(),
         )
+        .wait()
     };
 
     commit_and_push(&sandbox, &colleague, "theirs", "x\n", "Theirs");
@@ -308,6 +321,7 @@ fn changes_in_a_pulls_way_are_named_or_stashed_and_put_back() {
             &Progress::new(),
             &CancelToken::new(),
         )
+        .wait()
         .unwrap()
     };
     let stashes = || {
@@ -399,33 +413,40 @@ fn a_conflicted_pull_is_aborted_or_continued() {
             &Progress::new(),
             &cancel,
         )
+        .wait()
     };
 
     assert_eq!(pulled(PullMode::Merge).unwrap(), Pulled::Conflicts);
     assert_eq!(
-        repository.operations(sandbox.git()).unwrap(),
+        repository.operations(sandbox.git()).wait().unwrap(),
         [Operation::Merge]
     );
-    abort_operation(sandbox.git(), &repository, Operation::Merge, &cancel).unwrap();
-    assert_eq!(repository.operations(sandbox.git()).unwrap(), []);
+    abort_operation(sandbox.git(), &repository, Operation::Merge, &cancel)
+        .wait()
+        .unwrap();
+    assert_eq!(repository.operations(sandbox.git()).wait().unwrap(), []);
     assert_eq!(rev(&sandbox, &mine, "HEAD"), before);
 
     assert_eq!(pulled(PullMode::Rebase).unwrap(), Pulled::Conflicts);
     assert_eq!(
-        repository.operations(sandbox.git()).unwrap(),
+        repository.operations(sandbox.git()).wait().unwrap(),
         [Operation::Rebase]
     );
-    abort_operation(sandbox.git(), &repository, Operation::Rebase, &cancel).unwrap();
+    abort_operation(sandbox.git(), &repository, Operation::Rebase, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(rev(&sandbox, &mine, "HEAD"), before);
 
     // Resolved and staged, the merge carries on (its message as git made it).
     assert_eq!(pulled(PullMode::Merge).unwrap(), Pulled::Conflicts);
     let refused = continue_operation(sandbox.git(), &repository, Operation::Merge, &cancel);
-    assert!(refused.is_err(), "conflicts are left");
+    assert!(refused.wait().is_err(), "conflicts are left");
     std::fs::write(mine.join("shared"), "both\n").unwrap();
     sandbox.run(&mine, "add", &["shared"]).unwrap();
-    continue_operation(sandbox.git(), &repository, Operation::Merge, &cancel).unwrap();
-    assert_eq!(repository.operations(sandbox.git()).unwrap(), []);
+    continue_operation(sandbox.git(), &repository, Operation::Merge, &cancel)
+        .wait()
+        .unwrap();
+    assert_eq!(repository.operations(sandbox.git()).wait().unwrap(), []);
     let parents = sandbox
         .run(&mine, "rev-list", &["--parents", "-n", "1", "HEAD"])
         .unwrap();
@@ -459,6 +480,7 @@ fn pushes_new_branches_and_explains_refusals_and_forces_with_a_lease() {
             &Progress::new(),
             &CancelToken::new(),
         )
+        .wait()
         .unwrap()
     };
 
@@ -558,6 +580,7 @@ fn a_pull_request_s_head_and_a_lone_branch_are_fetched_by_refspec() {
         &Progress::new(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(rev(&sandbox, &work, "pr/7"), head);
     assert_eq!(rev(&sandbox, &work, "origin/topic"), head);
@@ -570,7 +593,8 @@ fn a_pull_request_s_head_and_a_lone_branch_are_fetched_by_refspec() {
         "Fetching pull request #8",
         &Progress::new(),
         &CancelToken::new(),
-    );
+    )
+    .wait();
     assert!(missing.is_err());
 }
 
@@ -595,8 +619,8 @@ fn remote_urls_are_as_git_rewrites_them() {
             &["url.https://github.com/.insteadOf", "gh:"],
         )
         .unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
-    let urls = remote_urls(sandbox.git(), &repository).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let urls = remote_urls(sandbox.git(), &repository).wait().unwrap();
     assert_eq!(
         urls,
         [
@@ -613,7 +637,7 @@ fn a_fetch_moves_the_upstream_by_the_commits_it_brings() {
     let (mine, repository) = cloned(&sandbox, &url, "mine");
     let (theirs, _) = cloned(&sandbox, &url, "theirs");
     let git = sandbox.git();
-    let (name, before) = repository.upstream_tip(git).unwrap().unwrap();
+    let (name, before) = repository.upstream_tip(git).wait().unwrap().unwrap();
     assert_eq!(name, "refs/remotes/origin/main");
     assert_eq!(before.to_string(), rev(&sandbox, &mine, "origin/main"));
 
@@ -631,16 +655,21 @@ fn a_fetch_moves_the_upstream_by_the_commits_it_brings() {
         &Progress::new(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
-    let (_, after) = repository.upstream_tip(git).unwrap().unwrap();
+    let (_, after) = repository.upstream_tip(git).wait().unwrap().unwrap();
     assert_ne!(after, before);
     let cancel = CancelToken::new();
     assert_eq!(
-        count_between(git, &repository, before, after, &cancel).unwrap(),
+        count_between(git, &repository, before, after, &cancel)
+            .wait()
+            .unwrap(),
         2
     );
     assert_eq!(
-        count_between(git, &repository, after, before, &cancel).unwrap(),
+        count_between(git, &repository, after, before, &cancel)
+            .wait()
+            .unwrap(),
         0
     );
 
@@ -648,9 +677,9 @@ fn a_fetch_moves_the_upstream_by_the_commits_it_brings() {
     sandbox
         .run(&mine, "switch", &["--quiet", "-c", "alone"])
         .unwrap();
-    assert_eq!(repository.upstream_tip(git).unwrap(), None);
+    assert_eq!(repository.upstream_tip(git).wait().unwrap(), None);
     sandbox
         .run(&mine, "switch", &["--quiet", "--detach"])
         .unwrap();
-    assert_eq!(repository.upstream_tip(git).unwrap(), None);
+    assert_eq!(repository.upstream_tip(git).wait().unwrap(), None);
 }

@@ -406,13 +406,14 @@ impl PipelineView {
         let git = shared.git.cloned();
         let work_tree = shared.repository.work_tree().to_path_buf();
         let workflow = Arc::clone(&self.workflow);
-        self.details.request(jobs::blocking(move || {
-            let mut details =
-                pipeline_details(&account, &repository, iid, &cancel).map_err(|error| {
+        self.details.request(jobs::blocking(async move {
+            let mut details = pipeline_details(&account, &repository, iid, &cancel)
+                .await
+                .map_err(|error| {
                     Problem::new("The pipeline couldn't be read", error.to_string())
                 })?;
             if let (Some(path), Some(git)) = (details.workflow.clone(), git.as_ref()) {
-                let read = workflow_at(git, (&work_tree, commit), &path, &workflow);
+                let read = workflow_at(git, (&work_tree, commit), &path, &workflow).await;
                 details.with_workflow(&read);
             }
             Ok(Arc::new(details))
@@ -462,8 +463,9 @@ impl Acting {
             )));
             return;
         };
-        self.answer.request(jobs::blocking(move || {
+        self.answer.request(jobs::blocking(async move {
             ci_act(&account, &repository, action, &CancelToken::new())
+                .await
                 .map_err(|error| refusal(action, &error))
         }));
     }
@@ -515,7 +517,7 @@ impl Acting {
 /// The workflow in `path` as the repository holds it at `commit` (`git cat-file blob`, in its
 /// work tree `work_tree`), or as `kept` holds it already; none where it can't be read (the
 /// commit isn't here: a fork's), which leaves its jobs without needs.
-fn workflow_at(
+async fn workflow_at(
     git: &Git,
     (work_tree, commit): (&std::path::Path, ObjectId),
     path: &str,
@@ -531,7 +533,7 @@ fn workflow_at(
         .args(["blob".to_owned(), format!("{commit}:{path}")])
         .current_dir(work_tree)
         .output();
-    let workflow = Arc::new(match read {
+    let workflow = Arc::new(match read.await {
         Ok(done) => Workflow::parse(&String::from_utf8_lossy(&done.stdout)),
         Err(error) => {
             tracing::debug!(%error, path, "the workflow's file couldn't be read");

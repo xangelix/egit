@@ -15,7 +15,7 @@ use std::path::Path;
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    Asking, CancelToken, Credential, CredentialPlace, Repository, approve_credential,
+    Asking, CancelToken, Credential, CredentialPlace, Repository, Wait as _, approve_credential,
     erase_credential, fill_credential, installed_helpers, reject_credential, store_credential,
 };
 
@@ -35,6 +35,7 @@ fn filled(sandbox: &Sandbox, repository: Option<&Repository>, host: &str) -> Opt
         Asking::Never,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap()
 }
 
@@ -53,7 +54,7 @@ fn a_repository_s_helper_fills_rejects_and_approves() {
     let file = sandbox.path("credentials");
     std::fs::write(&file, "https://ada:t0ken@example.com\n").unwrap();
     store_helper(&sandbox, &repo, "--local", &file);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
 
     let credential = filled(&sandbox, Some(&repository), "example.com").unwrap();
     assert_eq!(credential.username(), "ada");
@@ -63,11 +64,15 @@ fn a_repository_s_helper_fills_rejects_and_approves() {
     // Outside the repository, its helper isn't configured.
     assert!(filled(&sandbox, None, "example.com").is_none());
 
-    reject_credential(sandbox.git(), Some(&repository), &credential).unwrap();
+    reject_credential(sandbox.git(), Some(&repository), &credential)
+        .wait()
+        .unwrap();
     assert!(!std::fs::read_to_string(&file).unwrap().contains("t0ken"));
     assert!(filled(&sandbox, Some(&repository), "example.com").is_none());
 
-    approve_credential(sandbox.git(), Some(&repository), &credential).unwrap();
+    approve_credential(sandbox.git(), Some(&repository), &credential)
+        .wait()
+        .unwrap();
     assert!(
         std::fs::read_to_string(&file)
             .unwrap()
@@ -115,26 +120,39 @@ fn a_secret_is_stored_for_a_user_and_erased() {
             Asking::Never,
             &CancelToken::new(),
         )
+        .wait()
         .unwrap()
     };
-    store_credential(sandbox.git(), None, key("work"), "sk-work").unwrap();
-    store_credential(sandbox.git(), None, key("home"), "sk-home").unwrap();
+    store_credential(sandbox.git(), None, key("work"), "sk-work")
+        .wait()
+        .unwrap();
+    store_credential(sandbox.git(), None, key("home"), "sk-home")
+        .wait()
+        .unwrap();
     // Each user's own.
     assert_eq!(kept("work").unwrap().password(), "sk-work");
     assert_eq!(kept("home").unwrap().password(), "sk-home");
     assert!(kept("other").is_none());
 
-    erase_credential(sandbox.git(), None, key("work")).unwrap();
+    erase_credential(sandbox.git(), None, key("work"))
+        .wait()
+        .unwrap();
     assert!(kept("work").is_none());
     assert_eq!(kept("home").unwrap().password(), "sk-home");
     // Nothing that would inject attributes is stored.
-    assert!(store_credential(sandbox.git(), None, key("work"), "a\nb").is_err());
+    assert!(
+        store_credential(sandbox.git(), None, key("work"), "a\nb")
+            .wait()
+            .is_err()
+    );
 }
 
 #[test]
 fn installed_helpers_are_found_in_git_s_exec_path() {
     let sandbox = Sandbox::new().unwrap();
     // `store` comes with every git; a name no helper has, nowhere.
-    let found = installed_helpers(sandbox.git(), &["no-such-helper", "store"]).unwrap();
+    let found = installed_helpers(sandbox.git(), &["no-such-helper", "store"])
+        .wait()
+        .unwrap();
     assert_eq!(found, ["store"]);
 }

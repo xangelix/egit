@@ -26,6 +26,7 @@ mod diff;
 mod discard;
 mod env;
 mod error;
+pub mod exec;
 mod files;
 mod foresee;
 mod format_patch;
@@ -105,6 +106,7 @@ pub use discard::{
     discard_lines, put_back,
 };
 pub use error::{Failure, GitError};
+pub use exec::{Wait, block_on};
 pub use files::{Entry, Files, Put, TempDir};
 pub use foresee::{Foreseen, MAX_REPLAYED, foresee_merge, foresee_pick, foresee_rebase};
 pub use format_patch::{

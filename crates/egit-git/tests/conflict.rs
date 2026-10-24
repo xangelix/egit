@@ -17,7 +17,7 @@ use bstr::BStr;
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, ConflictSides, GitVersion, IncomingCommit, Merge, MergedText, ObjectId, Operation,
-    Pick, Repository, Resolution, ResolveError, TreeEntry, WholeOnly, conflict_sides,
+    Pick, Repository, Resolution, ResolveError, TreeEntry, Wait as _, WholeOnly, conflict_sides,
     incoming_commit, merge_sides, resolve_conflict,
 };
 
@@ -49,7 +49,7 @@ fn conflicted_in(
     sandbox
         .commit_file(&path, file, current, "Current change")
         .unwrap();
-    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).wait().unwrap();
     Repo { path, repository }
 }
 
@@ -66,6 +66,7 @@ fn stops(sandbox: &Sandbox, repo: &Path, subcommand: &'static str, args: &[&str]
         .args(args)
         .current_dir(repo)
         .output_unchecked()
+        .wait()
         .unwrap();
     assert!(!done.status.success(), "{subcommand} {args:?} didn't stop");
 }
@@ -77,12 +78,16 @@ fn sides(sandbox: &Sandbox, repo: &Repo, file: &str) -> ConflictSides {
         BStr::new(file),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap()
     .unwrap()
 }
 
 fn merged(sandbox: &Sandbox, repo: &Repo, sides: &ConflictSides) -> MergedText {
-    match merge_sides(sandbox.git(), &repo.repository, sides, &CancelToken::new()).unwrap() {
+    match merge_sides(sandbox.git(), &repo.repository, sides, &CancelToken::new())
+        .wait()
+        .unwrap()
+    {
         Merge::Text(text) => text,
         Merge::WholeOnly(why) => panic!("not two texts: {why:?}"),
     }
@@ -95,6 +100,7 @@ fn incoming(sandbox: &Sandbox, repo: &Repo, operation: Operation) -> Option<Inco
         operation,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap()
 }
 
@@ -113,6 +119,7 @@ fn resolve(
         resolution,
         &CancelToken::new(),
     )
+    .wait()
 }
 
 /// What `merge-file` makes of three blobs, taking `side` (`--ours` or `--theirs`) in conflicts,
@@ -127,6 +134,7 @@ fn merge_file(sandbox: &Sandbox, repo: &Path, ids: [ObjectId; 3], side: &str) ->
         .args(["--object-id", "-p", side, &current, &base, &incoming])
         .current_dir(repo)
         .output()
+        .wait()
         .unwrap()
         .stdout
 }
@@ -139,6 +147,7 @@ fn blob(sandbox: &Sandbox, repo: &Path, content: &[u8]) -> ObjectId {
         .current_dir(repo)
         .stdin(content.to_vec())
         .output()
+        .wait()
         .unwrap();
     ObjectId::from_hex(hashed.stdout.trim_ascii()).unwrap()
 }
@@ -196,7 +205,7 @@ fn a_merge_conflict_is_merged_resolved_and_committed() {
         BStr::new("notes.txt"),
         &cancel,
     );
-    assert_eq!(left.unwrap(), None);
+    assert_eq!(left.wait().unwrap(), None);
     assert_eq!(staged(&sandbox, &repo.path, "notes.txt"), resolved);
     assert_eq!(
         std::fs::read(repo.path.join("notes.txt")).unwrap(),
@@ -238,12 +247,14 @@ fn a_deleted_side_binary_contents_and_a_link_resolve_only_whole() {
     sandbox.commit_file(&repo, "data", "c\0\n", "Ours").unwrap();
     stops(&sandbox, &repo, "merge", &["--quiet", "side"]);
     let repo = Repo {
-        repository: Repository::discover(sandbox.git(), &repo).unwrap(),
+        repository: Repository::discover(sandbox.git(), &repo).wait().unwrap(),
         path: repo,
     };
     let cancel = CancelToken::new();
     let merge = |sides: &ConflictSides| {
-        merge_sides(sandbox.git(), &repo.repository, sides, &cancel).unwrap()
+        merge_sides(sandbox.git(), &repo.repository, sides, &cancel)
+            .wait()
+            .unwrap()
     };
 
     let gone = sides(&sandbox, &repo, "gone");
@@ -340,7 +351,7 @@ fn files_added_on_both_sides_merge_from_nothing() {
         .unwrap();
     stops(&sandbox, &path, "merge", &["--quiet", "side"]);
     let repo = Repo {
-        repository: Repository::discover(sandbox.git(), &path).unwrap(),
+        repository: Repository::discover(sandbox.git(), &path).wait().unwrap(),
         path,
     };
     let sides = sides(&sandbox, &repo, "new");
@@ -416,7 +427,7 @@ fn one_side_taken_everywhere_is_what_merge_file_takes() {
     let sandbox = Sandbox::new().unwrap();
     let path = sandbox.init("repo").unwrap();
     let repo = Repo {
-        repository: Repository::discover(sandbox.git(), &path).unwrap(),
+        repository: Repository::discover(sandbox.git(), &path).wait().unwrap(),
         path,
     };
     let mut random = Random(0x9e37_79b9_7f4a_7c15);

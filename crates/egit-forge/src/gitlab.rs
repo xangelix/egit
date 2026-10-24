@@ -23,7 +23,7 @@ const PAGE: u32 = 100;
 
 /// Reads `repository`'s open merge requests, the most recently updated first, a page at a
 /// time (each handed to `found` as it lands), up to `limit` of them.
-pub(crate) fn merge_requests(
+pub(crate) async fn merge_requests(
     account: &Account,
     repository: &ForgeRepository,
     limit: u32,
@@ -46,7 +46,8 @@ pub(crate) fn merge_requests(
             &json!({ "path": repository.path(), "first": first, "after": after }),
             repository.path(),
             cancel,
-        )?;
+        )
+        .await?;
         let connection = data
             .project
             .ok_or_else(|| not_found(account, repository.full_name()))?
@@ -79,7 +80,7 @@ pub(crate) fn merge_requests(
 }
 
 /// Reads merge request `number`'s details.
-pub(crate) fn merge_request_details(
+pub(crate) async fn merge_request_details(
     account: &Account,
     repository: &ForgeRepository,
     number: u32,
@@ -92,7 +93,8 @@ pub(crate) fn merge_request_details(
         &json!({ "path": repository.path(), "iid": number.to_string() }),
         &what,
         cancel,
-    )?;
+    )
+    .await?;
     let request = data
         .project
         .and_then(|project| project.merge_request)
@@ -101,12 +103,12 @@ pub(crate) fn merge_request_details(
 }
 
 /// Reads `repository`'s default branch and the project it was forked from.
-pub(crate) fn project_info(
+pub(crate) async fn project_info(
     account: &Account,
     repository: &ForgeRepository,
     cancel: &CancelToken,
 ) -> Result<RepositoryInfo, ForgeError> {
-    let project = project(account, repository, cancel)?;
+    let project = project(account, repository, cancel).await?;
     Ok(RepositoryInfo {
         default_branch: project.default_branch,
         parent: project.parent.and_then(|parent| {
@@ -120,7 +122,7 @@ pub(crate) fn project_info(
 
 /// Opens a merge request into `repository`: from the branch's own project (a fork's, when it
 /// is one), a draft marked as GitLab marks one.
-pub(crate) fn create_merge_request(
+pub(crate) async fn create_merge_request(
     account: &Account,
     repository: &ForgeRepository,
     new: &NewPullRequest,
@@ -139,7 +141,7 @@ pub(crate) fn create_merge_request(
     // From a fork, the request is made in the fork, aimed at the project's own id.
     let source = match &new.head {
         Some(fork) if !fork.is(repository) => {
-            let target = project(account, repository, cancel)?;
+            let target = project(account, repository, cancel).await?;
             if let Some(fields) = body.as_object_mut() {
                 fields.insert("target_project_id".to_owned(), json!(target.id));
             }
@@ -151,7 +153,9 @@ pub(crate) fn create_merge_request(
         "/projects/{}/merge_requests",
         encoded(source.path())
     ));
-    let answer = account.send(&url, Some(body.to_string().as_bytes()), cancel)?;
+    let answer = account
+        .send(&url, Some(body.to_string().as_bytes()), cancel)
+        .await?;
     let created: Created = read_answer(account, &answer, source.path())?;
     Ok(Opened {
         number: created.iid,
@@ -160,8 +164,12 @@ pub(crate) fn create_merge_request(
 }
 
 /// Who the credential is (and checks the host accepts it).
-pub(crate) fn current_user(account: &Account, cancel: &CancelToken) -> Result<String, ForgeError> {
-    let data: CurrentUserData = graphql(account, CURRENT_USER, &json!({}), "the account", cancel)?;
+pub(crate) async fn current_user(
+    account: &Account,
+    cancel: &CancelToken,
+) -> Result<String, ForgeError> {
+    let data: CurrentUserData =
+        graphql(account, CURRENT_USER, &json!({}), "the account", cancel).await?;
     let user = data.current_user.ok_or_else(|| ForgeError::Refused {
         host: account.host().name().to_owned(),
     })?;
@@ -172,11 +180,11 @@ pub(crate) fn current_user(account: &Account, cancel: &CancelToken) -> Result<St
 /// The name the GitLab's ssh is on, as its projects' ssh addresses give it (one of the
 /// account's own projects, else any it may see): its `gitlab_shell_ssh_host`, which may not be
 /// its web pages' name. `None` when it shows the account no project.
-pub(crate) fn ssh_host(
+pub(crate) async fn ssh_host(
     account: &Account,
     cancel: &CancelToken,
 ) -> Result<Option<String>, ForgeError> {
-    let data: SshHostData = graphql(account, SSH_HOST, &json!({}), "a project", cancel)?;
+    let data: SshHostData = graphql(account, SSH_HOST, &json!({}), "a project", cancel).await?;
     let address = [data.mine, data.any]
         .into_iter()
         .flatten()
@@ -187,7 +195,7 @@ pub(crate) fn ssh_host(
 }
 
 /// A project, read through REST.
-fn project(
+async fn project(
     account: &Account,
     repository: &ForgeRepository,
     cancel: &CancelToken,
@@ -195,7 +203,7 @@ fn project(
     let url = account
         .host()
         .rest_url(&format!("/projects/{}", encoded(repository.path())));
-    let answer = account.send(&url, None, cancel)?;
+    let answer = account.send(&url, None, cancel).await?;
     read_answer(account, &answer, repository.path())
 }
 

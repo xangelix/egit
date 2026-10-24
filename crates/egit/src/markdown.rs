@@ -264,17 +264,17 @@ pub(crate) async fn read_documents(
     objects: Objects,
     (before, after): (Option<PictureSource>, Option<PictureSource>),
 ) -> Result<Arc<Documents>, Problem> {
-    jobs::blocking(move || {
-        let read = |source: Option<PictureSource>| {
-            source.map(|source| {
-                let bytes = read_side(&git, &repository, &objects, &source, LARGEST)?;
-                Ok(Document::new(
+    jobs::blocking(async move {
+        let read = async |source: Option<PictureSource>| {
+            let bytes = read_side(&git, &repository, &objects, &source?, LARGEST).await;
+            Some(bytes.map(|bytes| {
+                Document::new(
                     &String::from_utf8_lossy(&bytes),
                     u64::try_from(bytes.len()).unwrap_or(u64::MAX),
-                ))
-            })
+                )
+            }))
         };
-        let (mut before, mut after) = (read(before), read(after));
+        let (mut before, mut after) = (read(before).await, read(after).await);
         let changes = match (&mut before, &mut after) {
             (Some(Ok(before)), Some(Ok(after))) => compare(before, after),
             _ => Vec::new(),

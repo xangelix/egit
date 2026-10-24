@@ -23,8 +23,8 @@ use egit_git::testing::Sandbox;
 use std::ops::ControlFlow;
 
 use egit_git::{
-    CancelToken, ObjectId, ObjectKind, ObjectReader, Reference, Repository, list_references,
-    walk_history, walk_history_from,
+    CancelToken, ObjectId, ObjectKind, ObjectReader, Reference, Repository, Wait as _,
+    list_references, walk_history, walk_history_from,
 };
 use egit_gix::GixRepository;
 
@@ -72,11 +72,12 @@ fn all_objects(sandbox: &Sandbox, repo: &Path) -> Vec<ObjectId> {
 /// `ids` read in `repo` by `cat-file`.
 fn read_by_git(sandbox: &Sandbox, repo: &Path, ids: &[ObjectId]) -> Vec<Read> {
     let mut read = Vec::new();
-    let mut reader = ObjectReader::start(sandbox.git(), repo).unwrap();
+    let mut reader = ObjectReader::start(sandbox.git(), repo).wait().unwrap();
     reader
         .read(ids, |_, object| {
             read.push(object.map(|object| (object.kind, object.data.to_vec())));
         })
+        .wait()
         .unwrap();
     assert_eq!(read.len(), ids.len());
     read
@@ -118,10 +119,10 @@ fn same_reads(sandbox: &Sandbox, repo: &Path) {
 
 /// The references, the walk's tips, and the walk from them compared in `repo`.
 fn same_references(sandbox: &Sandbox, repo: &Path, gix: &GixRepository) {
-    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), repo).wait().unwrap();
     assert_eq!(
         sorted(gix.references().unwrap()),
-        sorted(list_references(sandbox.git(), &repository).unwrap())
+        sorted(list_references(sandbox.git(), &repository).wait().unwrap())
     );
     assert_eq!(gix.tips().unwrap(), git_tips(sandbox, repo));
     // The walk from gix's tips is git's own walk.
@@ -139,8 +140,9 @@ fn same_references(sandbox: &Sandbox, repo: &Path, gix: &GixRepository) {
                 &CancelToken::new(),
                 each,
             )
+            .wait()
         } else {
-            walk_history(sandbox.git(), &repository, &CancelToken::new(), each)
+            walk_history(sandbox.git(), &repository, &CancelToken::new(), each).wait()
         }
         .unwrap();
         walked

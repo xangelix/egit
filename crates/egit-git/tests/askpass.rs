@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use egit_git::askpass::{AskpassServer, HELPER_NAME, Prompt, PromptKind, run_helper};
 use egit_git::testing::Sandbox;
-use egit_git::{Completed, Git, GitError};
+use egit_git::{Completed, Git, GitError, Wait as _};
 
 const WAIT: Duration = Duration::from_secs(20);
 const CREDENTIAL_REQUEST: &[u8] = b"protocol=https\nhost=example.invalid\n\n";
@@ -86,7 +86,7 @@ impl Bridge {
         if non_interactive {
             command = command.non_interactive();
         }
-        thread::spawn(move || command.output())
+        thread::spawn(move || command.output().wait())
     }
 
     fn next_prompt(&self) -> Prompt {

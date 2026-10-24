@@ -19,12 +19,12 @@ use std::sync::Arc;
 use egit_git::testing::Sandbox;
 use egit_git::{
     Applies, ApplyAs, CancelToken, Changes, Integrated, ObjectId, Operation, PatchChange,
-    PatchKind, Repository, abort_operation, apply_patch, changes_patch, cherry_pick, current_patch,
-    format_patches, skip_operation, summarize_patch,
+    PatchKind, Repository, Wait as _, abort_operation, apply_patch, changes_patch, cherry_pick,
+    current_patch, format_patches, skip_operation, summarize_patch,
 };
 
 fn open(sandbox: &Sandbox, path: &Path) -> Repository {
-    Repository::discover(sandbox.git(), path).unwrap()
+    Repository::discover(sandbox.git(), path).wait().unwrap()
 }
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -87,6 +87,7 @@ fn saved(sandbox: &Sandbox, repo: &Path) -> (Vec<PathBuf>, Arc<[u8]>) {
         &folder,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     sandbox.run(repo, "switch", &["--quiet", "main"]).unwrap();
     let mut mailbox = Vec::new();
@@ -121,6 +122,7 @@ fn commits_are_saved_as_a_series_from_one_or_from_the_first() {
         &sandbox.path("all"),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(all.len(), 1, "main has its first commit alone");
     // A commit not in HEAD's history is refused.
@@ -132,6 +134,7 @@ fn commits_are_saved_as_a_series_from_one_or_from_the_first() {
             &sandbox.path("none"),
             &CancelToken::new(),
         )
+        .wait()
         .is_err()
     );
 }
@@ -143,7 +146,9 @@ fn a_patch_says_what_it_holds_and_whether_it_applies() {
     let (files, mailbox) = saved(&sandbox, &repo);
     let repository = open(&sandbox, &repo);
     let summary = |patch: &Arc<[u8]>| {
-        summarize_patch(sandbox.git(), &repository, patch, &CancelToken::new()).unwrap()
+        summarize_patch(sandbox.git(), &repository, patch, &CancelToken::new())
+            .wait()
+            .unwrap()
     };
     let whole = summary(&mailbox);
     assert_eq!(whole.kind, PatchKind::Mailbox);
@@ -213,6 +218,7 @@ fn a_series_applies_as_commits_stopping_where_one_conflicts() {
             ApplyAs::Commits { sign_off: true },
             &cancel
         )
+        .wait()
         .unwrap(),
         Integrated::Done
     );
@@ -240,32 +246,48 @@ fn a_series_applies_as_commits_stopping_where_one_conflicts() {
             ApplyAs::Commits { sign_off: false },
             &cancel
         )
+        .wait()
         .unwrap(),
         Integrated::Conflicts
     );
     assert_eq!(
-        repository.operations(sandbox.git()).unwrap(),
+        repository.operations(sandbox.git()).wait().unwrap(),
         [Operation::ApplyMailbox]
     );
-    let progress = repository.mailbox_progress(sandbox.git()).unwrap().unwrap();
+    let progress = repository
+        .mailbox_progress(sandbox.git())
+        .wait()
+        .unwrap()
+        .unwrap();
     assert_eq!((progress.next, progress.last), (1, 3));
     assert_eq!(progress.subject, "Change b");
-    let stopped_at = String::from_utf8(current_patch(git, &repository).unwrap()).unwrap();
+    let stopped_at = String::from_utf8(current_patch(git, &repository).wait().unwrap()).unwrap();
     assert!(stopped_at.contains("+B"), "{stopped_at}");
 
     // Skipped: the next conflicts too; aborted, all is as it was.
     assert_eq!(
-        skip_operation(git, &repository, Operation::ApplyMailbox, &cancel).unwrap(),
+        skip_operation(git, &repository, Operation::ApplyMailbox, &cancel)
+            .wait()
+            .unwrap(),
         Integrated::Conflicts
     );
-    let progress = repository.mailbox_progress(sandbox.git()).unwrap().unwrap();
+    let progress = repository
+        .mailbox_progress(sandbox.git())
+        .wait()
+        .unwrap()
+        .unwrap();
     assert_eq!((progress.next, progress.subject.as_str()), (2, "Change c"));
-    abort_operation(git, &repository, Operation::ApplyMailbox, &cancel).unwrap();
+    abort_operation(git, &repository, Operation::ApplyMailbox, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(
-        repository.operations(sandbox.git()).unwrap(),
+        repository.operations(sandbox.git()).wait().unwrap(),
         Vec::<Operation>::new()
     );
-    assert_eq!(repository.mailbox_progress(sandbox.git()).unwrap(), None);
+    assert_eq!(
+        repository.mailbox_progress(sandbox.git()).wait().unwrap(),
+        None
+    );
     assert_eq!(
         subjects(&sandbox, &repo, "main~1..main"),
         ["Change c differently"]
@@ -303,10 +325,13 @@ fn a_patch_that_doesnt_apply_at_all_stops_with_nothing_to_resolve() {
             ApplyAs::Commits { sign_off: false },
             &cancel
         )
+        .wait()
         .unwrap(),
         Integrated::Stopped
     );
-    abort_operation(sandbox.git(), &repository, Operation::ApplyMailbox, &cancel).unwrap();
+    abort_operation(sandbox.git(), &repository, Operation::ApplyMailbox, &cancel)
+        .wait()
+        .unwrap();
     // As changes, it is refused outright.
     assert!(
         apply_patch(
@@ -316,6 +341,7 @@ fn a_patch_that_doesnt_apply_at_all_stops_with_nothing_to_resolve() {
             ApplyAs::Changes { staged: true },
             &cancel
         )
+        .wait()
         .is_err()
     );
 }
@@ -329,9 +355,16 @@ fn changes_become_a_patch_and_apply_as_changes() {
     std::fs::write(repo.join("f"), "a\nb\nc\nd\n").unwrap();
     std::fs::write(repo.join("h"), [0_u8, 1, 2, 255]).unwrap();
     sandbox.run(&repo, "add", &["h"]).unwrap();
-    let staged: Arc<[u8]> =
-        Arc::from(changes_patch(git, &repository, Changes::Staged, &cancel).unwrap());
-    let all: Arc<[u8]> = Arc::from(changes_patch(git, &repository, Changes::All, &cancel).unwrap());
+    let staged: Arc<[u8]> = Arc::from(
+        changes_patch(git, &repository, Changes::Staged, &cancel)
+            .wait()
+            .unwrap(),
+    );
+    let all: Arc<[u8]> = Arc::from(
+        changes_patch(git, &repository, Changes::All, &cancel)
+            .wait()
+            .unwrap(),
+    );
     let (staged_text, all_text) = (
         String::from_utf8_lossy(&staged).into_owned(),
         String::from_utf8_lossy(&all).into_owned(),
@@ -351,6 +384,7 @@ fn changes_become_a_patch_and_apply_as_changes() {
             ApplyAs::Changes { staged: false },
             &cancel
         )
+        .wait()
         .unwrap(),
         Integrated::Done
     );
@@ -370,6 +404,7 @@ fn changes_become_a_patch_and_apply_as_changes() {
             ApplyAs::Changes { staged: true },
             &cancel
         )
+        .wait()
         .unwrap(),
         Integrated::Done
     );
@@ -392,6 +427,7 @@ fn changes_become_a_patch_and_apply_as_changes() {
             ApplyAs::Changes { staged: true },
             &cancel
         )
+        .wait()
         .unwrap(),
         Integrated::Conflicts
     );
@@ -412,14 +448,17 @@ fn a_stopped_cherry_pick_is_skipped() {
         rev(&sandbox, &repo, "topic~2"),
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(picked, Integrated::Conflicts);
     assert_eq!(
-        skip_operation(sandbox.git(), &repository, Operation::CherryPick, &cancel).unwrap(),
+        skip_operation(sandbox.git(), &repository, Operation::CherryPick, &cancel)
+            .wait()
+            .unwrap(),
         Integrated::Done
     );
     assert_eq!(
-        repository.operations(sandbox.git()).unwrap(),
+        repository.operations(sandbox.git()).wait().unwrap(),
         Vec::<Operation>::new()
     );
     assert_eq!(
@@ -427,5 +466,9 @@ fn a_stopped_cherry_pick_is_skipped() {
         ["Change b differently"]
     );
     // A merge has nothing to skip.
-    assert!(skip_operation(sandbox.git(), &repository, Operation::Merge, &cancel).is_err());
+    assert!(
+        skip_operation(sandbox.git(), &repository, Operation::Merge, &cancel)
+            .wait()
+            .is_err()
+    );
 }

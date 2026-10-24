@@ -150,7 +150,7 @@ pub(crate) async fn read_stats(
     read: Arc<AtomicU64>,
     cancel: CancelToken,
 ) -> Result<Arc<Stats>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         const TITLE: &str = "The statistics couldn't be read";
         let through_gix = gix_allowed_for(&git)
             .then(|| GixRepository::open(repository.work_tree()))
@@ -166,12 +166,14 @@ pub(crate) async fn read_stats(
         let tally = match through_gix {
             Some(tally) => tally,
             None => tally_git(&git, &repository, &names, &read, &cancel)
+                .await
                 .map_err(|error| Problem::git(TITLE, &error))?,
         };
         let mut stats = finish(&git, &repository, tally, &cancel)
+            .await
             .map_err(|error| Problem::git(TITLE, &error))?;
         // Before the first commit, or where they can't be listed, the page goes without them.
-        stats.files = file_stats(&git, &repository, sizes, &cancel).ok();
+        stats.files = file_stats(&git, &repository, sizes, &cancel).await.ok();
         Ok(Arc::new(stats))
     })
     .await
@@ -186,7 +188,7 @@ pub(crate) async fn read_lines(
     counted: Arc<AtomicU64>,
     cancel: CancelToken,
 ) -> Result<Arc<LineStats>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let newest: Vec<ObjectId> = (0..names.rows().min(LINES_COUNTED))
             .filter_map(|row| names.id(row))
             .collect();
@@ -227,6 +229,7 @@ pub(crate) async fn read_lines(
                 ControlFlow::Continue(())
             }
         })
+        .await
         .map_err(|error| Problem::git("The changed lines couldn't be counted", &error))?;
         let mut months: Vec<(i32, u64, u64)> = months
             .into_iter()
@@ -554,25 +557,27 @@ fn tally_gix(
 }
 
 /// Reads every row's commit through one `cat-file`, a block at a time.
-fn tally_git(
+async fn tally_git(
     git: &Git,
     repository: &Repository,
     names: &Names,
     read: &AtomicU64,
     cancel: &CancelToken,
 ) -> Result<Tally, GitError> {
-    let mut reader = ObjectReader::start(git, repository.work_tree())?;
+    let mut reader = ObjectReader::start(git, repository.work_tree()).await?;
     let mut tally = Tally::default();
     let rows = names.rows();
     let mut start = 0;
     while start < rows && !cancel.is_cancelled() {
         let end = start.saturating_add(BLOCK_ROWS).min(rows);
         let ids: Vec<ObjectId> = (start..end).filter_map(|row| names.id(row)).collect();
-        reader.read(&ids, |_, object| {
-            if let Some(object) = object.filter(|object| object.kind == ObjectKind::Commit) {
-                tally.add(object.data);
-            }
-        })?;
+        reader
+            .read(&ids, |_, object| {
+                if let Some(object) = object.filter(|object| object.kind == ObjectKind::Commit) {
+                    tally.add(object.data);
+                }
+            })
+            .await?;
         read.fetch_add(end.saturating_sub(start), Ordering::Relaxed);
         start = end;
     }
@@ -593,7 +598,7 @@ struct Person {
 }
 
 /// The statistics a tally makes: its contacts through the mailmap, as people by email.
-fn finish(
+async fn finish(
     git: &Git,
     repository: &Repository,
     tally: Tally,
@@ -610,7 +615,7 @@ fn finish(
         contact.settle();
     }
     let keys: Vec<&BStr> = contacts.iter().map(|(key, _)| BStr::new(key)).collect();
-    let mapped = map_contacts(git, repository, &keys, cancel)?;
+    let mapped = map_contacts(git, repository, &keys, cancel).await?;
     let mut people: HashMap<String, Person> = HashMap::new();
     for ((_, contact), mapped) in contacts.into_iter().zip(mapped) {
         let mapped = mapped.to_str_lossy();
@@ -678,7 +683,7 @@ fn finish(
 }
 
 /// The files at `HEAD`: by language, the largest (with sizes when `sizes`).
-fn file_stats(
+async fn file_stats(
     git: &Git,
     repository: &Repository,
     sizes: bool,
@@ -706,7 +711,8 @@ fn file_stats(
                 largest.pop();
             }
         }
-    })?;
+    })
+    .await?;
     stats.bytes = sizes.then_some(bytes);
     let mut languages: Vec<Language> = languages
         .into_iter()

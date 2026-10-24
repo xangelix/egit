@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use egit_git::testing::{Sandbox, set_mode};
 use egit_git::{
     CancelToken, CloneOptions, FetchOptions, Git, Holding, Progress, PushFlag, PushOptions,
-    Repository, SshSharing, clone, fetch, push,
+    Repository, SshSharing, Wait as _, clone, fetch, push,
 };
 
 /// An sshd of the test's own, stopped when dropped.
@@ -200,6 +200,7 @@ fn fetched(git: &Git, repository: &Repository) {
         &Progress::new(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
 }
 
@@ -239,6 +240,7 @@ fn pushed(git: &Git, repository: &Repository) {
         &Progress::new(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(
         pushed
@@ -335,9 +337,10 @@ fn a_passphrase_is_asked_once_while_connections_are_shared() {
         &Progress::new(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(asked(&asked_file), 1);
-    let repository = Repository::discover(&shared, &work).unwrap();
+    let repository = Repository::discover(&shared, &work).wait().unwrap();
     fetched(&shared, &repository);
     fetched(&shared, &repository);
     sandbox.commit_file(&work, "f", "2\n", "More").unwrap();
@@ -361,6 +364,7 @@ fn a_passphrase_is_asked_once_while_connections_are_shared() {
         &Progress::new(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(asked(&asked_file), 1);
 

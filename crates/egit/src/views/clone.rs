@@ -121,7 +121,7 @@ impl CloneView {
         self.progress = Progress::new();
         self.cancel = CancelToken::new();
         let (git, progress, cancel) = (git.clone(), self.progress.clone(), self.cancel.clone());
-        self.cloning.request(jobs::blocking(move || {
+        self.cloning.request(jobs::blocking(async move {
             let CloneRequest {
                 url,
                 host,
@@ -129,7 +129,7 @@ impl CloneView {
                 options,
             } = request;
             let git = match there {
-                Some(options) => crate::app::reach(options)?,
+                Some(options) => crate::app::reach(options).await?,
                 None => git,
             };
             // There, as a shell there reads it.
@@ -137,7 +137,7 @@ impl CloneView {
                 Some(home) => super::home::folder_there(&destination, home),
                 None => destination,
             };
-            match clone(&git, &url, &destination, options, &progress, &cancel) {
+            match clone(&git, &url, &destination, options, &progress, &cancel).await {
                 Ok(()) => Ok(Some(Location {
                     host,
                     path: destination,

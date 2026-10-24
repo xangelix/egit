@@ -26,8 +26,8 @@ use std::time::{Duration, Instant};
 
 use bstr::ByteSlice as _;
 use egit_git::{
-    CancelToken, Commit, Git, GitOptions, ObjectId, ObjectReader, Repository, list_references,
-    walk_history,
+    CancelToken, Commit, Git, GitOptions, ObjectId, ObjectReader, Repository, Wait as _,
+    list_references, walk_history,
 };
 use gix::prelude::Find as _;
 
@@ -42,6 +42,7 @@ fn tips(git: &Git, repository: &Repository) -> Vec<gix::ObjectId> {
         .args(["--no-walk=unsorted", "--exclude=refs/stash", "--all"])
         .current_dir(repository.work_tree())
         .output()
+        .wait()
         .unwrap()
         .stdout;
     let all: Vec<String> = listed
@@ -63,6 +64,7 @@ fn tips(git: &Git, repository: &Repository) -> Vec<gix::ObjectId> {
         .args(&all)
         .current_dir(repository.work_tree())
         .output()
+        .wait()
         .unwrap()
         .stdout;
     reduced
@@ -83,8 +85,8 @@ fn measure() {
         println!("EGIT_SCALE_REPO isn't set: nothing to measure");
         return;
     };
-    let git = Git::new(GitOptions::default()).unwrap();
-    let repository = Repository::discover(&git, &path).unwrap();
+    let git = Git::new(GitOptions::default()).wait().unwrap();
+    let repository = Repository::discover(&git, &path).wait().unwrap();
     println!("{}:", path.display());
     let walked = git_walk(&git, &repository);
     gix_walk(&git, &repository, &walked);
@@ -104,6 +106,7 @@ fn git_walk(git: &Git, repository: &Repository) -> Vec<(ObjectId, Vec<ObjectId>)
         walked.push((id, parents.to_vec()));
         ControlFlow::Continue(())
     })
+    .wait()
     .unwrap();
     println!(
         "  git walk: first commit {}, all {} commits in {}",
@@ -230,6 +233,7 @@ fn commit_reads(git: &Git, repository: &Repository, walked: &[(ObjectId, Vec<Obj
                     let commit = Commit::parse(object.unwrap().data).unwrap();
                     subjects.push(commit.subject());
                 })
+                .wait()
                 .unwrap();
         }
         (started.elapsed(), subjects)
@@ -257,7 +261,9 @@ fn commit_reads(git: &Git, repository: &Repository, walked: &[(ObjectId, Vec<Obj
         }
         (started.elapsed(), subjects)
     };
-    let mut reader = ObjectReader::start(git, repository.work_tree()).unwrap();
+    let mut reader = ObjectReader::start(git, repository.work_tree())
+        .wait()
+        .unwrap();
     let fresh = gix::open(repository.work_tree()).unwrap();
     let ours = egit_gix::GixRepository::open(repository.work_tree()).unwrap();
     let (git_cold, git_subjects) = git_pass(&mut reader);
@@ -296,6 +302,7 @@ fn tips_listed(git: &Git, repository: &Repository) {
             .args(["--no-walk=unsorted", "--exclude=refs/stash", "--all"])
             .current_dir(repository.work_tree())
             .output()
+            .wait()
             .unwrap();
         assert_ne!(listed.stdout.len(), 0);
         git_best = git_best.min(started.elapsed());
@@ -317,7 +324,7 @@ fn tips_listed(git: &Git, repository: &Repository) {
 /// References, peeled, as egit lists them.
 fn references(git: &Git, repository: &Repository) {
     let started = Instant::now();
-    let refs = list_references(git, repository).unwrap();
+    let refs = list_references(git, repository).wait().unwrap();
     let git_refs = started.elapsed();
     let gix = egit_gix::GixRepository::open(repository.work_tree()).unwrap();
     let started = Instant::now();

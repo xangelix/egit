@@ -191,8 +191,9 @@ pub(super) fn show(
             view.cancel.clone(),
         );
         let reference = view.reference.clone();
-        view.entries.request(jobs::blocking(move || {
+        view.entries.request(jobs::blocking(async move {
             reflog(&git, &repository, reference.as_bstr(), MOST, &cancel)
+                .await
                 .map(Arc::new)
                 .map_err(|error| Problem::git("The reflog couldn't be read", &error))
         }));

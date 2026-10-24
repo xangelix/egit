@@ -95,21 +95,21 @@ struct RestJob {
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub fn job(
+pub async fn job(
     account: &Account,
     repository: &ForgeRepository,
     id: u64,
     cancel: &CancelToken,
 ) -> Result<JobRun, ForgeError> {
     if repository.host().kind() == ForgeKind::GitHub {
-        return github_job(account, repository, id, cancel);
+        return github_job(account, repository, id, cancel).await;
     }
     let what = format!("{} job {id}", repository.full_name());
     let url = account.host().rest_url(&format!(
         "/projects/{}/jobs/{id}",
         encoded(repository.path())
     ));
-    let answer = account.send(&url, None, cancel)?;
+    let answer = account.send(&url, None, cancel).await?;
     let job: RestJob = read_answer(account, &answer, &what)?;
     let time = |text: Option<String>| text.as_deref().and_then(parse_time);
     Ok(JobRun {
@@ -157,15 +157,15 @@ pub enum LogRead {
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub fn read_log(
+pub async fn read_log(
     account: &Account,
     repository: &ForgeRepository,
     (id, from, ranges): (u64, u64, bool),
     cancel: &CancelToken,
-    sink: &mut dyn FnMut(&[u8]),
+    sink: &mut (dyn FnMut(&[u8]) + Send),
 ) -> Result<LogRead, ForgeError> {
     if repository.host().kind() == ForgeKind::GitHub {
-        return github_log(account, repository, (id, from), cancel, sink);
+        return github_log(account, repository, (id, from), cancel, sink).await;
     }
     let url = account.host().rest_url(&format!(
         "/projects/{}/jobs/{id}/trace",
@@ -175,34 +175,36 @@ pub fn read_log(
     // How many of the log's bytes went by (a whole log's), how many were handed over, and
     // whether a range came from elsewhere than asked.
     let (mut seen, mut given, mut misplaced) = (0_u64, 0_u64, false);
-    let streamed = account.stream(
-        &url,
-        (asked, MOST_READ),
-        &mut |status, content_range, part| {
-            let length = u64::try_from(part.len()).unwrap_or(u64::MAX);
-            if status == 206 {
-                // `bytes 120-4095/4096`: only bytes from where asked will do.
-                let start = content_range
-                    .and_then(|range| range.strip_prefix("bytes "))
-                    .and_then(|range| range.split('-').next())
-                    .and_then(|start| start.trim().parse::<u64>().ok());
-                if start != Some(from) {
-                    misplaced = true;
+    let streamed = account
+        .stream(
+            &url,
+            (asked, MOST_READ),
+            &mut |status, content_range, part| {
+                let length = u64::try_from(part.len()).unwrap_or(u64::MAX);
+                if status == 206 {
+                    // `bytes 120-4095/4096`: only bytes from where asked will do.
+                    let start = content_range
+                        .and_then(|range| range.strip_prefix("bytes "))
+                        .and_then(|range| range.split('-').next())
+                        .and_then(|start| start.trim().parse::<u64>().ok());
+                    if start != Some(from) {
+                        misplaced = true;
+                        return;
+                    }
+                    given = given.saturating_add(length);
+                    sink(part);
                     return;
                 }
-                given = given.saturating_add(length);
-                sink(part);
-                return;
-            }
-            let skip = usize::try_from(from.saturating_sub(seen)).unwrap_or(usize::MAX);
-            seen = seen.saturating_add(length);
-            if let Some(new) = part.get(skip..).filter(|new| !new.is_empty()) {
-                given = given.saturating_add(u64::try_from(new.len()).unwrap_or(u64::MAX));
-                sink(new);
-            }
-        },
-        cancel,
-    )?;
+                let skip = usize::try_from(from.saturating_sub(seen)).unwrap_or(usize::MAX);
+                seen = seen.saturating_add(length);
+                if let Some(new) = part.get(skip..).filter(|new| !new.is_empty()) {
+                    given = given.saturating_add(u64::try_from(new.len()).unwrap_or(u64::MAX));
+                    sink(new);
+                }
+            },
+            cancel,
+        )
+        .await?;
     match streamed.status {
         206 if misplaced => Ok(LogRead::Shorter),
         206 => Ok(LogRead::Read {

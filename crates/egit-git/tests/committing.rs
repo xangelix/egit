@@ -13,7 +13,9 @@
 use std::path::Path;
 
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, NewCommit, Repository, create_commit, recent_authors, reword_head};
+use egit_git::{
+    CancelToken, NewCommit, Repository, Wait as _, create_commit, recent_authors, reword_head,
+};
 
 /// `HEAD`'s message.
 fn message(sandbox: &Sandbox, repo: &Path) -> String {
@@ -22,8 +24,9 @@ fn message(sandbox: &Sandbox, repo: &Path) -> String {
 }
 
 fn commit(sandbox: &Sandbox, repo: &Path, new: &NewCommit) -> Result<String, egit_git::GitError> {
-    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), repo).wait().unwrap();
     create_commit(sandbox.git(), &repository, new, &CancelToken::new())
+        .wait()
         .map(|committed| committed.output)
 }
 
@@ -192,13 +195,14 @@ fn rewording_head_changes_only_its_message() {
         .run(&repo, "rev-parse", &["HEAD^{tree}"])
         .unwrap()
         .stdout;
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     reword_head(
         sandbox.git(),
         &repository,
         "First, said better\n\n# kept\nWhy.",
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(
         message(&sandbox, &repo),
@@ -279,9 +283,11 @@ fn trailers_name_co_authors_after_the_message() {
 fn recent_authors_are_counted_through_the_mailmap() {
     let sandbox = Sandbox::new().unwrap();
     let repo = sandbox.init("repo").unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     // Nobody before the first commit.
-    let none = recent_authors(sandbox.git(), &repository, 100, &CancelToken::new()).unwrap();
+    let none = recent_authors(sandbox.git(), &repository, 100, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(none, []);
     let by = |author: &str, subject: &str| {
         sandbox
@@ -307,7 +313,9 @@ fn recent_authors_are_counted_through_the_mailmap() {
         "Ada Lovelace <ada@example.com> <ada@old.example.com>\n",
     )
     .unwrap();
-    let authors = recent_authors(sandbox.git(), &repository, 100, &CancelToken::new()).unwrap();
+    let authors = recent_authors(sandbox.git(), &repository, 100, &CancelToken::new())
+        .wait()
+        .unwrap();
     let found: Vec<(String, String, u32)> = authors
         .iter()
         .map(|author| {
@@ -326,7 +334,9 @@ fn recent_authors_are_counted_through_the_mailmap() {
         ]
     );
     // At most the last `limit` commits.
-    let last = recent_authors(sandbox.git(), &repository, 1, &CancelToken::new()).unwrap();
+    let last = recent_authors(sandbox.git(), &repository, 1, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(last.len(), 1);
     assert_eq!(last[0].person.email, "ada@example.com");
 }

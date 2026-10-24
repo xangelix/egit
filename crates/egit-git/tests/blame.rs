@@ -17,7 +17,8 @@ use std::path::Path;
 use bstr::BStr;
 use egit_git::testing::Sandbox;
 use egit_git::{
-    BlameCommit, BlameRun, CancelToken, FileCommit, Moves, ObjectId, Repository, blame, file_log,
+    BlameCommit, BlameRun, CancelToken, FileCommit, Moves, ObjectId, Repository, Wait as _, blame,
+    file_log,
 };
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -33,7 +34,7 @@ fn summaries(
     path: &str,
     moves: Moves,
 ) -> Vec<String> {
-    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), repo).wait().unwrap();
     let mut commits: Vec<BlameCommit> = Vec::new();
     let mut runs: Vec<BlameRun> = Vec::new();
     blame(
@@ -48,6 +49,7 @@ fn summaries(
             runs.push(run);
         },
     )
+    .wait()
     .unwrap();
     let lines = runs
         .iter()
@@ -144,7 +146,7 @@ fn the_work_tree_s_uncommitted_lines_are_said_so() {
 fn a_file_s_history_follows_its_rename() {
     let sandbox = Sandbox::new().unwrap();
     let repo = history(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let mut commits: Vec<FileCommit> = Vec::new();
     file_log(
         sandbox.git(),
@@ -153,6 +155,7 @@ fn a_file_s_history_follows_its_rename() {
         &CancelToken::new(),
         |commit| commits.push(commit),
     )
+    .wait()
     .unwrap();
     let seen: Vec<(&str, u8, String)> = commits
         .iter()

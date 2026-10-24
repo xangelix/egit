@@ -11,6 +11,7 @@
 //! sshd runs as any user), each command a session of one shared connection, as egit runs git
 //! over SSH.
 
+use crate::exec::Wait as _;
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
@@ -149,7 +150,8 @@ impl Sandbox {
         Ok(Git::new(GitOptions {
             host,
             ..Self::options_from(env)
-        })?)
+        })
+        .wait()?)
     }
 
     /// How the sandbox's git is run, here: its program, variables, and those it doesn't get.
@@ -227,7 +229,8 @@ impl Sandbox {
             .write("init")
             .arg("--quiet")
             .current_dir(&repo)
-            .output()?;
+            .output()
+            .wait()?;
         Ok(repo)
     }
 
@@ -247,7 +250,8 @@ impl Sandbox {
             .write(subcommand)
             .args(args)
             .current_dir(dir)
-            .output()?)
+            .output()
+            .wait()?)
     }
 
     /// Writes `contents` to `file` in `repo` and commits it with `message`.

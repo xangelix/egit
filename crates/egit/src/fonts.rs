@@ -131,7 +131,7 @@ impl Fallbacks {
         }
         let kept = self.kept.clone();
         self.lookup
-            .request(jobs::blocking(move || Ok(look_for(wanted, &kept))));
+            .request(jobs::blocking(async move { Ok(look_for(wanted, &kept)) }));
     }
 }
 

@@ -119,16 +119,19 @@ impl PatchView {
         let source = self.source.clone();
         let pasted = self.pasted.clone();
         let (git, repository, cancel) = (git.clone(), Arc::clone(repository), self.cancel.clone());
-        self.read.request(jobs::blocking(move || {
+        self.read.request(jobs::blocking(async move {
             let bytes = match source {
                 PatchSource::Files(files) => read_files(&files)?,
                 PatchSource::Pasted => with_final_newline(pasted.into_bytes()),
-                PatchSource::Stopped => current_patch(&git, &repository).map_err(|error| {
-                    Problem::git("The patch it stopped at couldn't be read", &error)
-                })?,
+                PatchSource::Stopped => {
+                    current_patch(&git, &repository).await.map_err(|error| {
+                        Problem::git("The patch it stopped at couldn't be read", &error)
+                    })?
+                }
             };
             let bytes: Arc<[u8]> = Arc::from(bytes);
             let summary = summarize_patch(&git, &repository, &bytes, &cancel)
+                .await
                 .map_err(|error| Problem::git("This isn't a patch git can apply", &error))?;
             let text = Text::new(Arc::clone(&bytes)).map_err(|error| {
                 Problem::new("The patch is too large to show", error.to_string())

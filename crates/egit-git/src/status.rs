@@ -139,7 +139,7 @@ impl Status {
     /// # Errors
     ///
     /// When git fails, is cancelled, or prints something that isn't a status.
-    pub fn read(
+    pub async fn read(
         git: &Git,
         repository: &Repository,
         cancel: &CancelToken,
@@ -154,7 +154,8 @@ impl Status {
             ])
             .current_dir(repository.work_tree())
             .cancel_token(cancel)
-            .output()?;
+            .output()
+            .await?;
         Self::parse(output.stdout)
     }
 

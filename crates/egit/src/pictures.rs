@@ -74,23 +74,21 @@ pub(crate) async fn read_pictures(
     objects: Objects,
     (before, after): (Option<PictureSource>, Option<PictureSource>),
 ) -> Result<Arc<Pictures>, Problem> {
-    jobs::blocking(move || {
-        let read = |source: Option<PictureSource>| {
-            source.map(|source| {
-                let bytes = read_side(&git, &repository, &objects, &source, LARGEST_FILE)?;
-                decode(&bytes)
-            })
+    jobs::blocking(async move {
+        let read = async |source: Option<PictureSource>| {
+            let bytes = read_side(&git, &repository, &objects, &source?, LARGEST_FILE).await;
+            Some(bytes.and_then(|bytes| decode(&bytes)))
         };
         Ok(Arc::new(Pictures {
-            before: read(before),
-            after: read(after),
+            before: read(before).await,
+            after: read(after).await,
         }))
     })
     .await
 }
 
 /// A side's bytes, refused past `largest`.
-pub(crate) fn read_side(
+pub(crate) async fn read_side(
     git: &Git,
     repository: &Repository,
     objects: &Objects,
@@ -112,6 +110,7 @@ pub(crate) fn read_side(
                         .filter(|object| object.kind == ObjectKind::Blob)
                         .map(|object| object.data.to_vec());
                 })
+                .await
                 .map_err(|error| error.to_string())?;
             let bytes = bytes.ok_or_else(|| format!("{id} isn't in this repository."))?;
             let size = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
@@ -126,6 +125,7 @@ pub(crate) fn read_side(
             let files = git.files();
             let found = files
                 .look(&[&file])
+                .await
                 .map_err(|error| error.to_string())?
                 .pop();
             match found {
@@ -135,7 +135,7 @@ pub(crate) fn read_side(
                 Some(egit_git::Entry::File { .. }) => {}
                 _ => return Err(format!("{} isn't a file.", file.display())),
             }
-            files.read(&file).map_err(|error| error.to_string())
+            files.read(&file).await.map_err(|error| error.to_string())
         }
     }
 }

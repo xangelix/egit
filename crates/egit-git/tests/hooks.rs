@@ -17,8 +17,8 @@ use std::time::{Duration, Instant};
 
 use egit_git::testing::{Sandbox, set_mode};
 use egit_git::{
-    CancelToken, Color, GitError, LineKind, NewCommit, Repository, Transcript, create_commit,
-    installed_hooks,
+    CancelToken, Color, GitError, LineKind, NewCommit, Repository, Transcript, Wait as _,
+    create_commit, installed_hooks,
 };
 
 /// Writes `script` as the hook `name` in `folder`, runnable unless `runnable` is false.
@@ -65,8 +65,8 @@ fn the_hooks_a_repository_has_are_the_runnable_ones_where_git_looks() {
     hook(&hooks_folder, "pre-commit", "exit 0", true);
     hook(&hooks_folder, "commit-msg", "exit 0", false);
     hook(&hooks_folder, "pre-push.sample", "exit 0", true);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
-    let hooks = installed_hooks(sandbox.git(), &repository).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let hooks = installed_hooks(sandbox.git(), &repository).wait().unwrap();
     assert_eq!(
         hooks.names,
         ["pre-commit"],
@@ -84,7 +84,7 @@ fn the_hooks_a_repository_has_are_the_runnable_ones_where_git_looks() {
     sandbox
         .run(&repo, "config", &["core.hooksPath", ".husky"])
         .unwrap();
-    let hooks = installed_hooks(sandbox.git(), &repository).unwrap();
+    let hooks = installed_hooks(sandbox.git(), &repository).wait().unwrap();
     assert_eq!(hooks.names, ["pre-push"]);
     assert!(hooks.configured && hooks.folder.ends_with(".husky"));
 }
@@ -100,10 +100,12 @@ fn a_commit_s_hooks_print_into_its_transcript() {
         r#"printf '\033[32mchecking\033[0m style\n'; echo "colour: $PRE_COMMIT_COLOR""#,
         true,
     );
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let transcript = Transcript::new();
     let git = sandbox.git().with_transcript(&transcript);
-    create_commit(&git, &repository, &commit("Checked"), &CancelToken::new()).unwrap();
+    create_commit(&git, &repository, &commit("Checked"), &CancelToken::new())
+        .wait()
+        .unwrap();
     let said = lines(&transcript);
     assert_eq!(said[0].0, LineKind::Command);
     assert!(said[0].1.starts_with("git commit --file=-"), "{said:?}");
@@ -131,8 +133,13 @@ fn a_commit_s_hooks_print_into_its_transcript() {
         .write("status")
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
-    git.read("status").current_dir(&repo).output().unwrap();
+    git.read("status")
+        .current_dir(&repo)
+        .output()
+        .wait()
+        .unwrap();
     assert_eq!(transcript.updates(), before);
 }
 
@@ -146,10 +153,10 @@ fn a_hook_s_refusal_and_skipping_it() {
         "echo 'lint: 2 problems' >&2; exit 1",
         true,
     );
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let transcript = Transcript::new();
     let git = sandbox.git().with_transcript(&transcript);
-    let refused = create_commit(&git, &repository, &commit("Refused"), &CancelToken::new());
+    let refused = create_commit(&git, &repository, &commit("Refused"), &CancelToken::new()).wait();
     assert!(matches!(refused, Err(GitError::Failed(_))));
     let said = lines(&transcript);
     assert!(said.contains(&(LineKind::Err, "lint: 2 problems".to_owned())));
@@ -163,7 +170,9 @@ fn a_hook_s_refusal_and_skipping_it() {
         no_verify: true,
         ..commit("Skipped")
     };
-    create_commit(&git, &repository, &skipping, &CancelToken::new()).unwrap();
+    create_commit(&git, &repository, &skipping, &CancelToken::new())
+        .wait()
+        .unwrap();
     let head = sandbox.run(&repo, "log", &["-1", "--format=%s"]).unwrap();
     assert_eq!(head.stdout.trim_ascii(), b"Skipped");
 }
@@ -178,7 +187,7 @@ fn a_hook_cancelled_part_way_makes_no_commit() {
         "echo 'running the tests'; sleep 30",
         true,
     );
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let transcript = Transcript::new();
     let git = sandbox.git().with_transcript(&transcript);
     let cancel = CancelToken::new();
@@ -197,7 +206,7 @@ fn a_hook_cancelled_part_way_makes_no_commit() {
         }
         stopper.cancel();
     });
-    let made = create_commit(&git, &repository, &commit("Never"), &cancel);
+    let made = create_commit(&git, &repository, &commit("Never"), &cancel).wait();
     assert!(matches!(made, Err(GitError::Cancelled { .. })), "{made:?}");
     assert!(
         started.elapsed() < Duration::from_secs(20),

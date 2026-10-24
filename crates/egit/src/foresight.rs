@@ -81,8 +81,8 @@ impl Foresight {
         drop(state);
         let shared = Arc::clone(&self.state);
         let (git, repository, ctx) = (git.clone(), Arc::clone(repository), ctx.clone());
-        jobs::detached(move || {
-            let seen = foresee(&git, &repository, head, bringing);
+        jobs::detached(async move {
+            let seen = foresee(&git, &repository, head, bringing).await;
             let mut state = shared.lock();
             state.working.remove(&key);
             state.seen.insert(key, seen);
@@ -100,7 +100,7 @@ impl Foresight {
 }
 
 /// Works out what bringing in would do (`None` when git fails, or for a root commit).
-fn foresee(
+async fn foresee(
     git: &Git,
     repository: &Repository,
     head: ObjectId,
@@ -108,10 +108,18 @@ fn foresee(
 ) -> Option<Foreseen> {
     let cancel = CancelToken::new();
     let foreseen = match bringing {
-        Bringing::Merge(other) => foresee_merge(git, repository, head, other, &cancel).map(Some),
-        Bringing::Rebase(onto) => foresee_rebase(git, repository, head, onto, &cancel).map(Some),
-        Bringing::Pick(commit) => foresee_pick(git, repository, head, (commit, false), &cancel),
-        Bringing::Revert(commit) => foresee_pick(git, repository, head, (commit, true), &cancel),
+        Bringing::Merge(other) => foresee_merge(git, repository, head, other, &cancel)
+            .await
+            .map(Some),
+        Bringing::Rebase(onto) => foresee_rebase(git, repository, head, onto, &cancel)
+            .await
+            .map(Some),
+        Bringing::Pick(commit) => {
+            foresee_pick(git, repository, head, (commit, false), &cancel).await
+        }
+        Bringing::Revert(commit) => {
+            foresee_pick(git, repository, head, (commit, true), &cancel).await
+        }
     };
     foreseen.unwrap_or_else(|error| {
         tracing::debug!(%error, ?bringing, "couldn't foresee it");

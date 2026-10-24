@@ -87,7 +87,7 @@ impl ConflictSides {
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints something that isn't an index entry.
-pub fn conflict_sides(
+pub async fn conflict_sides(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -100,7 +100,8 @@ pub fn conflict_sides(
         .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     parse_unmerged(&listed.stdout, path)
 }
 
@@ -378,7 +379,7 @@ impl Scanned {
 /// # Errors
 ///
 /// When git fails or is cancelled, a side's object is missing, or the merge is over 4 GiB.
-pub fn merge_sides(
+pub async fn merge_sides(
     git: &Git,
     repository: &Repository,
     sides: &ConflictSides,
@@ -394,25 +395,27 @@ pub fn merge_sides(
     let base = match sides.base {
         Some(base) => base.id,
         // Added on both sides: merged as git merges them, from nothing.
-        None => empty_blob(git, repository, cancel)?,
+        None => empty_blob(git, repository, cancel).await?,
     };
     // Base, current, incoming.
     let ids = [base, current.id, incoming.id];
     let mut scanned = [None; 3];
-    let mut reader = ObjectReader::start(git, work_tree)?;
-    reader.read(&ids, |id, object| {
-        let Some(object) = object else {
-            return;
-        };
-        // The same object may be two sides: each answer fills the first side still empty.
-        if let Some(slot) = ids
-            .iter()
-            .zip(scanned.iter_mut())
-            .find_map(|(side, slot)| (*side == id && slot.is_none()).then_some(slot))
-        {
-            *slot = Some(Scanned::of(object.data));
-        }
-    })?;
+    let mut reader = ObjectReader::start(git, work_tree).await?;
+    reader
+        .read(&ids, |id, object| {
+            let Some(object) = object else {
+                return;
+            };
+            // The same object may be two sides: each answer fills the first side still empty.
+            if let Some(slot) = ids
+                .iter()
+                .zip(scanned.iter_mut())
+                .find_map(|(side, slot)| (*side == id && slot.is_none()).then_some(slot))
+            {
+                *slot = Some(Scanned::of(object.data));
+            }
+        })
+        .await?;
     let mut sides_scanned = [Scanned::default(); 3];
     for (slot, found) in sides_scanned.iter_mut().zip(scanned) {
         *slot = found.ok_or_else(|| GitError::unexpected("cat-file", "the conflict's sides"))?;
@@ -442,7 +445,8 @@ pub fn merge_sides(
         .current_dir(work_tree)
         .stdout_limit(usize::try_from(u32::MAX).unwrap_or(usize::MAX))
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     // The exit code counts the conflicts (up to 127); anything above is an error.
     let conflicts = match merged.status.code() {
         Some(code @ 0..=127) => usize::try_from(code).unwrap_or(0),
@@ -467,7 +471,7 @@ pub fn merge_sides(
 }
 
 /// The empty blob's name (added to the repository: git doesn't know it otherwise).
-fn empty_blob(
+async fn empty_blob(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
@@ -478,7 +482,8 @@ fn empty_blob(
         .current_dir(repository.work_tree())
         .stdin(Vec::new())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     ObjectId::from_hex(hashed.stdout.trim_ascii())
         .ok_or_else(|| GitError::unexpected("hash-object", "an object name"))
 }
@@ -575,7 +580,7 @@ pub enum ResolveError {
 ///
 /// [`ResolveError::Stale`] when the index holds other sides, or none, and
 /// [`ResolveError::Git`] when git fails or is cancelled.
-pub fn resolve_conflict(
+pub async fn resolve_conflict(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -583,7 +588,11 @@ pub fn resolve_conflict(
     resolution: Resolution,
     cancel: &CancelToken,
 ) -> Result<(), ResolveError> {
-    if conflict_sides(git, repository, path, cancel)?.as_ref() != Some(expected) {
+    if conflict_sides(git, repository, path, cancel)
+        .await?
+        .as_ref()
+        != Some(expected)
+    {
         return Err(ResolveError::Stale);
     }
     let work_tree = repository.work_tree();
@@ -595,7 +604,8 @@ pub fn resolve_conflict(
                 .env("GIT_LITERAL_PATHSPECS", "1")
                 .current_dir(work_tree)
                 .cancel_token(cancel)
-                .output()?;
+                .output()
+                .await?;
             return Ok(());
         }
         Resolution::Side(entry) => entry,
@@ -606,7 +616,8 @@ pub fn resolve_conflict(
                 .current_dir(work_tree)
                 .stdin(content)
                 .cancel_token(cancel)
-                .output()?;
+                .output()
+                .await?;
             let id = ObjectId::from_hex(hashed.stdout.trim_ascii())
                 .ok_or_else(|| GitError::unexpected("hash-object", "an object name"))?;
             TreeEntry { mode, id }
@@ -621,7 +632,8 @@ pub fn resolve_conflict(
         .current_dir(work_tree)
         .stdin(record)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let mut paths = path.to_vec();
     paths.push(b'\0');
     git.write("checkout-index")
@@ -629,7 +641,8 @@ pub fn resolve_conflict(
         .current_dir(work_tree)
         .stdin(paths)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     Ok(())
 }
 
@@ -652,7 +665,7 @@ pub struct IncomingCommit {
 /// # Errors
 ///
 /// When git can't be run or is cancelled.
-pub fn incoming_commit(
+pub async fn incoming_commit(
     git: &Git,
     repository: &Repository,
     operation: Operation,
@@ -679,7 +692,8 @@ pub fn incoming_commit(
         ])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if !shown.status.success() {
         return Ok(None);
     }

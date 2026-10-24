@@ -227,7 +227,7 @@ impl Syntax {
         let bytes = text.shared();
         let lines = text.lines();
         let (shared, walk_feeds) = (Arc::clone(&walk), feeds.clone());
-        jobs::detached(move || parse(grammar, &bytes, lines, &walk_feeds, &shared));
+        jobs::detached(async move { parse(grammar, &bytes, lines, &walk_feeds, &shared) });
         Some(Self {
             grammar,
             feeds,

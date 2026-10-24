@@ -41,7 +41,7 @@ pub enum Forwarded {
 /// # Errors
 ///
 /// When git fails otherwise (changes in the way, an operation in progress) or is cancelled.
-pub fn fast_forward_current(
+pub async fn fast_forward_current(
     git: &Git,
     repository: &Repository,
     to: &BStr,
@@ -53,7 +53,8 @@ pub fn fast_forward_current(
         .arg(to.to_os_str_lossy())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if done.status.success() {
         let there = done.stdout.find(b"Already up to date").is_some();
         return Ok(if there {
@@ -79,7 +80,7 @@ pub fn fast_forward_current(
 ///
 /// When git fails (the remote hasn't the branch, the branch is checked out somewhere) or is
 /// cancelled.
-pub fn fast_forward_branch(
+pub async fn fast_forward_branch(
     git: &Git,
     repository: &Repository,
     branch: &BStr,
@@ -108,7 +109,8 @@ pub fn fast_forward_branch(
         .current_dir(repository.work_tree())
         .progress(progress)
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     // `<flag> <old> <new> <ref>` for each ref it touched; nothing for one already there.
     let flag = done.stdout.lines().find_map(|line| {
         let (flag, rest) = (line.first()?, line.get(2..)?);

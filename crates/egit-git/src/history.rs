@@ -41,19 +41,20 @@ const MAX_REDUCED_TIPS: usize = 4096;
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints something that isn't a commit and its parents.
-pub fn walk_history(
+pub async fn walk_history(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
     each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
 ) -> Result<Walked, GitError> {
-    let start = if repository.has_commit_graph(git) {
+    let start = if repository.has_commit_graph(git).await {
         let listed = git
             .read("rev-list")
             .args(["--no-walk=unsorted", "--exclude=refs/stash", "--all"])
             .current_dir(repository.work_tree())
             .cancel_token(cancel)
-            .output()?
+            .output()
+            .await?
             .stdout;
         let tips: Vec<ObjectId> = listed
             .lines()
@@ -63,11 +64,11 @@ pub fn walk_history(
                     .ok_or_else(|| GitError::unexpected("rev-list", "a commit's name"))
             })
             .collect::<Result<_, _>>()?;
-        Start::Tips(reduced(git, repository, tips, cancel)?)
+        Start::Tips(reduced(git, repository, tips, cancel).await?)
     } else {
         Start::All
     };
-    walk_from(git, repository, start, cancel, each)
+    walk_from(git, repository, start, cancel, each).await
 }
 
 /// The commits a walk of every ref but `hidden` (full names) starts from.
@@ -78,7 +79,7 @@ pub fn walk_history(
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints what isn't a commit's name.
-pub fn history_tips(
+pub async fn history_tips(
     git: &Git,
     repository: &Repository,
     hidden: &[BString],
@@ -99,7 +100,8 @@ pub fn history_tips(
         .stdin(input)
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?
+        .output()
+        .await?
         .stdout
         .lines()
         .filter(|line| !line.is_empty())
@@ -117,19 +119,19 @@ pub fn history_tips(
 /// # Errors
 ///
 /// As [`walk_history`]'s.
-pub fn walk_history_from(
+pub async fn walk_history_from(
     git: &Git,
     repository: &Repository,
     tips: Vec<ObjectId>,
     cancel: &CancelToken,
     each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
 ) -> Result<Walked, GitError> {
-    let tips = if repository.has_commit_graph(git) {
-        reduced(git, repository, tips, cancel)?
+    let tips = if repository.has_commit_graph(git).await {
+        reduced(git, repository, tips, cancel).await?
     } else {
         tips
     };
-    walk_from(git, repository, Start::Tips(tips), cancel, each)
+    walk_from(git, repository, Start::Tips(tips), cancel, each).await
 }
 
 /// Where a walk starts.
@@ -141,7 +143,7 @@ enum Start {
 }
 
 /// The topological walk itself, from `start`.
-fn walk_from(
+async fn walk_from(
     git: &Git,
     repository: &Repository,
     start: Start,
@@ -196,7 +198,7 @@ fn walk_from(
         }
         Start::All => walk.args(["--exclude=refs/stash", "--all"]),
     };
-    walk.stream(|chunk| lines.feed(chunk, &mut handle))?;
+    walk.stream(|chunk| lines.feed(chunk, &mut handle)).await?;
     if let Some(line) = malformed {
         return Err(GitError::unexpected(
             "rev-list",
@@ -209,7 +211,7 @@ fn walk_from(
 /// `tips` less those another of them reaches (`merge-base --independent`); all of them when
 /// fewer than two, or more than [`MAX_REDUCED_TIPS`] (walking them all costs no more than
 /// reducing them).
-fn reduced(
+async fn reduced(
     git: &Git,
     repository: &Repository,
     tips: Vec<ObjectId>,
@@ -224,7 +226,8 @@ fn reduced(
         .args(tips.iter().map(ToString::to_string))
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?
+        .output()
+        .await?
         .stdout;
     reduced
         .lines()
@@ -279,12 +282,16 @@ impl Reference {
 /// # Errors
 ///
 /// When git fails or prints something unexpected.
-pub fn list_references(git: &Git, repository: &Repository) -> Result<Vec<Reference>, GitError> {
+pub async fn list_references(
+    git: &Git,
+    repository: &Repository,
+) -> Result<Vec<Reference>, GitError> {
     let listed = git
         .read("for-each-ref")
         .arg("--format=%(objectname)%00%(*objectname)%00%(*objecttype)%00%(symref)%00%(refname)")
         .current_dir(repository.work_tree())
-        .output()?;
+        .output()
+        .await?;
     let mut references = Vec::new();
     // Tags of tags: git 2.43 (the floor) peels only the first in `%(*objectname)`; later git,
     // since its commit 188782ec, all of them.
@@ -328,13 +335,13 @@ pub fn list_references(git: &Git, repository: &Repository) -> Result<Vec<Referen
             target,
         });
     }
-    peel_nested(git, repository, &mut references, &nested)?;
+    peel_nested(git, repository, &mut references, &nested).await?;
     Ok(references)
 }
 
 /// Peels the references at `nested` (tags of tags) through every tag, as later git peels
 /// `%(*objectname)` itself: one `rev-parse` of `<name>^{}` for all of them.
-fn peel_nested(
+async fn peel_nested(
     git: &Git,
     repository: &Repository,
     references: &mut [Reference],
@@ -358,7 +365,8 @@ fn peel_nested(
         .read("rev-parse")
         .args(&names)
         .current_dir(repository.work_tree())
-        .output()?;
+        .output()
+        .await?;
     for (&at, line) in nested.iter().zip(peeled.stdout.lines()) {
         let target = ObjectId::from_hex(line)
             .ok_or_else(|| GitError::unexpected("rev-parse", "an object name"))?;
@@ -437,7 +445,7 @@ impl TreeEntry {
 /// # Errors
 ///
 /// When git fails or prints something unexpected.
-pub fn commit_changes(
+pub async fn commit_changes(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -459,7 +467,7 @@ pub fn commit_changes(
         Some(parent) => command.arg(parent.to_string()).arg(commit.to_string()),
         None => command.arg("--root").arg(commit.to_string()),
     };
-    let listed = command.output()?;
+    let listed = command.output().await?;
     parse_raw(&listed.stdout)
 }
 
@@ -558,7 +566,7 @@ pub struct CountedFile {
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints something unexpected.
-pub fn line_counts(
+pub async fn line_counts(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -584,7 +592,7 @@ pub fn line_counts(
         Some(parent) => command.arg(parent.to_string()).arg(commit.to_string()),
         None => command.arg("--root").arg(commit.to_string()),
     };
-    let listed = command.output()?;
+    let listed = command.output().await?;
     parse_numstat(&listed.stdout)
 }
 
@@ -633,12 +641,12 @@ fn parse_numstat(output: &[u8]) -> Result<Vec<CountedFile>, GitError> {
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn write_commit_graph(
+pub async fn write_commit_graph(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
 ) -> Result<(), GitError> {
-    let config = ConfigSnapshot::read(git, ConfigPlace::Repository(repository.work_tree()))?;
+    let config = ConfigSnapshot::read(git, ConfigPlace::Repository(repository.work_tree())).await?;
     let mut command = git
         .write("commit-graph")
         .args(["write", "--reachable"])
@@ -647,7 +655,7 @@ pub fn write_commit_graph(
     if !config.is_partial_clone() {
         command = command.arg("--changed-paths");
     }
-    command.output().map(drop)
+    command.output().await.map(drop)
 }
 
 /// The lines one commit added and removed (against its first parent; none for a merge).
@@ -674,7 +682,7 @@ pub struct CommitLines<'a> {
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn commit_lines(
+pub async fn commit_lines(
     git: &Git,
     repository: &Repository,
     commits: &[ObjectId],
@@ -738,7 +746,8 @@ pub fn commit_lines(
                 // Any other line (the blank one before the counts) leaves the commit waiting.
                 ControlFlow::Continue(())
             })
-        })?;
+        })
+        .await?;
     if flow.is_continue()
         && let Some((time, email)) = pending
     {
@@ -788,7 +797,7 @@ pub struct ListedCommit {
 /// # Errors
 ///
 /// When one isn't a commit here, or git fails or is cancelled.
-pub fn list_commits(
+pub async fn list_commits(
     git: &Git,
     repository: &Repository,
     commits: &[ObjectId],
@@ -815,7 +824,8 @@ pub fn list_commits(
         .current_dir(repository.work_tree())
         .stdin(stdin)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     parse_listed(&listed.stdout)
 }
 
@@ -858,7 +868,7 @@ fn parse_listed(output: &[u8]) -> Result<Vec<ListedCommit>, GitError> {
 /// # Errors
 ///
 /// When git fails (a ref that doesn't exist) or is cancelled.
-pub fn commits_between(
+pub async fn commits_between(
     git: &Git,
     repository: &Repository,
     base: &BStr,
@@ -877,7 +887,8 @@ pub fn commits_between(
         .arg("--")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     listed
         .stdout
         .lines()
@@ -894,7 +905,7 @@ pub fn commits_between(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn count_between(
+pub async fn count_between(
     git: &Git,
     repository: &Repository,
     base: ObjectId,
@@ -909,7 +920,8 @@ pub fn count_between(
         .arg("--")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     counted
         .stdout
         .trim_ascii()

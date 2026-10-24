@@ -104,7 +104,7 @@ pub enum Uncommitted {
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints something that isn't a patch.
-pub fn uncommitted_diff(
+pub async fn uncommitted_diff(
     git: &Git,
     repository: &Repository,
     paths: &[&BStr],
@@ -135,14 +135,17 @@ pub fn uncommitted_diff(
     }
     let paths = paths.iter().map(|path| path.to_os_str_lossy());
     match which {
-        Uncommitted::Unstaged => parse_streamed(command.arg("--").args(paths)),
-        Uncommitted::Staged => parse_streamed(command.args(["--cached", "-M", "--"]).args(paths)),
+        Uncommitted::Unstaged => parse_streamed(command.arg("--").args(paths)).await,
+        Uncommitted::Staged => {
+            parse_streamed(command.args(["--cached", "-M", "--"]).args(paths)).await
+        }
         Uncommitted::Untracked => {
             // Against nothing: `--no-index` says whether they differ by exiting 1.
             let output = command
                 .args(["--no-index", "--", "/dev/null"])
                 .args(paths)
-                .output_unchecked()?;
+                .output_unchecked()
+                .await?;
             if !matches!(output.status.code(), Some(0 | 1)) {
                 return Err(GitError::failed("diff", output.status, output.stderr));
             }
@@ -168,7 +171,7 @@ pub fn uncommitted_diff(
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints something that isn't a patch.
-pub fn file_diff(
+pub async fn file_diff(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -209,23 +212,25 @@ pub fn file_diff(
     command = command
         .arg("--")
         .args(paths.iter().map(|path| path.to_os_str_lossy()));
-    parse_streamed(command)
+    parse_streamed(command).await
 }
 
 /// Runs `command`, parsing the patch it prints as it streams.
-fn parse_streamed(command: GitCommand) -> Result<FileDiff, GitError> {
+async fn parse_streamed(command: GitCommand) -> Result<FileDiff, GitError> {
     let mut parser = Parser::default();
     let mut lines = Lines::default();
     let mut failed = None;
-    command.stream(|chunk| {
-        lines.feed(chunk, &mut |line| match parser.line(line) {
-            Ok(()) => std::ops::ControlFlow::Continue(()),
-            Err(error) => {
-                failed = Some(error);
-                std::ops::ControlFlow::Break(())
-            }
+    command
+        .stream(|chunk| {
+            lines.feed(chunk, &mut |line| match parser.line(line) {
+                Ok(()) => std::ops::ControlFlow::Continue(()),
+                Err(error) => {
+                    failed = Some(error);
+                    std::ops::ControlFlow::Break(())
+                }
+            })
         })
-    })?;
+        .await?;
     match failed {
         Some(error) => Err(error),
         None => Ok(parser.diff),

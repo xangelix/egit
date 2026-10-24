@@ -30,16 +30,18 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// [`io::ErrorKind::NotFound`] when it isn't there, and when it can't be read.
-    pub fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
+    pub async fn read(&self, path: &Path) -> io::Result<Vec<u8>> {
         match self.git.host() {
             Host::Local => std::fs::read(path),
             Host::Ssh(ssh) => {
-                let ran = self.run(
-                    ssh,
-                    "[ -e \"$1\" ] || exit 3; exec cat -- \"$1\"",
-                    &[path.as_os_str()],
-                    None,
-                )?;
+                let ran = self
+                    .run(
+                        ssh,
+                        "[ -e \"$1\" ] || exit 3; exec cat -- \"$1\"",
+                        &[path.as_os_str()],
+                        None,
+                    )
+                    .await?;
                 ran.into_result(path)
             }
         }
@@ -50,7 +52,7 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When one there can't be read.
-    pub fn read_all(&self, paths: &[&Path]) -> io::Result<Vec<Option<Vec<u8>>>> {
+    pub async fn read_all(&self, paths: &[&Path]) -> io::Result<Vec<Option<Vec<u8>>>> {
         match self.git.host() {
             Host::Local => paths
                 .iter()
@@ -63,14 +65,16 @@ impl<'g> Files<'g> {
             Host::Ssh(ssh) => {
                 let args: Vec<&OsStr> = paths.iter().map(|path| path.as_os_str()).collect();
                 // Each its size on a line of its own ("-" for none), then its bytes.
-                let ran = self.run(
-                    ssh,
-                    "for path in \"$@\"; do \
+                let ran = self
+                    .run(
+                        ssh,
+                        "for path in \"$@\"; do \
                      if [ -f \"$path\" ]; then wc -c < \"$path\" && cat -- \"$path\" || exit 1; \
                      else echo -; fi; done",
-                    &args,
-                    None,
-                )?;
+                        &args,
+                        None,
+                    )
+                    .await?;
                 split_sized(&ran.into_result(Path::new(""))?, paths.len())
             }
         }
@@ -82,19 +86,21 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When they can't be looked at there.
-    pub fn runnable(&self, paths: &[&Path]) -> io::Result<Vec<bool>> {
+    pub async fn runnable(&self, paths: &[&Path]) -> io::Result<Vec<bool>> {
         match self.git.host() {
             Host::Local => Ok(paths.iter().map(|path| runnable_here(path)).collect()),
             Host::Ssh(ssh) => {
                 let args: Vec<&OsStr> = paths.iter().map(|path| path.as_os_str()).collect();
-                let ran = self.run(
-                    ssh,
-                    "for path in \"$@\"; do \
+                let ran = self
+                    .run(
+                        ssh,
+                        "for path in \"$@\"; do \
                      if [ -f \"$path\" ] && [ -x \"$path\" ]; then printf 1; else printf 0; fi; \
                      done",
-                    &args,
-                    None,
-                )?;
+                        &args,
+                        None,
+                    )
+                    .await?;
                 flags(&ran.into_result(Path::new(""))?, paths.len())
             }
         }
@@ -105,23 +111,25 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When one can't be looked at.
-    pub fn look(&self, paths: &[&Path]) -> io::Result<Vec<Entry>> {
+    pub async fn look(&self, paths: &[&Path]) -> io::Result<Vec<Entry>> {
         match self.git.host() {
             Host::Local => paths.iter().map(|path| look_here(path)).collect(),
             Host::Ssh(ssh) => {
                 let args: Vec<&OsStr> = paths.iter().map(|path| path.as_os_str()).collect();
-                let ran = self.run(
-                    ssh,
-                    "for path in \"$@\"; do \
+                let ran = self
+                    .run(
+                        ssh,
+                        "for path in \"$@\"; do \
                      if [ -L \"$path\" ]; then printf L; readlink -- \"$path\" | wc -c; \
                      readlink -- \"$path\"; \
                      elif [ -d \"$path\" ]; then printf D; \
                      elif [ -e \"$path\" ]; then printf F; \
                      if [ -x \"$path\" ]; then printf 1; else printf 0; fi; wc -c < \"$path\"; \
                      else printf N; fi || exit 1; done",
-                    &args,
-                    None,
-                )?;
+                        &args,
+                        None,
+                    )
+                    .await?;
                 read_entries(&ran.into_result(Path::new(""))?, paths.len())
             }
         }
@@ -134,7 +142,7 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When it can't be written.
-    pub fn put(&self, path: &Path, bytes: &[u8], put: Put) -> io::Result<()> {
+    pub async fn put(&self, path: &Path, bytes: &[u8], put: Put) -> io::Result<()> {
         match self.git.host() {
             Host::Local => put_here(path, bytes, put),
             Host::Ssh(ssh) => {
@@ -145,7 +153,7 @@ impl<'g> Files<'g> {
                          exec ln -s -- \"$(cat)\" \"$1\"",
                         &[path.as_os_str()],
                         Some(bytes),
-                    )?,
+                    ).await?,
                     Put::File { executable } => self.run(
                         ssh,
                         "folder=$(dirname -- \"$1\") && mkdir -p -- \"$folder\" && \
@@ -160,7 +168,7 @@ impl<'g> Files<'g> {
                             OsStr::new(if executable { "1" } else { "0" }),
                         ],
                         Some(bytes),
-                    )?,
+                    ).await?,
                 };
                 ran.into_result(path).map(drop)
             }
@@ -172,11 +180,12 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When it can't be removed.
-    pub fn remove_if_there(&self, path: &Path) -> io::Result<()> {
+    pub async fn remove_if_there(&self, path: &Path) -> io::Result<()> {
         match self.git.host() {
             Host::Local => remove_here(path),
             Host::Ssh(ssh) => self
-                .run(ssh, "exec rm -f -- \"$1\"", &[path.as_os_str()], None)?
+                .run(ssh, "exec rm -f -- \"$1\"", &[path.as_os_str()], None)
+                .await?
                 .into_result(path)
                 .map(drop),
         }
@@ -187,7 +196,7 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When they can't be looked at.
-    pub fn exist(&self, paths: &[&Path]) -> io::Result<Vec<bool>> {
+    pub async fn exist(&self, paths: &[&Path]) -> io::Result<Vec<bool>> {
         match self.git.host() {
             Host::Local => paths
                 .iter()
@@ -195,14 +204,16 @@ impl<'g> Files<'g> {
                 .collect(),
             Host::Ssh(ssh) => {
                 let args: Vec<&OsStr> = paths.iter().map(|path| path.as_os_str()).collect();
-                let ran = self.run(
-                    ssh,
-                    "for path in \"$@\"; do \
+                let ran = self
+                    .run(
+                        ssh,
+                        "for path in \"$@\"; do \
                      if [ -e \"$path\" ] || [ -L \"$path\" ]; then printf 1; else printf 0; fi; \
                      done",
-                    &args,
-                    None,
-                )?;
+                        &args,
+                        None,
+                    )
+                    .await?;
                 flags(&ran.into_result(Path::new(""))?, paths.len())
             }
         }
@@ -213,17 +224,18 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When it can't be looked at.
-    pub fn exists(&self, path: &Path) -> io::Result<bool> {
-        Ok(self.exist(&[path])?.first() == Some(&true))
+    pub async fn exists(&self, path: &Path) -> io::Result<bool> {
+        Ok(self.exist(&[path]).await?.first() == Some(&true))
     }
 
     /// Whether `path` is a file (following links); not when it can't be looked at.
     #[must_use]
-    pub fn is_file(&self, path: &Path) -> bool {
+    pub async fn is_file(&self, path: &Path) -> bool {
         match self.git.host() {
             Host::Local => path.is_file(),
             Host::Ssh(ssh) => self
                 .run(ssh, "[ -f \"$1\" ]", &[path.as_os_str()], None)
+                .await
                 .is_ok_and(|ran| ran.status.success()),
         }
     }
@@ -233,11 +245,12 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When it can't be written.
-    pub fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+    pub async fn write(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
         match self.git.host() {
             Host::Local => std::fs::write(path, bytes),
             Host::Ssh(ssh) => self
-                .run(ssh, "exec cat > \"$1\"", &[path.as_os_str()], Some(bytes))?
+                .run(ssh, "exec cat > \"$1\"", &[path.as_os_str()], Some(bytes))
+                .await?
                 .into_result(path)
                 .map(drop),
         }
@@ -248,7 +261,7 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When it can't be written.
-    pub fn append(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+    pub async fn append(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
         match self.git.host() {
             Host::Local => std::fs::OpenOptions::new()
                 .create(true)
@@ -256,7 +269,8 @@ impl<'g> Files<'g> {
                 .open(path)?
                 .write_all(bytes),
             Host::Ssh(ssh) => self
-                .run(ssh, "exec cat >> \"$1\"", &[path.as_os_str()], Some(bytes))?
+                .run(ssh, "exec cat >> \"$1\"", &[path.as_os_str()], Some(bytes))
+                .await?
                 .into_result(path)
                 .map(drop),
         }
@@ -267,7 +281,7 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// [`io::ErrorKind::NotFound`] when it isn't there, and when it can't be removed.
-    pub fn remove_file(&self, path: &Path) -> io::Result<()> {
+    pub async fn remove_file(&self, path: &Path) -> io::Result<()> {
         match self.git.host() {
             Host::Local => std::fs::remove_file(path),
             Host::Ssh(ssh) => self
@@ -276,7 +290,8 @@ impl<'g> Files<'g> {
                     "[ -e \"$1\" ] || [ -L \"$1\" ] || exit 3; exec rm -f -- \"$1\"",
                     &[path.as_os_str()],
                     None,
-                )?
+                )
+                .await?
                 .into_result(path)
                 .map(drop),
         }
@@ -287,11 +302,12 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When it can't be made.
-    pub fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+    pub async fn create_dir_all(&self, path: &Path) -> io::Result<()> {
         match self.git.host() {
             Host::Local => std::fs::create_dir_all(path),
             Host::Ssh(ssh) => self
-                .run(ssh, "exec mkdir -p -- \"$1\"", &[path.as_os_str()], None)?
+                .run(ssh, "exec mkdir -p -- \"$1\"", &[path.as_os_str()], None)
+                .await?
                 .into_result(path)
                 .map(drop),
         }
@@ -304,7 +320,7 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When the other computer can't be asked.
-    pub fn folders_within(&self, roots: &[&Path], most: usize) -> io::Result<Vec<PathBuf>> {
+    pub async fn folders_within(&self, roots: &[&Path], most: usize) -> io::Result<Vec<PathBuf>> {
         match self.git.host() {
             Host::Local => Ok(folders_here(roots, most)),
             Host::Ssh(ssh) => {
@@ -321,7 +337,8 @@ impl<'g> Files<'g> {
                          2>/dev/null | head -z -n \"$most\"",
                         &args,
                         None,
-                    )?
+                    )
+                    .await?
                     .into_result(Path::new(""))?;
                 Ok(found
                     .split(|byte| *byte == 0)
@@ -334,11 +351,12 @@ impl<'g> Files<'g> {
 
     /// The home folder on the other computer (`$HOME` there), where `~` and relative paths
     /// typed for it lead.
-    pub(crate) fn home_there(self, ssh: &SshHost) -> io::Result<PathBuf> {
+    pub(crate) async fn home_there(self, ssh: &SshHost) -> io::Result<PathBuf> {
         const SCRIPT: &str = "case $HOME in /*) printf %s \"$HOME\" ;; \
                               *) echo 'HOME is not set to a folder' >&2; exit 1 ;; esac";
         let said = self
-            .run(ssh, SCRIPT, &[], None)?
+            .run(ssh, SCRIPT, &[], None)
+            .await?
             .into_result(Path::new("~"))?;
         Ok(bstr::ByteSlice::to_path_lossy(said.as_slice()).into_owned())
     }
@@ -349,7 +367,7 @@ impl<'g> Files<'g> {
     /// # Errors
     ///
     /// When it can't be made.
-    pub fn temp_dir(&self, prefix: &str) -> io::Result<TempDir> {
+    pub async fn temp_dir(&self, prefix: &str) -> io::Result<TempDir> {
         match self.git.host() {
             Host::Local => Ok(TempDir::Here(
                 tempfile::Builder::new().prefix(prefix).tempdir()?,
@@ -362,7 +380,8 @@ impl<'g> Files<'g> {
                         "exec mktemp -d \"${TMPDIR:-/tmp}/$1\"",
                         &[&template],
                         None,
-                    )?
+                    )
+                    .await?
                     .into_result(Path::new(""))?;
                 let path = bstr::ByteSlice::to_path_lossy(made.trim_ascii_end()).into_owned();
                 Ok(TempDir::There {
@@ -375,7 +394,12 @@ impl<'g> Files<'g> {
 
     /// Runs `script` with `sh` there, `args` its arguments (`$1` on), `input` its standard
     /// input; returns how it ended and what it printed.
-    fn run(
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "here it blocks; through a relay it will await"
+    )]
+    async fn run(
         self,
         ssh: &SshHost,
         script: &str,
@@ -774,9 +798,12 @@ impl Drop for TempDir {
         if let Self::There { path, git } = self
             && let Some(ssh) = git.host().ssh()
         {
-            let removed = git
-                .files()
-                .run(ssh, "exec rm -rf -- \"$1\"", &[path.as_os_str()], None);
+            let removed = crate::exec::block_on(git.files().run(
+                ssh,
+                "exec rm -rf -- \"$1\"",
+                &[path.as_os_str()],
+                None,
+            ));
             if let Err(error) = removed {
                 tracing::debug!(%error, path = %path.display(), "a folder there wasn't removed");
             }

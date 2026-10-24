@@ -17,8 +17,8 @@ use std::path::Path;
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, ChangeKind, Commit, LineCounts, ObjectId, ObjectKind, ObjectReader, RefKind,
-    Repository, commit_changes, commits_between, line_counts, list_references, walk_history,
-    walk_history_from, write_commit_graph,
+    Repository, Wait as _, commit_changes, commits_between, line_counts, list_references,
+    walk_history, walk_history_from, write_commit_graph,
 };
 
 fn sandbox() -> Sandbox {
@@ -75,7 +75,7 @@ fn walk_from(
     repo: &Path,
     tips: Vec<ObjectId>,
 ) -> Vec<(ObjectId, Vec<ObjectId>)> {
-    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), repo).wait().unwrap();
     let mut commits = Vec::new();
     let walked = walk_history_from(
         sandbox.git(),
@@ -87,13 +87,14 @@ fn walk_from(
             ControlFlow::Continue(())
         },
     )
+    .wait()
     .unwrap();
     assert_eq!(walked.commits, u64::try_from(commits.len()).unwrap());
     commits
 }
 
 fn walk(sandbox: &Sandbox, repo: &Path) -> Vec<(ObjectId, Vec<ObjectId>)> {
-    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), repo).wait().unwrap();
     let mut commits = Vec::new();
     let walked = walk_history(
         sandbox.git(),
@@ -104,6 +105,7 @@ fn walk(sandbox: &Sandbox, repo: &Path) -> Vec<(ObjectId, Vec<ObjectId>)> {
             ControlFlow::Continue(())
         },
     )
+    .wait()
     .unwrap();
     assert_eq!(walked.commits, u64::try_from(commits.len()).unwrap());
     assert!(!walked.stopped);
@@ -161,10 +163,11 @@ fn an_empty_repository_has_no_history() {
 fn a_walk_can_stop_early() {
     let sandbox = sandbox();
     let repo = branchy(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let walked = walk_history(sandbox.git(), &repository, &CancelToken::new(), |_, _| {
         ControlFlow::Break(())
     })
+    .wait()
     .unwrap();
     assert_eq!(walked.commits, 1);
     assert!(walked.stopped);
@@ -204,8 +207,8 @@ fn lists_refs_with_tags_followed_to_their_commits() {
         )
         .unwrap();
 
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
-    let references = list_references(sandbox.git(), &repository).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let references = list_references(sandbox.git(), &repository).wait().unwrap();
     let find = |name: &str| references.iter().find(|reference| reference.name == name);
     assert!(
         find("refs/remotes/origin/HEAD").is_none(),
@@ -268,6 +271,7 @@ fn reads_objects_through_one_process() {
         .stdin(stream.into_bytes())
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
 
     let commits: Vec<ObjectId> = walk(&sandbox, &repo)
@@ -275,7 +279,7 @@ fn reads_objects_through_one_process() {
         .map(|(id, _)| id)
         .collect();
     assert_eq!(commits.len(), 300);
-    let mut reader = ObjectReader::start(sandbox.git(), &repo).unwrap();
+    let mut reader = ObjectReader::start(sandbox.git(), &repo).wait().unwrap();
     let missing = ObjectId::from_hex(b"0123456789012345678901234567890123456789").unwrap();
     let mut asked = commits.clone();
     asked.insert(150, missing);
@@ -291,6 +295,7 @@ fn reads_objects_through_one_process() {
             }
             None => subjects.push((id, "missing".to_owned())),
         })
+        .wait()
         .unwrap();
     assert_eq!(subjects.len(), 301);
     assert_eq!(subjects[0].1, "Commit number 300");
@@ -303,6 +308,7 @@ fn reads_objects_through_one_process() {
         .read(&commits[..1], |_, object| {
             again = object.map(|object| Commit::parse(object.data).unwrap().committer.time);
         })
+        .wait()
         .unwrap();
     assert_eq!(again, Some(1_700_000_300));
 }
@@ -319,17 +325,19 @@ fn reads_large_objects_then_small_ones() {
             .stdin(contents)
             .current_dir(&repo)
             .output()
+            .wait()
             .unwrap();
         ObjectId::from_hex(written.stdout.trim_ascii()).unwrap()
     };
     let large = write(b"0123456789abcdef".repeat(200_000));
     let small = write(b"small\n".to_vec());
-    let mut reader = ObjectReader::start(sandbox.git(), &repo).unwrap();
+    let mut reader = ObjectReader::start(sandbox.git(), &repo).wait().unwrap();
     let mut sizes = Vec::new();
     reader
         .read(&[large, small, large, small], |_, object| {
             sizes.push(object.map(|object| object.data.len()));
         })
+        .wait()
         .unwrap();
     assert_eq!(sizes, [Some(3_200_000), Some(6), Some(3_200_000), Some(6)]);
 }
@@ -354,11 +362,13 @@ fn lists_what_a_commit_changed() {
     sandbox
         .run(&repo, "commit", &["--quiet", "--message", "Change"])
         .unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
 
     let head = rev(&sandbox, &repo, "HEAD");
     let parent = rev(&sandbox, &repo, "HEAD^");
-    let mut changes = commit_changes(sandbox.git(), &repository, head, Some(parent)).unwrap();
+    let mut changes = commit_changes(sandbox.git(), &repository, head, Some(parent))
+        .wait()
+        .unwrap();
     changes.sort_by(|a, b| a.path.cmp(&b.path));
     // Each side names what the tree holds there.
     let keep = &changes[1];
@@ -386,7 +396,9 @@ fn lists_what_a_commit_changed() {
     );
 
     let root = rev(&sandbox, &repo, "HEAD~2");
-    let first = commit_changes(sandbox.git(), &repository, root, None).unwrap();
+    let first = commit_changes(sandbox.git(), &repository, root, None)
+        .wait()
+        .unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].kind, ChangeKind::Added);
 }
@@ -414,7 +426,7 @@ fn counts_the_lines_a_commit_changed_in_the_order_it_lists_them() {
     sandbox
         .run(&repo, "commit", &["--quiet", "--message", "Change"])
         .unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let (head, parent) = (rev(&sandbox, &repo, "HEAD"), rev(&sandbox, &repo, "HEAD^"));
 
     let counted = line_counts(
@@ -424,8 +436,11 @@ fn counts_the_lines_a_commit_changed_in_the_order_it_lists_them() {
         Some(parent),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
-    let listed = commit_changes(sandbox.git(), &repository, head, Some(parent)).unwrap();
+    let listed = commit_changes(sandbox.git(), &repository, head, Some(parent))
+        .wait()
+        .unwrap();
     let paths = |paths: Vec<&bstr::BString>| -> Vec<String> {
         paths.into_iter().map(ToString::to_string).collect()
     };
@@ -444,7 +459,9 @@ fn counts_the_lines_a_commit_changed_in_the_order_it_lists_them() {
     assert_eq!(lines["logo.png"], None, "a binary file has no lines");
 
     let root = rev(&sandbox, &repo, "HEAD~2");
-    let first = line_counts(sandbox.git(), &repository, root, None, &CancelToken::new()).unwrap();
+    let first = line_counts(sandbox.git(), &repository, root, None, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].lines, counts(1, 0));
 }
@@ -453,10 +470,12 @@ fn counts_the_lines_a_commit_changed_in_the_order_it_lists_them() {
 fn writes_a_commit_graph() {
     let sandbox = sandbox();
     let repo = branchy(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
-    assert!(!repository.has_commit_graph(sandbox.git()));
-    write_commit_graph(sandbox.git(), &repository, &CancelToken::new()).unwrap();
-    assert!(repository.has_commit_graph(sandbox.git()));
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    assert!(!repository.has_commit_graph(sandbox.git()).wait());
+    write_commit_graph(sandbox.git(), &repository, &CancelToken::new())
+        .wait()
+        .unwrap();
+    assert!(repository.has_commit_graph(sandbox.git()).wait());
     assert_eq!(walk(&sandbox, &repo).len(), 6);
 }
 
@@ -494,8 +513,10 @@ fn with_a_commit_graph_walks_what_all_reaches_from_fewer_tips() {
         .unwrap();
     std::fs::write(repo.join("a"), "changed\n").unwrap();
     sandbox.run(&repo, "stash", &["--quiet"]).unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
-    write_commit_graph(sandbox.git(), &repository, &CancelToken::new()).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    write_commit_graph(sandbox.git(), &repository, &CancelToken::new())
+        .wait()
+        .unwrap();
     // One more commit, after the graph was written.
     sandbox.commit_file(&repo, "g", "g\n", "After").unwrap();
 
@@ -587,9 +608,11 @@ fn a_partial_clones_commit_graph_fetches_nothing() {
         .unwrap();
     let before = trees(&sandbox, &clone);
 
-    let repository = Repository::discover(sandbox.git(), &clone).unwrap();
-    write_commit_graph(sandbox.git(), &repository, &CancelToken::new()).unwrap();
-    assert!(repository.has_commit_graph(sandbox.git()));
+    let repository = Repository::discover(sandbox.git(), &clone).wait().unwrap();
+    write_commit_graph(sandbox.git(), &repository, &CancelToken::new())
+        .wait()
+        .unwrap();
+    assert!(repository.has_commit_graph(sandbox.git()).wait());
     assert_eq!(
         trees(&sandbox, &clone),
         before,
@@ -601,7 +624,7 @@ fn a_partial_clones_commit_graph_fetches_nothing() {
 fn a_branch_s_own_commits_are_listed_newest_first() {
     let sandbox = sandbox();
     let repo = branchy(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let between = |base: &str, tip: &str, limit| {
         commits_between(
             sandbox.git(),
@@ -611,6 +634,7 @@ fn a_branch_s_own_commits_are_listed_newest_first() {
             limit,
             &CancelToken::new(),
         )
+        .wait()
     };
     let (d, e) = (
         rev(&sandbox, &repo, "topic~1"),

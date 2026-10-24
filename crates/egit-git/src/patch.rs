@@ -259,7 +259,7 @@ impl<'a> Cursor<'a> {
 ///
 /// [`LinesError::Stale`] when the index holds something else at `path` (or a conflict), and
 /// [`LinesError::Git`] when git fails or is cancelled.
-pub fn write_index_content(
+pub async fn write_index_content(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -269,7 +269,7 @@ pub fn write_index_content(
     cancel: &CancelToken,
 ) -> Result<ObjectId, LinesError> {
     let work_tree = repository.work_tree();
-    if index_entry_at(git, repository, path, cancel)? != expected {
+    if index_entry_at(git, repository, path, cancel).await? != expected {
         return Err(LinesError::Stale);
     }
     let hashed = git
@@ -278,7 +278,8 @@ pub fn write_index_content(
         .current_dir(work_tree)
         .stdin(content)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let id = ObjectId::from_hex(hashed.stdout.trim_ascii())
         .ok_or_else(|| GitError::unexpected("hash-object", "an object name"))?;
     let mut record = format!("{mode:o} {id} 0\t").into_bytes();
@@ -289,7 +290,8 @@ pub fn write_index_content(
         .current_dir(work_tree)
         .stdin(record)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     Ok(id)
 }
 
@@ -299,7 +301,7 @@ pub fn write_index_content(
 ///
 /// [`LinesError::Stale`] when it is in conflict (its sides are staged apart), and
 /// [`LinesError::Git`] when git fails or is cancelled.
-pub(crate) fn index_entry_at(
+pub(crate) async fn index_entry_at(
     git: &Git,
     repository: &Repository,
     path: &BStr,
@@ -312,7 +314,8 @@ pub(crate) fn index_entry_at(
         .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     index_entry(&listed.stdout)
 }
 

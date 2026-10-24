@@ -29,7 +29,7 @@ pub struct Author {
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn recent_authors(
+pub async fn recent_authors(
     git: &Git,
     repository: &Repository,
     limit: usize,
@@ -42,7 +42,8 @@ pub fn recent_authors(
         .args(["--exclude=refs/stash", "--all", "--"])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let mut found: HashMap<BString, (usize, Author)> = HashMap::new();
     for (at, line) in output.stdout.lines().enumerate() {
         let Some((name, email)) = line.split_once_str(b"\0") else {
@@ -79,7 +80,7 @@ pub fn recent_authors(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn map_contacts(
+pub async fn map_contacts(
     git: &Git,
     repository: &Repository,
     contacts: &[&BStr],
@@ -106,7 +107,8 @@ pub fn map_contacts(
         .current_dir(repository.work_tree())
         .stdin(stdin)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let mut answers = mapped.stdout.lines();
     contacts
         .iter()

@@ -17,6 +17,7 @@ use egit_agents::accounts::{AuthStatus, Signer, auth_status};
 use egit_agents::install::{Install, find_node};
 use egit_agents::sessions::list_sessions;
 use egit_git::CancelToken;
+use egit_git::Wait as _;
 
 #[test]
 #[ignore = "downloads the SDK (about 250 MB) from npm's registry"]
@@ -24,12 +25,12 @@ fn the_sdk_installs_and_loads() {
     let node = find_node().unwrap();
     let cache = tempfile::tempdir().unwrap();
     let install = Install::at(cache.path());
-    install.install(&node, &CancelToken::new()).unwrap();
-    assert!(install.is_ready());
+    install.install(&node, &CancelToken::new()).wait().unwrap();
+    assert!(install.is_ready().wait());
     // Again: nothing to do.
-    install.install(&node, &CancelToken::new()).unwrap();
+    install.install(&node, &CancelToken::new()).wait().unwrap();
 
-    let claude = install.claude().unwrap();
+    let claude = install.claude().wait().unwrap();
     let version = std::process::Command::new(&claude)
         .arg("--version")
         .output()

@@ -68,7 +68,7 @@ pub struct SignatureCheck {
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints something unexpected.
-pub fn check_signatures(
+pub async fn check_signatures(
     git: &Git,
     repository: &Repository,
     ids: &[ObjectId],
@@ -95,7 +95,8 @@ pub fn check_signatures(
         .current_dir(repository.work_tree())
         .stdin(stdin)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     parse_checks(&listed.stdout)
 }
 

@@ -15,7 +15,7 @@ use bstr::{BStr, ByteSlice as _};
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, DiffLineKind, DiffOptions, FileDiff, ObjectId, Repository, Uncommitted,
-    WHOLE_FILE, file_diff, uncommitted_diff,
+    WHOLE_FILE, Wait as _, file_diff, uncommitted_diff,
 };
 
 fn sandbox() -> Sandbox {
@@ -29,7 +29,7 @@ fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
 
 /// The diff of `paths` in `HEAD` (against its parent, if it has one).
 fn diff_head(sandbox: &Sandbox, repo: &Path, paths: &[&str], context: u32) -> FileDiff {
-    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), repo).wait().unwrap();
     let commit = rev(sandbox, repo, "HEAD");
     let parent = sandbox
         .run(repo, "rev-parse", &["--verify", "--quiet", "HEAD^"])
@@ -49,6 +49,7 @@ fn diff_head(sandbox: &Sandbox, repo: &Path, paths: &[&str], context: u32) -> Fi
         &options,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap()
 }
 
@@ -225,7 +226,7 @@ fn whitespace_alone_is_left_out_when_asked() {
     sandbox
         .commit_file(&repo, "f", "a\n  b c\nD\n", "Indent")
         .unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let options = DiffOptions {
         context: 0,
         ignore_whitespace: true,
@@ -240,6 +241,7 @@ fn whitespace_alone_is_left_out_when_asked() {
         &options,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     // The hunk header names the line before as its context, as git does.
     assert_eq!(
@@ -256,13 +258,14 @@ fn whitespace_alone_is_left_out_when_asked() {
         &options,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert!(unstaged.lines.is_empty(), "{:?}", shown(&unstaged));
 }
 
 /// The diff of the uncommitted changes `which` to `paths`.
 fn uncommitted(sandbox: &Sandbox, repo: &Path, paths: &[&str], which: Uncommitted) -> FileDiff {
-    let repository = Repository::discover(sandbox.git(), repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), repo).wait().unwrap();
     let paths: Vec<&BStr> = paths.iter().copied().map(BStr::new).collect();
     uncommitted_diff(
         sandbox.git(),
@@ -272,6 +275,7 @@ fn uncommitted(sandbox: &Sandbox, repo: &Path, paths: &[&str], which: Uncommitte
         &DiffOptions::default(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap()
 }
 

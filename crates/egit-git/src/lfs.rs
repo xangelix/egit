@@ -55,12 +55,13 @@ impl LfsVersion {
 /// # Errors
 ///
 /// When git can't be run.
-pub fn lfs_version(git: &Git) -> Result<Option<LfsVersion>, GitError> {
+pub async fn lfs_version(git: &Git) -> Result<Option<LfsVersion>, GitError> {
     let done = git
         .read("lfs")
         .arg("version")
         .current_dir(crate::git::outside_repositories())
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     Ok(done
         .status
         .success()
@@ -120,7 +121,7 @@ const fn tracked() -> bool {
 /// # Errors
 ///
 /// When git LFS fails or prints what isn't a listing.
-pub fn lfs_patterns(
+pub async fn lfs_patterns(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
@@ -130,7 +131,8 @@ pub fn lfs_patterns(
         .args(["track", "--json"])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if done.status.success() {
         let read: Patterns = serde_json::from_slice(&done.stdout)
             .map_err(|error| GitError::unexpected("lfs track", error.to_string()))?;
@@ -152,7 +154,8 @@ pub fn lfs_patterns(
         .arg("track")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     Ok(parse_listing(&listed.stdout))
 }
 
@@ -230,7 +233,7 @@ struct FileEntry {
 /// # Errors
 ///
 /// When git LFS fails or prints what isn't a listing.
-pub fn lfs_files(
+pub async fn lfs_files(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
@@ -240,7 +243,8 @@ pub fn lfs_files(
         .args(["ls-files", "--json"])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if !done.status.success() {
         if done.stderr.message().contains("HEAD") {
             return Ok(Vec::new());
@@ -269,11 +273,12 @@ pub fn lfs_files(
 /// # Errors
 ///
 /// When git LFS fails.
-pub fn lfs_install(git: &Git, repository: &Repository) -> Result<(), GitError> {
+pub async fn lfs_install(git: &Git, repository: &Repository) -> Result<(), GitError> {
     git.write("lfs")
         .args(["install", "--local"])
         .current_dir(repository.work_tree())
         .output()
+        .await
         .map(drop)
 }
 
@@ -285,7 +290,7 @@ pub fn lfs_install(git: &Git, repository: &Repository) -> Result<(), GitError> {
 /// # Errors
 ///
 /// When git LFS fails (a pattern it refuses).
-pub fn lfs_track(
+pub async fn lfs_track(
     git: &Git,
     repository: &Repository,
     pattern: &str,
@@ -298,7 +303,7 @@ pub fn lfs_track(
     if lockable {
         command = command.arg("--lockable");
     }
-    command.arg("--").arg(pattern).output().map(drop)
+    command.arg("--").arg(pattern).output().await.map(drop)
 }
 
 /// Stops tracking `pattern` with LFS (`git lfs untrack`): its line leaves `.gitattributes`.
@@ -307,12 +312,17 @@ pub fn lfs_track(
 /// # Errors
 ///
 /// When git LFS fails.
-pub fn lfs_untrack(git: &Git, repository: &Repository, pattern: &str) -> Result<(), GitError> {
+pub async fn lfs_untrack(
+    git: &Git,
+    repository: &Repository,
+    pattern: &str,
+) -> Result<(), GitError> {
     git.write("lfs")
         .args(["untrack", "--"])
         .arg(pattern)
         .current_dir(repository.work_tree())
         .output()
+        .await
         .map(drop)
 }
 
@@ -342,7 +352,7 @@ pub enum LfsTransfer {
 /// # Errors
 ///
 /// When git LFS fails (the remote's store refuses, or lacks a file) or is cancelled.
-pub fn lfs_transfer(
+pub async fn lfs_transfer(
     git: &Git,
     repository: &Repository,
     transfer: &LfsTransfer,
@@ -368,7 +378,7 @@ pub fn lfs_transfer(
             .arg(remote.to_os_str_lossy())
             .prompt_context("Pushing LFS files"),
     };
-    let done = command.output()?;
+    let done = command.output().await?;
     Ok(done.stderr.message())
 }
 
@@ -378,7 +388,7 @@ pub fn lfs_transfer(
 /// # Errors
 ///
 /// When git LFS fails or is cancelled.
-pub fn lfs_prune(
+pub async fn lfs_prune(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
@@ -388,7 +398,8 @@ pub fn lfs_prune(
         .arg("prune")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let mut said = done.stdout.to_str_lossy().trim().to_owned();
     if said.is_empty() {
         said = done.stderr.message();
@@ -430,7 +441,7 @@ struct Owner {
 /// # Errors
 ///
 /// When git LFS fails (a server without locking, or none reachable) or is cancelled.
-pub fn lfs_locks(
+pub async fn lfs_locks(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
@@ -441,7 +452,8 @@ pub fn lfs_locks(
         .prompt_context("Reading the LFS locks")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     parse_locks(&done.stdout)
 }
 
@@ -466,7 +478,7 @@ fn parse_locks(json: &[u8]) -> Result<Vec<LfsLock>, GitError> {
 /// # Errors
 ///
 /// When git LFS fails: a server without locking, a lock someone else holds.
-pub fn lfs_lock(
+pub async fn lfs_lock(
     git: &Git,
     repository: &Repository,
     path: &[u8],
@@ -485,6 +497,7 @@ pub fn lfs_lock(
         .arg("--")
         .arg(path.to_os_str_lossy())
         .output()
+        .await
         .map(drop)
 }
 

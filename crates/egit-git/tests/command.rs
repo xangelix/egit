@@ -18,7 +18,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, GitError, GitVersion};
+use egit_git::{CancelToken, GitError, GitVersion, Wait as _};
 
 fn sandbox() -> Sandbox {
     Sandbox::new().expect("a sandbox")
@@ -39,6 +39,7 @@ fn collects_standard_output_and_feeds_standard_input() {
         .arg("--stdin")
         .stdin(b"hello\n".as_slice())
         .output()
+        .wait()
         .unwrap();
     assert_eq!(
         completed.stdout,
@@ -56,6 +57,7 @@ fn a_failure_carries_gits_own_message() {
         .args(["--verify", "no-such-revision"])
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap_err();
     let failure = error.failure().expect("git ran and failed");
     assert_eq!(failure.code(), Some(128));
@@ -71,6 +73,7 @@ fn unchecked_output_returns_any_exit() {
         .read("config")
         .args(["--get", "no.such-key"])
         .output_unchecked()
+        .wait()
         .unwrap();
     assert_eq!(completed.status.code(), Some(1));
     assert_eq!(completed.stdout, b"");
@@ -85,6 +88,7 @@ fn a_missing_directory_is_named() {
         .read("status")
         .current_dir(&missing)
         .output()
+        .wait()
         .unwrap_err();
     assert!(matches!(&error, GitError::Io { .. }), "{error:?}");
     assert!(error.to_string().contains("isn't a directory"), "{error}");
@@ -99,6 +103,7 @@ fn git_runs_in_a_session_of_its_own_without_a_terminal() {
         .read("stat")
         .config("alias.stat", "!cat /proc/self/stat")
         .output()
+        .wait()
         .unwrap();
     let stat = String::from_utf8(completed.stdout).unwrap();
     // `pid (comm) state ppid pgrp session tty_nr …`; `comm` may contain spaces.
@@ -125,6 +130,7 @@ fn never_prompts_on_a_terminal() {
         .arg("fill")
         .stdin(b"protocol=https\nhost=example.invalid\n\n".as_slice())
         .output()
+        .wait()
         .unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(10));
     let message = error.failure().expect("git failed").stderr.message();
@@ -152,6 +158,7 @@ fn cancelling_stops_git_and_everything_it_started() {
         .env("PID_FILE", &pid_file)
         .cancel_token(&token)
         .output()
+        .wait()
         .unwrap_err();
     canceller.join().unwrap();
     assert!(
@@ -180,6 +187,7 @@ fn a_cancelled_token_starts_nothing() {
         .read("version")
         .cancel_token(&token)
         .output()
+        .wait()
         .unwrap_err();
     assert!(matches!(
         error,
@@ -205,6 +213,7 @@ fn streams_everything_git_prints() {
             received.extend_from_slice(chunk);
             ControlFlow::Continue(())
         })
+        .wait()
         .unwrap();
     assert!(!streamed.stopped);
     assert!(streamed.status.success());
@@ -227,6 +236,7 @@ fn a_consumer_can_stop_an_endless_stream() {
                 ControlFlow::Continue(())
             }
         })
+        .wait()
         .unwrap();
     assert!(streamed.stopped);
 }
@@ -240,6 +250,7 @@ fn collected_output_is_limited() {
         .config("alias.forever", "!yes")
         .stdout_limit(1024)
         .output()
+        .wait()
         .unwrap_err();
     assert!(
         matches!(error, GitError::OutputTooLarge { limit: 1024, .. }),
@@ -264,6 +275,7 @@ fn a_write_waits_for_another_gits_lock() {
         .arg("file")
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
     releaser.join().unwrap();
     let staged = sandbox
@@ -272,6 +284,7 @@ fn a_write_waits_for_another_gits_lock() {
         .args(["--cached", "--name-only"])
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
     assert_eq!(staged.stdout, b"file\n");
 }
@@ -288,6 +301,7 @@ fn a_write_gives_up_on_a_lock_nobody_releases() {
         .arg("file")
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap_err();
     assert!(error.is_lock_contention(), "{error:?}");
     let lock = error.failure().unwrap().held_lock().unwrap();
@@ -319,6 +333,7 @@ fn a_read_never_takes_the_index_lock() {
         .arg("--porcelain")
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
     assert_eq!(fs::metadata(&index).unwrap().modified().unwrap(), before);
 
@@ -329,6 +344,7 @@ fn a_read_never_takes_the_index_lock() {
         .arg("--porcelain")
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
     assert_ne!(fs::metadata(&index).unwrap().modified().unwrap(), before);
 }

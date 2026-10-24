@@ -103,7 +103,12 @@ impl CancelToken {
 
     /// Waits for `duration`, or less if the token is cancelled meanwhile. Returns whether it was
     /// cancelled.
-    pub(crate) fn sleep(&self, duration: Duration) -> bool {
+    #[allow(
+        clippy::unused_async,
+        clippy::unused_async_trait_impl,
+        reason = "here it blocks; through a relay it will await"
+    )]
+    pub(crate) async fn sleep(&self, duration: Duration) -> bool {
         let deadline = Instant::now().checked_add(duration);
         let mut running = self.0.running.lock();
         while !self.is_cancelled() {
@@ -158,6 +163,7 @@ impl Drop for Registration<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::Wait as _;
 
     #[test]
     fn starts_uncancelled_and_clones_share_state() {
@@ -172,7 +178,7 @@ mod tests {
     fn sleep_runs_its_course_without_a_cancel() {
         let token = CancelToken::new();
         let started = Instant::now();
-        assert!(!token.sleep(Duration::from_millis(20)));
+        assert!(!token.sleep(Duration::from_millis(20)).wait());
         assert!(started.elapsed() >= Duration::from_millis(20));
     }
 
@@ -183,7 +189,10 @@ mod tests {
             let token = token.clone();
             std::thread::spawn(move || {
                 let started = Instant::now();
-                (token.sleep(Duration::from_secs(60)), started.elapsed())
+                (
+                    token.sleep(Duration::from_secs(60)).wait(),
+                    started.elapsed(),
+                )
             })
         };
         std::thread::sleep(Duration::from_millis(20));
@@ -197,6 +206,6 @@ mod tests {
     fn a_cancelled_token_sleeps_not_at_all() {
         let token = CancelToken::new();
         token.cancel();
-        assert!(token.sleep(Duration::from_secs(60)));
+        assert!(token.sleep(Duration::from_secs(60)).wait());
     }
 }

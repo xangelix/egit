@@ -30,7 +30,7 @@ pub struct CloneOptions {
 ///
 /// When git fails (a wrong address, refused credentials, an existing destination) or is
 /// cancelled.
-pub fn clone(
+pub async fn clone(
     git: &Git,
     url: &str,
     destination: &Path,
@@ -59,6 +59,7 @@ pub fn clone(
         .arg(url)
         .arg(destination)
         .output()
+        .await
         .map(drop)
 }
 
@@ -80,7 +81,7 @@ pub struct FetchOptions {
 ///
 /// When git fails (a remote that can't be reached, refused credentials, a prompt in the
 /// background) or is cancelled.
-pub fn fetch(
+pub async fn fetch(
     git: &Git,
     repository: &Repository,
     options: FetchOptions,
@@ -103,7 +104,7 @@ pub fn fetch(
     if options.background {
         command = command.arg("--no-auto-maintenance").non_interactive();
     }
-    command.output().map(drop)
+    command.output().await.map(drop)
 }
 
 /// Fetches from `remote` alone (`fetch <remote>`), removing its remote-tracking branches whose
@@ -112,7 +113,7 @@ pub fn fetch(
 /// # Errors
 ///
 /// When git fails (the remote can't be reached, refused credentials) or is cancelled.
-pub fn fetch_remote(
+pub async fn fetch_remote(
     git: &Git,
     repository: &Repository,
     remote: &BStr,
@@ -134,6 +135,7 @@ pub fn fetch_remote(
         .arg("--")
         .arg(remote.to_os_str_lossy())
         .output()
+        .await
         .map(drop)
 }
 
@@ -147,7 +149,7 @@ pub fn fetch_remote(
 ///
 /// When git fails (the remote doesn't have it, a branch it would move isn't a fast-forward or
 /// is checked out) or is cancelled.
-pub fn fetch_refspecs(
+pub async fn fetch_refspecs(
     git: &Git,
     repository: &Repository,
     remote: &BStr,
@@ -165,6 +167,7 @@ pub fn fetch_refspecs(
         .progress(progress)
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -217,7 +220,7 @@ pub enum Pulled {
 /// # Errors
 ///
 /// When git fails otherwise (no upstream, a remote that can't be reached) or is cancelled.
-pub fn pull(
+pub async fn pull(
     git: &Git,
     repository: &Repository,
     (mode, autostash): (PullMode, bool),
@@ -225,7 +228,7 @@ pub fn pull(
     cancel: &CancelToken,
 ) -> Result<Pulled, GitError> {
     let stashed_before = if autostash {
-        crate::stash::latest(git, repository, cancel)?
+        crate::stash::latest(git, repository, cancel).await?
     } else {
         None
     };
@@ -245,10 +248,10 @@ pub fn pull(
     if autostash {
         command = command.arg("--autostash");
     }
-    let Err(error) = command.output() else {
+    let Err(error) = command.output().await else {
         // Changes that came back with conflicts are kept as a stash (git's words for it differ
         // between versions; the stash list doesn't).
-        if autostash && crate::stash::latest(git, repository, cancel)? != stashed_before {
+        if autostash && crate::stash::latest(git, repository, cancel).await? != stashed_before {
             return Ok(Pulled::ChangesConflicted);
         }
         return Ok(Pulled::Updated);
@@ -272,6 +275,7 @@ pub fn pull(
     }
     let stopped = repository
         .operations(git)
+        .await
         .map_err(|source| GitError::Io {
             subcommand: "pull",
             source,
@@ -359,7 +363,7 @@ pub struct PushOptions {
 ///
 /// When git fails before any ref is pushed (a remote that can't be reached, refused
 /// credentials) or is cancelled.
-pub fn push(
+pub async fn push(
     git: &Git,
     repository: &Repository,
     options: &PushOptions,
@@ -382,7 +386,7 @@ pub fn push(
         refspec: refspec.as_bstr(),
         flags: &flags,
     };
-    push.run(git, repository, progress, cancel)
+    push.run(git, repository, progress, cancel).await
 }
 
 /// Pushes the tag `tag` to `remote` (`refs/tags/<tag>`, as it is here). A refused ref isn't
@@ -391,7 +395,7 @@ pub fn push(
 /// # Errors
 ///
 /// When git fails before any ref is pushed, or is cancelled.
-pub fn push_tag(
+pub async fn push_tag(
     git: &Git,
     repository: &Repository,
     remote: &BStr,
@@ -409,7 +413,7 @@ pub fn push_tag(
         refspec: refspec.as_bstr(),
         flags: &[],
     };
-    push.run(git, repository, progress, cancel)
+    push.run(git, repository, progress, cancel).await
 }
 
 /// Deletes the branch `branch` (its short name there) on `remote` (pushing nothing to
@@ -418,7 +422,7 @@ pub fn push_tag(
 /// # Errors
 ///
 /// When git fails before any ref is pushed, or is cancelled.
-pub fn delete_remote_branch(
+pub async fn delete_remote_branch(
     git: &Git,
     repository: &Repository,
     remote: &BStr,
@@ -433,7 +437,7 @@ pub fn delete_remote_branch(
         refspec: refspec.as_bstr(),
         flags: &[],
     };
-    push.run(git, repository, progress, cancel)
+    push.run(git, repository, progress, cancel).await
 }
 
 /// One refspec pushed to a remote, with flags.
@@ -445,7 +449,7 @@ struct Push<'a> {
 
 impl Push<'_> {
     /// Runs `push --porcelain`; a refused ref isn't an error.
-    fn run(
+    async fn run(
         &self,
         git: &Git,
         repository: &Repository,
@@ -463,7 +467,8 @@ impl Push<'_> {
             .arg("--")
             .arg(self.remote.to_os_str_lossy())
             .arg(self.refspec.to_os_str_lossy())
-            .output_unchecked()?;
+            .output_unchecked()
+            .await?;
         let (refs, mut notes) = parse_porcelain(&done.stdout)?;
         if refs.is_empty() && !done.status.success() {
             return Err(GitError::failed("push", done.status, done.stderr));
@@ -531,11 +536,12 @@ fn parse_porcelain(output: &[u8]) -> Result<(Vec<PushedRef>, Vec<String>), GitEr
 /// # Errors
 ///
 /// When git fails.
-pub fn remotes(git: &Git, repository: &Repository) -> Result<Vec<BString>, GitError> {
+pub async fn remotes(git: &Git, repository: &Repository) -> Result<Vec<BString>, GitError> {
     let listed = git
         .read("remote")
         .current_dir(repository.work_tree())
-        .output()?;
+        .output()
+        .await?;
     Ok(listed
         .stdout
         .lines()
@@ -550,18 +556,19 @@ pub fn remotes(git: &Git, repository: &Repository) -> Result<Vec<BString>, GitEr
 /// # Errors
 ///
 /// When git fails.
-pub fn remote_urls(
+pub async fn remote_urls(
     git: &Git,
     repository: &Repository,
 ) -> Result<Vec<(BString, BString)>, GitError> {
     let mut urls = Vec::new();
-    for name in remotes(git, repository)? {
+    for name in remotes(git, repository).await? {
         let url = git
             .read("ls-remote")
             .args(["--get-url", "--"])
             .arg(name.to_os_str_lossy())
             .current_dir(repository.work_tree())
-            .output()?
+            .output()
+            .await?
             .stdout;
         let url = url.strip_suffix(b"\n").unwrap_or(&url);
         urls.push((name, BString::from(url)));
@@ -575,7 +582,7 @@ pub fn remote_urls(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn abort_operation(
+pub async fn abort_operation(
     git: &Git,
     repository: &Repository,
     operation: Operation,
@@ -594,6 +601,7 @@ pub fn abort_operation(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -606,7 +614,7 @@ pub fn abort_operation(
 /// # Errors
 ///
 /// When there is nothing to skip, git refuses, or is cancelled.
-pub fn skip_operation(
+pub async fn skip_operation(
     git: &Git,
     repository: &Repository,
     operation: Operation,
@@ -628,8 +636,9 @@ pub fn skip_operation(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop);
-    carried_on(git, repository, skipped, cancel)
+    carried_on(git, repository, skipped, cancel).await
 }
 
 /// Carries on with an operation git stopped in the middle of, once its conflicts are resolved
@@ -638,7 +647,7 @@ pub fn skip_operation(
 /// # Errors
 ///
 /// When git refuses (conflicts left, say) or is cancelled.
-pub fn continue_operation(
+pub async fn continue_operation(
     git: &Git,
     repository: &Repository,
     operation: Operation,
@@ -663,6 +672,7 @@ pub fn continue_operation(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 

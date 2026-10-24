@@ -107,12 +107,12 @@ pub(crate) fn gitlab_artifact(
 /// Any of [`ForgeError`]'s: [`ForgeError::Cancelled`] when `cancel` (or the sink) stopped it,
 /// [`ForgeError::Said`] for an artifact that expired, [`ForgeError::Mismatched`] for one that
 /// doesn't match its digest.
-pub fn download_artifact(
+pub async fn download_artifact(
     account: &Account,
     repository: &ForgeRepository,
     artifact: &Artifact,
     cancel: &CancelToken,
-    sink: &mut dyn FnMut(&[u8]) -> bool,
+    sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
 ) -> Result<u64, ForgeError> {
     let host = account.host().name().to_owned();
     let what = format!("{}'s artifact {}", repository.full_name(), artifact.name);
@@ -146,7 +146,7 @@ pub fn download_artifact(
         given = given.saturating_add(u64::try_from(part.len()).unwrap_or(u64::MAX));
         sink(part)
     };
-    let first = account.download(&url, &mut take, cancel)?;
+    let first = account.download(&url, &mut take, cancel).await?;
     let done = match (first.status, first.location.as_deref()) {
         (301..=308, Some(location)) => account.download_public(location, &mut take, cancel)?,
         _ => first,

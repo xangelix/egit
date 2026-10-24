@@ -132,7 +132,7 @@ pub enum SwitchError {
 ///
 /// [`SwitchError::WouldOverwrite`] when changes in the work tree are in the way (nothing
 /// changed), and [`SwitchError::Git`] when git fails otherwise or is cancelled.
-pub fn switch(
+pub async fn switch(
     git: &Git,
     repository: &Repository,
     to: &SwitchTo,
@@ -159,7 +159,7 @@ pub fn switch(
             .arg(at.to_string()),
         SwitchTo::Detached(at) => command.arg("--detach").arg(at.to_string()),
     };
-    match command.output() {
+    match command.output().await {
         Ok(_) => Ok(()),
         Err(error) => Err(would_overwrite(&error).unwrap_or(SwitchError::Git(error))),
     }
@@ -197,7 +197,7 @@ pub(crate) fn overwritten(said: &[u8]) -> Option<(Vec<BString>, bool)> {
 /// # Errors
 ///
 /// When git fails (a branch of that name exists, say) or is cancelled.
-pub fn create_branch(
+pub async fn create_branch(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -210,6 +210,7 @@ pub fn create_branch(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -218,7 +219,7 @@ pub fn create_branch(
 /// # Errors
 ///
 /// When git fails (a branch called `new` exists, say) or is cancelled.
-pub fn rename_branch(
+pub async fn rename_branch(
     git: &Git,
     repository: &Repository,
     old: &BStr,
@@ -232,6 +233,7 @@ pub fn rename_branch(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -241,7 +243,7 @@ pub fn rename_branch(
 /// # Errors
 ///
 /// When it is checked out, or git fails or is cancelled.
-pub fn move_branch(
+pub async fn move_branch(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -255,6 +257,7 @@ pub fn move_branch(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -266,7 +269,7 @@ pub fn move_branch(
 /// # Errors
 ///
 /// When git fails (`upstream` isn't a branch it has, say) or is cancelled.
-pub fn set_upstream(
+pub async fn set_upstream(
     git: &Git,
     repository: &Repository,
     branch: &BStr,
@@ -287,6 +290,7 @@ pub fn set_upstream(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -308,7 +312,7 @@ pub enum DeleteBranchError {
 ///
 /// [`DeleteBranchError::NotMerged`] without `force` when it isn't merged, and
 /// [`DeleteBranchError::Git`] when git fails otherwise (it is checked out, say).
-pub fn delete_branch(
+pub async fn delete_branch(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -324,7 +328,7 @@ pub fn delete_branch(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output();
-    match done {
+    match done.await {
         Ok(_) => Ok(()),
         Err(error)
             if error.failure().is_some_and(|failure| {
@@ -343,7 +347,7 @@ pub fn delete_branch(
 /// # Errors
 ///
 /// When git fails (a tag of that name exists, say) or is cancelled.
-pub fn create_tag(
+pub async fn create_tag(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -366,6 +370,7 @@ pub fn create_tag(
         .arg(name.to_os_str_lossy())
         .arg(at.to_string())
         .output()
+        .await
         .map(drop)
 }
 
@@ -374,7 +379,7 @@ pub fn create_tag(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn delete_tag(
+pub async fn delete_tag(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -386,6 +391,7 @@ pub fn delete_tag(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 

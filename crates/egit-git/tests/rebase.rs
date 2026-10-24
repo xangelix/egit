@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, Integrated, ObjectId, Operation, Planned, RangeError, RebaseError, Repository,
-    Step, rebase_interactive, rebase_keeping_merges, rebase_range,
+    Step, Wait as _, rebase_interactive, rebase_keeping_merges, rebase_range,
 };
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -78,7 +78,7 @@ fn plan(steps: Vec<(ObjectId, Step)>) -> Vec<Planned> {
 fn a_range_is_read_from_a_commit_up_to_head() {
     let sandbox = Sandbox::new().unwrap();
     let path = five(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).wait().unwrap();
     let git = sandbox.git();
     let range = rebase_range(
         git,
@@ -86,6 +86,7 @@ fn a_range_is_read_from_a_commit_up_to_head() {
         rev(&sandbox, &path, "main~2"),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(range.base, Some(rev(&sandbox, &path, "main~3")));
     let subjects: Vec<_> = range
@@ -96,7 +97,9 @@ fn a_range_is_read_from_a_commit_up_to_head() {
     assert_eq!(subjects, ["Three", "Four", "Five"]);
     assert_eq!(range.commits[1].author, "Ada");
     let root = rev(&sandbox, &path, "main~4");
-    let all = rebase_range(git, &repository, root, &CancelToken::new()).unwrap();
+    let all = rebase_range(git, &repository, root, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!((all.base, all.commits.len()), (None, 5));
 
     // A commit elsewhere, and a range holding a merge.
@@ -106,7 +109,7 @@ fn a_range_is_read_from_a_commit_up_to_head() {
     sandbox.commit_file(&path, "s", "side\n", "Side").unwrap();
     let side = rev(&sandbox, &path, "side");
     sandbox.run(&path, "switch", &["--quiet", "main"]).unwrap();
-    let elsewhere = rebase_range(git, &repository, side, &CancelToken::new());
+    let elsewhere = rebase_range(git, &repository, side, &CancelToken::new()).wait();
     assert!(
         matches!(elsewhere, Err(RangeError::NotInBranch)),
         "{elsewhere:?}"
@@ -115,7 +118,9 @@ fn a_range_is_read_from_a_commit_up_to_head() {
         .run(&path, "merge", &["--quiet", "--no-edit", "side"])
         .unwrap();
     // A merge is marked, its branch's commit in the range too.
-    let merged = rebase_range(git, &repository, root, &CancelToken::new()).unwrap();
+    let merged = rebase_range(git, &repository, root, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(merged.merges(), 1);
     assert!(merged.commits.iter().any(|commit| commit.id == side));
     assert!(merged.commits.last().unwrap().merge);
@@ -125,7 +130,7 @@ fn a_range_is_read_from_a_commit_up_to_head() {
 fn commits_are_reordered_reworded_squashed_fixed_up_and_dropped() {
     let sandbox = Sandbox::new().unwrap();
     let path = five(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).wait().unwrap();
     let [two, three, four, five] =
         ["main~3", "main~2", "main~1", "main"].map(|name| rev(&sandbox, &path, name));
     let base = rev(&sandbox, &path, "main~4");
@@ -147,6 +152,7 @@ fn commits_are_reordered_reworded_squashed_fixed_up_and_dropped() {
         &steps,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(done, Integrated::Done);
     assert_eq!(
@@ -169,6 +175,7 @@ fn commits_are_reordered_reworded_squashed_fixed_up_and_dropped() {
         &steps,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(log(&sandbox, &path, "%s"), ["Four", "One"]);
 }
@@ -177,7 +184,7 @@ fn commits_are_reordered_reworded_squashed_fixed_up_and_dropped() {
 fn a_squash_without_a_reword_joins_the_messages() {
     let sandbox = Sandbox::new().unwrap();
     let path = five(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).wait().unwrap();
     let base = rev(&sandbox, &path, "main~2");
     let steps = plan(vec![
         (rev(&sandbox, &path, "main~1"), Step::Pick),
@@ -190,6 +197,7 @@ fn a_squash_without_a_reword_joins_the_messages() {
         &steps,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(message(&sandbox, &path, "main"), "Four\n\nFive");
 }
@@ -201,7 +209,7 @@ fn conflicts_stop_the_rebase_and_rewords_after_them_still_apply() {
     for (content, subject) in [("1\n", "One"), ("2\n", "Two"), ("3\n", "Three")] {
         sandbox.commit_file(&path, "f", content, subject).unwrap();
     }
-    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).wait().unwrap();
     let base = rev(&sandbox, &path, "main~2");
     // `Three` before `Two`: each changes what the other did.
     let steps = plan(vec![
@@ -218,10 +226,11 @@ fn conflicts_stop_the_rebase_and_rewords_after_them_still_apply() {
         &steps,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(stopped, Integrated::Conflicts);
     assert_eq!(
-        repository.operations(sandbox.git()).unwrap(),
+        repository.operations(sandbox.git()).wait().unwrap(),
         [Operation::Rebase]
     );
     // Each conflict resolved as the commit being replayed has it, until the rebase ends.
@@ -234,9 +243,10 @@ fn conflicts_stop_the_rebase_and_rewords_after_them_still_apply() {
             .arg("--continue")
             .current_dir(&path)
             .output_unchecked()
+            .wait()
             .unwrap();
     }
-    assert_eq!(repository.operations(sandbox.git()).unwrap(), []);
+    assert_eq!(repository.operations(sandbox.git()).wait().unwrap(), []);
     assert_eq!(
         log(&sandbox, &path, "%s"),
         ["Two, after three", "Three", "One"]
@@ -247,13 +257,14 @@ fn conflicts_stop_the_rebase_and_rewords_after_them_still_apply() {
 fn the_root_is_reworded_and_a_dirty_work_tree_refused() {
     let sandbox = Sandbox::new().unwrap();
     let path = five(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).wait().unwrap();
     let range = rebase_range(
         sandbox.git(),
         &repository,
         rev(&sandbox, &path, "main~4"),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     let mut steps: Vec<Planned> = range
         .commits
@@ -272,9 +283,10 @@ fn the_root_is_reworded_and_a_dirty_work_tree_refused() {
         range.base,
         &steps,
         &CancelToken::new(),
-    );
+    )
+    .wait();
     assert!(matches!(refused, Err(RebaseError::Git(_))), "{refused:?}");
-    assert_eq!(repository.operations(sandbox.git()).unwrap(), []);
+    assert_eq!(repository.operations(sandbox.git()).wait().unwrap(), []);
     sandbox.run(&path, "checkout", &["--", "f2"]).unwrap();
 
     rebase_interactive(
@@ -284,6 +296,7 @@ fn the_root_is_reworded_and_a_dirty_work_tree_refused() {
         &steps,
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(
         log(&sandbox, &path, "%s").last().map(String::as_str),
@@ -323,11 +336,13 @@ fn merged(sandbox: &Sandbox) -> PathBuf {
 fn a_range_with_a_merge_keeps_it_as_its_plan_drops_and_rewords() {
     let sandbox = Sandbox::new().unwrap();
     let path = merged(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).wait().unwrap();
     let git = sandbox.git();
     let cancel = CancelToken::new();
     let from = rev(&sandbox, &path, "main~2");
-    let range = rebase_range(git, &repository, from, &cancel).unwrap();
+    let range = rebase_range(git, &repository, from, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(range.merges(), 1);
     let id_of = |subject: &str| {
         range
@@ -357,11 +372,15 @@ fn a_range_with_a_merge_keeps_it_as_its_plan_drops_and_rewords() {
         (vec![("Side two", Step::Squash)], "melded"),
         (vec![("Merge side", Step::Drop)], "a merge dropped"),
     ] {
-        let refused = rebase_keeping_merges(git, &repository, range.base, &plan(&steps), &cancel);
+        let refused =
+            rebase_keeping_merges(git, &repository, range.base, &plan(&steps), &cancel).wait();
         assert!(refused.is_err(), "{why}");
         assert_eq!(rev(&sandbox, &path, "HEAD"), head, "{why}");
     }
-    assert_eq!(repository.operations(sandbox.git()).unwrap(), Vec::new());
+    assert_eq!(
+        repository.operations(sandbox.git()).wait().unwrap(),
+        Vec::new()
+    );
 
     // A side commit dropped, a commit and the merge reworded: the merge stays one.
     let steps = [
@@ -369,7 +388,9 @@ fn a_range_with_a_merge_keeps_it_as_its_plan_drops_and_rewords() {
         ("Two", Step::Reword("Two, again".to_owned())),
         ("Merge side", Step::Reword("Merge side, again".to_owned())),
     ];
-    let done = rebase_keeping_merges(git, &repository, range.base, &plan(&steps), &cancel).unwrap();
+    let done = rebase_keeping_merges(git, &repository, range.base, &plan(&steps), &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(done, Integrated::Done);
     let _ = id_of("Side one");
     let subjects = |args: &[&str]| -> Vec<String> {
@@ -401,7 +422,7 @@ fn a_range_with_a_merge_keeps_it_as_its_plan_drops_and_rewords() {
 fn a_rebase_onto_a_branch_keeps_merges_when_asked() {
     let sandbox = Sandbox::new().unwrap();
     let path = merged(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &path).unwrap();
+    let repository = Repository::discover(sandbox.git(), &path).wait().unwrap();
     let cancel = CancelToken::new();
     // `upstream` moved on from `One`.
     sandbox
@@ -422,12 +443,16 @@ fn a_rebase_onto_a_branch_keeps_merges_when_asked() {
     // A copy of `main`, rebased after it without being asked to keep merges.
     sandbox.run(&path, "branch", &["copy", "main"]).unwrap();
     let upstream = bstr::BStr::new("upstream");
-    let done = egit_git::rebase(sandbox.git(), &repository, upstream, true, &cancel).unwrap();
+    let done = egit_git::rebase(sandbox.git(), &repository, upstream, true, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(done, Integrated::Done);
     assert_eq!(merges(&sandbox, "main"), "1", "kept");
     assert!(path.join("u").exists());
     sandbox.run(&path, "switch", &["--quiet", "copy"]).unwrap();
-    let done = egit_git::rebase(sandbox.git(), &repository, upstream, false, &cancel).unwrap();
+    let done = egit_git::rebase(sandbox.git(), &repository, upstream, false, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(done, Integrated::Done);
     assert_eq!(merges(&sandbox, "copy"), "0", "flattened");
 }

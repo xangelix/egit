@@ -209,7 +209,7 @@ fn rest(account: &Account, repository: &ForgeRepository, path: &str) -> String {
 }
 
 /// GETs `url` and reads its JSON.
-fn get<T: serde::de::DeserializeOwned>(
+async fn get<T: serde::de::DeserializeOwned>(
     account: &Account,
     url: &str,
     what: &str,
@@ -218,7 +218,7 @@ fn get<T: serde::de::DeserializeOwned>(
     if cancel.is_cancelled() {
         return Err(cancelled());
     }
-    let answer = account.send(url, None, cancel)?;
+    let answer = account.send(url, None, cancel).await?;
     read_answer(account, &answer, what)
 }
 
@@ -231,12 +231,12 @@ fn succeeded(account: &Account, answer: &Answer, what: &str) -> Result<(), Forge
 }
 
 /// Reads `repository`'s latest workflow runs, the newest first, a page at a time.
-pub(super) fn pipelines(
+pub(super) async fn pipelines(
     account: &Account,
     repository: &ForgeRepository,
     limit: u32,
     cancel: &CancelToken,
-    found: &mut dyn FnMut(Vec<Pipeline>),
+    found: &mut (dyn FnMut(Vec<Pipeline>) + Send),
 ) -> Result<PipelineListing, ForgeError> {
     let what = format!("{}'s workflow runs", repository.full_name());
     let mut read = 0_u32;
@@ -251,7 +251,7 @@ pub(super) fn pipelines(
             repository,
             &format!("/actions/runs?per_page={PAGE}&page={page}&exclude_pull_requests=true"),
         );
-        let runs: RunsPage = match get(account, &url, &what, cancel) {
+        let runs: RunsPage = match get(account, &url, &what, cancel).await {
             Ok(runs) => runs,
             // Actions the account can't see (or turned off) answer as no repository.
             Err(ForgeError::NotFound { .. }) if read == 0 => {
@@ -277,7 +277,7 @@ pub(super) fn pipelines(
 }
 
 /// Reads workflow run `id` of `repository` whole.
-pub(super) fn pipeline_details(
+pub(super) async fn pipeline_details(
     account: &Account,
     repository: &ForgeRepository,
     id: u64,
@@ -289,7 +289,8 @@ pub(super) fn pipeline_details(
         &rest(account, repository, &format!("/actions/runs/{id}")),
         &what,
         cancel,
-    )?;
+    )
+    .await?;
     let pipeline = run
         .pipeline(repository)
         .ok_or_else(|| ForgeError::Malformed {
@@ -303,18 +304,20 @@ pub(super) fn pipeline_details(
             repository,
             &format!("/actions/runs/{id}/jobs?filter=all&per_page={PAGE}&page={page}"),
         );
-        let read: JobsPage = get(account, &url, &what, cancel)?;
+        let read: JobsPage = get(account, &url, &what, cancel).await?;
         let count = read.jobs.len();
         all.extend(read.jobs);
         if count < usize::try_from(PAGE).unwrap_or(usize::MAX) {
             break;
         }
     }
-    let may = may_push(account, repository, cancel).unwrap_or_else(|error| {
-        // Unknown: offered, and GitHub's refusal said where it refuses.
-        tracing::debug!(%error, "what the account may do in the repository is unknown");
-        true
-    });
+    let may = may_push(account, repository, cancel)
+        .await
+        .unwrap_or_else(|error| {
+            // Unknown: offered, and GitHub's refusal said where it refuses.
+            tracing::debug!(%error, "what the account may do in the repository is unknown");
+            true
+        });
     let ended = run.ended();
     let jobs = latest_jobs(all, ended, may);
     let retryable = ended
@@ -346,7 +349,7 @@ pub(super) fn pipeline_details(
         can_update: may,
         ordered_stages: false,
         workflow: run.workflow(),
-        artifacts: run_artifacts(account, repository, id, cancel)?,
+        artifacts: run_artifacts(account, repository, id, cancel).await?,
     })
 }
 
@@ -368,7 +371,7 @@ struct ArtifactsPage {
 }
 
 /// What run `id` uploaded (its first hundred artifacts, by name).
-fn run_artifacts(
+async fn run_artifacts(
     account: &Account,
     repository: &ForgeRepository,
     id: u64,
@@ -380,7 +383,7 @@ fn run_artifacts(
         repository,
         &format!("/actions/runs/{id}/artifacts?per_page={PAGE}"),
     );
-    let page: ArtifactsPage = get(account, &url, &what, cancel)?;
+    let page: ArtifactsPage = get(account, &url, &what, cancel).await?;
     let mut artifacts: Vec<Artifact> = page
         .artifacts
         .into_iter()
@@ -449,7 +452,7 @@ fn latest_jobs(all: Vec<RestJob>, ended: bool, may: bool) -> Vec<Job> {
 
 /// Whether the account may push to `repository` (and so re-run and cancel its runs), as GitHub
 /// says, remembered a while.
-fn may_push(
+async fn may_push(
     account: &Account,
     repository: &ForgeRepository,
     cancel: &CancelToken,
@@ -458,7 +461,8 @@ fn may_push(
         return Ok(known);
     }
     let what = repository.full_name();
-    let read: RepositoryPermissions = get(account, &rest(account, repository, ""), &what, cancel)?;
+    let read: RepositoryPermissions =
+        get(account, &rest(account, repository, ""), &what, cancel).await?;
     let may = read
         .permissions
         .is_some_and(|may| may.push || may.maintain || may.admin);
@@ -470,28 +474,30 @@ fn may_push(
 /// (`POST …/runs/:id/rerun-failed-jobs`), all of them (`…/rerun`), the run cancelled
 /// (`…/cancel`), or a job re-run (`…/jobs/:id/rerun`; its new run looked for in the run's new
 /// attempt, a second apart a few times, and returned).
-pub(super) fn ci_act(
+pub(super) async fn ci_act(
     account: &Account,
     repository: &ForgeRepository,
     action: CiAction,
     cancel: &CancelToken,
 ) -> Result<Option<u64>, ForgeError> {
     let what = format!("{}'s {action:?}", repository.full_name());
-    let post = |path: String| -> Result<(), ForgeError> {
-        let answer = account.send(&rest(account, repository, &path), Some(b"{}"), cancel)?;
+    let post = async |path: String| -> Result<(), ForgeError> {
+        let answer = account
+            .send(&rest(account, repository, &path), Some(b"{}"), cancel)
+            .await?;
         succeeded(account, &answer, &what)
     };
     match action {
         CiAction::RetryPipeline(id) => {
-            post(format!("/actions/runs/{id}/rerun-failed-jobs"))?;
+            post(format!("/actions/runs/{id}/rerun-failed-jobs")).await?;
             Ok(Some(id))
         }
         CiAction::RerunPipeline(id) => {
-            post(format!("/actions/runs/{id}/rerun"))?;
+            post(format!("/actions/runs/{id}/rerun")).await?;
             Ok(Some(id))
         }
         CiAction::CancelPipeline(id) => {
-            post(format!("/actions/runs/{id}/cancel"))?;
+            post(format!("/actions/runs/{id}/cancel")).await?;
             Ok(Some(id))
         }
         CiAction::RetryJob(id) => {
@@ -500,9 +506,10 @@ pub(super) fn ci_act(
                 &rest(account, repository, &format!("/actions/jobs/{id}")),
                 &what,
                 cancel,
-            )?;
-            post(format!("/actions/jobs/{id}/rerun"))?;
-            rerun_of(account, repository, &job, cancel)
+            )
+            .await?;
+            post(format!("/actions/jobs/{id}/rerun")).await?;
+            rerun_of(account, repository, &job, cancel).await
         }
         CiAction::CancelJob(_) | CiAction::PlayJob(_) => Err(not_found(account, what)),
     }
@@ -528,7 +535,7 @@ struct RestWorkflow {
 }
 
 /// `repository`'s active workflows, by name (`GET …/actions/workflows`, a hundred at most).
-pub(super) fn workflows(
+pub(super) async fn workflows(
     account: &Account,
     repository: &ForgeRepository,
     cancel: &CancelToken,
@@ -539,7 +546,7 @@ pub(super) fn workflows(
         repository,
         &format!("/actions/workflows?per_page={PAGE}"),
     );
-    let page: WorkflowsPage = get(account, &url, &what, cancel)?;
+    let page: WorkflowsPage = get(account, &url, &what, cancel).await?;
     let mut found: Vec<super::WorkflowFile> = page
         .workflows
         .into_iter()
@@ -560,14 +567,14 @@ pub(super) fn workflows(
 
 /// Starts a run of `workflow` on `reference` (`POST …/actions/workflows/:id/dispatches`), then
 /// looks for it a second apart a few times (GitHub makes it a moment later): its id, once seen.
-pub(super) fn dispatch(
+pub(super) async fn dispatch(
     account: &Account,
     repository: &ForgeRepository,
     (workflow, reference): (u64, &str),
     cancel: &CancelToken,
 ) -> Result<Option<u64>, ForgeError> {
     let what = format!("{}'s run of workflow {workflow}", repository.full_name());
-    let newest = || -> Result<Option<u64>, ForgeError> {
+    let newest = async || -> Result<Option<u64>, ForgeError> {
         let url = rest(
             account,
             repository,
@@ -576,21 +583,21 @@ pub(super) fn dispatch(
                 crate::gitlab::encoded(reference)
             ),
         );
-        let runs: RunsPage = get(account, &url, &what, cancel)?;
+        let runs: RunsPage = get(account, &url, &what, cancel).await?;
         Ok(runs.workflow_runs.first().map(|run| run.id))
     };
-    let before = newest()?;
+    let before = newest().await?;
     let body = serde_json::json!({ "ref": reference }).to_string();
     let url = rest(
         account,
         repository,
         &format!("/actions/workflows/{workflow}/dispatches"),
     );
-    let answer = account.send(&url, Some(body.as_bytes()), cancel)?;
+    let answer = account.send(&url, Some(body.as_bytes()), cancel).await?;
     succeeded(account, &answer, &what)?;
     for _ in 0..LOOKS_FOR_RERUN {
         std::thread::sleep(Duration::from_secs(1));
-        if let Some(made) = newest()?.filter(|made| Some(*made) != before) {
+        if let Some(made) = newest().await?.filter(|made| Some(*made) != before) {
             return Ok(Some(made));
         }
     }
@@ -599,7 +606,7 @@ pub(super) fn dispatch(
 
 /// The run of `job` its re-run made, once its run's latest attempt has one; none found after a
 /// few looks.
-fn rerun_of(
+async fn rerun_of(
     account: &Account,
     repository: &ForgeRepository,
     job: &RestJob,
@@ -618,7 +625,7 @@ fn rerun_of(
             repository,
             &format!("/actions/runs/{run}/jobs?filter=latest&per_page={PAGE}"),
         );
-        let read: JobsPage = get(account, &url, &what, cancel)?;
+        let read: JobsPage = get(account, &url, &what, cancel).await?;
         if let Some(again) = read
             .jobs
             .iter()
@@ -631,7 +638,7 @@ fn rerun_of(
 }
 
 /// How GitHub job `id` stands, with its steps.
-pub(crate) fn github_job(
+pub(crate) async fn github_job(
     account: &Account,
     repository: &ForgeRepository,
     id: u64,
@@ -643,7 +650,8 @@ pub(crate) fn github_job(
         &rest(account, repository, &format!("/actions/jobs/{id}")),
         &what,
         cancel,
-    )?;
+    )
+    .await?;
     let status = job.status();
     let failure = match job.conclusion.as_deref() {
         Some("timed_out") => Some("timed out".to_owned()),
@@ -680,19 +688,21 @@ pub(crate) fn github_job(
 /// Reads GitHub job `id`'s log after its first `from` bytes, handing the new ones to `sink`:
 /// GitHub answers with a redirect to a file of it (its whole, as far as it is written), fetched
 /// without the token; nothing yet is [`LogRead::Missing`].
-pub(crate) fn github_log(
+pub(crate) async fn github_log(
     account: &Account,
     repository: &ForgeRepository,
     (id, from): (u64, u64),
     cancel: &CancelToken,
-    sink: &mut dyn FnMut(&[u8]),
+    sink: &mut (dyn FnMut(&[u8]) + Send),
 ) -> Result<LogRead, ForgeError> {
     let what = format!("{} job {id}'s log", repository.full_name());
-    let answer = account.send(
-        &rest(account, repository, &format!("/actions/jobs/{id}/logs")),
-        None,
-        cancel,
-    )?;
+    let answer = account
+        .send(
+            &rest(account, repository, &format!("/actions/jobs/{id}/logs")),
+            None,
+            cancel,
+        )
+        .await?;
     let (mut seen, mut given) = (0_u64, 0_u64);
     let mut take = |part: &[u8]| {
         let length = u64::try_from(part.len()).unwrap_or(u64::MAX);

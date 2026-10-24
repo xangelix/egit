@@ -134,7 +134,7 @@ impl ConfigSnapshot {
     /// # Errors
     ///
     /// When git fails or prints something that isn't a configuration listing.
-    pub fn read(git: &Git, place: ConfigPlace<'_>) -> Result<Self, GitError> {
+    pub async fn read(git: &Git, place: ConfigPlace<'_>) -> Result<Self, GitError> {
         let base = match place {
             // Anywhere but egit's own working directory, which might be inside a repository.
             ConfigPlace::User => crate::git::outside_repositories(),
@@ -144,7 +144,8 @@ impl ConfigSnapshot {
             .read("config")
             .args(["--list", "--show-origin", "--show-scope", "--null"])
             .current_dir(base)
-            .output()?;
+            .output()
+            .await?;
         Self::parse(listed.stdout, base.to_owned())
             .map_err(|detail| GitError::unexpected("config", detail))
     }
@@ -286,7 +287,7 @@ impl ConfigSnapshot {
 /// # Errors
 ///
 /// When git refuses the key or can't write the file.
-pub fn set_config(
+pub async fn set_config(
     git: &Git,
     target: ConfigTarget<'_>,
     key: &str,
@@ -296,6 +297,7 @@ pub fn set_config(
         .args(["--replace-all", key])
         .arg(value)
         .output()
+        .await
         .map(drop)
 }
 
@@ -304,7 +306,7 @@ pub fn set_config(
 /// # Errors
 ///
 /// When git refuses the key or can't write the file.
-pub fn add_config_value(
+pub async fn add_config_value(
     git: &Git,
     target: ConfigTarget<'_>,
     key: &str,
@@ -312,13 +314,15 @@ pub fn add_config_value(
 ) -> Result<(), GitError> {
     let has = config_command(git, target)
         .args(["--fixed-value", "--get", key, value])
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if has.status.success() {
         return Ok(());
     }
     config_command(git, target)
         .args(["--add", key, value])
         .output()
+        .await
         .map(drop)
 }
 
@@ -328,7 +332,7 @@ pub fn add_config_value(
 /// # Errors
 ///
 /// When git refuses the key or can't write the file.
-pub fn unset_config_value(
+pub async fn unset_config_value(
     git: &Git,
     target: ConfigTarget<'_>,
     key: &str,
@@ -336,7 +340,8 @@ pub fn unset_config_value(
 ) -> Result<(), GitError> {
     let completed = config_command(git, target)
         .args(["--fixed-value", "--unset-all", key, value])
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     // Exit code 5: there was nothing to remove.
     if completed.status.success() || completed.status.code() == Some(5) {
         Ok(())
@@ -354,10 +359,11 @@ pub fn unset_config_value(
 /// # Errors
 ///
 /// When git refuses the key or can't write the file.
-pub fn unset_config(git: &Git, target: ConfigTarget<'_>, key: &str) -> Result<(), GitError> {
+pub async fn unset_config(git: &Git, target: ConfigTarget<'_>, key: &str) -> Result<(), GitError> {
     let completed = config_command(git, target)
         .args(["--unset-all", key])
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     // Exit code 5: there was nothing to remove.
     if completed.status.success() || completed.status.code() == Some(5) {
         Ok(())

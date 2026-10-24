@@ -132,7 +132,7 @@ pub(crate) fn of_entries<'a>(
 
 /// Discards as `discard` says; the outcome keeps each file as it was and as it is now, for Undo
 /// (none when they were too many or too large to keep).
-pub(crate) fn run(
+pub(crate) async fn run(
     git: &Git,
     repository: &Repository,
     discard: &Discard,
@@ -140,7 +140,7 @@ pub(crate) fn run(
 ) -> Result<Outcome, Problem> {
     let done = match discard {
         Discard::Files { tracked, untracked } => {
-            discard_files(git, repository, &paths(tracked), &paths(untracked), cancel)
+            discard_files(git, repository, &paths(tracked), &paths(untracked), cancel).await
         }
         Discard::Lines(lines) => discard_lines(
             git,
@@ -150,6 +150,7 @@ pub(crate) fn run(
             lines.entry,
             cancel,
         )
+        .await
         .map(|file| Some(vec![file])),
     };
     match done {

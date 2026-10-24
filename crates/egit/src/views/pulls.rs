@@ -99,8 +99,9 @@ impl PullRequestView {
             "The {}'s details couldn't be read",
             request_noun(repository.host().kind())
         );
-        self.details.request(jobs::blocking(move || {
+        self.details.request(jobs::blocking(async move {
             pull_request_details(&account, &repository, selected.1, &cancel)
+                .await
                 .map(Arc::new)
                 .map_err(|error| Problem::new(title, error.to_string()))
         }));

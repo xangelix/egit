@@ -763,15 +763,19 @@ impl Tasks {
         let (progress, cancel) = (self.progress.clone(), self.cancel.clone());
         let running = task.clone();
         let accounts = accounts.to_vec();
-        self.result.request(jobs::blocking(move || {
-            let _queued = writes.hold();
+        self.result.request(jobs::blocking(async move {
+            let _queued = writes.hold().await;
             match &running {
                 Task::Undo(undo) | Task::Redo(undo) => {
                     let redo = matches!(running, Task::Redo(_));
                     let done = if redo {
-                        undo::do_again(&git, &repository, undo, &cancel).map(Landed::Redone)
+                        undo::do_again(&git, &repository, undo, &cancel)
+                            .await
+                            .map(Landed::Redone)
                     } else {
-                        undo::take_back(&git, &repository, undo, &cancel).map(Landed::Undone)
+                        undo::take_back(&git, &repository, undo, &cancel)
+                            .await
+                            .map(Landed::Undone)
                     };
                     match done {
                         Ok(landed) => {
@@ -789,10 +793,11 @@ impl Tasks {
                     }
                 }
                 task => {
-                    let before = undo::before(&git, &repository, task);
-                    let ran = run(&git, &repository, task, &progress, &cancel, &accounts);
+                    let before = undo::before(&git, &repository, task).await;
+                    let ran = run(&git, &repository, task, &progress, &cancel, &accounts).await;
                     if let Ok(outcome) = &ran
-                        && let Some(noted) = undo::noted(&git, &repository, task, before, outcome)
+                        && let Some(noted) =
+                            undo::noted(&git, &repository, task, before, outcome).await
                     {
                         journal.lock().push(Landed::Done(noted));
                     }
@@ -854,7 +859,7 @@ impl Tasks {
             self.background_cancel = CancelToken::new();
             let (git, repository) = (git.clone(), Arc::clone(repository));
             let (progress, cancel) = (Progress::new(), self.background_cancel.clone());
-            self.background.request(jobs::blocking(move || {
+            self.background.request(jobs::blocking(async move {
                 let options = FetchOptions {
                     all: true,
                     prune: true,
@@ -862,8 +867,8 @@ impl Tasks {
                 };
                 // Where the current branch's upstream is, before and after: a problem reading
                 // it only goes without the notice.
-                let before = repository.upstream_tip(&git).ok().flatten();
-                match fetch(&git, &repository, options, &progress, &cancel) {
+                let before = repository.upstream_tip(&git).await.ok().flatten();
+                match fetch(&git, &repository, options, &progress, &cancel).await {
                     Ok(()) => {}
                     Err(GitError::Cancelled { .. }) => return Ok(Fetched::Stopped),
                     Err(error) => {
@@ -873,21 +878,22 @@ impl Tasks {
                 let Some((upstream, from)) = before else {
                     return Ok(Fetched::Done(None));
                 };
-                let after = repository.upstream_tip(&git).ok().flatten();
-                Ok(Fetched::Done(
-                    after
-                        .filter(|(name, to)| *name == upstream && *to != from)
-                        .and_then(|(_, to)| {
-                            let commits =
-                                count_between(&git, &repository, from, to, &cancel).ok()?;
-                            (commits > 0).then_some(Brought {
-                                upstream,
-                                from,
-                                to,
-                                commits,
-                            })
-                        }),
-                ))
+                let after = repository.upstream_tip(&git).await.ok().flatten();
+                let Some((_, to)) = after.filter(|(name, to)| *name == upstream && *to != from)
+                else {
+                    return Ok(Fetched::Done(None));
+                };
+                let commits = count_between(&git, &repository, from, to, &cancel)
+                    .await
+                    .ok();
+                Ok(Fetched::Done(commits.filter(|commits| *commits > 0).map(
+                    |commits| Brought {
+                        upstream,
+                        from,
+                        to,
+                        commits,
+                    },
+                )))
             }));
         }
         let wait = if self.background_every.is_some() {
@@ -939,7 +945,7 @@ impl Drop for Tasks {
 }
 
 /// Runs `task`.
-fn run(
+async fn run(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -951,10 +957,12 @@ fn run(
         // `start` takes them back and does them again itself.
         Task::Undo(_) | Task::Redo(_) => Ok(Outcome::Done),
         Task::CheckOutPullRequest { .. } | Task::CreatePullRequest(_) | Task::StartPipeline(_) => {
-            forge(git, repository, task, progress, cancel, accounts)
+            forge(git, repository, task, progress, cancel, accounts).await
         }
-        Task::Lfs(lfs) => crate::lfs::run(git, repository, lfs, progress, cancel),
-        Task::Submodules(task) => crate::submodules::run(git, repository, task, progress, cancel),
+        Task::Lfs(lfs) => crate::lfs::run(git, repository, lfs, progress, cancel).await,
+        Task::Submodules(task) => {
+            crate::submodules::run(git, repository, task, progress, cancel).await
+        }
         Task::Fetch
         | Task::Pull(_)
         | Task::PullStashing { .. }
@@ -963,7 +971,9 @@ fn run(
         | Task::PushTag { .. }
         | Task::DeleteRemoteBranch { .. }
         | Task::FastForwardBranch { .. }
-        | Task::DeleteBranchEverywhere { .. } => remote(git, repository, task, progress, cancel),
+        | Task::DeleteBranchEverywhere { .. } => {
+            remote(git, repository, task, progress, cancel).await
+        }
         Task::Abort(_)
         | Task::Continue(_)
         | Task::Merge { .. }
@@ -976,16 +986,16 @@ fn run(
         | Task::FastForward { .. }
         | Task::ApplyPatch { .. }
         | Task::Skip(_)
-        | Task::Bisect { .. } => history(git, repository, task, cancel),
+        | Task::Bisect { .. } => history(git, repository, task, cancel).await,
         Task::InteractiveRebase { .. }
         | Task::DropCommit(_)
         | Task::SquashIntoParent(_)
-        | Task::Reword { .. } => rewrite(git, repository, task, cancel),
-        Task::SignCommits { commits } => sign(git, repository, commits, progress, cancel),
-        Task::Discard(discard) => crate::discarding::run(git, repository, discard, cancel),
-        Task::Ignore(ignore) => crate::ignoring::run(git, repository, ignore, cancel),
+        | Task::Reword { .. } => rewrite(git, repository, task, cancel).await,
+        Task::SignCommits { commits } => sign(git, repository, commits, progress, cancel).await,
+        Task::Discard(discard) => crate::discarding::run(git, repository, discard, cancel).await,
+        Task::Ignore(ignore) => crate::ignoring::run(git, repository, ignore, cancel).await,
         Task::Export { commits, how } => {
-            crate::exporting::run(git, repository, commits, how, cancel)
+            crate::exporting::run(git, repository, commits, how, cancel).await
         }
         Task::Switch(_)
         | Task::StashAndSwitch(_)
@@ -994,26 +1004,26 @@ fn run(
         | Task::DeleteBranch { .. }
         | Task::CreateTag { .. }
         | Task::DeleteTag(_)
-        | Task::SetUpstream { .. } => references(git, repository, task, cancel),
+        | Task::SetUpstream { .. } => references(git, repository, task, cancel).await,
         Task::AddWorktree { .. }
         | Task::SavePatch { .. }
         | Task::CopyPatch(_)
         | Task::SavePatches { .. }
         | Task::CopyChanges(_)
-        | Task::SaveChanges { .. } => places(git, repository, task, cancel),
+        | Task::SaveChanges { .. } => places(git, repository, task, cancel).await,
         Task::Stash { .. } | Task::ApplyStash { .. } | Task::DropStash(_) => {
-            stashing(git, repository, task, cancel)
+            stashing(git, repository, task, cancel).await
         }
         Task::AddRemote { .. }
         | Task::FetchRemote { .. }
         | Task::RenameRemote { .. }
         | Task::RemoveRemote(_)
-        | Task::SetRemoteUrls { .. } => remotes(git, repository, task, progress, cancel),
+        | Task::SetRemoteUrls { .. } => remotes(git, repository, task, progress, cancel).await,
         Task::RemoveWorktree { .. }
         | Task::LockWorktree { .. }
         | Task::UnlockWorktree(_)
         | Task::PruneWorktrees
-        | Task::UpdateSubmodules(_) => trees(git, repository, task, progress, cancel),
+        | Task::UpdateSubmodules(_) => trees(git, repository, task, progress, cancel).await,
     }
 }
 
@@ -1026,7 +1036,7 @@ fn failed(title: &'static str) -> impl Fn(GitError) -> Result<Outcome, Problem> 
 }
 
 /// Pull requests: checking one out, or opening one.
-fn forge(
+async fn forge(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -1052,6 +1062,7 @@ fn forge(
                 progress,
                 cancel,
             )
+            .await
             .map(|()| Outcome::Done)
             .or_else(failed(match kind {
                 ForgeKind::GitHub => "The pull request couldn't be fetched",
@@ -1060,7 +1071,7 @@ fn forge(
             if fetched == Outcome::Cancelled {
                 return Ok(fetched);
             }
-            match switch(git, repository, to, cancel) {
+            match switch(git, repository, to, cancel).await {
                 Ok(()) => Ok(Outcome::Done),
                 Err(SwitchError::WouldOverwrite { paths, untracked }) => {
                     Ok(Outcome::WouldOverwrite { paths, untracked })
@@ -1087,6 +1098,7 @@ fn forge(
                     )
                 })?;
             create_pull_request(account, on, new, cancel)
+                .await
                 .map(Outcome::Opened)
                 .map_err(|error| Problem::new(title, error.to_string()))
         }
@@ -1114,6 +1126,7 @@ fn forge(
                 (workflow, &start.reference),
                 cancel,
             )
+            .await
             .map(|_| Outcome::Done)
             .map_err(|error| Problem::new(title, error.to_string()))
         }
@@ -1125,14 +1138,17 @@ fn forge(
 /// The files reverting `commit` onto `HEAD` would leave in conflict (foreseen: nothing is
 /// touched), if it would; `None` when it goes through, or can't be worked out (a root commit,
 /// git failing: git's own revert then says).
-fn revert_conflicts(
+async fn revert_conflicts(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
     cancel: &CancelToken,
 ) -> Option<Vec<BString>> {
-    let head = resolve_commit(git, repository, "HEAD").ok().flatten()?;
-    match foresee_pick(git, repository, head, (commit, true), cancel) {
+    let head = resolve_commit(git, repository, "HEAD")
+        .await
+        .ok()
+        .flatten()?;
+    match foresee_pick(git, repository, head, (commit, true), cancel).await {
         Ok(Some(Foreseen::Conflicts { files, .. })) => Some(files),
         Ok(_) => None,
         Err(error) => {
@@ -1143,7 +1159,7 @@ fn revert_conflicts(
 }
 
 /// Runs a pull task.
-fn pulling(
+async fn pulling(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -1152,12 +1168,14 @@ fn pulling(
 ) -> Result<Outcome, Problem> {
     match task {
         Task::Pull(mode) => pull(git, repository, (*mode, false), progress, cancel)
+            .await
             .map(Outcome::Pulled)
             .or_else(failed("Pulling failed")),
         Task::PullStashing {
             mode,
             untracked: false,
         } => pull(git, repository, (*mode, true), progress, cancel)
+            .await
             .map(Outcome::Pulled)
             .or_else(failed("Pulling failed")),
         Task::PullStashing {
@@ -1165,12 +1183,14 @@ fn pulling(
             untracked: true,
         } => {
             let stashed = stash_push(git, repository, ("Before pulling", true), &[], cancel)
+                .await
                 .map(Outcome::Stashed)
                 .or_else(failed("Your changes couldn't be stashed"))?;
             if stashed == Outcome::Cancelled {
                 return Ok(stashed);
             }
             pull(git, repository, (*mode, false), progress, cancel)
+                .await
                 .map(Outcome::Pulled)
                 .or_else(failed("Pulling failed"))
                 .map_err(|problem| {
@@ -1192,6 +1212,7 @@ fn pulling(
                 "pull.rebase",
                 value,
             )
+            .await
             .map_err(|error| Problem::git("The choice couldn't be remembered", &error))?;
             let mode = if *rebase {
                 PullMode::Rebase
@@ -1199,6 +1220,7 @@ fn pulling(
                 PullMode::Merge
             };
             pull(git, repository, (mode, false), progress, cancel)
+                .await
                 .map(Outcome::Pulled)
                 .or_else(failed("Pulling failed"))
         }
@@ -1207,7 +1229,7 @@ fn pulling(
 }
 
 /// Exchanges with a remote.
-fn remote(
+async fn remote(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -1222,13 +1244,15 @@ fn remote(
                 background: false,
             };
             fetch(git, repository, options, progress, cancel)
+                .await
                 .map(|()| Outcome::Fetched)
                 .or_else(failed("Fetching failed"))
         }
         Task::Pull(_) | Task::PullStashing { .. } | Task::PullAndRemember { .. } => {
-            pulling(git, repository, task, progress, cancel)
+            pulling(git, repository, task, progress, cancel).await
         }
         Task::Push(options) => push(git, repository, options, progress, cancel)
+            .await
             .map(Outcome::Pushed)
             .or_else(failed("Pushing failed")),
         Task::PushTag { remote, tag } => push_tag(
@@ -1239,11 +1263,13 @@ fn remote(
             progress,
             cancel,
         )
+        .await
         .map(Outcome::Pushed)
         .or_else(failed("The tag couldn't be pushed")),
         Task::DeleteRemoteBranch { remote, branch } => {
             let (remote, branch) = (remote.as_ref(), branch.as_ref());
             delete_remote_branch(git, repository, remote, branch, progress, cancel)
+                .await
                 .map(Outcome::Pushed)
                 .or_else(failed("The branch couldn't be deleted on the remote"))
         }
@@ -1256,6 +1282,7 @@ fn remote(
                 ForwardSource::Here(name) => ForwardFrom::Here(name.as_ref()),
             };
             fast_forward_branch(git, repository, branch.as_ref(), from, progress, cancel)
+                .await
                 .map(Outcome::Forwarded)
                 .or_else(failed("The branch couldn't be fast-forwarded"))
         }
@@ -1265,7 +1292,7 @@ fn remote(
             remote_branch,
             force,
         } => {
-            match delete_branch(git, repository, name.as_ref(), *force, cancel) {
+            match delete_branch(git, repository, name.as_ref(), *force, cancel).await {
                 Ok(()) => {}
                 Err(DeleteBranchError::NotMerged) => return Ok(Outcome::NotMerged),
                 Err(DeleteBranchError::Git(error)) => {
@@ -1274,6 +1301,7 @@ fn remote(
             }
             let (remote, branch) = (remote.as_ref(), remote_branch.as_ref());
             delete_remote_branch(git, repository, remote, branch, progress, cancel)
+                .await
                 .map(|pushed| {
                     if pushed.succeeded() {
                         Outcome::Done
@@ -1289,7 +1317,7 @@ fn remote(
 }
 
 /// Changes to the current branch's history, and an operation's end.
-fn history(
+async fn history(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -1297,54 +1325,68 @@ fn history(
 ) -> Result<Outcome, Problem> {
     match task {
         Task::Abort(operation) => abort_operation(git, repository, *operation, cancel)
+            .await
             .map(|()| Outcome::Aborted)
             .or_else(failed("It couldn't be aborted")),
         Task::Continue(operation) => continue_operation(git, repository, *operation, cancel)
+            .await
             .map(|()| Outcome::Continued)
             .or_else(failed("It couldn't carry on")),
         Task::Merge {
             what, fast_forward, ..
         } => merge(git, repository, what.as_ref(), *fast_forward, cancel)
+            .await
             .map(Outcome::Integrated)
             .or_else(failed("Merging failed")),
         Task::Rebase {
             onto, keep_merges, ..
         } => rebase(git, repository, onto.as_ref(), *keep_merges, cancel)
+            .await
             .map(Outcome::Integrated)
             .or_else(failed("Rebasing failed")),
         Task::Bisect { mark, commit } => bisect_mark(git, repository, *mark, *commit, cancel)
+            .await
             .map(|()| Outcome::Done)
             .or_else(failed("The commit wasn't marked")),
         Task::CherryPick(commit) => cherry_pick(git, repository, *commit, cancel)
+            .await
             .map(Outcome::Integrated)
             .or_else(failed("Cherry-picking failed")),
         Task::CherryPickAll(commits) => cherry_pick_all(git, repository, commits, cancel)
+            .await
             .map(Outcome::Integrated)
             .or_else(failed("Cherry-picking failed")),
         Task::RevertAll(commits) => revert_all(git, repository, commits, cancel)
+            .await
             .map(Outcome::Integrated)
             .or_else(failed("Reverting failed")),
         Task::Revert { commit, anyway } => {
-            if !anyway && let Some(files) = revert_conflicts(git, repository, *commit, cancel) {
+            if !anyway && let Some(files) = revert_conflicts(git, repository, *commit, cancel).await
+            {
                 return Ok(Outcome::WouldConflict {
                     commit: *commit,
                     files,
                 });
             }
             revert(git, repository, *commit, cancel)
+                .await
                 .map(Outcome::Integrated)
                 .or_else(failed("Reverting failed"))
         }
         Task::Reset(commit, mode) => reset(git, repository, *commit, *mode, cancel)
+            .await
             .map(|()| Outcome::Done)
             .or_else(failed("Resetting failed")),
         Task::FastForward { to, .. } => fast_forward_current(git, repository, to.as_ref(), cancel)
+            .await
             .map(Outcome::Forwarded)
             .or_else(failed("The branch couldn't be fast-forwarded")),
         Task::ApplyPatch { patch, how, .. } => apply_patch(git, repository, &patch.0, *how, cancel)
+            .await
             .map(Outcome::Integrated)
             .or_else(failed("The patch couldn't be applied")),
         Task::Skip(operation) => skip_operation(git, repository, *operation, cancel)
+            .await
             .map(Outcome::Integrated)
             .or_else(failed("It couldn't be skipped")),
         // `run` sends the others elsewhere.
@@ -1353,15 +1395,18 @@ fn history(
 }
 
 /// The current branch's history rewritten: interactively, or one commit dropped or squashed.
-fn rewrite(
+async fn rewrite(
     git: &Git,
     repository: &Repository,
     task: &Task,
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
     const TITLE: &str = "Rebasing failed";
-    let range =
-        |from| rebase_range(git, repository, from, cancel).map_err(|error| range_problem(&error));
+    let range = async |from| {
+        rebase_range(git, repository, from, cancel)
+            .await
+            .map_err(|error| range_problem(&error))
+    };
     let (base, plan, keep_merges) = match task {
         Task::InteractiveRebase {
             base,
@@ -1369,7 +1414,7 @@ fn rewrite(
             keep_merges,
         } => (*base, plan.clone(), *keep_merges),
         Task::DropCommit(commit) => {
-            let range = range(*commit)?;
+            let range = range(*commit).await?;
             (
                 range.base,
                 planned(&range, |id| (id == *commit).then_some(Step::Drop)),
@@ -1377,13 +1422,13 @@ fn rewrite(
             )
         }
         Task::SquashIntoParent(commit) => {
-            let parent = range(*commit)?.base.ok_or_else(|| {
+            let parent = range(*commit).await?.base.ok_or_else(|| {
                 Problem::new(
                     TITLE,
                     "It is the first commit: there is nothing to squash it into.",
                 )
             })?;
-            let range = range(parent)?;
+            let range = range(parent).await?;
             (
                 range.base,
                 planned(&range, |id| (id == *commit).then_some(Step::Squash)),
@@ -1395,13 +1440,15 @@ fn rewrite(
             // files are changed).
             let head = repository
                 .head_ref(git)
+                .await
                 .map_err(|error| Problem::git("HEAD couldn't be read", &error))?;
             if head.commit == Some(*commit) {
                 return reword_head(git, repository, message, cancel)
+                    .await
                     .map(|_| Outcome::Done)
                     .or_else(failed("The message couldn't be changed"));
             }
-            let range = range(*commit)?;
+            let range = range(*commit).await?;
             (
                 range.base,
                 planned(&range, |id| {
@@ -1414,9 +1461,9 @@ fn rewrite(
         _ => return Ok(Outcome::Done),
     };
     let rebased = if keep_merges {
-        rebase_keeping_merges(git, repository, base, &plan, cancel)
+        rebase_keeping_merges(git, repository, base, &plan, cancel).await
     } else {
-        rebase_interactive(git, repository, base, &plan, cancel)
+        rebase_interactive(git, repository, base, &plan, cancel).await
     };
     match rebased {
         Ok(integrated) => Ok(Outcome::Integrated(integrated)),
@@ -1427,14 +1474,14 @@ fn rewrite(
 
 /// Signs `commits` of the current branch, every commit after them made again and signed too,
 /// how far it got in `progress`.
-fn sign(
+async fn sign(
     git: &Git,
     repository: &Repository,
     commits: &[ObjectId],
     progress: &Progress,
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
-    let plan = match plan_signing(git, repository, commits, cancel) {
+    let plan = match plan_signing(git, repository, commits, cancel).await {
         Ok(plan) => plan,
         Err(SignError::Git(GitError::Cancelled { .. })) => return Ok(Outcome::Cancelled),
         Err(error) => return Err(sign_problem(&error)),
@@ -1446,7 +1493,8 @@ fn sign(
             u64::try_from(made).unwrap_or(u64::MAX),
             total,
         );
-    });
+    })
+    .await;
     match signed {
         Ok(signed) => Ok(Outcome::Signed {
             made: signed.made,
@@ -1508,13 +1556,13 @@ pub(crate) fn range_problem(error: &RangeError) -> Problem {
 }
 
 /// Switching, and changes to branches and tags.
-fn references(
+async fn references(
     git: &Git,
     repository: &Repository,
     task: &Task,
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
-    let switched = |to: &SwitchTo| match switch(git, repository, to, cancel) {
+    let switched = async |to: &SwitchTo| match switch(git, repository, to, cancel).await {
         Ok(()) => Ok(Outcome::Done),
         Err(SwitchError::WouldOverwrite { paths, untracked }) => {
             Ok(Outcome::WouldOverwrite { paths, untracked })
@@ -1522,15 +1570,16 @@ fn references(
         Err(SwitchError::Git(error)) => failed("Switching failed")(error),
     };
     match task {
-        Task::Switch(to) => switched(to),
+        Task::Switch(to) => switched(to).await,
         Task::StashAndSwitch(to) => {
             let stashed = stash_push(git, repository, ("Before switching", true), &[], cancel)
+                .await
                 .map(Outcome::Stashed)
                 .or_else(failed("Your changes couldn't be stashed"))?;
             if stashed == Outcome::Cancelled {
                 return Ok(stashed);
             }
-            switched(to).map_err(|problem| {
+            switched(to).await.map_err(|problem| {
                 Problem::new(
                     problem.title.clone(),
                     format!(
@@ -1543,16 +1592,18 @@ fn references(
         }
         Task::CreateBranch { name, at } => {
             create_branch(git, repository, name.as_ref(), *at, cancel)
+                .await
                 .map(|()| Outcome::Done)
                 .or_else(failed("The branch couldn't be made"))
         }
         Task::RenameBranch { old, new } => {
             rename_branch(git, repository, old.as_ref(), new.as_ref(), cancel)
+                .await
                 .map(|()| Outcome::Done)
                 .or_else(failed("The branch couldn't be renamed"))
         }
         Task::DeleteBranch { name, force } => {
-            match delete_branch(git, repository, name.as_ref(), *force, cancel) {
+            match delete_branch(git, repository, name.as_ref(), *force, cancel).await {
                 Ok(()) => Ok(Outcome::Done),
                 Err(DeleteBranchError::NotMerged) => Ok(Outcome::NotMerged),
                 Err(DeleteBranchError::Git(error)) => {
@@ -1568,9 +1619,11 @@ fn references(
             message.as_deref(),
             cancel,
         )
+        .await
         .map(|()| Outcome::Done)
         .or_else(failed("The tag couldn't be made")),
         Task::DeleteTag(name) => delete_tag(git, repository, name.as_ref(), cancel)
+            .await
             .map(|()| Outcome::Done)
             .or_else(failed("The tag couldn't be deleted")),
         Task::SetUpstream { branch, upstream } => set_upstream(
@@ -1580,6 +1633,7 @@ fn references(
             upstream.as_ref().map(AsRef::as_ref),
             cancel,
         )
+        .await
         .map(|()| Outcome::Done)
         .or_else(failed("The upstream couldn't be set")),
         // `run` sends the others elsewhere.
@@ -1588,7 +1642,7 @@ fn references(
 }
 
 /// Places of the repository's outside it: a new work tree, a patch saved.
-fn places(
+async fn places(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -1606,33 +1660,37 @@ fn places(
                 WorktreeSource::Detached(commit) => WorktreeFrom::Detached(*commit),
             };
             add_worktree(git, repository, path, from, cancel)
+                .await
                 .map(|()| Outcome::Done)
                 .or_else(failed("The worktree couldn't be made"))
         }
         Task::SavePatch { commit, path } => {
-            let patch = match format_patch(git, repository, *commit, cancel) {
+            let patch = match format_patch(git, repository, *commit, cancel).await {
                 Ok(patch) => patch,
                 Err(error) => return failed("The patch couldn't be made")(error),
             };
             write_patch(path, &patch)
         }
         Task::SaveChanges { changes, path } => {
-            let patch = match changes_patch(git, repository, *changes, cancel) {
+            let patch = match changes_patch(git, repository, *changes, cancel).await {
                 Ok(patch) => patch,
                 Err(error) => return failed("The patch couldn't be made")(error),
             };
             write_patch(path, &patch)
         }
-        Task::CopyPatch(commit) => match format_patch(git, repository, *commit, cancel) {
+        Task::CopyPatch(commit) => match format_patch(git, repository, *commit, cancel).await {
             Ok(patch) => copied(patch),
             Err(error) => failed("The patch couldn't be made")(error),
         },
-        Task::CopyChanges(changes) => match changes_patch(git, repository, *changes, cancel) {
-            Ok(patch) => copied(patch),
-            Err(error) => failed("The patch couldn't be made")(error),
-        },
+        Task::CopyChanges(changes) => {
+            match changes_patch(git, repository, *changes, cancel).await {
+                Ok(patch) => copied(patch),
+                Err(error) => failed("The patch couldn't be made")(error),
+            }
+        }
         Task::SavePatches { from, folder } => {
             format_patches(git, repository, *from, folder, cancel)
+                .await
                 .map(|written| Outcome::SavedPatches(written.len()))
                 .or_else(failed("The patches couldn't be saved"))
         }
@@ -1642,7 +1700,7 @@ fn places(
 }
 
 /// Remotes added, fetched alone, renamed, removed, or pointed elsewhere.
-fn remotes(
+async fn remotes(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -1653,46 +1711,50 @@ fn remotes(
         |result: Result<(), GitError>, title| result.map(|()| Outcome::Done).or_else(failed(title));
     match task {
         Task::AddRemote { name, url, fetch } => {
-            if let Err(error) = add_remote(git, repository, name, url, cancel) {
+            if let Err(error) = add_remote(git, repository, name, url, cancel).await {
                 return failed("The remote wasn't added")(error);
             }
             if !*fetch {
                 return Ok(Outcome::Done);
             }
             done(
-                fetch_remote(git, repository, BStr::new(name), false, progress, cancel),
+                fetch_remote(git, repository, BStr::new(name), false, progress, cancel).await,
                 "The remote was added, but couldn't be fetched from",
             )
         }
         Task::FetchRemote { remote, prune } => done(
-            fetch_remote(git, repository, remote.as_ref(), *prune, progress, cancel),
+            fetch_remote(git, repository, remote.as_ref(), *prune, progress, cancel).await,
             "The fetch failed",
         ),
         Task::RenameRemote { old, new } => done(
-            rename_remote(git, repository, old.as_ref(), new, cancel),
+            rename_remote(git, repository, old.as_ref(), new, cancel).await,
             "The remote wasn't renamed",
         ),
         Task::RemoveRemote(name) => done(
-            remove_remote(git, repository, name.as_ref(), cancel),
+            remove_remote(git, repository, name.as_ref(), cancel).await,
             "The remote wasn't removed",
         ),
         Task::SetRemoteUrls { remote, url, push } => {
             let title = "The remote's address wasn't changed";
-            if let Err(error) = set_remote_url(git, repository, remote.as_ref(), url, false, cancel)
+            if let Err(error) =
+                set_remote_url(git, repository, remote.as_ref(), url, false, cancel).await
             {
                 return failed(title)(error);
             }
             // Pushing goes where fetching comes from, unless told otherwise.
-            let pushed = push.as_ref().map_or_else(
-                || {
+            let pushed = match push {
+                None => {
                     unset_config(
                         git,
                         ConfigTarget::Repository(repository.work_tree()),
                         &format!("remote.{}.pushurl", remote.to_str_lossy()),
                     )
-                },
-                |push| set_remote_url(git, repository, remote.as_ref(), push, true, cancel),
-            );
+                    .await
+                }
+                Some(push) => {
+                    set_remote_url(git, repository, remote.as_ref(), push, true, cancel).await
+                }
+            };
             done(pushed, title)
         }
         // `run` sends the others elsewhere.
@@ -1701,7 +1763,7 @@ fn remotes(
 }
 
 /// Worktrees removed, locked, unlocked, or pruned; submodules updated.
-fn trees(
+async fn trees(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -1712,7 +1774,7 @@ fn trees(
         |result: Result<(), GitError>, title| result.map(|()| Outcome::Done).or_else(failed(title));
     match task {
         Task::RemoveWorktree { path, force } => {
-            match remove_worktree(git, repository, path, *force, cancel) {
+            match remove_worktree(git, repository, path, *force, cancel).await {
                 Ok(()) => Ok(Outcome::Done),
                 Err(RemoveWorktreeError::Changes) => Ok(Outcome::WorktreeChanges),
                 Err(RemoveWorktreeError::Locked) => Err(Problem::new(
@@ -1725,21 +1787,21 @@ fn trees(
             }
         }
         Task::LockWorktree { path, reason } => done(
-            lock_worktree(git, repository, path, reason, cancel),
+            lock_worktree(git, repository, path, reason, cancel).await,
             "The worktree wasn't locked",
         ),
         Task::UnlockWorktree(path) => done(
-            unlock_worktree(git, repository, path, cancel),
+            unlock_worktree(git, repository, path, cancel).await,
             "The worktree wasn't unlocked",
         ),
         Task::PruneWorktrees => done(
-            prune_worktrees(git, repository, cancel),
+            prune_worktrees(git, repository, cancel).await,
             "The worktrees weren't pruned",
         ),
         Task::UpdateSubmodules(paths) => {
             let paths: Vec<&BStr> = paths.iter().map(AsRef::as_ref).collect();
             done(
-                update_submodules(git, repository, &paths, progress, cancel),
+                update_submodules(git, repository, &paths, progress, cancel).await,
                 "The submodules weren't updated",
             )
         }
@@ -1749,7 +1811,7 @@ fn trees(
 }
 
 /// Stashing, and a stash applied or dropped.
-fn stashing(
+async fn stashing(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -1773,13 +1835,16 @@ fn stashing(
         } => {
             let paths: Vec<&BStr> = paths.iter().map(|path| path.as_bstr()).collect();
             stash_push(git, repository, (message, *untracked), &paths, cancel)
+                .await
                 .map(Outcome::Stashed)
                 .or_else(failed("Your changes couldn't be stashed"))
         }
         Task::ApplyStash { stash, pop } => stash_apply(git, repository, stash, *pop, cancel)
+            .await
             .map(Outcome::Integrated)
             .or_else(stale("The stash couldn't be applied")),
         Task::DropStash(stash) => stash_drop(git, repository, stash, cancel)
+            .await
             .map(|()| Outcome::Done)
             .or_else(stale("The stash couldn't be dropped")),
         // `run` sends the others elsewhere.

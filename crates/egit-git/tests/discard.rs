@@ -19,7 +19,8 @@ use bstr::BStr;
 use egit_git::testing::{Sandbox, set_mode};
 use egit_git::{
     CancelToken, DiffLineKind, DiffOptions, DiscardError, DiscardSide, FileDiff, Repository,
-    Status, TreeEntry, Uncommitted, discard_files, discard_lines, put_back, uncommitted_diff,
+    Status, TreeEntry, Uncommitted, Wait as _, discard_files, discard_lines, put_back,
+    uncommitted_diff,
 };
 
 fn read(repo: &Path, file: &str) -> String {
@@ -35,12 +36,15 @@ fn diff(sandbox: &Sandbox, repository: &Repository, path: &str, which: Uncommitt
         &DiffOptions::default(),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap()
 }
 
 /// What the index holds at `path`.
 fn entry(sandbox: &Sandbox, repository: &Repository, path: &str) -> Option<TreeEntry> {
-    let status = Status::read(sandbox.git(), repository, &CancelToken::new()).unwrap();
+    let status = Status::read(sandbox.git(), repository, &CancelToken::new())
+        .wait()
+        .unwrap();
     status
         .entries()
         .find(|entry| entry.path == path)
@@ -90,7 +94,7 @@ fn whole_files_are_discarded_put_back_and_discarded_again() {
     } else {
         &[BStr::new("new/run.sh")]
     };
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
 
     let files = discard_files(
@@ -100,6 +104,7 @@ fn whole_files_are_discarded_put_back_and_discarded_again() {
         untracked,
         &cancel,
     )
+    .wait()
     .unwrap()
     .expect("kept");
     assert_eq!(read(&repo, "a"), "one\nstaged\n", "what is staged stays");
@@ -122,6 +127,7 @@ fn whole_files_are_discarded_put_back_and_discarded_again() {
         DiscardSide::Before,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(read(&repo, "a"), "one\nstaged\nnot staged\n");
     assert!(!repo.join("b").exists());
@@ -147,6 +153,7 @@ fn whole_files_are_discarded_put_back_and_discarded_again() {
         DiscardSide::After,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(short_status(&sandbox, &repo), "M  a\n");
 
@@ -159,7 +166,7 @@ fn whole_files_are_discarded_put_back_and_discarded_again() {
         DiscardSide::Before,
         &cancel,
     );
-    assert!(matches!(refused, Err(DiscardError::Stale(path)) if path == "a"));
+    assert!(matches!(refused.wait(), Err(DiscardError::Stale(path)) if path == "a"));
     assert_eq!(read(&repo, "b"), "keep\n", "nothing written");
 }
 
@@ -175,7 +182,7 @@ fn some_lines_are_discarded_and_put_back() {
     changed[1] = "LINE 2\n".to_owned();
     changed[15] = "LINE 16\n".to_owned();
     std::fs::write(repo.join("f"), changed.concat()).unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
 
     let unstaged = diff(&sandbox, &repository, "f", Uncommitted::Unstaged);
@@ -189,6 +196,7 @@ fn some_lines_are_discarded_and_put_back() {
         entry(&sandbox, &repository, "f"),
         &cancel,
     )
+    .wait()
     .unwrap();
     let mut kept = lines;
     kept[1] = "LINE 2\n".to_owned();
@@ -202,6 +210,7 @@ fn some_lines_are_discarded_and_put_back() {
         DiscardSide::Before,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(read(&repo, "f"), changed.concat());
     put_back(
@@ -211,6 +220,7 @@ fn some_lines_are_discarded_and_put_back() {
         DiscardSide::After,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(read(&repo, "f"), kept.concat());
 
@@ -224,7 +234,8 @@ fn some_lines_are_discarded_and_put_back() {
         |_| true,
         entry(&sandbox, &repository, "f"),
         &cancel,
-    );
+    )
+    .wait();
     assert!(
         matches!(refused, Err(DiscardError::Stale(_))),
         "{refused:?}"
@@ -243,7 +254,7 @@ fn lines_keep_the_line_endings_git_converts() {
         .commit_file(&repo, "f", "a\r\nb\r\nc\r\n", "F")
         .unwrap();
     std::fs::write(repo.join("f"), "a\r\nB\r\nc\r\nd\r\n").unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let unstaged = diff(&sandbox, &repository, "f", Uncommitted::Unstaged);
     // Only `d`, the last line added.
     let last = unstaged.lines.len() - 1;
@@ -256,6 +267,7 @@ fn lines_keep_the_line_endings_git_converts() {
         entry(&sandbox, &repository, "f"),
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(read(&repo, "f"), "a\r\nB\r\nc\r\n");
 }
@@ -269,7 +281,7 @@ fn lines_of_untracked_and_deleted_files() {
         .unwrap();
     std::fs::remove_file(repo.join("gone")).unwrap();
     std::fs::write(repo.join("new"), "1\n2\n3\n").unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
 
     // An untracked file without its second line.
@@ -287,6 +299,7 @@ fn lines_of_untracked_and_deleted_files() {
         None,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(read(&repo, "new"), "1\n3\n");
 
@@ -305,6 +318,7 @@ fn lines_of_untracked_and_deleted_files() {
         entry(&sandbox, &repository, "gone"),
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(read(&repo, "gone"), "x\n");
     assert!(file.before.is_none());
@@ -315,6 +329,7 @@ fn lines_of_untracked_and_deleted_files() {
         DiscardSide::Before,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert!(!repo.join("gone").exists());
 }
@@ -328,7 +343,7 @@ fn a_file_too_large_to_keep_leaves_nothing_kept() {
     let large = std::fs::File::create(repo.join("large.bin")).unwrap();
     large.set_len(egit_git::KEEP_BYTES + 1).unwrap();
     drop(large);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let kept = discard_files(
         sandbox.git(),
         &repository,
@@ -336,6 +351,7 @@ fn a_file_too_large_to_keep_leaves_nothing_kept() {
         &[BStr::new("large.bin")],
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     assert_eq!(kept, None);
     assert!(!repo.join("large.bin").exists(), "discarded all the same");

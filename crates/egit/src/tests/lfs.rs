@@ -2,6 +2,7 @@
 //! here says so and sets it up; its menu and page; a pattern tracked and untracked; its files
 //! listed. Skipped without git-lfs, unless `EGIT_REQUIRE_LFS` is set.
 
+use egit_git::Wait as _;
 use egit_git::testing::Sandbox;
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
@@ -14,7 +15,10 @@ use crate::theme::icon;
 
 /// Whether git-lfs is installed; without it the test is skipped, unless it is required.
 fn available(sandbox: &Sandbox) -> bool {
-    let found = egit_git::lfs_version(sandbox.git()).unwrap().is_some();
+    let found = egit_git::lfs_version(sandbox.git())
+        .wait()
+        .unwrap()
+        .is_some();
     assert!(
         found || std::env::var_os("EGIT_REQUIRE_LFS").is_none(),
         "git-lfs is needed to test Git LFS"

@@ -118,7 +118,7 @@ impl History {
             cancel.clone(),
             ctx.clone(),
         );
-        jobs::detached(move || {
+        jobs::detached(async move {
             let (git, repository, objects, scope, cancel, ctx) = job;
             let walking = Walking {
                 git: &git,
@@ -126,7 +126,7 @@ impl History {
                 objects: &objects,
                 cancel: &cancel,
             };
-            let walked = walk(&walking, &scope, &sender, &ctx);
+            let walked = walk(&walking, &scope, &sender, &ctx).await;
             // When nobody listens any more, there is no one to tell.
             let _ = sender.send(Piece::Done(walked));
             ctx.request_repaint();
@@ -427,7 +427,9 @@ struct Walking<'a> {
 }
 
 /// The repository's refs: gitoxide's where it reads them, else git's; and gitoxide's reader.
-fn read_refs(walking: &Walking<'_>) -> Result<(Vec<Reference>, Option<GixRepository>), Problem> {
+async fn read_refs(
+    walking: &Walking<'_>,
+) -> Result<(Vec<Reference>, Option<GixRepository>), Problem> {
     let gix = walking.objects.reopen(walking.repository.work_tree());
     let read_by_gix = gix.as_ref().and_then(|gix| match gix.references() {
         Ok(refs) => Some(refs),
@@ -438,12 +440,14 @@ fn read_refs(walking: &Walking<'_>) -> Result<(Vec<Reference>, Option<GixReposit
     });
     let refs = match read_by_gix {
         Some(refs) => refs,
-        None => list_references(walking.git, walking.repository).map_err(|error| {
-            Problem::git(
-                "The repository's branches and tags couldn't be read",
-                &error,
-            )
-        })?,
+        None => list_references(walking.git, walking.repository)
+            .await
+            .map_err(|error| {
+                Problem::git(
+                    "The repository's branches and tags couldn't be read",
+                    &error,
+                )
+            })?,
     };
     Ok((refs, gix))
 }
@@ -452,14 +456,14 @@ fn read_refs(walking: &Walking<'_>) -> Result<(Vec<Reference>, Option<GixReposit
 /// the commits it starts from come from gitoxide where it reads them as git does; with
 /// `scope`, only some refs' commits, a branch pinned to the left (each as far as its refs are
 /// found: none found, everything).
-fn walk(
+async fn walk(
     walking: &Walking<'_>,
     scope: &Scope,
     pieces: &Sender<Piece>,
     ctx: &egui::Context,
 ) -> Result<(), Problem> {
     let (git, repository) = (walking.git, walking.repository);
-    let (refs, gix) = read_refs(walking)?;
+    let (refs, gix) = read_refs(walking).await?;
     let target = |name: &BString| {
         refs.iter()
             .find(|reference| reference.name == *name)
@@ -492,7 +496,7 @@ fn walk(
     };
     let start = Piece::Start {
         refs: Refs::new(refs),
-        commit_graph: repository.has_commit_graph(git),
+        commit_graph: repository.has_commit_graph(git).await,
         scope: applied,
     };
     if pieces.send(start).is_err() {
@@ -520,6 +524,7 @@ fn walk(
     let tips = if !hidden.is_empty() {
         Some(
             history_tips(git, repository, &hidden, walking.cancel)
+                .await
                 .map_err(|error| Problem::git("The history couldn't be read", &error))?,
         )
     } else if only.is_empty() {
@@ -535,8 +540,8 @@ fn walk(
     };
     let cancel = walking.cancel;
     match tips {
-        Some(tips) => walk_history_from(git, repository, tips, cancel, each),
-        None => walk_history(git, repository, cancel, each),
+        Some(tips) => walk_history_from(git, repository, tips, cancel, each).await,
+        None => walk_history(git, repository, cancel, each).await,
     }
     .map_err(|error| Problem::git("The history couldn't be read", &error))?;
     let widest = builder.widest();
@@ -623,7 +628,8 @@ const fn rank(kind: RefKind) -> u8 {
 /// every read to git.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Objects {
-    git: Arc<Mutex<Option<ObjectReader>>>,
+    /// Held while git answers: a job waiting for it waits without holding a thread's lock.
+    git: Arc<tokio::sync::Mutex<Option<ObjectReader>>>,
     gix: Arc<Mutex<Gix>>,
     /// The repository is on another computer: gitoxide (which reads files here) never reads.
     there: bool,
@@ -683,7 +689,7 @@ impl Objects {
     /// Reads `ids` (see [`ObjectReader::read`]), inside a job: through gitoxide, or git; git
     /// reads what gitoxide didn't (a partial clone's objects it hasn't, which git fetches, or
     /// all after gitoxide failed partway).
-    pub(crate) fn read(
+    pub(crate) async fn read(
         &self,
         git: &Git,
         work_tree: &Path,
@@ -706,14 +712,14 @@ impl Objects {
             }
         }
         let rest = ids.get(handed..).unwrap_or_default();
-        let mut reader = self.git.lock();
+        let mut reader = self.git.lock().await;
         if reader.is_none() {
-            *reader = Some(ObjectReader::start(git, work_tree)?);
+            *reader = Some(ObjectReader::start(git, work_tree).await?);
         }
         let Some(active) = reader.as_mut() else {
             return Ok(());
         };
-        let read = active.read(rest, each);
+        let read = active.read(rest, each).await;
         if read.is_err() {
             *reader = None;
         }
@@ -832,8 +838,9 @@ impl Signatures {
             return;
         }
         let (git, repository) = (git.clone(), Arc::clone(repository));
-        self.checking.request(jobs::blocking(move || {
+        self.checking.request(jobs::blocking(async move {
             let found = check_signatures(&git, &repository, &missing, &CancelToken::new())
+                .await
                 .map_err(|error| Problem::git("Signatures couldn't be checked", &error));
             Ok(Checked {
                 ids: missing,
@@ -945,7 +952,7 @@ impl Summaries {
             return;
         }
         let (git, repository, objects) = (git.clone(), Arc::clone(repository), objects.clone());
-        self.reading.request(jobs::blocking(move || {
+        self.reading.request(jobs::blocking(async move {
             let mut found = Vec::with_capacity(missing.len());
             let zone = crate::format::local_zone();
             objects
@@ -956,6 +963,7 @@ impl Summaries {
                         .map_or_else(Summary::unreadable, |commit| Summary::of(&commit, &zone));
                     found.push((id, summary));
                 })
+                .await
                 .map_err(|error| Problem::git("Commits couldn't be read", &error))?;
             Ok(found)
         }));
@@ -1099,7 +1107,7 @@ pub(crate) async fn read_file(
     if entry.mode == TreeEntry::SUBMODULE {
         return Ok(Arc::new(FileContent::Submodule { commit: entry.id }));
     }
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         const UNREADABLE: &str = "The file couldn't be read";
         let mut content = None;
         objects
@@ -1108,6 +1116,7 @@ pub(crate) async fn read_file(
                     .filter(|object| object.kind == ObjectKind::Blob)
                     .map(|object| FileContent::of(object.data, &path));
             })
+            .await
             .map_err(|error| Problem::git(UNREADABLE, &error))?;
         content.map(Arc::new).ok_or_else(|| {
             Problem::new(
@@ -1126,9 +1135,9 @@ pub(crate) async fn read_work_tree_file(
     repository: Arc<Repository>,
     path: BString,
 ) -> Result<Arc<FileContent>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let file = repository.work_tree().join(path.to_path_lossy());
-        let bytes = git.files().read(&file).map_err(|error| {
+        let bytes = git.files().read(&file).await.map_err(|error| {
             Problem::new(
                 "The file couldn't be read",
                 format!("{}: {error}", file.display()),
@@ -1146,7 +1155,7 @@ pub(crate) async fn read_message(
     objects: Objects,
     id: ObjectId,
 ) -> Result<String, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         const UNREADABLE: &str = "The last commit's message couldn't be read";
         let mut message = None;
         objects
@@ -1156,6 +1165,7 @@ pub(crate) async fn read_message(
                     .and_then(|object| Commit::parse(object.data).ok())
                     .map(|commit| commit.message.to_str_lossy().into_owned());
             })
+            .await
             .map_err(|error| Problem::git(UNREADABLE, &error))?;
         message.ok_or_else(|| Problem::new(UNREADABLE, format!("{id} isn't a commit here.")))
     })
@@ -1169,11 +1179,12 @@ pub(crate) async fn read_details(
     objects: Objects,
     id: ObjectId,
 ) -> Result<Arc<CommitDetails>, Problem> {
-    jobs::blocking(move || {
-        let commit = read_commit(&git, &repository, &objects, id)?;
+    jobs::blocking(async move {
+        let commit = read_commit(&git, &repository, &objects, id).await?;
         // Read again after a task anyway; a check failing only hides rewording.
-        let in_head = repository.head_reaches(&git, id).unwrap_or(false);
+        let in_head = repository.head_reaches(&git, id).await.unwrap_or(false);
         let changes = commit_changes(&git, &repository, id, commit.parents.first().copied())
+            .await
             .map_err(|error| Problem::git("The commit's changes couldn't be listed", &error))?;
         Ok(Arc::new(CommitDetails {
             id,
@@ -1194,10 +1205,11 @@ pub(crate) async fn read_comparison(
     from: ObjectId,
     to: ObjectId,
 ) -> Result<Arc<CommitDetails>, Problem> {
-    jobs::blocking(move || {
-        let mut commit = read_commit(&git, &repository, &objects, to)?;
+    jobs::blocking(async move {
+        let mut commit = read_commit(&git, &repository, &objects, to).await?;
         commit.parents = vec![from];
         let changes = commit_changes(&git, &repository, to, Some(from))
+            .await
             .map_err(|error| Problem::git("The commits couldn't be compared", &error))?;
         Ok(Arc::new(CommitDetails {
             id: to,
@@ -1210,7 +1222,7 @@ pub(crate) async fn read_comparison(
 }
 
 /// The commit `id`, parsed.
-fn read_commit(
+async fn read_commit(
     git: &Git,
     repository: &Repository,
     objects: &Objects,
@@ -1224,6 +1236,7 @@ fn read_commit(
                 .filter(|object| object.kind == ObjectKind::Commit)
                 .map(|object| Commit::parse(object.data));
         })
+        .await
         .map_err(|error| Problem::git(UNREADABLE, &error))?;
     match parsed {
         Some(Ok(commit)) => Ok(commit),
@@ -1254,9 +1267,10 @@ pub(crate) async fn read_change_counts(
     details: Arc<CommitDetails>,
     cancel: CancelToken,
 ) -> Result<Arc<ChangeCounts>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let parent = details.commit.parents.first().copied();
         let counted = line_counts(&git, &repository, details.id, parent, &cancel)
+            .await
             .map_err(|error| Problem::git("The changed lines couldn't be counted", &error))?;
         let files = align_counts(&details.changes, counted);
         let total = files

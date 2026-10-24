@@ -144,7 +144,7 @@ pub(crate) fn start_blame(
 ) -> Arc<Blaming> {
     let blaming = Arc::new(Blaming::default());
     let shared = Arc::clone(&blaming);
-    jobs::detached(move || {
+    jobs::detached(async move {
         let mut runs = Vec::with_capacity(BATCH);
         let mut last = Instant::now();
         // The commits found, copied once each (the last batch is handed over after `blame`).
@@ -165,7 +165,8 @@ pub(crate) fn start_blame(
                     last = Instant::now();
                 }
             },
-        );
+        )
+        .await;
         if !runs.is_empty() {
             shared.state.lock().take(&commits, &runs);
         }
@@ -192,7 +193,7 @@ pub(crate) async fn read_blamed_file(
     };
     let (finding, found_path) = (Arc::clone(&repository), path.clone());
     let finder = git.clone();
-    let entry = jobs::blocking(move || {
+    let entry = jobs::blocking(async move {
         tree_entry(
             &finder,
             &finding,
@@ -200,6 +201,7 @@ pub(crate) async fn read_blamed_file(
             found_path.as_ref(),
             &CancelToken::new(),
         )
+        .await
         .map_err(|error| Problem::git("The file couldn't be found", &error))
     })
     .await?

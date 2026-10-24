@@ -96,13 +96,15 @@ impl PullRequestForm {
         let (git, repository, objects) =
             (git.clone(), Arc::clone(shared.repository), objects.clone());
         let (head, remote, branch) = (self.head.clone(), self.remote.clone(), self.branch.clone());
-        self.prepared.request(jobs::blocking(move || {
-            let info = repository_info(&account, &head, &CancelToken::new()).map_err(|error| {
-                Problem::new(
-                    "The repository's details couldn't be read",
-                    error.to_string(),
-                )
-            })?;
+        self.prepared.request(jobs::blocking(async move {
+            let info = repository_info(&account, &head, &CancelToken::new())
+                .await
+                .map_err(|error| {
+                    Problem::new(
+                        "The repository's details couldn't be read",
+                        error.to_string(),
+                    )
+                })?;
             let mut targets = vec![(head.clone(), info.default_branch.clone())];
             if let Some((parent, default)) = info.parent {
                 // A fork's requests usually go to the repository it came from.
@@ -112,7 +114,8 @@ impl PullRequestForm {
                 .first()
                 .and_then(|(_, default)| default.clone())
                 .unwrap_or_else(|| "main".to_owned());
-            let (title, body) = suggested(&git, &repository, &objects, &remote, &base, &branch);
+            let (title, body) =
+                suggested(&git, &repository, &objects, &remote, &base, &branch).await;
             Ok(Arc::new(Prepared {
                 targets,
                 title,
@@ -124,7 +127,7 @@ impl PullRequestForm {
 
 /// The title and description a branch's commits suggest: its one commit's subject and body
 /// when it brings in one, its name otherwise.
-fn suggested(
+async fn suggested(
     git: &egit_git::Git,
     repository: &egit_git::Repository,
     objects: &Objects,
@@ -143,19 +146,23 @@ fn suggested(
         tip.as_bstr(),
         2,
         &CancelToken::new(),
-    ) else {
+    )
+    .await
+    else {
         return named();
     };
     let [only] = commits.as_slice() else {
         return named();
     };
     let mut message = None;
-    let read = objects.read(git, repository.work_tree(), &[*only], |_, object| {
-        message = object
-            .filter(|object| object.kind == ObjectKind::Commit)
-            .and_then(|object| Commit::parse(object.data).ok())
-            .map(|commit| commit.message.to_str_lossy().into_owned());
-    });
+    let read = objects
+        .read(git, repository.work_tree(), &[*only], |_, object| {
+            message = object
+                .filter(|object| object.kind == ObjectKind::Commit)
+                .and_then(|object| Commit::parse(object.data).ok())
+                .map(|commit| commit.message.to_str_lossy().into_owned());
+        })
+        .await;
     match (read, message) {
         (Ok(()), Some(message)) => {
             let (subject, body) = message.split_once("\n\n").unwrap_or((&message, ""));

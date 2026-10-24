@@ -18,7 +18,7 @@ use crate::repo::Repository;
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints something that isn't a tree's entry.
-pub fn tree_entry(
+pub async fn tree_entry(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -34,7 +34,8 @@ pub fn tree_entry(
         .env("GIT_LITERAL_PATHSPECS", "1")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     parse_entry(&listed.stdout, path)
 }
 
@@ -66,7 +67,7 @@ fn parse_entry(listed: &[u8], path: &BStr) -> Result<Option<TreeEntry>, GitError
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn tree_folders(
+pub async fn tree_folders(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -78,7 +79,8 @@ pub fn tree_folders(
         .arg(commit.to_string())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     Ok(listed
         .stdout
         .split_str(b"\0")
@@ -98,7 +100,7 @@ pub fn tree_folders(
 /// # Errors
 ///
 /// When `at` names no commit, or git fails or is cancelled.
-pub fn tree_files(
+pub async fn tree_files(
     git: &Git,
     repository: &Repository,
     at: &str,
@@ -133,6 +135,7 @@ pub fn tree_files(
                 std::ops::ControlFlow::Continue(())
             })
         })
+        .await
         .map(drop)
 }
 
@@ -145,7 +148,7 @@ pub fn tree_files(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn ignored_paths(
+pub async fn ignored_paths(
     git: &Git,
     repository: &Repository,
     paths: &[&BStr],
@@ -165,7 +168,8 @@ pub fn ignored_paths(
         .current_dir(repository.work_tree())
         .stdin(stdin)
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     // 1: none of them is ignored.
     match checked.status.code() {
         Some(0) => Ok(checked

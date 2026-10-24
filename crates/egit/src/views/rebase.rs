@@ -153,8 +153,9 @@ impl RebaseView {
                 Arc::clone(shared.repository),
                 view.cancel.clone(),
             );
-            view.range.request(jobs::blocking(move || {
+            view.range.request(jobs::blocking(async move {
                 rebase_range(&git, &repository, from, &cancel)
+                    .await
                     .map(Arc::new)
                     .map_err(|error| range_problem(&error))
             }));

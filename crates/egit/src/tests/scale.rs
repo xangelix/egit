@@ -27,7 +27,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
-use egit_git::{ConfigPlace, ConfigSnapshot, Git, GitOptions, Repository};
+use egit_git::{ConfigPlace, ConfigSnapshot, Git, GitOptions, Repository, Wait as _};
 use egui_kittest::Harness;
 
 use super::screens::{rendering, screens};
@@ -93,7 +93,7 @@ fn a_large_history_opens_at_once_and_scrolls_within_a_frame() {
         println!("EGIT_SCALE_REPO isn't set");
         return;
     };
-    let git = Git::new(GitOptions::default()).unwrap();
+    let git = Git::new(GitOptions::default()).wait().unwrap();
     let mut harness =
         Harness::builder()
             .with_size([1600.0, 1000.0])
@@ -237,12 +237,13 @@ fn statistics(harness: &mut Harness<'_, EgitApp>) {
 /// The history narrowed to the current branch and pinned, then every branch's again: how soon
 /// each read again takes over.
 fn scoped(harness: &mut Harness<'_, EgitApp>, repo: &std::path::Path) {
-    let git = Git::new(GitOptions::default()).unwrap();
+    let git = Git::new(GitOptions::default()).wait().unwrap();
     let branch = git
         .read("symbolic-ref")
         .arg("HEAD")
         .current_dir(repo)
         .output()
+        .wait()
         .unwrap()
         .stdout;
     let branch = bstr::BString::from(branch.trim_ascii());
@@ -271,10 +272,11 @@ fn scoped(harness: &mut Harness<'_, EgitApp>, repo: &std::path::Path) {
 /// Searches the history, each kind in turn, printing how soon the first commit was found, how
 /// long it all took, and the memory held at its end and once it was dropped.
 fn searches(repo: &std::path::Path, names: &Names) {
-    let git = Git::new(GitOptions::default()).unwrap();
-    let repository = Arc::new(Repository::discover(&git, repo).unwrap());
-    let config =
-        ConfigSnapshot::read(&git, ConfigPlace::Repository(repository.work_tree())).unwrap();
+    let git = Git::new(GitOptions::default()).wait().unwrap();
+    let repository = Arc::new(Repository::discover(&git, repo).wait().unwrap());
+    let config = ConfigSnapshot::read(&git, ConfigPlace::Repository(repository.work_tree()))
+        .wait()
+        .unwrap();
     let index = Arc::new(OnceLock::new());
     let ctx = egui::Context::default();
     let abbreviated = names

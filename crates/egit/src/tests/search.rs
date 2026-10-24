@@ -12,7 +12,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, CommitFilter, ObjectId, Repository, find_commits};
+use egit_git::{CancelToken, CommitFilter, ObjectId, Repository, Wait as _, find_commits};
 use egit_gix::GixRepository;
 use egit_text::matches_case;
 use egui::accesskit::Role;
@@ -236,6 +236,7 @@ fn assorted(sandbox: &Sandbox, commits: u32) -> PathBuf {
         .current_dir(&repo)
         .stdin(stream.into_bytes())
         .output()
+        .wait()
         .unwrap();
     repo
 }
@@ -263,7 +264,7 @@ fn messages_and_authors_read_here_are_those_git_finds() {
         "egit reads the commits itself"
     );
     let git = sandbox.git();
-    let repository = Arc::new(Repository::discover(git, &repo).unwrap());
+    let repository = Arc::new(Repository::discover(git, &repo).wait().unwrap());
     let ctx = egui::Context::default();
     let mut history = History::load(
         git,
@@ -337,6 +338,7 @@ fn messages_and_authors_read_here_are_those_git_finds() {
             theirs.insert(id);
             std::ops::ControlFlow::Continue(())
         })
+        .wait()
         .unwrap();
         assert_eq!(ours, theirs, "{kind:?} {query:?}");
         assert_eq!(search.found().count(), u64::try_from(ours.len()).unwrap());

@@ -108,7 +108,7 @@ fn escape_into(pattern: &mut BString, name: &BStr) -> Result<(), IgnoreError> {
 /// # Errors
 ///
 /// When the file can't be found (git fails), read, or written.
-pub fn ignore(
+pub async fn ignore(
     git: &Git,
     repository: &Repository,
     place: IgnoreIn,
@@ -123,7 +123,8 @@ pub fn ignore(
                 .args(["--path-format=absolute", "--git-path", "info/exclude"])
                 .current_dir(repository.work_tree())
                 .cancel_token(cancel)
-                .output()?;
+                .output()
+                .await?;
             found
                 .stdout
                 .trim_end_with(|c| c == '\n' || c == '\r')
@@ -131,7 +132,7 @@ pub fn ignore(
                 .into_owned()
         }
     };
-    add_patterns(git, &file, patterns)
+    add_patterns(git, &file, patterns).await
 }
 
 /// Adds `patterns` again, as they were before [`unignore`] took them back.
@@ -139,14 +140,14 @@ pub fn ignore(
 /// # Errors
 ///
 /// When the file can't be read or written.
-pub fn ignore_again(git: &Git, ignored: &Ignored) -> Result<Ignored, IgnoreError> {
+pub async fn ignore_again(git: &Git, ignored: &Ignored) -> Result<Ignored, IgnoreError> {
     let patterns: Vec<BString> = ignored
         .added
         .lines()
         .filter(|line| !line.is_empty())
         .map(BString::from)
         .collect();
-    add_patterns(git, &ignored.file, &patterns)
+    add_patterns(git, &ignored.file, &patterns).await
 }
 
 /// Takes back what [`ignore`] added: its end cut off (the file removed, when it was made for
@@ -156,7 +157,7 @@ pub fn ignore_again(git: &Git, ignored: &Ignored) -> Result<Ignored, IgnoreError
 ///
 /// [`IgnoreError::Changed`] when the file no longer ends with it (nothing is changed), and
 /// when it can't be read or written.
-pub fn unignore(git: &Git, ignored: &Ignored) -> Result<(), IgnoreError> {
+pub async fn unignore(git: &Git, ignored: &Ignored) -> Result<(), IgnoreError> {
     if ignored.added.is_empty() {
         return Ok(());
     }
@@ -166,7 +167,7 @@ pub fn unignore(git: &Git, ignored: &Ignored) -> Result<(), IgnoreError> {
         source,
     };
     let files = git.files();
-    let content = match files.read(file) {
+    let content = match files.read(file).await {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(IgnoreError::Changed(file.clone()));
@@ -177,19 +178,23 @@ pub fn unignore(git: &Git, ignored: &Ignored) -> Result<(), IgnoreError> {
         return Err(IgnoreError::Changed(file.clone()));
     };
     if ignored.created && kept.is_empty() {
-        return files.remove_file(file).map_err(io);
+        return files.remove_file(file).await.map_err(io);
     }
-    files.write(file, kept).map_err(io)
+    files.write(file, kept).await.map_err(io)
 }
 
 /// Appends those of `patterns` that `file` doesn't hold as a line already.
-fn add_patterns(git: &Git, file: &Path, patterns: &[BString]) -> Result<Ignored, IgnoreError> {
+async fn add_patterns(
+    git: &Git,
+    file: &Path,
+    patterns: &[BString],
+) -> Result<Ignored, IgnoreError> {
     let io = |source| IgnoreError::Io {
         path: file.to_owned(),
         source,
     };
     let files = git.files();
-    let (content, created) = match files.read(file) {
+    let (content, created) = match files.read(file).await {
         Ok(content) => (content, false),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => (Vec::new(), true),
         Err(error) => return Err(io(error)),
@@ -221,9 +226,9 @@ fn add_patterns(git: &Git, file: &Path, patterns: &[BString]) -> Result<Ignored,
         added = [ending, added.as_slice()].concat().into();
     }
     if let Some(folder) = file.parent() {
-        files.create_dir_all(folder).map_err(io)?;
+        files.create_dir_all(folder).await.map_err(io)?;
     }
-    files.append(file, &added).map_err(io)?;
+    files.append(file, &added).await.map_err(io)?;
     Ok(Ignored {
         file: file.to_owned(),
         added,

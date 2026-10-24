@@ -9,6 +9,7 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+use egit_git::Wait as _;
 use egit_git::askpass::{AskpassServer, PromptKind};
 use egit_git::testing::Sandbox;
 
@@ -28,6 +29,7 @@ fn the_executable_answers_git_as_its_askpass_helper() {
             .stdin(b"protocol=https\nhost=example.invalid\n\n".as_slice())
             .current_dir(home)
             .output()
+            .wait()
     });
 
     let wait = Duration::from_secs(30);
@@ -99,7 +101,7 @@ fn a_signing_keys_passphrase_is_asked_through_the_window() {
     let (server, prompts) =
         AskpassServer::start_in(&base, Path::new(env!("CARGO_BIN_EXE_egit")), || {}).unwrap();
     let git = sandbox.git_with(server.environment()).unwrap();
-    let repository = egit_git::Repository::discover(&git, &repo).unwrap();
+    let repository = egit_git::Repository::discover(&git, &repo).wait().unwrap();
     let committing = {
         let (git, repository) = (git.clone(), repository.clone());
         thread::spawn(move || {
@@ -109,6 +111,7 @@ fn a_signing_keys_passphrase_is_asked_through_the_window() {
                 ..egit_git::NewCommit::default()
             };
             egit_git::create_commit(&git, &repository, &commit, &egit_git::CancelToken::new())
+                .wait()
         })
     };
 
@@ -124,10 +127,12 @@ fn a_signing_keys_passphrase_is_asked_through_the_window() {
         .arg("HEAD")
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
     let head = egit_git::ObjectId::from_hex(head.stdout.trim_ascii()).unwrap();
     let checks =
         egit_git::check_signatures(&git, &repository, &[head], &egit_git::CancelToken::new())
+            .wait()
             .unwrap();
     assert_eq!(checks[0].verdict, egit_git::Verdict::Good);
     drop(server);

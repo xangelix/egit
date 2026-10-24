@@ -62,8 +62,8 @@ impl Repository {
     /// # Errors
     ///
     /// A [`DiscoverError`] saying why there is no repository egit can open there.
-    pub fn discover(git: &Git, path: &Path) -> Result<Self, DiscoverError> {
-        let start = if git.files().is_file(path) {
+    pub async fn discover(git: &Git, path: &Path) -> Result<Self, DiscoverError> {
+        let start = if git.files().is_file(path).await {
             path.parent().unwrap_or(path)
         } else {
             path
@@ -80,6 +80,7 @@ impl Repository {
             ])
             .current_dir(start)
             .output()
+            .await
             .map_err(|error| classify(error, start))?;
         let mut lines = probe.stdout.lines();
         let mut next = || {
@@ -111,7 +112,8 @@ impl Repository {
             .read("rev-parse")
             .args(["--path-format=absolute", "--show-toplevel"])
             .current_dir(start)
-            .output()?;
+            .output()
+            .await?;
         let work_tree = top
             .stdout
             .lines()
@@ -154,7 +156,7 @@ impl Repository {
     /// in topological order start at once (see [`write_commit_graph`](crate::write_commit_graph));
     /// not when its files can't be looked at.
     #[must_use]
-    pub fn has_commit_graph(&self, git: &Git) -> bool {
+    pub async fn has_commit_graph(&self, git: &Git) -> bool {
         let info = self.common_dir.join("objects/info");
         let (single, chain) = (
             info.join("commit-graph"),
@@ -162,6 +164,7 @@ impl Repository {
         );
         git.files()
             .exist(&[&single, &chain])
+            .await
             .is_ok_and(|there| there.contains(&true))
     }
 
@@ -176,19 +179,20 @@ impl Repository {
     /// # Errors
     ///
     /// When git fails or prints something unexpected.
-    pub fn head(&self, git: &Git) -> Result<Head, GitError> {
+    pub async fn head(&self, git: &Git) -> Result<Head, GitError> {
         let symbolic = git
             .read("symbolic-ref")
             .args(["--quiet", "HEAD"])
             .current_dir(&self.work_tree)
-            .output_unchecked()?;
+            .output_unchecked()
+            .await?;
         match symbolic.status.code() {
             Some(0) => {
                 let reference = BString::from(symbolic.stdout.trim_ascii_end());
-                self.branch_head(git, reference).map(Head::Branch)
+                self.branch_head(git, reference).await.map(Head::Branch)
             }
             // Not a symbolic ref: `HEAD` is detached.
-            Some(1) => self.detached_head(git).map(Head::Detached),
+            Some(1) => self.detached_head(git).await.map(Head::Detached),
             _ => Err(GitError::failed(
                 "symbolic-ref",
                 symbolic.status,
@@ -203,12 +207,13 @@ impl Repository {
     /// # Errors
     ///
     /// When git fails otherwise.
-    pub fn head_reaches(&self, git: &Git, commit: ObjectId) -> Result<bool, GitError> {
+    pub async fn head_reaches(&self, git: &Git, commit: ObjectId) -> Result<bool, GitError> {
         let reached = git
             .read("merge-base")
             .args(["--is-ancestor", &commit.to_string(), "HEAD"])
             .current_dir(&self.work_tree)
-            .output_unchecked()?;
+            .output_unchecked()
+            .await?;
         match reached.status.code() {
             Some(0) => Ok(true),
             // Not an ancestor; or (128) no `HEAD` yet.
@@ -227,12 +232,13 @@ impl Repository {
     /// # Errors
     ///
     /// When git fails or prints something unexpected.
-    pub fn head_ref(&self, git: &Git) -> Result<HeadRef, GitError> {
+    pub async fn head_ref(&self, git: &Git) -> Result<HeadRef, GitError> {
         let symbolic = git
             .read("symbolic-ref")
             .args(["--quiet", "HEAD"])
             .current_dir(&self.work_tree)
-            .output_unchecked()?;
+            .output_unchecked()
+            .await?;
         let reference = match symbolic.status.code() {
             Some(0) => Some(BString::from(symbolic.stdout.trim_ascii_end())),
             Some(1) => None,
@@ -248,7 +254,8 @@ impl Repository {
             .read("rev-parse")
             .args(["--verify", "--quiet", "HEAD"])
             .current_dir(&self.work_tree)
-            .output_unchecked()?;
+            .output_unchecked()
+            .await?;
         let commit = if resolved.status.success() {
             Some(
                 ObjectId::from_hex(resolved.stdout.trim_ascii())
@@ -271,12 +278,13 @@ impl Repository {
     /// # Errors
     ///
     /// When git can't be run, or prints something unexpected.
-    pub fn upstream_tip(&self, git: &Git) -> Result<Option<(BString, ObjectId)>, GitError> {
+    pub async fn upstream_tip(&self, git: &Git) -> Result<Option<(BString, ObjectId)>, GitError> {
         let named = git
             .read("rev-parse")
             .args(["--verify", "--quiet", "--symbolic-full-name", "@{upstream}"])
             .current_dir(&self.work_tree)
-            .output_unchecked()?;
+            .output_unchecked()
+            .await?;
         let name = named.stdout.trim_ascii();
         if !named.status.success() || !name.starts_with(b"refs/") {
             return Ok(None);
@@ -286,7 +294,8 @@ impl Repository {
             .args(["--verify", "--quiet", "--end-of-options"])
             .arg(format!("{}^{{commit}}", name.to_str_lossy()))
             .current_dir(&self.work_tree)
-            .output_unchecked()?;
+            .output_unchecked()
+            .await?;
         if !resolved.status.success() {
             return Ok(None);
         }
@@ -295,7 +304,7 @@ impl Repository {
         Ok(Some((BString::from(name), commit)))
     }
 
-    fn branch_head(&self, git: &Git, reference: BString) -> Result<BranchHead, GitError> {
+    async fn branch_head(&self, git: &Git, reference: BString) -> Result<BranchHead, GitError> {
         let name = BString::from(
             reference
                 .strip_prefix(b"refs/heads/")
@@ -309,7 +318,8 @@ impl Repository {
             )
             .arg(reference.to_os_str_lossy())
             .current_dir(&self.work_tree)
-            .output()?;
+            .output()
+            .await?;
         // The pattern also matches refs below the branch's name; only an exact match counts.
         let record = listed.stdout.lines().find(|line| {
             line.split_str(b"\0")
@@ -359,14 +369,15 @@ impl Repository {
         })
     }
 
-    fn detached_head(&self, git: &Git) -> Result<CommitSummary, GitError> {
+    async fn detached_head(&self, git: &Git) -> Result<CommitSummary, GitError> {
         let shown = git
             .read("log")
             .config("log.showSignature", "false")
             .config("i18n.logOutputEncoding", "UTF-8")
             .args(["--max-count=1", "--format=%H%x00%s", "HEAD", "--"])
             .current_dir(&self.work_tree)
-            .output()?;
+            .output()
+            .await?;
         let line = shown.stdout.strip_suffix(b"\n").unwrap_or(&shown.stdout);
         let (id, subject) = line
             .split_once_str(b"\0")
@@ -383,7 +394,7 @@ impl Repository {
     /// # Errors
     ///
     /// When the git directory can't be read.
-    pub fn operations(&self, git: &Git) -> io::Result<Vec<Operation>> {
+    pub async fn operations(&self, git: &Git) -> io::Result<Vec<Operation>> {
         let dir = &self.git_dir;
         let names = [
             "rebase-merge",
@@ -397,7 +408,8 @@ impl Repository {
         let paths = names.map(|name| dir.join(name));
         let there = git
             .files()
-            .exist(&paths.iter().map(PathBuf::as_path).collect::<Vec<_>>())?;
+            .exist(&paths.iter().map(PathBuf::as_path).collect::<Vec<_>>())
+            .await?;
         let has = |name: &str| {
             names
                 .iter()
@@ -437,12 +449,13 @@ impl Repository {
 /// # Errors
 ///
 /// When git can't write the user's configuration.
-pub fn trust_directory(git: &Git, path: &Path) -> Result<(), GitError> {
+pub async fn trust_directory(git: &Git, path: &Path) -> Result<(), GitError> {
     git.write("config")
         .args(["--global", "--add", "safe.directory"])
         .arg(path)
         .current_dir(crate::git::outside_repositories())
         .output()
+        .await
         .map(drop)
 }
 
@@ -453,11 +466,12 @@ pub fn trust_directory(git: &Git, path: &Path) -> Result<(), GitError> {
 /// # Errors
 ///
 /// When `folder` isn't a folder, or git can't write `.git` in it.
-pub fn init_repository(git: &Git, folder: &Path) -> Result<(), GitError> {
+pub async fn init_repository(git: &Git, folder: &Path) -> Result<(), GitError> {
     git.write("init")
         .arg("--quiet")
         .current_dir(folder)
         .output()
+        .await
         .map(drop)
 }
 

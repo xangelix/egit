@@ -106,9 +106,10 @@ impl SignInDialog {
         let token = std::mem::take(&mut self.token);
         let account = Arc::clone(&self.account);
         let host = self.host.clone();
-        self.signing.request(jobs::blocking(move || {
+        self.signing.request(jobs::blocking(async move {
             account
                 .sign_in_with_token(&token, &CancelToken::new())
+                .await
                 .map_err(|error| refusal(&host, &error))
         }));
     }
@@ -118,10 +119,11 @@ impl SignInDialog {
     pub(crate) fn with_helper(&mut self) {
         let account = Arc::clone(&self.account);
         let host = self.host.clone();
-        self.signing.request(jobs::blocking(move || {
+        self.signing.request(jobs::blocking(async move {
             let context = format!("Signing in to {}", host.name());
             account
                 .sign_in(&context, &CancelToken::new())
+                .await
                 .map_err(|error| refusal(&host, &error))
         }));
     }
@@ -201,9 +203,9 @@ impl SignIns {
         let keepers = self.keepers.get_or_insert_with(|| {
             let mut looking = Bind::new(true);
             let git = git.clone();
-            looking.request(jobs::blocking(move || {
+            looking.request(jobs::blocking(async move {
                 let names: Vec<&str> = KEEPERS.iter().map(|keeper| keeper.name).collect();
-                let found = installed_helpers(&git, &names).map_err(|error| {
+                let found = installed_helpers(&git, &names).await.map_err(|error| {
                     Problem::git("The credential helpers couldn't be looked for", &error)
                 })?;
                 Ok(KEEPERS
@@ -244,28 +246,32 @@ impl SignIns {
         let (git, writes) = (git.clone(), writes.clone());
         let signed: Vec<(ForgeHost, SignedIn)> = self.session.lock().values().cloned().collect();
         let mut keeping = Bind::new(true);
-        keeping.request(jobs::blocking(move || {
+        keeping.request(jobs::blocking(async move {
             let failed =
                 |error| Problem::git(format!("{} couldn't be set up", keeper.words), &error);
             {
-                let _queued = writes.hold();
+                let _queued = writes.hold().await;
                 add_config_value(
                     &git,
                     ConfigTarget::Global,
                     "credential.helper",
                     keeper.value,
                 )
+                .await
                 .map_err(failed)?;
             }
             let mut kept = 0_usize;
             for (host, signed) in &signed {
-                approve_credential(&git, None, &signed.credential).map_err(failed)?;
+                approve_credential(&git, None, &signed.credential)
+                    .await
+                    .map_err(failed)?;
                 let place = CredentialPlace {
                     protocol: host.protocol(),
                     host: host.name(),
                     username: Some(&signed.login),
                 };
                 let back = fill_credential(&git, None, place, Asking::Never, &CancelToken::new())
+                    .await
                     .map_err(failed)?;
                 if back.is_some_and(|back| back.password() == signed.credential.password()) {
                     kept = kept.saturating_add(1);
@@ -300,9 +306,10 @@ impl SignIns {
             let mut asking = Bind::new(true);
             let account = Account::new(git.clone(), None, host.clone());
             let name = host.name().to_owned();
-            asking.request(jobs::blocking(move || {
+            asking.request(jobs::blocking(async move {
                 account
                     .who(&CancelToken::new())
+                    .await
                     .map_err(|error| match error {
                         ForgeError::Refused { .. } => Problem::new(
                             format!("{name} refused the credentials git keeps"),
@@ -330,10 +337,13 @@ impl SignIns {
         let account = Account::new(git.clone(), None, host.clone());
         let mut signing = Bind::new(true);
         let name = host.name().to_owned();
-        signing.request(jobs::blocking(move || {
-            account.sign_out(&CancelToken::new()).map_err(|error| {
-                Problem::new(format!("Signing out of {name} failed"), error.to_string())
-            })
+        signing.request(jobs::blocking(async move {
+            account
+                .sign_out(&CancelToken::new())
+                .await
+                .map_err(|error| {
+                    Problem::new(format!("Signing out of {name} failed"), error.to_string())
+                })
         }));
         self.signing_out = Some((host, signing));
     }

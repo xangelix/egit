@@ -58,18 +58,21 @@ pub(crate) async fn read_conflict(
     operation: Option<Operation>,
     cancel: CancelToken,
 ) -> Result<Option<Arc<ConflictFile>>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let failed = |error| Problem::git("The conflict couldn't be read", &error);
-        let Some(sides) =
-            conflict_sides(&git, &repository, path.as_ref(), &cancel).map_err(failed)?
+        let Some(sides) = conflict_sides(&git, &repository, path.as_ref(), &cancel)
+            .await
+            .map_err(failed)?
         else {
             return Ok(None);
         };
-        let merge = merge_sides(&git, &repository, &sides, &cancel).map_err(failed)?;
+        let merge = merge_sides(&git, &repository, &sides, &cancel)
+            .await
+            .map_err(failed)?;
         let incoming = match operation {
-            Some(operation) => {
-                incoming_commit(&git, &repository, operation, &cancel).map_err(failed)?
-            }
+            Some(operation) => incoming_commit(&git, &repository, operation, &cancel)
+                .await
+                .map_err(failed)?,
             None => None,
         };
         Ok(Some(Arc::new(ConflictFile {
@@ -190,7 +193,7 @@ pub(crate) async fn build(
     show_base: bool,
     labels: Labels,
 ) -> Result<Arc<MergeDocument>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let text = file.text().ok_or_else(|| {
             Problem::new(
                 "There is nothing to merge",
@@ -403,7 +406,7 @@ pub(crate) struct SideDocument {
 
 /// Makes both sides' documents of `file`, in a job.
 pub(crate) async fn build_sides(file: Arc<ConflictFile>) -> Result<Arc<SideDocuments>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let text = file.text().ok_or_else(|| {
             Problem::new(
                 "There is nothing to merge",

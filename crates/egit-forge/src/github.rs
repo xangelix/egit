@@ -26,7 +26,7 @@ const PAGE: u32 = 100;
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s, from the page that failed (the pages before it were handed over).
-pub(crate) fn pull_requests(
+pub(crate) async fn pull_requests(
     account: &Account,
     repository: &ForgeRepository,
     limit: u32,
@@ -54,7 +54,8 @@ pub(crate) fn pull_requests(
             }),
             &repository.full_name(),
             cancel,
-        )?;
+        )
+        .await?;
         let connection = data
             .repository
             .ok_or_else(|| not_found(account, repository.full_name()))?
@@ -90,7 +91,7 @@ pub(crate) fn pull_requests(
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub(crate) fn pull_request_details(
+pub(crate) async fn pull_request_details(
     account: &Account,
     repository: &ForgeRepository,
     number: u32,
@@ -107,7 +108,8 @@ pub(crate) fn pull_request_details(
         }),
         &what,
         cancel,
-    )?;
+    )
+    .await?;
     let pull = data
         .repository
         .and_then(|repository| repository.pull_request)
@@ -120,7 +122,7 @@ pub(crate) fn pull_request_details(
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub(crate) fn repository_info(
+pub(crate) async fn repository_info(
     account: &Account,
     repository: &ForgeRepository,
     cancel: &CancelToken,
@@ -131,7 +133,8 @@ pub(crate) fn repository_info(
         &json!({ "owner": repository.owner(), "name": repository.name() }),
         &repository.full_name(),
         cancel,
-    )?;
+    )
+    .await?;
     let found = data
         .repository
         .ok_or_else(|| not_found(account, repository.full_name()))?;
@@ -153,7 +156,7 @@ pub(crate) fn repository_info(
 ///
 /// Any of [`ForgeError`]'s; [`ForgeError::Status`] with GitHub's reason when it refuses (one is
 /// already open for the branch, nothing to merge, …).
-pub(crate) fn create_pull_request(
+pub(crate) async fn create_pull_request(
     account: &Account,
     repository: &ForgeRepository,
     new: &NewPullRequest,
@@ -176,7 +179,7 @@ pub(crate) fn create_pull_request(
         repository.owner(),
         repository.name()
     ));
-    let answer = account.send(&url, Some(body.as_bytes()), cancel)?;
+    let answer = account.send(&url, Some(body.as_bytes()), cancel).await?;
     let created: Created = read_answer(account, &answer, &repository.full_name())?;
     Ok(Opened {
         number: created.number,
@@ -185,8 +188,8 @@ pub(crate) fn create_pull_request(
 }
 
 /// Who the credential is (and checks the host accepts it).
-pub(crate) fn viewer(account: &Account, cancel: &CancelToken) -> Result<String, ForgeError> {
-    let data: ViewerData = graphql(account, VIEWER, &json!({}), "the account", cancel)?;
+pub(crate) async fn viewer(account: &Account, cancel: &CancelToken) -> Result<String, ForgeError> {
+    let data: ViewerData = graphql(account, VIEWER, &json!({}), "the account", cancel).await?;
     account.note_login(&data.viewer.login);
     Ok(data.viewer.login)
 }

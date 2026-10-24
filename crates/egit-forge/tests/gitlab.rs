@@ -25,7 +25,7 @@ use egit_forge::{
     ssh_host, start_pipeline, workflows,
 };
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, ObjectId};
+use egit_git::{CancelToken, ObjectId, Wait as _};
 
 const TOKEN: &str = "glpat-t0ken";
 
@@ -91,6 +91,7 @@ fn merge_requests_come_a_page_at_a_time() {
     pull_requests(&account, &project, 1_000, &CancelToken::new(), |page| {
         pages.push(page);
     })
+    .wait()
     .unwrap();
     let sizes: Vec<usize> = pages.iter().map(|page| page.pulls.len()).collect();
     assert_eq!(sizes, [100, 50]);
@@ -129,7 +130,9 @@ fn a_merge_request_s_details_and_the_project_are_read() {
         ];
         drop(state);
     }
-    let details = pull_request_details(&account, &project, 3, &CancelToken::new()).unwrap();
+    let details = pull_request_details(&account, &project, 3, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(details.body, "Fixes everything.");
     assert_eq!(
         (details.additions, details.deletions, details.changed_files),
@@ -146,15 +149,19 @@ fn a_merge_request_s_details_and_the_project_are_read() {
     assert_eq!(details.reviews[0].state, ReviewState::Approved);
     assert_eq!(details.labels, ["bug"]);
     assert!(matches!(
-        pull_request_details(&account, &project, 99, &CancelToken::new()),
+        pull_request_details(&account, &project, 99, &CancelToken::new()).wait(),
         Err(ForgeError::NotFound { .. })
     ));
 
-    let info = repository_info(&account, &project, &CancelToken::new()).unwrap();
+    let info = repository_info(&account, &project, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(info.default_branch.as_deref(), Some("main"));
     assert_eq!(info.parent, None);
     let fork = ForgeRepository::new(project.host().clone(), "ada/tool").unwrap();
-    let info = repository_info(&account, &fork, &CancelToken::new()).unwrap();
+    let info = repository_info(&account, &fork, &CancelToken::new())
+        .wait()
+        .unwrap();
     let (parent, default) = info.parent.unwrap();
     assert!(parent.is(&project));
     assert_eq!(default.as_deref(), Some("main"));
@@ -171,7 +178,9 @@ fn a_merge_request_is_opened_from_the_project_and_from_a_fork() {
         base_branch: "main".to_owned(),
         draft: true,
     };
-    let opened = create_pull_request(&account, &project, &new, &CancelToken::new()).unwrap();
+    let opened = create_pull_request(&account, &project, &new, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(opened.number, 2);
     let sent = fake.state().requests.last().unwrap().clone();
     assert_eq!(sent.method, "POST");
@@ -184,7 +193,7 @@ fn a_merge_request_is_opened_from_the_project_and_from_a_fork() {
     assert_eq!(sent.body["title"], "Draft: Add a feature");
     assert_eq!(sent.body["description"], "It does things.");
     assert!(sent.body.get("target_project_id").is_none());
-    match create_pull_request(&account, &project, &new, &CancelToken::new()) {
+    match create_pull_request(&account, &project, &new, &CancelToken::new()).wait() {
         Err(ForgeError::Status {
             status: 409,
             message,
@@ -203,7 +212,9 @@ fn a_merge_request_is_opened_from_the_project_and_from_a_fork() {
         draft: false,
         ..new
     };
-    let opened = create_pull_request(&account, &project, &from_fork, &CancelToken::new()).unwrap();
+    let opened = create_pull_request(&account, &project, &from_fork, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(opened.number, 3);
     let sent = fake.state().requests.last().unwrap().clone();
     assert_eq!(sent.path, "/api/v4/projects/ada%2Ftool/merge_requests");
@@ -231,6 +242,7 @@ fn a_fork_s_merge_request_is_from_another_project() {
     pull_requests(&account, &project, 100, &CancelToken::new(), |page| {
         read.extend(page.pulls);
     })
+    .wait()
     .unwrap();
     assert!(read[0].cross_repository);
     assert_eq!(read[0].head_repository.as_deref(), Some("cy/tool"));
@@ -241,7 +253,7 @@ fn a_fork_s_merge_request_is_from_another_project() {
 #[test]
 fn refused_credentials_rate_limits_and_missing_projects_say_so() {
     let (_fake, sandbox, account, project) = setup(1, "wrong");
-    let result = pull_requests(&account, &project, 100, &CancelToken::new(), |_| {});
+    let result = pull_requests(&account, &project, 100, &CancelToken::new(), |_| {}).wait();
     assert!(matches!(result, Err(ForgeError::Refused { .. })));
     let kept = std::fs::read_to_string(sandbox.path("credentials")).unwrap();
     assert!(!kept.contains("wrong"), "{kept}");
@@ -249,11 +261,11 @@ fn refused_credentials_rate_limits_and_missing_projects_say_so() {
     let (fake, _sandbox, account, project) = setup(1, TOKEN);
     let missing = ForgeRepository::new(project.host().clone(), "team/missing").unwrap();
     assert!(matches!(
-        pull_requests(&account, &missing, 100, &CancelToken::new(), |_| {}),
+        pull_requests(&account, &missing, 100, &CancelToken::new(), |_| {}).wait(),
         Err(ForgeError::NotFound { .. })
     ));
     fake.state().rate_limited = true;
-    match pull_requests(&account, &project, 100, &CancelToken::new(), |_| {}) {
+    match pull_requests(&account, &project, 100, &CancelToken::new(), |_| {}).wait() {
         Err(ForgeError::RateLimited { reset, .. }) => assert_eq!(reset, Some(1_700_000_000)),
         other => panic!("{other:?}"),
     }
@@ -265,6 +277,7 @@ fn signing_in_says_who() {
     assert_eq!(
         account
             .sign_in("Signing in", &CancelToken::new())
+            .wait()
             .unwrap()
             .login,
         "ada"
@@ -338,6 +351,7 @@ fn pipelines_come_a_page_at_a_time_and_one_is_read_whole() {
     let listing = pipelines(&account, &project, 1_000, &CancelToken::new(), |page| {
         pages.push(page);
     })
+    .wait()
     .unwrap();
     assert_eq!(listing, PipelineListing::Listed);
     let sizes: Vec<usize> = pages.iter().map(Vec::len).collect();
@@ -372,15 +386,20 @@ fn pipelines_come_a_page_at_a_time_and_one_is_read_whole() {
     pipelines(&account, &project, 30, &CancelToken::new(), |page| {
         count += page.len();
     })
+    .wait()
     .unwrap();
     assert_eq!(count, 30);
     // A project whose CI/CD is off lists none: hidden, said so, not an error.
     fake.state().pipelines_hidden = true;
-    let listing = pipelines(&account, &project, 30, &CancelToken::new(), |_| {}).unwrap();
+    let listing = pipelines(&account, &project, 30, &CancelToken::new(), |_| {})
+        .wait()
+        .unwrap();
     assert_eq!(listing, PipelineListing::Hidden);
     fake.state().pipelines_hidden = false;
 
-    let details = pipeline_details(&account, &project, 150, &CancelToken::new()).unwrap();
+    let details = pipeline_details(&account, &project, 150, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(details.pipeline, *newest);
     assert_eq!(details.user.as_deref(), Some("ada"));
     assert_eq!(details.duration, Some(95));
@@ -408,7 +427,7 @@ fn pipelines_come_a_page_at_a_time_and_one_is_read_whole() {
     assert_eq!(details.stages[0].jobs[0].id, Some(914_900));
     // One that isn't there says so.
     assert!(matches!(
-        pipeline_details(&account, &project, 999, &CancelToken::new()),
+        pipeline_details(&account, &project, 999, &CancelToken::new()).wait(),
         Err(ForgeError::NotFound { .. })
     ));
 }
@@ -418,18 +437,27 @@ fn a_gitlab_says_the_name_its_ssh_is_on() {
     let (fake, _sandbox, account, _project) = setup(0, TOKEN);
     // On its own name: the fake's.
     assert_eq!(
-        ssh_host(&account, &CancelToken::new()).unwrap().as_deref(),
+        ssh_host(&account, &CancelToken::new())
+            .wait()
+            .unwrap()
+            .as_deref(),
         Some("127.0.0.1")
     );
     // On a name of its own, as its projects' ssh addresses give it.
     fake.state().ssh_host = Some("git-ssh.example.org".to_owned());
     assert_eq!(
-        ssh_host(&account, &CancelToken::new()).unwrap().as_deref(),
+        ssh_host(&account, &CancelToken::new())
+            .wait()
+            .unwrap()
+            .as_deref(),
         Some("git-ssh.example.org")
     );
     // Showing the account no project, it can't say.
     fake.state().repositories.clear();
-    assert_eq!(ssh_host(&account, &CancelToken::new()).unwrap(), None);
+    assert_eq!(
+        ssh_host(&account, &CancelToken::new()).wait().unwrap(),
+        None
+    );
 }
 
 #[test]
@@ -442,9 +470,13 @@ fn a_job_s_log_is_read_as_it_grows_from_where_it_was() {
     fake.state().repositories[0].pipelines = pipelines;
 
     // Its number comes with its pipeline; how it stands, from the job itself.
-    let details = pipeline_details(&account, &project, 1, &CancelToken::new()).unwrap();
+    let details = pipeline_details(&account, &project, 1, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(details.stages[1].jobs[0].id, Some(777));
-    let unit = job(&account, &project, 777, &CancelToken::new()).unwrap();
+    let unit = job(&account, &project, 777, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert_eq!(
         (unit.name.as_str(), unit.stage.as_deref(), unit.status),
         ("unit", Some("test"), CiStatus::Running)
@@ -466,6 +498,7 @@ fn a_job_s_log_is_read_as_it_grows_from_where_it_was() {
                 &CancelToken::new(),
                 &mut sink,
             )
+            .wait()
             .unwrap()
         };
         let first = take(read, &mut log);
@@ -516,6 +549,7 @@ fn a_job_s_log_is_read_as_it_grows_from_where_it_was() {
             &CancelToken::new(),
             &mut sink
         )
+        .wait()
         .unwrap(),
         LogRead::Missing
     );
@@ -538,8 +572,12 @@ fn a_pipeline_s_jobs_are_retried_cancelled_and_started_their_earlier_runs_kept()
     // `lint` waits for `compile` alone; the rest for the stages before them.
     pipelines[0].stages[1].2[1].needs = Some(vec!["compile".to_owned()]);
     fake.state().repositories[0].pipelines = pipelines;
-    let read = || pipeline_details(&account, &project, 1, &CancelToken::new()).unwrap();
-    let act = |action| ci_act(&account, &project, action, &CancelToken::new());
+    let read = || {
+        pipeline_details(&account, &project, 1, &CancelToken::new())
+            .wait()
+            .unwrap()
+    };
+    let act = |action| ci_act(&account, &project, action, &CancelToken::new()).wait();
 
     let details = read();
     assert!(details.actions.retry && details.actions.cancel && details.can_update);
@@ -603,13 +641,16 @@ fn a_pipeline_is_started_on_a_branch() {
     fake.state().repositories[0].pipelines = fake_pipelines(2);
     let cancel = CancelToken::new();
     // A project has no workflows to choose: its pipeline runs .gitlab-ci.yml.
-    assert_eq!(workflows(&account, &project, &cancel).unwrap(), []);
-    let made = start_pipeline(&account, &project, (None, "topic"), &cancel).unwrap();
+    assert_eq!(workflows(&account, &project, &cancel).wait().unwrap(), []);
+    let made = start_pipeline(&account, &project, (None, "topic"), &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(made, Some(3));
     let mut listed = Vec::new();
     pipelines(&account, &project, 10, &cancel, &mut |page| {
         listed.extend(page);
     })
+    .wait()
     .unwrap();
     let newest = &listed[0];
     assert_eq!(
@@ -618,7 +659,11 @@ fn a_pipeline_is_started_on_a_branch() {
     );
     // Refused to an account that may only read.
     fake.state().read_only = true;
-    assert!(start_pipeline(&account, &project, (None, "topic"), &cancel).is_err());
+    assert!(
+        start_pipeline(&account, &project, (None, "topic"), &cancel)
+            .wait()
+            .is_err()
+    );
 }
 
 #[test]
@@ -640,7 +685,9 @@ fn a_job_s_artifacts_are_listed_and_downloaded() {
         ),
     ];
     fake.state().repositories[0].pipelines = pipelines;
-    let details = pipeline_details(&account, &project, 1, &CancelToken::new()).unwrap();
+    let details = pipeline_details(&account, &project, 1, &CancelToken::new())
+        .wait()
+        .unwrap();
     let artifacts = &details.stages[0].jobs[0].artifacts;
     // Its log is no artifact to download.
     assert_eq!(
@@ -666,6 +713,7 @@ fn a_job_s_artifacts_are_listed_and_downloaded() {
                 true
             },
         )
+        .wait()
         .unwrap();
         assert_eq!(count, u64::try_from(bytes.len()).unwrap());
         String::from_utf8(bytes).unwrap()
@@ -688,7 +736,8 @@ fn a_job_s_artifacts_are_listed_and_downloaded() {
         &artifacts[0],
         &CancelToken::new(),
         &mut |_| false,
-    );
+    )
+    .wait();
     assert!(matches!(stopped, Err(ForgeError::Cancelled)));
     // One gone from GitLab isn't found.
     fake.state().repositories[0].pipelines[0].stages[0].2[0]
@@ -700,6 +749,7 @@ fn a_job_s_artifacts_are_listed_and_downloaded() {
         &artifacts[1],
         &CancelToken::new(),
         &mut |_| true,
-    );
+    )
+    .wait();
     assert!(matches!(gone, Err(ForgeError::NotFound { .. })));
 }

@@ -48,7 +48,7 @@ pub enum FastForward {
 /// # Errors
 ///
 /// When git refuses (local changes in the way, say) or is cancelled.
-pub fn merge(
+pub async fn merge(
     git: &Git,
     repository: &Repository,
     what: &BStr,
@@ -63,7 +63,8 @@ pub fn merge(
             .arg(what.to_os_str_lossy())
             .current_dir(repository.work_tree())
             .cancel_token(cancel)
-            .output()?;
+            .output()
+            .await?;
         Some(named.stdout.trim_ascii().to_owned())
             .filter(|short| !short.is_empty() && !short.contains(&b'\n'))
     } else {
@@ -81,7 +82,7 @@ pub fn merge(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output();
-    stopped(git, repository, done.map(drop), cancel)
+    stopped(git, repository, done.await.map(drop), cancel).await
 }
 
 /// Rebases the current branch onto `onto` (`git rebase`): its commits not in `onto`,
@@ -93,7 +94,7 @@ pub fn merge(
 /// # Errors
 ///
 /// When git refuses (local changes in the way, say) or is cancelled.
-pub fn rebase(
+pub async fn rebase(
     git: &Git,
     repository: &Repository,
     onto: &BStr,
@@ -111,7 +112,7 @@ pub fn rebase(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output();
-    stopped(git, repository, done.map(drop), cancel)
+    stopped(git, repository, done.await.map(drop), cancel).await
 }
 
 /// Applies `commit`'s changes to the current branch as a new commit (`git cherry-pick`; a
@@ -120,13 +121,13 @@ pub fn rebase(
 /// # Errors
 ///
 /// When git refuses (local changes in the way, say) or is cancelled.
-pub fn cherry_pick(
+pub async fn cherry_pick(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
-    pick(git, repository, "cherry-pick", &[], &[commit], cancel)
+    pick(git, repository, "cherry-pick", &[], &[commit], cancel).await
 }
 
 /// Applies `commits`' changes to the current branch as new commits, in the order given (the
@@ -139,13 +140,13 @@ pub fn cherry_pick(
 /// # Errors
 ///
 /// When git refuses (local changes in the way, say) or is cancelled.
-pub fn cherry_pick_all(
+pub async fn cherry_pick_all(
     git: &Git,
     repository: &Repository,
     commits: &[ObjectId],
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
-    pick(git, repository, "cherry-pick", &[], commits, cancel)
+    pick(git, repository, "cherry-pick", &[], commits, cancel).await
 }
 
 /// Undoes `commit`'s changes in the current branch with a new commit (`git revert`, git's
@@ -154,13 +155,13 @@ pub fn cherry_pick_all(
 /// # Errors
 ///
 /// When git refuses (local changes in the way, say) or is cancelled.
-pub fn revert(
+pub async fn revert(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
-    pick(git, repository, "revert", &["--no-edit"], &[commit], cancel)
+    pick(git, repository, "revert", &["--no-edit"], &[commit], cancel).await
 }
 
 /// Undoes `commits`' changes in the current branch with new commits, in the order given (the
@@ -169,18 +170,18 @@ pub fn revert(
 /// # Errors
 ///
 /// When git refuses (local changes in the way, say) or is cancelled.
-pub fn revert_all(
+pub async fn revert_all(
     git: &Git,
     repository: &Repository,
     commits: &[ObjectId],
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
-    pick(git, repository, "revert", &["--no-edit"], commits, cancel)
+    pick(git, repository, "revert", &["--no-edit"], commits, cancel).await
 }
 
 /// Cherry-picks or reverts `commits` (`subcommand`) in turn, skipping those that change
 /// nothing ([`Integrated::Empty`] when every one did).
-fn pick(
+async fn pick(
     git: &Git,
     repository: &Repository,
     subcommand: &'static str,
@@ -202,7 +203,7 @@ fn pick(
     // A merge's changes are those against its first parent (git takes `--mainline` for the
     // other commits too, since 2.21).
     for commit in commits {
-        if parents(git, repository, *commit, cancel)? > 1 {
+        if parents(git, repository, *commit, cancel).await? > 1 {
             command = command.args(["--mainline", "1"]);
             break;
         }
@@ -210,7 +211,7 @@ fn pick(
     for commit in commits {
         command = command.arg(commit.to_string());
     }
-    let mut done = command.output().map(drop);
+    let mut done = command.output().await.map(drop);
     // A commit whose changes are here already stops git: skipped, the rest go on.
     let mut skipped = 0;
     while skipped < commits.len() && is_now_empty(&done) {
@@ -221,12 +222,13 @@ fn pick(
             .current_dir(work_tree)
             .cancel_token(cancel)
             .output()
+            .await
             .map(drop);
     }
     if skipped == commits.len() && done.is_ok() {
         return Ok(Integrated::Empty);
     }
-    stopped(git, repository, done, cancel)
+    stopped(git, repository, done, cancel).await
 }
 
 /// Whether git stopped at a commit that would change nothing ("… is now empty").
@@ -239,7 +241,7 @@ fn is_now_empty(done: &Result<(), GitError>) -> bool {
 }
 
 /// How many parents `commit` has.
-fn parents(
+async fn parents(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -251,7 +253,8 @@ fn parents(
         .arg(commit.to_string())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     // The commit, then its parents.
     Ok(listed
         .stdout
@@ -263,7 +266,7 @@ fn parents(
 
 /// What `done` means: a failure that left an operation stopped at conflicts is
 /// [`Integrated::Conflicts`].
-pub(crate) fn stopped(
+pub(crate) async fn stopped(
     git: &Git,
     repository: &Repository,
     done: Result<(), GitError>,
@@ -275,17 +278,20 @@ pub(crate) fn stopped(
     if error.failure().is_none() {
         return Err(error);
     }
-    let operations = repository.operations(git).map_err(|source| GitError::Io {
-        subcommand: "status",
-        source,
-    })?;
+    let operations = repository
+        .operations(git)
+        .await
+        .map_err(|source| GitError::Io {
+            subcommand: "status",
+            source,
+        })?;
     let in_progress = operations.iter().any(|operation| {
         matches!(
             operation,
             Operation::Merge | Operation::Rebase | Operation::CherryPick | Operation::Revert
         )
     });
-    if in_progress && has_conflicts(git, repository, cancel)? {
+    if in_progress && has_conflicts(git, repository, cancel).await? {
         Ok(Integrated::Conflicts)
     } else {
         Err(error)
@@ -294,7 +300,7 @@ pub(crate) fn stopped(
 
 /// How an operation carried on after a skip ended: done, stopped at the next conflicts, or (a
 /// `git am`) stopped at a patch that doesn't apply.
-pub(crate) fn carried_on(
+pub(crate) async fn carried_on(
     git: &Git,
     repository: &Repository,
     done: Result<(), GitError>,
@@ -306,13 +312,16 @@ pub(crate) fn carried_on(
     if error.failure().is_none() {
         return Err(error);
     }
-    let operations = repository.operations(git).map_err(|source| GitError::Io {
-        subcommand: "status",
-        source,
-    })?;
+    let operations = repository
+        .operations(git)
+        .await
+        .map_err(|source| GitError::Io {
+            subcommand: "status",
+            source,
+        })?;
     if operations.is_empty() {
         Err(error)
-    } else if has_conflicts(git, repository, cancel)? {
+    } else if has_conflicts(git, repository, cancel).await? {
         Ok(Integrated::Conflicts)
     } else if operations.contains(&Operation::ApplyMailbox) {
         Ok(Integrated::Stopped)
@@ -322,7 +331,7 @@ pub(crate) fn carried_on(
 }
 
 /// Whether the index holds a conflict.
-pub(crate) fn has_conflicts(
+pub(crate) async fn has_conflicts(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
@@ -332,7 +341,8 @@ pub(crate) fn has_conflicts(
         .args(["-u", "-z"])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     Ok(!listed.stdout.is_empty())
 }
 
@@ -355,7 +365,7 @@ pub enum ResetMode {
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn reset(
+pub async fn reset(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -374,5 +384,6 @@ pub fn reset(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }

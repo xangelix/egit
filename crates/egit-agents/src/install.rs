@@ -195,17 +195,18 @@ impl Install {
 
     /// Whether it is installed and whole (there, asked of the other computer: in a job).
     #[must_use]
-    pub fn is_ready(&self) -> bool {
+    pub async fn is_ready(&self) -> bool {
         let Some(git) = &self.there else {
             return self.dir.join(READY).is_file()
                 && self.bridge().is_file()
-                && self.claude().is_some();
+                && self.claude().await.is_some();
         };
         let (ready, bridge) = (self.dir.join(READY), self.bridge());
         git.files()
             .exist(&[&ready, &bridge])
+            .await
             .is_ok_and(|there| there.iter().all(|there| *there))
-            && self.claude().is_some()
+            && self.claude().await.is_some()
     }
 
     /// The bridge script.
@@ -217,7 +218,7 @@ impl Install {
     /// Claude Code's binary for its platform, as the SDK installed it (there, whichever
     /// platform's npm chose: asked of the other computer, in a job).
     #[must_use]
-    pub fn claude(&self) -> Option<PathBuf> {
+    pub async fn claude(&self) -> Option<PathBuf> {
         let packages = self.dir.join("node_modules").join("@anthropic-ai");
         let binary = if cfg!(windows) && self.there.is_none() {
             "claude.exe"
@@ -239,6 +240,7 @@ impl Install {
         let there = git
             .files()
             .exist(&candidates.iter().map(PathBuf::as_path).collect::<Vec<_>>())
+            .await
             .ok()?;
         candidates
             .into_iter()
@@ -253,12 +255,12 @@ impl Install {
     ///
     /// When the files can't be written, npm fails (its words said), Claude Code's binary isn't
     /// there after, or `cancel` stopped it.
-    pub fn install(&self, node: &Node, cancel: &CancelToken) -> Result<(), AgentError> {
-        if self.is_ready() {
+    pub async fn install(&self, node: &Node, cancel: &CancelToken) -> Result<(), AgentError> {
+        if self.is_ready().await {
             return Ok(());
         }
         if let Some(git) = &self.there {
-            return self.install_there(git, cancel);
+            return self.install_there(git, cancel).await;
         }
         let parent = self
             .dir
@@ -270,7 +272,7 @@ impl Install {
             std::fs::remove_dir_all(&making)?;
         }
         std::fs::create_dir_all(&making)?;
-        let made = write_and_install(&making, node, cancel);
+        let made = write_and_install(&making, node, cancel).await;
         if let Err(error) = made {
             remove_quietly(&making);
             return Err(error);
@@ -299,7 +301,7 @@ impl Install {
     /// [`Self::install`] on the other computer `git` runs on: the package written into a
     /// folder beside its place there, `npm ci` run there (cancelled, its session ends), then
     /// renamed into place, older ones removed.
-    fn install_there(&self, git: &Git, cancel: &CancelToken) -> Result<(), AgentError> {
+    async fn install_there(&self, git: &Git, cancel: &CancelToken) -> Result<(), AgentError> {
         let parent = self
             .dir
             .parent()
@@ -316,7 +318,7 @@ impl Install {
             ("package.json", PACKAGE),
             ("package-lock.json", LOCKFILE),
         ] {
-            files.write(&making.join(name), text.as_bytes())?;
+            files.write(&making.join(name), text.as_bytes()).await?;
         }
         let args = NPM_CI.map(OsStr::new);
         let mut command = git
@@ -331,14 +333,16 @@ impl Install {
             dir: making.clone(),
             there: Some(git.clone()),
         };
-        let checked = ran.and_then(|()| {
-            if made.claude().is_none() {
-                return Err(AgentError::Install(
-                    "npm installed no Claude Code binary for that computer".to_owned(),
-                ));
-            }
-            Ok(files.write(&making.join(READY), SDK_VERSION.as_bytes())?)
-        });
+        let checked = match ran {
+            Err(error) => Err(error),
+            Ok(()) if made.claude().await.is_none() => Err(AgentError::Install(
+                "npm installed no Claude Code binary for that computer".to_owned(),
+            )),
+            Ok(()) => files
+                .write(&making.join(READY), SDK_VERSION.as_bytes())
+                .await
+                .map_err(AgentError::from),
+        };
         if let Err(error) = checked {
             let _removed = sh_there(git, "rm -rf -- \"$1\"", &[making.as_os_str()]);
             return Err(error);
@@ -403,7 +407,11 @@ fn run_npm(command: &mut Command, cancel: &CancelToken, there: bool) -> Result<(
 }
 
 /// Writes the package into `dir` and runs `npm ci` there.
-fn write_and_install(dir: &Path, node: &Node, cancel: &CancelToken) -> Result<(), AgentError> {
+async fn write_and_install(
+    dir: &Path,
+    node: &Node,
+    cancel: &CancelToken,
+) -> Result<(), AgentError> {
     std::fs::write(dir.join("bridge.mjs"), BRIDGE)?;
     std::fs::write(dir.join("package.json"), PACKAGE)?;
     std::fs::write(dir.join("package-lock.json"), LOCKFILE)?;
@@ -421,7 +429,7 @@ fn write_and_install(dir: &Path, node: &Node, cancel: &CancelToken) -> Result<()
         dir: dir.to_owned(),
         there: None,
     };
-    if install.claude().is_none() {
+    if install.claude().await.is_none() {
         return Err(AgentError::Install(
             "npm installed no Claude Code binary for this platform".to_owned(),
         ));
@@ -549,6 +557,8 @@ fn said_there(stderr: Option<std::process::ChildStderr>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use egit_git::Wait as _;
+
     use super::*;
 
     #[test]
@@ -557,7 +567,7 @@ mod tests {
         let name = install.dir().file_name().unwrap().to_str().unwrap();
         assert!(name.starts_with("0.3.296-"), "{name}");
         assert_eq!(name.len(), "0.3.296-".len() + 8);
-        assert!(!install.is_ready());
+        assert!(!install.is_ready().wait());
         // The lockfile pins the version the SDK's constant says, and only Anthropic's packages.
         let lock: serde_json::Value = serde_json::from_str(LOCKFILE).unwrap();
         let packages = lock["packages"].as_object().unwrap();

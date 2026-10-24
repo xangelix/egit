@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, CombineError, ObjectId, Repository, combined_patch, format_series,
+    CancelToken, CombineError, ObjectId, Repository, Wait as _, combined_patch, format_series,
     format_series_into, list_commits,
 };
 
@@ -96,13 +96,14 @@ fn applied_at(sandbox: &Sandbox, repo: &Path, at: &str, patch: &[u8]) -> ObjectI
 fn commits_are_listed_in_the_order_given() {
     let sandbox = Sandbox::new().unwrap();
     let h = history(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &h.repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &h.repo).wait().unwrap();
     let listed = list_commits(
         sandbox.git(),
         &repository,
         &[h.four, h.two, h.merge],
         &CancelToken::new(),
     )
+    .wait()
     .unwrap();
     let subjects: Vec<&str> = listed
         .iter()
@@ -112,7 +113,9 @@ fn commits_are_listed_in_the_order_given() {
     assert_eq!(listed[0].parents, [h.three]);
     assert_eq!(listed[2].parents.len(), 2, "a merge");
     assert_eq!(
-        list_commits(sandbox.git(), &repository, &[], &CancelToken::new()).unwrap(),
+        list_commits(sandbox.git(), &repository, &[], &CancelToken::new())
+            .wait()
+            .unwrap(),
         []
     );
 }
@@ -121,11 +124,13 @@ fn commits_are_listed_in_the_order_given() {
 fn commits_picked_apart_make_a_series_that_applies() {
     let sandbox = Sandbox::new().unwrap();
     let h = history(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &h.repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &h.repo).wait().unwrap();
     let cancel = CancelToken::new();
     // The newest first, as a history lists them; the merge is left out.
     let picked = [h.merge, h.five, h.three];
-    let series = format_series(sandbox.git(), &repository, &picked, &cancel).unwrap();
+    let series = format_series(sandbox.git(), &repository, &picked, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(series.patches, 2);
     let text = String::from_utf8(series.text.clone()).unwrap();
     let first = text.find("Subject: [PATCH 1/2] Three").unwrap();
@@ -134,8 +139,9 @@ fn commits_picked_apart_make_a_series_that_applies() {
 
     let folder = sandbox.path("patches");
     std::fs::create_dir(&folder).unwrap();
-    let written =
-        format_series_into(sandbox.git(), &repository, &picked, &folder, &cancel).unwrap();
+    let written = format_series_into(sandbox.git(), &repository, &picked, &folder, &cancel)
+        .wait()
+        .unwrap();
     let names: Vec<String> = written
         .iter()
         .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
@@ -163,7 +169,7 @@ fn commits_picked_apart_make_a_series_that_applies() {
 fn commits_combine_into_one_patch() {
     let sandbox = Sandbox::new().unwrap();
     let h = history(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &h.repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &h.repo).wait().unwrap();
     let cancel = CancelToken::new();
     let tree = |name: String| rev(&sandbox, &h.repo, &format!("{name}^{{tree}}"));
 
@@ -174,6 +180,7 @@ fn commits_combine_into_one_patch() {
         &[h.four, h.three, h.two],
         &cancel,
     )
+    .wait()
     .unwrap();
     let text = String::from_utf8(patch.clone()).unwrap();
     assert!(
@@ -187,7 +194,9 @@ fn commits_combine_into_one_patch() {
     );
 
     // Apart: Three and Five onto One, without Two and Four.
-    let patch = combined_patch(sandbox.git(), &repository, &[h.five, h.three], &cancel).unwrap();
+    let patch = combined_patch(sandbox.git(), &repository, &[h.five, h.three], &cancel)
+        .wait()
+        .unwrap();
     let made = applied_at(&sandbox, &h.repo, &format!("{}", h.two), &patch);
     sandbox
         .run(
@@ -209,17 +218,19 @@ fn commits_combine_into_one_patch() {
         .unwrap();
 
     // From the root: everything One and Two hold.
-    let patch = combined_patch(sandbox.git(), &repository, &[h.two, h.one], &cancel).unwrap();
+    let patch = combined_patch(sandbox.git(), &repository, &[h.two, h.one], &cancel)
+        .wait()
+        .unwrap();
     assert!(String::from_utf8_lossy(&patch).contains("new file mode 100644"));
 
     // Four without Two, its neighbour: a conflict, named.
-    let refused = combined_patch(sandbox.git(), &repository, &[h.four, h.one], &cancel);
+    let refused = combined_patch(sandbox.git(), &repository, &[h.four, h.one], &cancel).wait();
     assert!(
         matches!(refused, Err(CombineError::Conflict(commit)) if commit == h.four),
         "{refused:?}"
     );
     assert!(matches!(
-        combined_patch(sandbox.git(), &repository, &[], &cancel),
+        combined_patch(sandbox.git(), &repository, &[], &cancel).wait(),
         Err(CombineError::Nothing)
     ));
 }

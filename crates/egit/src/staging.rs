@@ -92,22 +92,24 @@ pub(crate) async fn run(
     writes: WriteLock,
     request: StageRequest,
 ) -> Result<(), Problem> {
-    jobs::blocking(move || {
-        let _queued = writes.hold();
+    jobs::blocking(async move {
+        let _queued = writes.hold().await;
         let cancel = CancelToken::new();
         match request {
             StageRequest::Files { paths, direction } => {
                 let paths: Vec<&BStr> = paths.iter().map(AsRef::as_ref).collect();
                 let done = match direction {
-                    Direction::Stage => stage(&git, &repository, &paths, &cancel),
-                    Direction::Unstage => unstage(&git, &repository, &paths, &cancel),
+                    Direction::Stage => stage(&git, &repository, &paths, &cancel).await,
+                    Direction::Unstage => unstage(&git, &repository, &paths, &cancel).await,
                 };
                 done.map_err(|error| Problem::git(failed(direction), &error))
             }
-            StageRequest::Lines(lines) => stage_lines(&git, &repository, &objects, *lines, &cancel),
-            StageRequest::Resolve(request) => resolve(&git, &repository, &request, &cancel),
+            StageRequest::Lines(lines) => {
+                stage_lines(&git, &repository, &objects, *lines, &cancel).await
+            }
+            StageRequest::Resolve(request) => resolve(&git, &repository, &request, &cancel).await,
             StageRequest::TakeSide { paths, side } => {
-                take_side(&git, &repository, (&paths, side), &cancel)
+                take_side(&git, &repository, (&paths, side), &cancel).await
             }
         }
     })
@@ -124,7 +126,7 @@ const fn failed(direction: Direction) -> &'static str {
 
 /// Moves the picked lines across: the index's content (as `request.entry` says it was) edited
 /// in memory, then written over the entry if it is still that one.
-fn stage_lines(
+async fn stage_lines(
     git: &Git,
     repository: &Repository,
     objects: &Objects,
@@ -148,6 +150,7 @@ fn stage_lines(
                         .filter(|object| object.kind == ObjectKind::Blob)
                         .map(|object| object.data.to_vec());
                 })
+                .await
                 .map_err(|error| Problem::git(title, &error))?;
             blob.ok_or_else(|| Problem::new(title, "The index's copy of the file is missing."))?
         }
@@ -164,11 +167,11 @@ fn stage_lines(
         picked.get(index).copied().unwrap_or(false)
     })
     .map_err(|_| stale())?;
-    let mode = entry.map_or_else(
-        || work_tree_mode(git, repository, &path),
-        |entry| entry.mode,
-    );
-    match write_index_content(git, repository, path.as_ref(), entry, mode, content, cancel) {
+    let mode = match entry {
+        Some(entry) => entry.mode,
+        None => work_tree_mode(git, repository, &path).await,
+    };
+    match write_index_content(git, repository, path.as_ref(), entry, mode, content, cancel).await {
         Ok(_) => Ok(()),
         Err(LinesError::Stale) => Err(stale()),
         Err(LinesError::Git(error)) => Err(Problem::git(title, &error)),
@@ -176,7 +179,7 @@ fn stage_lines(
 }
 
 /// Resolves a conflict as `request` says, if its sides are still the index's.
-fn resolve(
+async fn resolve(
     git: &Git,
     repository: &Repository,
     request: &ResolveRequest,
@@ -223,6 +226,7 @@ fn resolve(
         resolution,
         cancel,
     )
+    .await
     .map_err(|error| match error {
         ResolveError::Stale => Problem::new(
             TITLE,
@@ -235,7 +239,7 @@ fn resolve(
 
 /// Resolves each file at `paths` as `side` has it, the sides read now (one that is no longer
 /// in conflict, resolved meanwhile, is left as it is).
-fn take_side(
+async fn take_side(
     git: &Git,
     repository: &Repository,
     (paths, side): (&[BString], WholeSide),
@@ -245,6 +249,7 @@ fn take_side(
     for path in paths {
         let path = path.as_ref();
         let Some(sides) = conflict_sides(git, repository, path, cancel)
+            .await
             .map_err(|error| Problem::git(TITLE, &error))?
         else {
             continue;
@@ -254,25 +259,26 @@ fn take_side(
             WholeSide::Incoming => sides.incoming,
         };
         let resolution = taken.map_or(Resolution::Delete, Resolution::Side);
-        resolve_conflict(git, repository, path, &sides, resolution, cancel).map_err(|error| {
-            match error {
+        resolve_conflict(git, repository, path, &sides, resolution, cancel)
+            .await
+            .map_err(|error| match error {
                 ResolveError::Stale => Problem::new(
                     TITLE,
                     "A file's sides changed while it was resolved. Look at it again.",
                 ),
                 ResolveError::Git(error) => Problem::git(TITLE, &error),
-            }
-        })?;
+            })?;
     }
     Ok(())
 }
 
 /// The mode a file not yet tracked gets: executable or not, as the work tree has it.
-fn work_tree_mode(git: &Git, repository: &Repository, path: &[u8]) -> u32 {
+async fn work_tree_mode(git: &Git, repository: &Repository, path: &[u8]) -> u32 {
     let file = repository.work_tree().join(path.to_os_str_lossy());
     let found = git
         .files()
         .look(&[&file])
+        .await
         .ok()
         .and_then(|mut found| found.pop());
     if matches!(

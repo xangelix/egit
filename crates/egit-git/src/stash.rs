@@ -39,7 +39,7 @@ impl Stash {
 /// # Errors
 ///
 /// When git fails, is cancelled, or prints something that isn't a stash.
-pub fn stashes(
+pub async fn stashes(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
@@ -49,7 +49,8 @@ pub fn stashes(
         .args(["list", "-z", "--format=%gd%x1f%H%x1f%ct%x1f%gs"])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let unexpected = || GitError::unexpected("stash", "a stash");
     listed
         .stdout
@@ -96,14 +97,14 @@ pub fn stashes(
 /// # Errors
 ///
 /// When git fails or is cancelled.
-pub fn stash_push(
+pub async fn stash_push(
     git: &Git,
     repository: &Repository,
     (message, untracked): (&str, bool),
     paths: &[&BStr],
     cancel: &CancelToken,
 ) -> Result<bool, GitError> {
-    let before = latest(git, repository, cancel)?;
+    let before = latest(git, repository, cancel).await?;
     let mut command = git
         .write("stash")
         .args(["push", "--quiet"])
@@ -129,13 +130,13 @@ pub fn stash_push(
             .env("GIT_LITERAL_PATHSPECS", "1")
             .stdin(stdin);
     }
-    command.output()?;
+    command.output().await?;
     // Nothing to stash makes no stash (and says so only without `--quiet`).
-    Ok(latest(git, repository, cancel)? != before)
+    Ok(latest(git, repository, cancel).await? != before)
 }
 
 /// The latest stash's commit, if there is one.
-pub(crate) fn latest(
+pub(crate) async fn latest(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
@@ -145,7 +146,8 @@ pub(crate) fn latest(
         .args(["--verify", "--quiet", "refs/stash"])
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     Ok(found
         .status
         .success()
@@ -170,14 +172,14 @@ pub enum StashError {
 /// # Errors
 ///
 /// [`StashError::Stale`] when the list changed, and [`StashError::Git`] when git fails.
-pub fn stash_apply(
+pub async fn stash_apply(
     git: &Git,
     repository: &Repository,
     stash: &Stash,
     pop: bool,
     cancel: &CancelToken,
 ) -> Result<Integrated, StashError> {
-    still(git, repository, stash, cancel)?;
+    still(git, repository, stash, cancel).await?;
     let done = git
         .write("stash")
         .args([if pop { "pop" } else { "apply" }, "--quiet"])
@@ -185,9 +187,11 @@ pub fn stash_apply(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output();
-    match done {
+    match done.await {
         Ok(_) => Ok(Integrated::Done),
-        Err(error) if error.failure().is_some() && has_conflicts(git, repository, cancel)? => {
+        Err(error)
+            if error.failure().is_some() && has_conflicts(git, repository, cancel).await? =>
+        {
             Ok(Integrated::Conflicts)
         }
         Err(error) => Err(error.into()),
@@ -199,19 +203,20 @@ pub fn stash_apply(
 /// # Errors
 ///
 /// [`StashError::Stale`] when the list changed, and [`StashError::Git`] when git fails.
-pub fn stash_drop(
+pub async fn stash_drop(
     git: &Git,
     repository: &Repository,
     stash: &Stash,
     cancel: &CancelToken,
 ) -> Result<(), StashError> {
-    still(git, repository, stash, cancel)?;
+    still(git, repository, stash, cancel).await?;
     git.write("stash")
         .args(["drop", "--quiet"])
         .arg(stash.name())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     Ok(())
 }
 
@@ -221,7 +226,7 @@ pub fn stash_drop(
 /// # Errors
 ///
 /// When `commit` isn't a stash git has, or git fails or is cancelled.
-pub fn stash_store(
+pub async fn stash_store(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -234,11 +239,12 @@ pub fn stash_store(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
 /// Whether `stash` is still where it was listed.
-fn still(
+async fn still(
     git: &Git,
     repository: &Repository,
     stash: &Stash,
@@ -250,7 +256,8 @@ fn still(
         .arg(stash.name())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     let id = found
         .status
         .success()

@@ -18,12 +18,12 @@ use std::path::{Path, PathBuf};
 use bstr::BStr;
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, ForwardFrom, Forwarded, ObjectId, Progress, Repository, WorktreeFrom,
+    CancelToken, ForwardFrom, Forwarded, ObjectId, Progress, Repository, Wait as _, WorktreeFrom,
     add_worktree, fast_forward_branch, fast_forward_current, format_patch, set_upstream,
 };
 
 fn open(sandbox: &Sandbox, path: &Path) -> Repository {
-    Repository::discover(sandbox.git(), path).unwrap()
+    Repository::discover(sandbox.git(), path).wait().unwrap()
 }
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -74,6 +74,7 @@ fn branches_move_forward_only() {
             &progress,
             &cancel,
         )
+        .wait()
     };
     let origin_main = ForwardFrom::Remote {
         remote: BStr::new("origin"),
@@ -104,12 +105,15 @@ fn branches_move_forward_only() {
             BStr::new("refs/remotes/origin/main"),
             &cancel
         )
+        .wait()
         .unwrap(),
         Forwarded::Moved
     );
     assert_eq!(rev(&sandbox, &repo, "main"), rev(&sandbox, &origin, "main"));
     assert_eq!(
-        fast_forward_current(git, &repository, BStr::new("refs/heads/behind"), &cancel).unwrap(),
+        fast_forward_current(git, &repository, BStr::new("refs/heads/behind"), &cancel)
+            .wait()
+            .unwrap(),
         Forwarded::AlreadyThere
     );
     sandbox
@@ -137,7 +141,9 @@ fn branches_move_forward_only() {
     sandbox.commit_file(&repo, "h", "ours\n", "Ours").unwrap();
     let ours = rev(&sandbox, &repo, "main");
     assert_eq!(
-        fast_forward_current(git, &repository, BStr::new("refs/heads/behind"), &cancel).unwrap(),
+        fast_forward_current(git, &repository, BStr::new("refs/heads/behind"), &cancel)
+            .wait()
+            .unwrap(),
         Forwarded::NotFastForward
     );
     assert_eq!(rev(&sandbox, &repo, "main"), ours);
@@ -159,6 +165,7 @@ fn upstreams_are_set_and_forgotten() {
         Some(BStr::new("origin/main")),
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(
         config(&sandbox, &repo, "branch.behind.remote").as_deref(),
@@ -168,7 +175,9 @@ fn upstreams_are_set_and_forgotten() {
         config(&sandbox, &repo, "branch.behind.merge").as_deref(),
         Some("refs/heads/main")
     );
-    set_upstream(git, &repository, BStr::new("behind"), None, &cancel).unwrap();
+    set_upstream(git, &repository, BStr::new("behind"), None, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(config(&sandbox, &repo, "branch.behind.merge"), None);
     // Only a branch git has.
     assert!(
@@ -179,6 +188,7 @@ fn upstreams_are_set_and_forgotten() {
             Some(BStr::new("origin/nowhere")),
             &cancel
         )
+        .wait()
         .is_err()
     );
 }
@@ -204,6 +214,7 @@ fn work_trees_check_out_a_branch_a_new_branch_or_a_commit() {
         WorktreeFrom::Branch(BStr::new("behind")),
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(head(&behind), "behind");
     assert!(behind.join("f").exists());
@@ -220,6 +231,7 @@ fn work_trees_check_out_a_branch_a_new_branch_or_a_commit() {
         },
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(head(&tracking), "topic");
     assert_eq!(
@@ -236,6 +248,7 @@ fn work_trees_check_out_a_branch_a_new_branch_or_a_commit() {
         WorktreeFrom::Detached(first),
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(head(&detached), "HEAD");
     assert_eq!(rev(&sandbox, &detached, "HEAD"), first);
@@ -249,6 +262,7 @@ fn work_trees_check_out_a_branch_a_new_branch_or_a_commit() {
             WorktreeFrom::Branch(BStr::new("behind")),
             &cancel,
         )
+        .wait()
         .is_err()
     );
 }
@@ -266,7 +280,9 @@ fn a_commit_s_patch_applies_elsewhere() {
         .unwrap();
     let repository = open(&sandbox, &repo);
     let commit = rev(&sandbox, &repo, "HEAD");
-    let patch = format_patch(sandbox.git(), &repository, commit, &CancelToken::new()).unwrap();
+    let patch = format_patch(sandbox.git(), &repository, commit, &CancelToken::new())
+        .wait()
+        .unwrap();
     let text = String::from_utf8(patch.clone()).unwrap();
     assert!(text.contains("Subject: [PATCH] Add a file"), "{text}");
     assert!(text.contains("+++ b/dir/new"), "{text}");
@@ -295,7 +311,9 @@ fn a_commit_s_patch_applies_elsewhere() {
 
     // The first commit too.
     let root = rev(&sandbox, &repo, "HEAD~2");
-    let patch = format_patch(sandbox.git(), &repository, root, &CancelToken::new()).unwrap();
+    let patch = format_patch(sandbox.git(), &repository, root, &CancelToken::new())
+        .wait()
+        .unwrap();
     assert!(
         String::from_utf8(patch)
             .unwrap()

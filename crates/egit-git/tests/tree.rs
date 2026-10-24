@@ -11,7 +11,7 @@
 
 use bstr::BStr;
 use egit_git::testing::Sandbox;
-use egit_git::{CancelToken, ObjectId, Repository, ignored_paths, tree_folders};
+use egit_git::{CancelToken, ObjectId, Repository, Wait as _, ignored_paths, tree_folders};
 
 #[test]
 fn lists_every_folder_of_a_commit() {
@@ -22,11 +22,13 @@ fn lists_every_folder_of_a_commit() {
         .commit_file(&repo, "a/b c/deep", "x\n", "Deep")
         .unwrap();
     sandbox.commit_file(&repo, "d/file", "x\n", "D").unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let head = sandbox.run(&repo, "rev-parse", &["HEAD"]).unwrap();
     let head = ObjectId::from_hex(head.stdout.trim_ascii()).unwrap();
 
-    let mut folders = tree_folders(sandbox.git(), &repository, head, &CancelToken::new()).unwrap();
+    let mut folders = tree_folders(sandbox.git(), &repository, head, &CancelToken::new())
+        .wait()
+        .unwrap();
     folders.sort();
     assert_eq!(folders, ["a", "a/b c", "d"]);
 }
@@ -43,15 +45,19 @@ fn says_which_paths_are_ignored_but_not_tracked_ones() {
     sandbox
         .run(&repo, "add", &["--force", "kept.log/inside"])
         .unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
 
     // Folders end with `/`, so that folder-only patterns match them.
     let paths = ["build/", "src/", "debug.log", "kept.log/inside"].map(BStr::new);
-    let ignored = ignored_paths(sandbox.git(), &repository, &paths, &cancel).unwrap();
+    let ignored = ignored_paths(sandbox.git(), &repository, &paths, &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(ignored, ["build/", "debug.log"]);
     assert_eq!(
-        ignored_paths(sandbox.git(), &repository, &[BStr::new("src")], &cancel).unwrap(),
+        ignored_paths(sandbox.git(), &repository, &[BStr::new("src")], &cancel)
+            .wait()
+            .unwrap(),
         Vec::<bstr::BString>::new()
     );
 }
@@ -68,7 +74,7 @@ fn lists_the_folders_inside_new_ones_up_to_a_limit() {
     let roots = [repo.join("new"), repo.join("gone"), repo.join("new/file")];
     let roots: Vec<&std::path::Path> = roots.iter().map(AsRef::as_ref).collect();
 
-    let mut found = files.folders_within(&roots, 100).unwrap();
+    let mut found = files.folders_within(&roots, 100).wait().unwrap();
     found.sort();
     let expected: Vec<_> = ["new", "new/a b", "new/a b/deep", "new/c"]
         .iter()
@@ -76,9 +82,9 @@ fn lists_the_folders_inside_new_ones_up_to_a_limit() {
         .collect();
     // Neither git's own folder, nor what isn't a folder, nor what isn't there.
     assert_eq!(found, expected);
-    assert_eq!(files.folders_within(&roots, 2).unwrap().len(), 2);
+    assert_eq!(files.folders_within(&roots, 2).wait().unwrap().len(), 2);
     assert_eq!(
-        files.folders_within(&[], 10).unwrap(),
+        files.folders_within(&[], 10).wait().unwrap(),
         Vec::<std::path::PathBuf>::new()
     );
 }

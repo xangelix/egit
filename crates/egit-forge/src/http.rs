@@ -37,7 +37,7 @@ pub(crate) struct Answer {
 }
 
 /// What takes a streamed answer's body a part at a time, with its status and `Content-Range`.
-pub(crate) type Sink<'a> = dyn FnMut(u16, Option<&str>, &[u8]) + 'a;
+pub(crate) type Sink<'a> = dyn FnMut(u16, Option<&str>, &[u8]) + Send + 'a;
 
 /// How a streamed answer went: its status, and what a refusal said (its body, 64 KiB at most).
 #[derive(Debug)]
@@ -224,7 +224,7 @@ impl Http {
         &self,
         url: &str,
         token: Option<&str>,
-        sink: &mut dyn FnMut(&[u8]) -> bool,
+        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
     ) -> Result<Streamed, ForgeError> {
         use std::io::Read as _;
         let started = std::time::Instant::now();

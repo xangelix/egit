@@ -69,25 +69,28 @@ impl Hooks {
 /// # Errors
 ///
 /// When git fails.
-pub fn installed_hooks(git: &Git, repository: &Repository) -> Result<Hooks, GitError> {
+pub async fn installed_hooks(git: &Git, repository: &Repository) -> Result<Hooks, GitError> {
     let work_tree = repository.work_tree();
     let found = git
         .read("rev-parse")
         .args(["--git-path", "hooks"])
         .current_dir(work_tree)
-        .output()?;
+        .output()
+        .await?;
     let folder = work_tree.join(found.stdout.trim_ascii_end().to_path_lossy());
     let configured = git
         .read("config")
         .args(["--get", "core.hooksPath"])
         .current_dir(work_tree)
-        .output_unchecked()?
+        .output_unchecked()
+        .await?
         .status
         .success();
     let paths = KNOWN.map(|name| folder.join(name));
     let runnable = git
         .files()
         .runnable(&paths.iter().map(PathBuf::as_path).collect::<Vec<_>>())
+        .await
         .map_err(|source| GitError::Io {
             subcommand: "rev-parse",
             source,

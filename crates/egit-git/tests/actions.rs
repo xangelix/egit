@@ -18,13 +18,13 @@ use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, CloneOptions, DeleteBranchError, FastForward, Head, Integrated, ObjectId,
     Operation, Progress, PushFlag, Repository, ResetMode, StashError, SwitchError, SwitchTo,
-    cherry_pick, cherry_pick_all, clone, create_branch, create_tag, delete_branch,
+    Wait as _, cherry_pick, cherry_pick_all, clone, create_branch, create_tag, delete_branch,
     delete_remote_branch, delete_tag, merge, push_tag, rebase, rename_branch, reset, revert,
     revert_all, stash_apply, stash_drop, stash_push, stashes, switch,
 };
 
 fn open(sandbox: &Sandbox, path: &Path) -> Repository {
-    Repository::discover(sandbox.git(), path).unwrap()
+    Repository::discover(sandbox.git(), path).wait().unwrap()
 }
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -41,7 +41,7 @@ fn subject(sandbox: &Sandbox, repo: &Path, name: &str) -> String {
 
 /// The branch `HEAD` is on (`None` when detached).
 fn branch(sandbox: &Sandbox, repository: &Repository) -> Option<String> {
-    match repository.head(sandbox.git()).unwrap() {
+    match repository.head(sandbox.git()).wait().unwrap() {
         Head::Branch(branch) => Some(branch.name.to_string()),
         Head::Detached(_) => None,
     }
@@ -70,42 +70,21 @@ fn branches_are_switched_to_created_renamed_and_deleted() {
     let path = two_branches(&sandbox);
     let repository = open(&sandbox, &path);
     let git = sandbox.git();
+    let to = |target: &SwitchTo| switch(git, &repository, target, &cancel()).wait();
 
-    switch(
-        git,
-        &repository,
-        &SwitchTo::Branch("other".into()),
-        &cancel(),
-    )
-    .unwrap();
+    to(&SwitchTo::Branch("other".into())).unwrap();
     assert_eq!(branch(&sandbox, &repository).as_deref(), Some("other"));
     // Changes git would overwrite stop it, and are named.
     std::fs::write(path.join("f"), "local\n").unwrap();
-    let blocked = switch(
-        git,
-        &repository,
-        &SwitchTo::Branch("main".into()),
-        &cancel(),
-    );
+    let blocked = to(&SwitchTo::Branch("main".into()));
     let Err(SwitchError::WouldOverwrite { paths, untracked }) = blocked else {
         panic!("{blocked:?}");
     };
     assert_eq!((paths, untracked), (vec!["f".into()], false));
     sandbox.run(&path, "checkout", &["--", "f"]).unwrap();
-    switch(
-        git,
-        &repository,
-        &SwitchTo::Branch("main".into()),
-        &cancel(),
-    )
-    .unwrap();
+    to(&SwitchTo::Branch("main".into())).unwrap();
     std::fs::write(path.join("g"), "untracked\n").unwrap();
-    let blocked = switch(
-        git,
-        &repository,
-        &SwitchTo::Branch("other".into()),
-        &cancel(),
-    );
+    let blocked = to(&SwitchTo::Branch("other".into()));
     assert!(
         matches!(
             blocked,
@@ -123,20 +102,16 @@ fn branches_are_switched_to_created_renamed_and_deleted() {
         name: "fix".into(),
         at: first,
     };
-    switch(git, &repository, &new, &cancel()).unwrap();
+    to(&new).unwrap();
     assert_eq!(branch(&sandbox, &repository).as_deref(), Some("fix"));
     assert_eq!(rev(&sandbox, &path, "HEAD"), first);
-    switch(git, &repository, &SwitchTo::Detached(first), &cancel()).unwrap();
+    to(&SwitchTo::Detached(first)).unwrap();
     assert_eq!(branch(&sandbox, &repository), None);
-    switch(
-        git,
-        &repository,
-        &SwitchTo::Branch("main".into()),
-        &cancel(),
-    )
-    .unwrap();
+    to(&SwitchTo::Branch("main".into())).unwrap();
 
-    create_branch(git, &repository, BStr::new("later"), first, &cancel()).unwrap();
+    create_branch(git, &repository, BStr::new("later"), first, &cancel())
+        .wait()
+        .unwrap();
     rename_branch(
         git,
         &repository,
@@ -144,16 +119,21 @@ fn branches_are_switched_to_created_renamed_and_deleted() {
         BStr::new("sooner"),
         &cancel(),
     )
+    .wait()
     .unwrap();
     assert_eq!(rev(&sandbox, &path, "sooner"), first);
     // `other` has a commit nowhere else: deleting it is confirmed first.
-    let unmerged = delete_branch(git, &repository, BStr::new("other"), false, &cancel());
+    let unmerged = delete_branch(git, &repository, BStr::new("other"), false, &cancel()).wait();
     assert!(
         matches!(unmerged, Err(DeleteBranchError::NotMerged)),
         "{unmerged:?}"
     );
-    delete_branch(git, &repository, BStr::new("other"), true, &cancel()).unwrap();
-    delete_branch(git, &repository, BStr::new("sooner"), false, &cancel()).unwrap();
+    delete_branch(git, &repository, BStr::new("other"), true, &cancel())
+        .wait()
+        .unwrap();
+    delete_branch(git, &repository, BStr::new("sooner"), false, &cancel())
+        .wait()
+        .unwrap();
     let left = sandbox
         .run(&path, "branch", &["--format=%(refname:short)"])
         .unwrap();
@@ -188,6 +168,7 @@ fn a_remote_branch_is_tracked_deleted_and_a_tag_pushed() {
         &Progress::new(),
         &cancel(),
     )
+    .wait()
     .unwrap();
     let repository = open(&sandbox, &path);
 
@@ -195,7 +176,7 @@ fn a_remote_branch_is_tracked_deleted_and_a_tag_pushed() {
         remote_branch: "origin/other".into(),
         local: "other".into(),
     };
-    switch(git, &repository, &track, &cancel()).unwrap();
+    switch(git, &repository, &track, &cancel()).wait().unwrap();
     let upstream = sandbox
         .run(
             &path,
@@ -213,6 +194,7 @@ fn a_remote_branch_is_tracked_deleted_and_a_tag_pushed() {
         &Progress::new(),
         &cancel(),
     )
+    .wait()
     .unwrap();
     assert_eq!(deleted.refs[0].flag, PushFlag::Deleted);
     let on_origin = sandbox
@@ -221,7 +203,9 @@ fn a_remote_branch_is_tracked_deleted_and_a_tag_pushed() {
     assert_eq!(on_origin.stdout.trim_ascii(), b"main");
 
     let head = rev(&sandbox, &path, "HEAD");
-    create_tag(git, &repository, BStr::new("v1"), head, None, &cancel()).unwrap();
+    create_tag(git, &repository, BStr::new("v1"), head, None, &cancel())
+        .wait()
+        .unwrap();
     let pushed = push_tag(
         git,
         &repository,
@@ -230,6 +214,7 @@ fn a_remote_branch_is_tracked_deleted_and_a_tag_pushed() {
         &Progress::new(),
         &cancel(),
     )
+    .wait()
     .unwrap();
     assert!(pushed.succeeded(), "{pushed:?}");
     assert_eq!(rev(&sandbox, &bare, "v1"), head);
@@ -241,94 +226,89 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
     let path = two_branches(&sandbox);
     let repository = open(&sandbox, &path);
     let git = sandbox.git();
-    let operations = || repository.operations(sandbox.git()).unwrap();
+    let operations = || repository.operations(sandbox.git()).wait().unwrap();
+    let pick = |commit| {
+        cherry_pick(git, &repository, commit, &cancel())
+            .wait()
+            .unwrap()
+    };
+    let merge_other = || {
+        let other = BStr::new("other");
+        merge(
+            git,
+            &repository,
+            other,
+            FastForward::AsConfigured,
+            &cancel(),
+        )
+        .wait()
+        .unwrap()
+    };
+    let reset_to = |commit, mode| {
+        reset(git, &repository, commit, mode, &cancel())
+            .wait()
+            .unwrap();
+    };
     // `f` is "one" there, "two" now.
     let one = rev(&sandbox, &path, "main~1");
 
     // Picked, then picked again: its change is in, so it is skipped.
     let other = rev(&sandbox, &path, "other");
-    assert_eq!(
-        cherry_pick(git, &repository, other, &cancel()).unwrap(),
-        Integrated::Done
-    );
+    assert_eq!(pick(other), Integrated::Done);
     assert_eq!(subject(&sandbox, &path, "HEAD"), "Other");
     let picked = rev(&sandbox, &path, "HEAD");
-    assert_eq!(
-        cherry_pick(git, &repository, other, &cancel()).unwrap(),
-        Integrated::Empty
-    );
+    assert_eq!(pick(other), Integrated::Empty);
     assert_eq!(operations(), []);
     assert_eq!(rev(&sandbox, &path, "HEAD"), picked);
 
     assert_eq!(
-        revert(git, &repository, picked, &cancel()).unwrap(),
+        revert(git, &repository, picked, &cancel()).wait().unwrap(),
         Integrated::Done
     );
     assert_eq!(subject(&sandbox, &path, "HEAD"), "Revert \"Other\"");
     assert!(!path.join("g").exists());
 
     // Merged: a merge commit (`other` is no ancestor of `main`).
-    assert_eq!(
-        merge(
-            git,
-            &repository,
-            BStr::new("other"),
-            FastForward::AsConfigured,
-            &cancel()
-        )
-        .unwrap(),
-        Integrated::Done
-    );
+    assert_eq!(merge_other(), Integrated::Done);
     let parents = sandbox.run(&path, "log", &["-1", "--format=%P"]).unwrap();
     assert_eq!(parents.stdout.split(|&byte| byte == b' ').count(), 2);
     // A merge's changes, against its first parent, reverted.
     let merged = rev(&sandbox, &path, "HEAD");
     assert_eq!(
-        revert(git, &repository, merged, &cancel()).unwrap(),
+        revert(git, &repository, merged, &cancel()).wait().unwrap(),
         Integrated::Done
     );
 
     // Reset: soft keeps the changes staged, mixed unstaged, hard nowhere.
     let start = one;
     let before = rev(&sandbox, &path, "HEAD");
-    reset(git, &repository, start, ResetMode::Soft, &cancel()).unwrap();
+    reset_to(start, ResetMode::Soft);
     let staged = sandbox
         .run(&path, "diff", &["--cached", "--name-only"])
         .unwrap();
     assert_eq!(staged.stdout.trim_ascii(), b"f");
-    reset(git, &repository, before, ResetMode::Soft, &cancel()).unwrap();
-    reset(git, &repository, start, ResetMode::Mixed, &cancel()).unwrap();
+    reset_to(before, ResetMode::Soft);
+    reset_to(start, ResetMode::Mixed);
     let changed = sandbox.run(&path, "diff", &["--name-only"]).unwrap();
     assert_eq!(changed.stdout.trim_ascii(), b"f");
-    reset(git, &repository, start, ResetMode::Hard, &cancel()).unwrap();
+    reset_to(start, ResetMode::Hard);
     assert_eq!(std::fs::read_to_string(path.join("f")).unwrap(), "one\n");
     assert_eq!(rev(&sandbox, &path, "HEAD"), start);
 
     // Conflicts stop each, the operation in progress.
     sandbox.commit_file(&path, "g", "mine\n", "Mine").unwrap();
-    assert_eq!(
-        merge(
-            git,
-            &repository,
-            BStr::new("other"),
-            FastForward::AsConfigured,
-            &cancel()
-        )
-        .unwrap(),
-        Integrated::Conflicts
-    );
+    assert_eq!(merge_other(), Integrated::Conflicts);
     assert_eq!(operations(), [Operation::Merge]);
     sandbox.run(&path, "merge", &["--abort"]).unwrap();
     assert_eq!(
-        rebase(git, &repository, BStr::new("other"), false, &cancel()).unwrap(),
+        rebase(git, &repository, BStr::new("other"), false, &cancel())
+            .wait()
+            .unwrap(),
         Integrated::Conflicts
     );
     assert_eq!(operations(), [Operation::Rebase]);
     sandbox.run(&path, "rebase", &["--abort"]).unwrap();
-    assert_eq!(
-        cherry_pick(git, &repository, other, &cancel()).unwrap(),
-        Integrated::Conflicts
-    );
+    assert_eq!(pick(other), Integrated::Conflicts);
     assert_eq!(operations(), [Operation::CherryPick]);
     sandbox.run(&path, "cherry-pick", &["--abort"]).unwrap();
     // A clean rebase: `main`'s own commit replayed onto `other`.
@@ -337,7 +317,9 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
         .unwrap();
     sandbox.commit_file(&path, "h", "later\n", "Later").unwrap();
     assert_eq!(
-        rebase(git, &repository, BStr::new("other"), false, &cancel()).unwrap(),
+        rebase(git, &repository, BStr::new("other"), false, &cancel())
+            .wait()
+            .unwrap(),
         Integrated::Done
     );
     assert_eq!(subject(&sandbox, &path, "HEAD~1"), "Other");
@@ -364,6 +346,7 @@ fn a_merge_fast_forwards_as_configured_or_never_and_names_a_branch_as_people_do(
             FastForward::Never,
             &cancel()
         )
+        .wait()
         .unwrap(),
         Integrated::Done
     );
@@ -386,6 +369,7 @@ fn a_merge_fast_forwards_as_configured_or_never_and_names_a_branch_as_people_do(
             FastForward::AsConfigured,
             &cancel()
         )
+        .wait()
         .unwrap(),
         Integrated::Done
     );
@@ -403,6 +387,7 @@ fn a_merge_fast_forwards_as_configured_or_never_and_names_a_branch_as_people_do(
             FastForward::Never,
             &cancel(),
         )
+        .wait()
         .unwrap();
     };
     merge_full(&sandbox);
@@ -435,7 +420,9 @@ fn tags_are_made_annotated_or_light_and_deleted() {
         .run(&path, "config", &["tag.gpgSign", "true"])
         .unwrap();
     let head = rev(&sandbox, &path, "HEAD");
-    create_tag(git, &repository, BStr::new("light"), head, None, &cancel()).unwrap();
+    create_tag(git, &repository, BStr::new("light"), head, None, &cancel())
+        .wait()
+        .unwrap();
     let kind = sandbox.run(&path, "cat-file", &["-t", "light"]).unwrap();
     assert_eq!(kind.stdout.trim_ascii(), b"commit");
     sandbox
@@ -450,13 +437,20 @@ fn tags_are_made_annotated_or_light_and_deleted() {
         Some(message),
         &cancel(),
     )
+    .wait()
     .unwrap();
     let shown = sandbox
         .run(&path, "tag", &["--list", "--format=%(contents)", "v1"])
         .unwrap();
     assert_eq!(shown.stdout.trim_ascii(), b"Release one\n\n  its notes");
-    assert!(create_tag(git, &repository, BStr::new("v1"), head, None, &cancel()).is_err());
-    delete_tag(git, &repository, BStr::new("v1"), &cancel()).unwrap();
+    assert!(
+        create_tag(git, &repository, BStr::new("v1"), head, None, &cancel())
+            .wait()
+            .is_err()
+    );
+    delete_tag(git, &repository, BStr::new("v1"), &cancel())
+        .wait()
+        .unwrap();
     let left = sandbox.run(&path, "tag", &["--list"]).unwrap();
     assert_eq!(left.stdout.trim_ascii(), b"light");
 }
@@ -482,7 +476,9 @@ fn several_commits_are_picked_and_reverted_in_turn() {
         .map(|name| rev(&sandbox, &path, name))
         .collect();
     assert_eq!(
-        cherry_pick_all(git, &repository, &commits, &cancel()).unwrap(),
+        cherry_pick_all(git, &repository, &commits, &cancel())
+            .wait()
+            .unwrap(),
         Integrated::Done
     );
     let log = sandbox
@@ -490,19 +486,23 @@ fn several_commits_are_picked_and_reverted_in_turn() {
         .unwrap()
         .stdout;
     assert_eq!(log, b"C\nA\nB here\n");
-    assert_eq!(repository.operations(git).unwrap(), []);
+    assert_eq!(repository.operations(git).wait().unwrap(), []);
 
     // Reverted, the newest first: back to before.
     let picked = [rev(&sandbox, &path, "HEAD"), rev(&sandbox, &path, "HEAD~1")];
     assert_eq!(
-        revert_all(git, &repository, &picked, &cancel()).unwrap(),
+        revert_all(git, &repository, &picked, &cancel())
+            .wait()
+            .unwrap(),
         Integrated::Done
     );
     assert!(!path.join("a").exists() && !path.join("c").exists());
     // Every one of them already here: nothing picked, said so.
     let here = [rev(&sandbox, &path, "HEAD~4")];
     assert_eq!(
-        cherry_pick_all(git, &repository, &here, &cancel()).unwrap(),
+        cherry_pick_all(git, &repository, &here, &cancel())
+            .wait()
+            .unwrap(),
         Integrated::Empty
     );
 }
@@ -519,17 +519,23 @@ fn some_files_alone_are_stashed() {
     std::fs::write(path.join("[a].log"), "new\n").unwrap();
     std::fs::write(path.join("a.log"), "untracked, kept\n").unwrap();
     let paths = [BStr::new("[a].log")];
-    assert!(stash_push(git, &repository, ("Some", false), &paths, &cancel()).unwrap());
+    assert!(
+        stash_push(git, &repository, ("Some", false), &paths, &cancel())
+            .wait()
+            .unwrap()
+    );
     assert!(!path.join("[a].log").exists());
     assert_eq!(
         std::fs::read_to_string(path.join("f")).unwrap(),
         "changed\n"
     );
     assert!(path.join("a.log").exists());
-    let listed = stashes(git, &repository, &cancel()).unwrap();
+    let listed = stashes(git, &repository, &cancel()).wait().unwrap();
     assert_eq!(listed[0].message, "On main: Some");
     assert_eq!(
-        stash_apply(git, &repository, &listed[0], true, &cancel()).unwrap(),
+        stash_apply(git, &repository, &listed[0], true, &cancel())
+            .wait()
+            .unwrap(),
         Integrated::Done
     );
     assert_eq!(
@@ -544,15 +550,27 @@ fn stashes_are_made_listed_applied_popped_and_dropped() {
     let path = two_branches(&sandbox);
     let repository = open(&sandbox, &path);
     let git = sandbox.git();
-    assert!(!stash_push(git, &repository, ("", false), &[], &cancel()).unwrap());
-    assert_eq!(stashes(git, &repository, &cancel()).unwrap(), []);
+    assert!(
+        !stash_push(git, &repository, ("", false), &[], &cancel())
+            .wait()
+            .unwrap()
+    );
+    assert_eq!(stashes(git, &repository, &cancel()).wait().unwrap(), []);
 
     std::fs::write(path.join("f"), "changed\n").unwrap();
-    assert!(stash_push(git, &repository, ("First", false), &[], &cancel()).unwrap());
+    assert!(
+        stash_push(git, &repository, ("First", false), &[], &cancel())
+            .wait()
+            .unwrap()
+    );
     std::fs::write(path.join("new"), "untracked\n").unwrap();
-    assert!(stash_push(git, &repository, ("", true), &[], &cancel()).unwrap());
+    assert!(
+        stash_push(git, &repository, ("", true), &[], &cancel())
+            .wait()
+            .unwrap()
+    );
     assert!(!path.join("new").exists());
-    let listed = stashes(git, &repository, &cancel()).unwrap();
+    let listed = stashes(git, &repository, &cancel()).wait().unwrap();
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[1].index, 1);
     assert_eq!(listed[1].message, "On main: First");
@@ -560,33 +578,41 @@ fn stashes_are_made_listed_applied_popped_and_dropped() {
 
     // The untracked file back, the stash kept; then popped.
     assert_eq!(
-        stash_apply(git, &repository, &listed[0], false, &cancel()).unwrap(),
+        stash_apply(git, &repository, &listed[0], false, &cancel())
+            .wait()
+            .unwrap(),
         Integrated::Done
     );
     assert!(path.join("new").exists());
     std::fs::remove_file(path.join("new")).unwrap();
     assert_eq!(
-        stash_apply(git, &repository, &listed[0], true, &cancel()).unwrap(),
+        stash_apply(git, &repository, &listed[0], true, &cancel())
+            .wait()
+            .unwrap(),
         Integrated::Done
     );
     std::fs::remove_file(path.join("new")).unwrap();
     // The list moved: `First` isn't second any more.
-    let stale = stash_drop(git, &repository, &listed[1], &cancel());
+    let stale = stash_drop(git, &repository, &listed[1], &cancel()).wait();
     assert!(matches!(stale, Err(StashError::Stale)), "{stale:?}");
 
     // `First` changes `f`, as the work tree now does: applying it conflicts.
-    let listed = stashes(git, &repository, &cancel()).unwrap();
+    let listed = stashes(git, &repository, &cancel()).wait().unwrap();
     sandbox
         .commit_file(&path, "f", "committed\n", "Committed")
         .unwrap();
     assert_eq!(
-        stash_apply(git, &repository, &listed[0], true, &cancel()).unwrap(),
+        stash_apply(git, &repository, &listed[0], true, &cancel())
+            .wait()
+            .unwrap(),
         Integrated::Conflicts
     );
     // A stash that conflicts is kept.
     sandbox.run(&path, "reset", &["--quiet", "--hard"]).unwrap();
-    let listed = stashes(git, &repository, &cancel()).unwrap();
+    let listed = stashes(git, &repository, &cancel()).wait().unwrap();
     assert_eq!(listed.len(), 1);
-    stash_drop(git, &repository, &listed[0], &cancel()).unwrap();
-    assert_eq!(stashes(git, &repository, &cancel()).unwrap(), []);
+    stash_drop(git, &repository, &listed[0], &cancel())
+        .wait()
+        .unwrap();
+    assert_eq!(stashes(git, &repository, &cancel()).wait().unwrap(), []);
 }

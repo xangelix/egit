@@ -38,8 +38,8 @@ pub(crate) enum Place {
 
 impl Place {
     /// Where `HEAD` is now, if that can be read.
-    pub(crate) fn read(git: &Git, repository: &Repository) -> Option<Self> {
-        here(git, repository).ok()
+    pub(crate) async fn read(git: &Git, repository: &Repository) -> Option<Self> {
+        here(git, repository).await.ok()
     }
 
     /// Its commit.
@@ -261,13 +261,18 @@ impl Halt {
 }
 
 /// The object `name` (a full ref name) points to, if it exists.
-fn at(git: &Git, repository: &Repository, name: &str) -> Result<Option<ObjectId>, Halt> {
-    ref_target(git, repository, BStr::new(name)).map_err(|error| failed(&error))
+async fn at(git: &Git, repository: &Repository, name: &str) -> Result<Option<ObjectId>, Halt> {
+    ref_target(git, repository, BStr::new(name))
+        .await
+        .map_err(|error| failed(&error))
 }
 
 /// Where `HEAD` is now.
-fn here(git: &Git, repository: &Repository) -> Result<Place, Halt> {
-    let head = repository.head_ref(git).map_err(|error| failed(&error))?;
+async fn here(git: &Git, repository: &Repository) -> Result<Place, Halt> {
+    let head = repository
+        .head_ref(git)
+        .await
+        .map_err(|error| failed(&error))?;
     Ok(match (head.branch(), head.commit) {
         (Some(name), at) => Place::Branch {
             name: name.to_owned(),
@@ -279,21 +284,23 @@ fn here(git: &Git, repository: &Repository) -> Result<Place, Halt> {
 }
 
 /// Takes `undo` back: its changes, last first, each checked first.
-pub(crate) fn take_back(
+pub(crate) async fn take_back(
     git: &Git,
     repository: &Repository,
     undo: &Undo,
     cancel: &CancelToken,
 ) -> Result<Undo, Stopped> {
     for (done, change) in undo.changes.iter().rev().enumerate() {
-        reverse(git, repository, change, cancel).map_err(|halt| halt.stopped(false, done))?;
+        reverse(git, repository, change, cancel)
+            .await
+            .map_err(|halt| halt.stopped(false, done))?;
     }
     Ok(undo.clone())
 }
 
 /// Does `undo` again: its changes, first first, each checked first; returns them as done this
 /// time (a stash made again is a new one).
-pub(crate) fn do_again(
+pub(crate) async fn do_again(
     git: &Git,
     repository: &Repository,
     undo: &Undo,
@@ -302,8 +309,11 @@ pub(crate) fn do_again(
     let mut changes = Vec::with_capacity(undo.changes.len());
     for change in &undo.changes {
         let done = changes.len();
-        changes
-            .push(redo(git, repository, change, cancel).map_err(|halt| halt.stopped(true, done))?);
+        changes.push(
+            redo(git, repository, change, cancel)
+                .await
+                .map_err(|halt| halt.stopped(true, done))?,
+        );
     }
     Ok(Undo {
         what: undo.what.clone(),
@@ -312,7 +322,7 @@ pub(crate) fn do_again(
 }
 
 /// Takes one change back.
-fn reverse(
+async fn reverse(
     git: &Git,
     repository: &Repository,
     change: &Change,
@@ -325,43 +335,51 @@ fn reverse(
             after,
             mode,
         } => {
-            let now = here(git, repository)?;
+            let now = here(git, repository).await?;
             if now.branch() != branch.as_ref().map(|branch| branch.as_bstr())
                 || now.commit() != Some(*after)
             {
                 return Err(moved_on("HEAD isn't where the action left it."));
             }
-            reset(git, repository, *before, *mode, cancel).map_err(|error| failed(&error))
+            reset(git, repository, *before, *mode, cancel)
+                .await
+                .map_err(|error| failed(&error))
         }
-        Change::Switched { from, to } => switch_back(git, repository, to, from, cancel),
+        Change::Switched { from, to } => switch_back(git, repository, to, from, cancel).await,
         Change::BranchMade { name, at: made } => {
-            if at(git, repository, &format!("refs/heads/{name}"))? != Some(*made) {
+            if at(git, repository, &format!("refs/heads/{name}")).await? != Some(*made) {
                 return Err(moved_on(format!("{name} moved since it was made.")));
             }
-            delete_branch(git, repository, name.as_bstr(), true, cancel).map_err(|error| Halt {
-                moved_on: false,
-                detail: error.to_string(),
-            })
+            delete_branch(git, repository, name.as_bstr(), true, cancel)
+                .await
+                .map_err(|error| Halt {
+                    moved_on: false,
+                    detail: error.to_string(),
+                })
         }
         Change::BranchRemoved { name, was } => {
             create_branch(git, repository, name.as_bstr(), *was, cancel)
+                .await
                 .map_err(|error| failed(&error))
         }
         Change::BranchRenamed { from, to } => {
             rename_branch(git, repository, to.as_bstr(), from.as_bstr(), cancel)
+                .await
                 .map_err(|error| failed(&error))
         }
         Change::BranchMoved { name, from, to } => {
-            move_back(git, repository, name.as_bstr(), *to, *from, cancel)
+            move_back(git, repository, name.as_bstr(), *to, *from, cancel).await
         }
         Change::TagMade { name, at } => delete_ref(git, repository, name.as_bstr(), *at, cancel)
+            .await
             .map_err(|_| moved_on(format!("{name} isn't where it was made."))),
         Change::TagRemoved { name, was } => {
             create_ref(git, repository, name.as_bstr(), *was, cancel)
+                .await
                 .map_err(|_| moved_on(format!("{name} exists again.")))
         }
         Change::Stashed { id, .. } => {
-            let latest = latest_stash(git, repository, cancel)?;
+            let latest = latest_stash(git, repository, cancel).await?;
             if latest.as_ref().map(|stash| stash.id) != Some(*id) {
                 return Err(moved_on("The stash isn't the latest any more."));
             }
@@ -369,19 +387,20 @@ fn reverse(
                 return Ok(());
             };
             stash_apply(git, repository, &stash, true, cancel)
+                .await
                 .map(drop)
                 .map_err(|error| Halt {
                     moved_on: false,
                     detail: error.to_string(),
                 })
         }
-        Change::StashDropped { id, message } => {
-            stash_store(git, repository, *id, message, cancel).map_err(|error| failed(&error))
-        }
-        Change::Discarded(files) => {
-            put_back(git, repository, files, DiscardSide::Before, cancel).map_err(discard_halt)
-        }
-        Change::Ignored(ignored) => unignore(git, ignored).map_err(ignore_halt),
+        Change::StashDropped { id, message } => stash_store(git, repository, *id, message, cancel)
+            .await
+            .map_err(|error| failed(&error)),
+        Change::Discarded(files) => put_back(git, repository, files, DiscardSide::Before, cancel)
+            .await
+            .map_err(discard_halt),
+        Change::Ignored(ignored) => unignore(git, ignored).await.map_err(ignore_halt),
     }
 }
 
@@ -409,7 +428,7 @@ fn discard_halt(error: DiscardError) -> Halt {
 }
 
 /// Does one change again; returns it as done this time.
-fn redo(
+async fn redo(
     git: &Git,
     repository: &Repository,
     change: &Change,
@@ -422,41 +441,49 @@ fn redo(
             after,
             mode,
         } => {
-            let now = here(git, repository)?;
+            let now = here(git, repository).await?;
             if now.branch() != branch.as_ref().map(|branch| branch.as_bstr())
                 || now.commit() != Some(*before)
             {
                 return Err(moved_on("HEAD isn't where the undo left it."));
             }
-            reset(git, repository, *after, *mode, cancel).map_err(|error| failed(&error))?;
+            reset(git, repository, *after, *mode, cancel)
+                .await
+                .map_err(|error| failed(&error))?;
         }
-        Change::Switched { from, to } => switch_back(git, repository, from, to, cancel)?,
+        Change::Switched { from, to } => switch_back(git, repository, from, to, cancel).await?,
         Change::BranchMade { name, at } => {
             create_branch(git, repository, name.as_bstr(), *at, cancel)
+                .await
                 .map_err(|error| failed(&error))?;
         }
         Change::BranchRemoved { name, was } => {
-            if at(git, repository, &format!("refs/heads/{name}"))? != Some(*was) {
+            if at(git, repository, &format!("refs/heads/{name}")).await? != Some(*was) {
                 return Err(moved_on(format!("{name} moved since.")));
             }
-            delete_branch(git, repository, name.as_bstr(), true, cancel).map_err(|error| Halt {
-                moved_on: false,
-                detail: error.to_string(),
-            })?;
+            delete_branch(git, repository, name.as_bstr(), true, cancel)
+                .await
+                .map_err(|error| Halt {
+                    moved_on: false,
+                    detail: error.to_string(),
+                })?;
         }
         Change::BranchRenamed { from, to } => {
             rename_branch(git, repository, from.as_bstr(), to.as_bstr(), cancel)
+                .await
                 .map_err(|error| failed(&error))?;
         }
         Change::BranchMoved { name, from, to } => {
-            move_back(git, repository, name.as_bstr(), *from, *to, cancel)?;
+            move_back(git, repository, name.as_bstr(), *from, *to, cancel).await?;
         }
         Change::TagMade { name, at } => {
             create_ref(git, repository, name.as_bstr(), *at, cancel)
+                .await
                 .map_err(|_| moved_on(format!("{name} exists again.")))?;
         }
         Change::TagRemoved { name, was } => {
             delete_ref(git, repository, name.as_bstr(), *was, cancel)
+                .await
                 .map_err(|_| moved_on(format!("{name} moved since.")))?;
         }
         Change::Stashed {
@@ -467,8 +494,10 @@ fn redo(
         } => {
             let named: Vec<&BStr> = paths.iter().map(|path| path.as_bstr()).collect();
             stash_push(git, repository, (message, *untracked), &named, cancel)
+                .await
                 .map_err(|error| failed(&error))?;
-            let made = latest_stash(git, repository, cancel)?
+            let made = latest_stash(git, repository, cancel)
+                .await?
                 .ok_or_else(|| moved_on("There was nothing to stash."))?;
             return Ok(Change::Stashed {
                 id: made.id,
@@ -478,9 +507,10 @@ fn redo(
             });
         }
         Change::StashDropped { id, .. } => {
-            let latest = latest_stash(git, repository, cancel)?;
+            let latest = latest_stash(git, repository, cancel).await?;
             match latest {
                 Some(stash) if stash.id == *id => stash_drop(git, repository, &stash, cancel)
+                    .await
                     .map_err(|error| Halt {
                         moved_on: false,
                         detail: error.to_string(),
@@ -489,10 +519,13 @@ fn redo(
             }
         }
         Change::Discarded(files) => {
-            put_back(git, repository, files, DiscardSide::After, cancel).map_err(discard_halt)?;
+            put_back(git, repository, files, DiscardSide::After, cancel)
+                .await
+                .map_err(discard_halt)?;
         }
         Change::Ignored(ignored) => {
             return ignore_again(git, ignored)
+                .await
                 .map(Change::Ignored)
                 .map_err(ignore_halt);
         }
@@ -501,17 +534,17 @@ fn redo(
 }
 
 /// Switches from `now` (where `HEAD` must be) to `to`.
-fn switch_back(
+async fn switch_back(
     git: &Git,
     repository: &Repository,
     now: &Place,
     to: &Place,
     cancel: &CancelToken,
 ) -> Result<(), Halt> {
-    if !here(git, repository)?.same_as(now) {
+    if !here(git, repository).await?.same_as(now) {
         return Err(moved_on("HEAD isn't where the switch left it."));
     }
-    match switch(git, repository, &to.switch_to(), cancel) {
+    match switch(git, repository, &to.switch_to(), cancel).await {
         Ok(()) => Ok(()),
         Err(SwitchError::WouldOverwrite { paths, .. }) => Err(Halt {
             moved_on: false,
@@ -529,7 +562,7 @@ fn switch_back(
 }
 
 /// Moves the branch `name` from `now` (where it must be) to `to`.
-fn move_back(
+async fn move_back(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -537,19 +570,22 @@ fn move_back(
     to: ObjectId,
     cancel: &CancelToken,
 ) -> Result<(), Halt> {
-    if at(git, repository, &format!("refs/heads/{name}"))? != Some(now) {
+    if at(git, repository, &format!("refs/heads/{name}")).await? != Some(now) {
         return Err(moved_on(format!("{name} moved since.")));
     }
-    move_branch(git, repository, name, to, cancel).map_err(|error| failed(&error))
+    move_branch(git, repository, name, to, cancel)
+        .await
+        .map_err(|error| failed(&error))
 }
 
 /// The latest stash, if any.
-fn latest_stash(
+async fn latest_stash(
     git: &Git,
     repository: &Repository,
     cancel: &CancelToken,
 ) -> Result<Option<Stash>, Halt> {
     stashes(git, repository, cancel)
+        .await
         .map(|stashes| stashes.into_iter().next())
         .map_err(|error| failed(&error))
 }
@@ -566,35 +602,36 @@ pub(crate) struct Before {
 }
 
 /// Reads what `task`'s undo will need, before it runs (nothing for one that can't be undone).
-pub(crate) fn before(git: &Git, repository: &Repository, task: &Task) -> Before {
+pub(crate) async fn before(git: &Git, repository: &Repository, task: &Task) -> Before {
     let head = || Place::read(git, repository);
-    let named = |name: String| at(git, repository, &name).ok().flatten();
+    let named = async |name: String| at(git, repository, &name).await.ok().flatten();
     match task {
         Task::DeleteBranch { name, .. } | Task::DeleteBranchEverywhere { name, .. } => Before {
-            branch: named(format!("refs/heads/{name}")),
+            branch: named(format!("refs/heads/{name}")).await,
             ..Before::default()
         },
         Task::FastForwardBranch { branch, .. } => Before {
-            branch: named(format!("refs/heads/{branch}")),
+            branch: named(format!("refs/heads/{branch}")).await,
             ..Before::default()
         },
         Task::DeleteTag(name) => Before {
-            tag: named(format!("refs/tags/{name}")),
+            tag: named(format!("refs/tags/{name}")).await,
             ..Before::default()
         },
         Task::StashAndSwitch(_)
         | Task::PullStashing {
             untracked: true, ..
         } => Before {
-            head: head(),
+            head: head().await,
             stash: latest_stash(git, repository, &CancelToken::new())
+                .await
                 .ok()
                 .flatten()
                 .map(|stash| stash.id),
             ..Before::default()
         },
         task if moves_head(task) => Before {
-            head: head(),
+            head: head().await,
             ..Before::default()
         },
         _ => Before::default(),
@@ -628,9 +665,29 @@ const fn moves_head(task: &Task) -> bool {
     )
 }
 
+/// The stash (of every change, untracked ones too) an action made: the latest, where it isn't
+/// the one there was before (`since`).
+async fn stash_made(
+    git: &Git,
+    repository: &Repository,
+    since: Option<ObjectId>,
+    message: &str,
+) -> Option<Change> {
+    let latest = latest_stash(git, repository, &CancelToken::new())
+        .await
+        .ok()
+        .flatten()?;
+    (Some(latest.id) != since).then(|| Change::Stashed {
+        id: latest.id,
+        message: message.to_owned(),
+        untracked: true,
+        paths: Vec::new(),
+    })
+}
+
 /// How to take back what `task` did, now that it ended as `outcome` (`None` when it can't be,
 /// or changed nothing).
-pub(crate) fn noted(
+pub(crate) async fn noted(
     git: &Git,
     repository: &Repository,
     task: &Task,
@@ -642,26 +699,17 @@ pub(crate) fn noted(
     }
     let short = |name: &BString| name.to_str_lossy().into_owned();
     let head = || Place::read(git, repository);
-    let latest = || {
-        latest_stash(git, repository, &CancelToken::new())
-            .ok()
-            .flatten()
-    };
     let what: String;
     let mut changes = Vec::new();
     match task {
         Task::Switch(to) | Task::StashAndSwitch(to) | Task::CheckOutPullRequest { to, .. } => {
-            let (from, to_place) = (before.head?, head()?);
+            let (from, to_place) = (before.head?, head().await?);
             // Only a stash this made (with nothing to stash, git makes none).
             if let Task::StashAndSwitch(_) = task
-                && let Some(made) = latest().filter(|stash| Some(stash.id) != before.stash)
+                && let Some(made) =
+                    stash_made(git, repository, before.stash, "Before switching").await
             {
-                changes.push(Change::Stashed {
-                    id: made.id,
-                    message: "Before switching".to_owned(),
-                    untracked: true,
-                    paths: Vec::new(),
-                });
+                changes.push(made);
             }
             match to {
                 SwitchTo::NewBranch { name, at } => changes.push(Change::BranchMade {
@@ -684,7 +732,7 @@ pub(crate) fn noted(
         }
         task if moves_head(task) => {
             let stashed_before = before.stash;
-            let (from, to) = (before.head?, head()?);
+            let (from, to) = (before.head?, head().await?);
             let (before, after) = (from.commit()?, to.commit()?);
             if before == after || !from.same_as(&to) {
                 return None;
@@ -694,14 +742,10 @@ pub(crate) fn noted(
             if let Task::PullStashing {
                 untracked: true, ..
             } = task
-                && let Some(made) = latest().filter(|stash| Some(stash.id) != stashed_before)
+                && let Some(made) =
+                    stash_made(git, repository, stashed_before, "Before pulling").await
             {
-                changes.push(Change::Stashed {
-                    id: made.id,
-                    message: "Before pulling".to_owned(),
-                    untracked: true,
-                    paths: Vec::new(),
-                });
+                changes.push(made);
             }
             // A soft or mixed reset is taken back the same way (its changes are uncommitted
             // ones, in the way of keeping them); anything else keeps what is uncommitted.
@@ -734,7 +778,7 @@ pub(crate) fn noted(
             changes.push(Change::Discarded(files.clone()));
         }
         task => {
-            let (words, change) = noted_ref(git, repository, task, &before)?;
+            let (words, change) = noted_ref(git, repository, task, &before).await?;
             what = words;
             changes.push(change);
         }
@@ -743,16 +787,17 @@ pub(crate) fn noted(
 }
 
 /// How to take back what `task` did to a branch, tag, or stash (not the current branch).
-fn noted_ref(
+async fn noted_ref(
     git: &Git,
     repository: &Repository,
     task: &Task,
     before: &Before,
 ) -> Option<(String, Change)> {
     let short = |name: &BString| name.to_str_lossy().into_owned();
-    let named = |name: String| at(git, repository, &name).ok().flatten();
-    let latest = || {
+    let named = async |name: String| at(git, repository, &name).await.ok().flatten();
+    let latest = async || {
         latest_stash(git, repository, &CancelToken::new())
+            .await
             .ok()
             .flatten()
     };
@@ -791,7 +836,7 @@ fn noted_ref(
             Change::BranchMoved {
                 name: branch.clone(),
                 from: before.branch?,
-                to: named(format!("refs/heads/{branch}"))?,
+                to: named(format!("refs/heads/{branch}")).await?,
             },
         ),
         Task::CreateTag { name, .. } => {
@@ -799,7 +844,7 @@ fn noted_ref(
             (
                 format!("making the tag {}", short(name)),
                 Change::TagMade {
-                    at: named(full.clone())?,
+                    at: named(full.clone()).await?,
                     name: full.into(),
                 },
             )
@@ -818,7 +863,7 @@ fn noted_ref(
         } => (
             "stashing the changes".to_owned(),
             Change::Stashed {
-                id: latest()?.id,
+                id: latest().await?.id,
                 message: message.clone(),
                 untracked: *untracked,
                 paths: paths.clone(),

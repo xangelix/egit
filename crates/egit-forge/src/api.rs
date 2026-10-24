@@ -16,7 +16,7 @@ use crate::{github, gitlab};
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s, from the page that failed (the pages before it were handed over).
-pub fn pull_requests(
+pub async fn pull_requests(
     account: &Account,
     repository: &ForgeRepository,
     limit: u32,
@@ -24,8 +24,10 @@ pub fn pull_requests(
     found: impl FnMut(PullRequestPage),
 ) -> Result<(), ForgeError> {
     match repository.host().kind() {
-        ForgeKind::GitHub => github::pull_requests(account, repository, limit, cancel, found),
-        ForgeKind::GitLab => gitlab::merge_requests(account, repository, limit, cancel, found),
+        ForgeKind::GitHub => github::pull_requests(account, repository, limit, cancel, found).await,
+        ForgeKind::GitLab => {
+            gitlab::merge_requests(account, repository, limit, cancel, found).await
+        }
     }
 }
 
@@ -34,15 +36,19 @@ pub fn pull_requests(
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub fn pull_request_details(
+pub async fn pull_request_details(
     account: &Account,
     repository: &ForgeRepository,
     number: u32,
     cancel: &CancelToken,
 ) -> Result<PullRequestDetails, ForgeError> {
     match repository.host().kind() {
-        ForgeKind::GitHub => github::pull_request_details(account, repository, number, cancel),
-        ForgeKind::GitLab => gitlab::merge_request_details(account, repository, number, cancel),
+        ForgeKind::GitHub => {
+            github::pull_request_details(account, repository, number, cancel).await
+        }
+        ForgeKind::GitLab => {
+            gitlab::merge_request_details(account, repository, number, cancel).await
+        }
     }
 }
 
@@ -51,14 +57,14 @@ pub fn pull_request_details(
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub fn repository_info(
+pub async fn repository_info(
     account: &Account,
     repository: &ForgeRepository,
     cancel: &CancelToken,
 ) -> Result<RepositoryInfo, ForgeError> {
     match repository.host().kind() {
-        ForgeKind::GitHub => github::repository_info(account, repository, cancel),
-        ForgeKind::GitLab => gitlab::project_info(account, repository, cancel),
+        ForgeKind::GitHub => github::repository_info(account, repository, cancel).await,
+        ForgeKind::GitLab => gitlab::project_info(account, repository, cancel).await,
     }
 }
 
@@ -68,15 +74,15 @@ pub fn repository_info(
 ///
 /// Any of [`ForgeError`]'s; [`ForgeError::Status`] with the forge's reason when it refuses
 /// (one is already open for the branch, nothing to merge, …).
-pub fn create_pull_request(
+pub async fn create_pull_request(
     account: &Account,
     repository: &ForgeRepository,
     new: &NewPullRequest,
     cancel: &CancelToken,
 ) -> Result<Opened, ForgeError> {
     match repository.host().kind() {
-        ForgeKind::GitHub => github::create_pull_request(account, repository, new, cancel),
-        ForgeKind::GitLab => gitlab::create_merge_request(account, repository, new, cancel),
+        ForgeKind::GitHub => github::create_pull_request(account, repository, new, cancel).await,
+        ForgeKind::GitLab => gitlab::create_merge_request(account, repository, new, cancel).await,
     }
 }
 
@@ -89,17 +95,20 @@ pub fn create_pull_request(
 /// # Errors
 ///
 /// Any of [`ForgeError`]'s.
-pub fn ssh_host(account: &Account, cancel: &CancelToken) -> Result<Option<String>, ForgeError> {
+pub async fn ssh_host(
+    account: &Account,
+    cancel: &CancelToken,
+) -> Result<Option<String>, ForgeError> {
     match account.host().kind() {
         ForgeKind::GitHub => Ok(None),
-        ForgeKind::GitLab => gitlab::ssh_host(account, cancel),
+        ForgeKind::GitLab => gitlab::ssh_host(account, cancel).await,
     }
 }
 
 /// Who the account's credential is, as its host says (which checks the host accepts it).
-pub(crate) fn viewer(account: &Account, cancel: &CancelToken) -> Result<String, ForgeError> {
+pub(crate) async fn viewer(account: &Account, cancel: &CancelToken) -> Result<String, ForgeError> {
     match account.host().kind() {
-        ForgeKind::GitHub => github::viewer(account, cancel),
-        ForgeKind::GitLab => gitlab::current_user(account, cancel),
+        ForgeKind::GitHub => github::viewer(account, cancel).await,
+        ForgeKind::GitLab => gitlab::current_user(account, cancel).await,
     }
 }

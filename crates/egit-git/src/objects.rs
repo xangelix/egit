@@ -1,7 +1,7 @@
 //! Reading objects through one long-lived `git cat-file --batch-command --buffer`, instead of a
 //! git process per object.
 
-use std::io::{self, BufRead as _, Read as _, Write as _};
+use std::io::{self, Write as _};
 use std::path::Path;
 
 use bstr::{BStr, ByteSlice as _};
@@ -68,12 +68,13 @@ impl ObjectReader {
     /// # Errors
     ///
     /// When git can't be started.
-    pub fn start(git: &Git, work_tree: &Path) -> Result<Self, GitError> {
+    pub async fn start(git: &Git, work_tree: &Path) -> Result<Self, GitError> {
         let process = git
             .read("cat-file")
             .args(["--batch-command", "--buffer"])
             .current_dir(work_tree)
-            .spawn()?;
+            .spawn()
+            .await?;
         Ok(Self {
             process,
             request: Vec::new(),
@@ -88,7 +89,7 @@ impl ObjectReader {
     /// # Errors
     ///
     /// When git stops or answers something that isn't an object.
-    pub fn read(
+    pub async fn read(
         &mut self,
         ids: &[ObjectId],
         mut each: impl FnMut(ObjectId, Option<Object<'_>>),
@@ -100,13 +101,9 @@ impl ObjectReader {
                 let _ = writeln!(self.request, "contents {id}");
             }
             self.request.extend_from_slice(b"flush\n");
-            let request = &self.request;
-            self.process
-                .input()
-                .and_then(|input| input.write_all(request).and_then(|()| input.flush()))
-                .map_err(io_error)?;
+            self.process.send(&self.request).await.map_err(io_error)?;
             for &id in batch {
-                let found = self.read_answer()?;
+                let found = self.read_answer().await?;
                 match found {
                     Some(kind) => each(
                         id,
@@ -126,12 +123,12 @@ impl ObjectReader {
     }
 
     /// Reads one answer into `self.content`: the object's kind, or `None` when it is missing.
-    fn read_answer(&mut self) -> Result<Option<ObjectKind>, GitError> {
+    async fn read_answer(&mut self) -> Result<Option<ObjectKind>, GitError> {
         self.header.clear();
         let read = self
             .process
-            .output()
             .read_until(b'\n', &mut self.header)
+            .await
             .map_err(io_error)?;
         if read == 0 {
             return Err(unexpected("it stopped answering"));
@@ -157,10 +154,15 @@ impl ObjectReader {
             .ok_or_else(|| unexpected("an object's size isn't a number"))?;
         self.content.clear();
         self.content.resize(size, 0);
-        let output = self.process.output();
-        output.read_exact(&mut self.content).map_err(io_error)?;
+        self.process
+            .read_exact(&mut self.content)
+            .await
+            .map_err(io_error)?;
         let mut newline = [0_u8; 1];
-        output.read_exact(&mut newline).map_err(io_error)?;
+        self.process
+            .read_exact(&mut newline)
+            .await
+            .map_err(io_error)?;
         if newline != *b"\n" {
             return Err(unexpected("an object didn't end where its size said"));
         }

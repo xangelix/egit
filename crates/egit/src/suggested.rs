@@ -90,7 +90,8 @@ pub(crate) fn suggest(git: &Git, known: &[PathBuf]) -> Vec<Suggestion> {
                     chunk
                         .iter()
                         .map(|path| Suggestion {
-                            active: last_active(git, path),
+                            // Each thread asks git in turn.
+                            active: egit_git::block_on(last_active(git, path)),
                             path: path.clone(),
                         })
                         .collect::<Vec<_>>()
@@ -111,13 +112,14 @@ pub(crate) fn suggest(git: &Git, known: &[PathBuf]) -> Vec<Suggestion> {
 
 /// When git last moved `repository`'s `HEAD` (its reflog's newest entry), else its last
 /// commit's time; none where git can't say (not a repository, no commit).
-fn last_active(git: &Git, repository: &Path) -> Option<i64> {
+async fn last_active(git: &Git, repository: &Path) -> Option<i64> {
     // `HEAD@{1700000000}`: the reflog entry's own time.
     let moved = git
         .read("log")
         .args(["-g", "-1", "--date=unix", "--format=%gd", "HEAD"])
         .current_dir(repository)
         .output()
+        .await
         .ok()
         .and_then(|done| {
             let said = done.stdout.trim().to_str().ok()?;
@@ -126,14 +128,16 @@ fn last_active(git: &Git, repository: &Path) -> Option<i64> {
                 .parse::<i64>()
                 .ok()
         });
-    moved.or_else(|| {
-        git.read("log")
-            .args(["-1", "--format=%ct", "HEAD"])
-            .current_dir(repository)
-            .output()
-            .ok()
-            .and_then(|done| done.stdout.trim().to_str().ok()?.parse().ok())
-    })
+    if moved.is_some() {
+        return moved;
+    }
+    git.read("log")
+        .args(["-1", "--format=%ct", "HEAD"])
+        .current_dir(repository)
+        .output()
+        .await
+        .ok()
+        .and_then(|done| done.stdout.trim().to_str().ok()?.parse().ok())
 }
 
 #[cfg(test)]

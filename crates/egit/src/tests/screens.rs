@@ -12,7 +12,7 @@ use egit_forge::ForgeKind;
 use egit_forge::testing::{FakeForge, FakePull, FakeRepository};
 use egit_git::askpass::{PromptKind, ask_as_helper};
 use egit_git::testing::Sandbox;
-use egit_git::{ConfigPlace, ConfigSnapshot, Git};
+use egit_git::{ConfigPlace, ConfigSnapshot, Git, Wait as _};
 use egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
@@ -430,7 +430,9 @@ fn the_profile_shows_where_settings_come_from_and_saves_edits() {
                 .unwrap_or(false)
     });
 
-    let written = ConfigSnapshot::read(sandbox.git(), ConfigPlace::User).unwrap();
+    let written = ConfigSnapshot::read(sandbox.git(), ConfigPlace::User)
+        .wait()
+        .unwrap();
     assert_eq!(written.profile().name().unwrap().text(), "Zoë Example");
     assert!(harness.query_by_label("Unsaved changes.").is_none());
 }
@@ -1631,6 +1633,7 @@ fn stopped_merging(sandbox: &Sandbox) -> PathBuf {
         .args(["--quiet", "side"])
         .current_dir(&repo)
         .output_unchecked()
+        .wait()
         .unwrap();
     assert!(!merged.status.success());
 
@@ -2465,6 +2468,7 @@ fn a_long_history_without_a_commit_graph_is_offered_one() {
         .stdin(stream.into_bytes())
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
     let mut harness = harness(&sandbox);
     settle(&mut harness, "the profile", profile_loaded);
@@ -2489,6 +2493,7 @@ fn a_long_history_without_a_commit_graph_is_offered_one() {
         harness.state().state.repos[0]
             .repository
             .has_commit_graph(sandbox.git())
+            .wait()
     );
 }
 

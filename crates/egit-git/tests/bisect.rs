@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    BisectLeft, BisectMark, BisectTerms, CancelToken, ObjectId, Operation, Repository,
+    BisectLeft, BisectMark, BisectTerms, CancelToken, ObjectId, Operation, Repository, Wait as _,
     abort_operation, bisect_mark, bisection,
 };
 
@@ -48,9 +48,13 @@ fn checked_out(repo: &Path) -> u32 {
 fn a_bisection_finds_the_first_bad_commit() {
     let sandbox = Sandbox::new().unwrap();
     let repo = ten(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let (git, cancel) = (sandbox.git(), CancelToken::new());
-    assert_eq!(bisection(git, &repository).unwrap(), None, "none yet");
+    assert_eq!(
+        bisection(git, &repository).wait().unwrap(),
+        None,
+        "none yet"
+    );
 
     // Started by marking the newest bad, then the oldest good.
     bisect_mark(
@@ -60,19 +64,23 @@ fn a_bisection_finds_the_first_bad_commit() {
         rev(&sandbox, &repo, "HEAD"),
         &cancel,
     )
+    .wait()
     .unwrap();
-    let started = bisection(git, &repository).unwrap().unwrap();
+    let started = bisection(git, &repository).wait().unwrap().unwrap();
     assert_eq!(started.terms, BisectTerms::default());
     assert_eq!(started.left, BisectLeft::NeedsGood);
     assert!(
         repository
             .operations(sandbox.git())
+            .wait()
             .unwrap()
             .contains(&Operation::Bisect)
     );
     let first = rev(&sandbox, &repo, "HEAD~9");
-    bisect_mark(git, &repository, BisectMark::Good, first, &cancel).unwrap();
-    let testing = bisection(git, &repository).unwrap().unwrap();
+    bisect_mark(git, &repository, BisectMark::Good, first, &cancel)
+        .wait()
+        .unwrap();
+    let testing = bisection(git, &repository).wait().unwrap().unwrap();
     assert_eq!(testing.left, BisectLeft::Testing { candidates: 9 });
     assert_eq!(testing.left.steps(), 3);
     assert_eq!(testing.good, [first]);
@@ -80,7 +88,7 @@ fn a_bisection_finds_the_first_bad_commit() {
     // Each commit git checks out marked as it is, until the first bad one is found.
     let seventh = rev(&sandbox, &repo, "main~3");
     for _ in 0..10 {
-        let state = bisection(git, &repository).unwrap().unwrap();
+        let state = bisection(git, &repository).wait().unwrap().unwrap();
         if let BisectLeft::Found(found) = state.left {
             assert_eq!(found, seventh);
             break;
@@ -91,16 +99,20 @@ fn a_bisection_finds_the_first_bad_commit() {
             BisectMark::Good
         };
         let head = rev(&sandbox, &repo, "HEAD");
-        bisect_mark(git, &repository, mark, head, &cancel).unwrap();
+        bisect_mark(git, &repository, mark, head, &cancel)
+            .wait()
+            .unwrap();
     }
     assert_eq!(
-        bisection(git, &repository).unwrap().unwrap().left,
+        bisection(git, &repository).wait().unwrap().unwrap().left,
         BisectLeft::Found(seventh)
     );
 
     // Stopped: back on the branch.
-    abort_operation(git, &repository, Operation::Bisect, &cancel).unwrap();
-    assert_eq!(bisection(git, &repository).unwrap(), None);
+    abort_operation(git, &repository, Operation::Bisect, &cancel)
+        .wait()
+        .unwrap();
+    assert_eq!(bisection(git, &repository).wait().unwrap(), None);
     assert_eq!(rev(&sandbox, &repo, "HEAD"), rev(&sandbox, &repo, "main"));
 }
 
@@ -108,15 +120,21 @@ fn a_bisection_finds_the_first_bad_commit() {
 fn skipped_commits_leave_a_choice() {
     let sandbox = Sandbox::new().unwrap();
     let repo = ten(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let (git, cancel) = (sandbox.git(), CancelToken::new());
     // Between the fifth (good) and the seventh (bad), the sixth can't be tested.
     let [fifth, sixth, seventh] =
         ["main~5", "main~4", "main~3"].map(|name| rev(&sandbox, &repo, name));
-    bisect_mark(git, &repository, BisectMark::Bad, seventh, &cancel).unwrap();
-    bisect_mark(git, &repository, BisectMark::Good, fifth, &cancel).unwrap();
-    bisect_mark(git, &repository, BisectMark::Skip, sixth, &cancel).unwrap();
-    let state = bisection(git, &repository).unwrap().unwrap();
+    bisect_mark(git, &repository, BisectMark::Bad, seventh, &cancel)
+        .wait()
+        .unwrap();
+    bisect_mark(git, &repository, BisectMark::Good, fifth, &cancel)
+        .wait()
+        .unwrap();
+    bisect_mark(git, &repository, BisectMark::Skip, sixth, &cancel)
+        .wait()
+        .unwrap();
+    let state = bisection(git, &repository).wait().unwrap().unwrap();
     assert_eq!(state.skipped, [sixth]);
     let BisectLeft::Among(mut among) = state.left else {
         panic!("{:?}", state.left)
@@ -131,7 +149,7 @@ fn skipped_commits_leave_a_choice() {
 fn a_bisection_in_its_own_terms_is_marked_in_them() {
     let sandbox = Sandbox::new().unwrap();
     let repo = ten(&sandbox);
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let (git, cancel) = (sandbox.git(), CancelToken::new());
     // Looking for a fix: `fixed` is the side with the change.
     sandbox
@@ -148,8 +166,9 @@ fn a_bisection_in_its_own_terms_is_marked_in_them() {
         rev(&sandbox, &repo, "HEAD"),
         &cancel,
     )
+    .wait()
     .unwrap();
-    let state = bisection(git, &repository).unwrap().unwrap();
+    let state = bisection(git, &repository).wait().unwrap().unwrap();
     assert_eq!(
         state.terms,
         BisectTerms {

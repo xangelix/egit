@@ -196,9 +196,10 @@ impl WorkTree {
         let (git, repository) = (git.clone(), Arc::clone(&self.repository));
         let watcher = self.watcher.clone();
         let (problem, head_folders) = (Arc::clone(&self.problem), Arc::clone(&self.head_folders));
-        self.status.request(jobs::blocking(move || {
+        self.status.request(jobs::blocking(async move {
             let cancel = CancelToken::new();
             let status = Status::read(&git, &repository, &cancel)
+                .await
                 .map_err(|error| Problem::git("The work tree's status couldn't be read", &error))?;
             if let Some(watcher) = watcher {
                 let outcome = folders(
@@ -210,6 +211,7 @@ impl WorkTree {
                     &watcher,
                     &cancel,
                 )
+                .await
                 .and_then(|folders| {
                     watcher
                         .watch(folders)
@@ -260,7 +262,7 @@ fn watch_problem(error: &notify::Error) -> String {
 
 /// The folders to watch: the work tree's top, `HEAD`'s folders (`head_folders` keeps them for a
 /// commit), those of `status`'s entries, and those created since that git doesn't ignore.
-fn folders(
+async fn folders(
     git: &Git,
     repository: &Repository,
     status: &Status,
@@ -282,6 +284,7 @@ fn folders(
             listed
         } else {
             let listed: Arc<[BString]> = tree_folders(git, repository, head, cancel)
+                .await
                 .map_err(|error| error.to_string())?
                 .into();
             *head_folders.lock() = Some((head, Arc::clone(&listed)));
@@ -301,7 +304,7 @@ fn folders(
             }
         }
     }
-    let created = created_folders(git, root, &watcher.take_created(), &folders)?;
+    let created = created_folders(git, root, &watcher.take_created(), &folders).await?;
     if !created.is_empty() {
         let relative: Vec<BString> = created
             .iter()
@@ -313,6 +316,7 @@ fn folders(
             .collect();
         let paths: Vec<&BStr> = relative.iter().map(AsRef::as_ref).collect();
         let ignored: HashSet<BString> = ignored_paths(git, repository, &paths, cancel)
+            .await
             .map_err(|error| error.to_string())?
             .into_iter()
             .collect();
@@ -329,7 +333,7 @@ fn folders(
 
 /// The folders in `created` (made since the last read) and those inside them, up to
 /// [`NEW_FOLDERS`], but those `known` already and git's own, on the computer `git` runs on.
-fn created_folders(
+async fn created_folders(
     git: &Git,
     root: &Path,
     created: &[PathBuf],
@@ -346,6 +350,7 @@ fn created_folders(
     let mut found = git
         .files()
         .folders_within(&roots, NEW_FOLDERS)
+        .await
         .map_err(|error| error.to_string())?;
     found.retain(|folder| folder.starts_with(root) && !known.contains(folder));
     found.sort();

@@ -273,6 +273,11 @@ writes paths), never `OsStrExt`.
     stays reserved while egit holds its `Child`. `cancel.rs` holds the running groups under
     one lock.
   - `error.rs` — `GitError`, with `Failure` (exit status + stderr tail, `message()`).
+  - `exec.rs` — running egit's futures: every function here that runs git is `async` (one
+    source for a browser, where a command is a relay's messages awaited, and a computer of its
+    own, where it blocks on git's pipes while polled, so it is polled on a thread made for
+    blocking); `block_on` (parks the thread while the future waits), `Wait` (`.wait()`, for
+    tests and threads of their own), `sleep`, `yield_now` (nothing here).
   - `object_id.rs` — `ObjectId` (SHA-1 or SHA-256, by length; never assume 40 digits) and
     `ObjectFormat` (`zero`, the name of no object).
   - `repo.rs` — `Repository::discover` (two `rev-parse`s; `DiscoverError` names not a
@@ -1083,8 +1088,10 @@ writes paths), never `OsStrExt`.
     through `AppState::opener` (`desktop.rs`'s `Opener`: the browser, or for tests a list,
     `recorded`; `Action::OpenUrl`).
   - `jobs.rs` — the runtime (2 workers, at most 16 blocking jobs: git processes queue
-    beyond), `blocking` (a closure on the blocking pool as a future for a `Bind`), and
-    `WriteLock` (taken inside jobs, never on the interface thread).
+    beyond), `blocking` (a future polled to its end on the blocking pool by
+    `egit_git::block_on`, as a future for a `Bind`), `detached` (the same, not waited for),
+    and `WriteLock` (an async lock, `hold().await`, taken inside jobs, never on the interface
+    thread).
   - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Preferences,
     Repo(id)}` (a repository's on another computer titled with it, "repo · devbox", under a
     globe); `show` focuses or adds a tab; `front` (the tab in front), `close_front`,
@@ -2690,7 +2697,14 @@ writes paths), never `OsStrExt`.
 
 - **Errors:** typed (`thiserror`) in `egit-git`; the application turns them into sentences a
   person can act on. Never `unwrap`/`expect`; never swallow an error silently.
-- **Sync:** `parking_lot` only (`clippy.toml` disallows `std::sync::{Mutex, RwLock, Condvar}`).
+- **Sync:** `parking_lot` only (`clippy.toml` disallows `std::sync::{Mutex, RwLock, Condvar}`),
+  but where a lock is held while git runs (an `.await`): then `tokio::sync::Mutex`.
+- **Async:** whatever runs git is `async`, and so is whatever calls it; a job is
+  `jobs::blocking(async move { … })`, a thread of its own `egit_git::block_on(…)`, a test
+  `.wait()`. Every future is `Send` (`clippy::future_not_send`: a callback's `dyn` type says
+  `+ Send`). A future made is awaited where it is made (`let made = commit(…).await;`), never
+  later: what it does happens when it is polled. A closure handing back a future to something
+  that doesn't await it (a thread's body, `let _x = …`) does nothing: block on it there.
 - **Unsafe:** denied workspace-wide. The rare exception lives in a small named module that
   allows it, with a `// SAFETY:` comment on every block.
 - **Docs:** every public item has rustdoc; every module starts with a doc comment saying what it

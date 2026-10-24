@@ -96,7 +96,7 @@ pub struct Signed {
 ///
 /// When none is asked for, `HEAD` is detached, one isn't in the branch's history, too many
 /// would be made again, or git fails or is cancelled.
-pub fn plan_signing(
+pub async fn plan_signing(
     git: &Git,
     repository: &Repository,
     asked: &[ObjectId],
@@ -106,7 +106,7 @@ pub fn plan_signing(
     if asked.is_empty() {
         return Err(SignError::Nothing);
     }
-    let head = repository.head_ref(git)?;
+    let head = repository.head_ref(git).await?;
     let (Some(branch), Some(tip)) = (head.reference, head.commit) else {
         return Err(SignError::Detached);
     };
@@ -122,11 +122,12 @@ pub fn plan_signing(
         .stdin(input.into_bytes())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     if outside.stdout.trim_ascii() != b"0" {
         return Err(SignError::NotInBranch);
     }
-    let listed = newest_down_to(git, repository, tip, &asked, cancel)?;
+    let listed = newest_down_to(git, repository, tip, &asked, cancel).await?;
     // Oldest first: each made again when asked for, or when a parent is.
     let mut made: HashSet<ObjectId> = HashSet::with_capacity(listed.len());
     let (mut commits, mut merges, mut lowest) = (Vec::new(), 0_usize, Vec::new());
@@ -144,11 +145,11 @@ pub fn plan_signing(
         }
     }
     // Pushed when the upstream holds one: then it holds one of the lowest asked for too.
-    let pushed = match repository.upstream_tip(git)? {
+    let pushed = match repository.upstream_tip(git).await? {
         Some((_, upstream)) => {
             let mut pushed = false;
             for commit in lowest.iter().take(UPSTREAM_CHECKS) {
-                if reaches(git, repository, *commit, upstream)? {
+                if reaches(git, repository, *commit, upstream).await? {
                     pushed = true;
                     break;
                 }
@@ -170,7 +171,7 @@ pub fn plan_signing(
 /// The branch's commits from its `tip` down, children before parents (`--topo-order`), each
 /// with its parents, until every one `asked` for has come: by then every commit after them
 /// has too.
-fn newest_down_to(
+async fn newest_down_to(
     git: &Git,
     repository: &Repository,
     tip: ObjectId,
@@ -203,7 +204,8 @@ fn newest_down_to(
         .arg(tip.to_string())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .stream(|chunk| lines.feed(chunk, &mut handle))?;
+        .stream(|chunk| lines.feed(chunk, &mut handle))
+        .await?;
     if too_many {
         return Err(SignError::TooMany);
     }
@@ -217,7 +219,7 @@ fn newest_down_to(
 type Listed = (ObjectId, Box<[ObjectId]>);
 
 /// Whether `from`'s history holds `commit` (`merge-base --is-ancestor`).
-fn reaches(
+async fn reaches(
     git: &Git,
     repository: &Repository,
     commit: ObjectId,
@@ -229,7 +231,8 @@ fn reaches(
         .arg(commit.to_string())
         .arg(from.to_string())
         .current_dir(repository.work_tree())
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     match reached.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -252,23 +255,25 @@ fn reaches(
 ///
 /// When a commit can't be read, signing fails (no key, a wrong passphrase), the branch moved,
 /// or git fails or is cancelled.
-pub fn sign_commits(
+pub async fn sign_commits(
     git: &Git,
     repository: &Repository,
     plan: &SigningPlan,
     cancel: &CancelToken,
     mut done: impl FnMut(usize),
 ) -> Result<Signed, SignError> {
-    let mut reader = ObjectReader::start(git, repository.work_tree())?;
+    let mut reader = ObjectReader::start(git, repository.work_tree()).await?;
     let mut made: HashMap<ObjectId, ObjectId> = HashMap::with_capacity(plan.commits.len());
     for batch in plan.commits.chunks(READ_AT_ONCE) {
         let mut read = Vec::with_capacity(batch.len());
-        reader.read(batch, |id, object| {
-            let parsed = object
-                .filter(|object| object.kind == ObjectKind::Commit)
-                .and_then(|object| Commit::parse(object.data).ok());
-            read.push((id, parsed));
-        })?;
+        reader
+            .read(batch, |id, object| {
+                let parsed = object
+                    .filter(|object| object.kind == ObjectKind::Commit)
+                    .and_then(|object| Commit::parse(object.data).ok());
+                read.push((id, parsed));
+            })
+            .await?;
         for (id, commit) in read {
             let commit = commit.ok_or(SignError::Unreadable(id))?;
             if cancel.is_cancelled() {
@@ -277,7 +282,7 @@ pub fn sign_commits(
                 }
                 .into());
             }
-            let signed = make_again(git, repository, &commit, &made, cancel)?;
+            let signed = make_again(git, repository, &commit, &made, cancel).await?;
             made.insert(id, signed);
             done(made.len());
         }
@@ -293,7 +298,8 @@ pub fn sign_commits(
         .arg(plan.tip.to_string())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if !moved.status.success() {
         return Err(if moved.stderr.as_bytes().contains_str("but expected") {
             SignError::Moved
@@ -310,7 +316,7 @@ pub fn sign_commits(
 
 /// `commit` made again and signed, on its parents as `made` maps them: its tree, author (name,
 /// email, and date in their own time zone), and message as they were, byte for byte.
-fn make_again(
+async fn make_again(
     git: &Git,
     repository: &Repository,
     commit: &Commit,
@@ -345,7 +351,7 @@ fn make_again(
     if let Some(encoding) = &commit.encoding {
         command = command.config("i18n.commitEncoding", encoding.to_os_str_lossy());
     }
-    let output = command.output()?;
+    let output = command.output().await?;
     ObjectId::from_hex(output.stdout.trim_ascii())
         .ok_or_else(|| GitError::failed("commit-tree", output.status, output.stderr))
 }

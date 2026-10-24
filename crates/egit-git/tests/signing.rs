@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, Git, NewCommit, ObjectId, Repository, SignError, SignatureCheck, Verdict,
-    check_signatures, create_commit, plan_signing, sign_commits,
+    Wait as _, check_signatures, create_commit, plan_signing, sign_commits,
 };
 
 /// Whether `program` can be run; a test without it is skipped, unless every signer is required.
@@ -60,19 +60,22 @@ fn staged(sandbox: &Sandbox, config: &[[&str; 2]]) -> PathBuf {
 
 /// Commits what is staged, signed, with `git`; returns the commit and its signature checked.
 fn commit_signed(git: &Git, repo: &Path) -> SignatureCheck {
-    let repository = Repository::discover(git, repo).unwrap();
+    let repository = Repository::discover(git, repo).wait().unwrap();
     let cancel = CancelToken::new();
     let commit = NewCommit {
         message: "Signed".to_owned(),
         sign: Some(true),
         ..NewCommit::default()
     };
-    create_commit(git, &repository, &commit, &cancel).unwrap();
+    create_commit(git, &repository, &commit, &cancel)
+        .wait()
+        .unwrap();
     let head = git
         .read("rev-parse")
         .arg("HEAD")
         .current_dir(repo)
         .output()
+        .wait()
         .unwrap();
     let head = ObjectId::from_hex(head.stdout.trim_ascii()).unwrap();
     let parent = git
@@ -80,9 +83,12 @@ fn commit_signed(git: &Git, repo: &Path) -> SignatureCheck {
         .arg("HEAD^")
         .current_dir(repo)
         .output()
+        .wait()
         .unwrap();
     let parent = ObjectId::from_hex(parent.stdout.trim_ascii()).unwrap();
-    let mut checks = check_signatures(git, &repository, &[head, parent], &cancel).unwrap();
+    let mut checks = check_signatures(git, &repository, &[head, parent], &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(checks.len(), 2);
     assert_eq!(
         checks[1].verdict,
@@ -99,6 +105,7 @@ fn shown(git: &Git, repo: &Path) -> String {
         .args(["--show-signature", "-1"])
         .current_dir(repo)
         .output()
+        .wait()
         .unwrap();
     format!(
         "{}{}",
@@ -181,15 +188,19 @@ fn a_revert_is_signed_as_commits_are() {
         .run(&repo, "commit", &["--quiet", "-m", "Second"])
         .unwrap();
     let git = sandbox.git();
-    let repository = Repository::discover(git, &repo).unwrap();
+    let repository = Repository::discover(git, &repo).wait().unwrap();
     let cancel = CancelToken::new();
     let second = rev(git, &repo, "HEAD");
     assert_eq!(
-        egit_git::revert(git, &repository, second, &cancel).unwrap(),
+        egit_git::revert(git, &repository, second, &cancel)
+            .wait()
+            .unwrap(),
         egit_git::Integrated::Done
     );
     let reverted = rev(git, &repo, "HEAD");
-    let checks = check_signatures(git, &repository, &[reverted], &cancel).unwrap();
+    let checks = check_signatures(git, &repository, &[reverted], &cancel)
+        .wait()
+        .unwrap();
     assert_eq!(checks[0].verdict, Verdict::Good);
     assert_eq!(
         said(git, &repo, reverted, "%s").trim_end(),
@@ -441,6 +452,7 @@ fn rev(git: &Git, repo: &Path, name: &str) -> ObjectId {
         .args(["--verify", name])
         .current_dir(repo)
         .output()
+        .wait()
         .unwrap();
     ObjectId::from_hex(out.stdout.trim_ascii()).unwrap()
 }
@@ -453,6 +465,7 @@ fn said(git: &Git, repo: &Path, commit: ObjectId, format: &str) -> String {
         .arg(commit.to_string())
         .current_dir(repo)
         .output()
+        .wait()
         .unwrap();
     String::from_utf8(out.stdout).unwrap()
 }
@@ -535,17 +548,21 @@ fn signs_commits_already_made_keeping_trees_authors_and_merges() {
     } = merged(&sandbox);
     // Something not committed, which signing never touches.
     std::fs::write(repo.join("other"), "uncommitted\n").unwrap();
-    let repository = Repository::discover(git, &repo).unwrap();
+    let repository = Repository::discover(git, &repo).wait().unwrap();
     let cancel = CancelToken::new();
 
     // Ada's commit: it, the merge after it, and the last made again; the side's commit and
     // the first stay.
-    let plan = plan_signing(git, &repository, &[adas], &cancel).unwrap();
+    let plan = plan_signing(git, &repository, &[adas], &cancel)
+        .wait()
+        .unwrap();
     assert_eq!((plan.asked, plan.commits.len(), plan.merges), (1, 3, 1));
     assert_eq!(plan.commits.first(), Some(&adas));
     assert!(!plan.pushed, "no upstream");
     let mut heard = Vec::new();
-    let signed = sign_commits(git, &repository, &plan, &cancel, |made| heard.push(made)).unwrap();
+    let signed = sign_commits(git, &repository, &plan, &cancel, |made| heard.push(made))
+        .wait()
+        .unwrap();
     assert_eq!(heard, [1, 2, 3]);
     assert_eq!((signed.from, signed.made), (tip, 3));
     assert_eq!(rev(git, &repo, "main"), signed.to);
@@ -556,7 +573,9 @@ fn signs_commits_already_made_keeping_trees_authors_and_merges() {
         rev(git, &repo, "main^"),
         rev(git, &repo, "main~2"),
     ];
-    let checks = check_signatures(git, &repository, &after, &cancel).unwrap();
+    let checks = check_signatures(git, &repository, &after, &cancel)
+        .wait()
+        .unwrap();
     assert!(
         checks.iter().all(|check| check.verdict == Verdict::Good),
         "{checks:?}"
@@ -586,6 +605,7 @@ fn signs_commits_already_made_keeping_trees_authors_and_merges() {
         .arg("main^:file")
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
     assert_eq!(shown_file.stdout, b"resolved\n");
     // The uncommitted change is still there; the reflog says what moved the branch.
@@ -598,6 +618,7 @@ fn signs_commits_already_made_keeping_trees_authors_and_merges() {
         .args(["-g", "-1", "--format=%gs", "main"])
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
     assert_eq!(moved.stdout.trim_ascii(), b"egit: signed 3 commits");
 }
@@ -621,16 +642,16 @@ fn signing_says_what_was_pushed_and_refuses_what_it_cant_sign() {
         .unwrap();
     let elsewhere = rev(git, &repo, "elsewhere");
     sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
-    let repository = Repository::discover(git, &repo).unwrap();
+    let repository = Repository::discover(git, &repo).wait().unwrap();
     let cancel = CancelToken::new();
 
     // Nothing asked for; a commit not in the branch.
     assert!(matches!(
-        plan_signing(git, &repository, &[], &cancel),
+        plan_signing(git, &repository, &[], &cancel).wait(),
         Err(SignError::Nothing)
     ));
     assert!(matches!(
-        plan_signing(git, &repository, &[elsewhere], &cancel),
+        plan_signing(git, &repository, &[elsewhere], &cancel).wait(),
         Err(SignError::NotInBranch)
     ));
 
@@ -657,14 +678,16 @@ fn signing_says_what_was_pushed_and_refuses_what_it_cant_sign() {
             &["--quiet", "--set-upstream", "origin", "main"],
         )
         .unwrap();
-    let plan = plan_signing(git, &repository, &[adas], &cancel).unwrap();
+    let plan = plan_signing(git, &repository, &[adas], &cancel)
+        .wait()
+        .unwrap();
     assert!(plan.pushed);
 
     // The branch moved after the plan was made: nothing changes.
     sandbox.commit_file(&repo, "late", "l\n", "Late").unwrap();
     let late = rev(git, &repo, "main");
     assert!(matches!(
-        sign_commits(git, &repository, &plan, &cancel, |_| ()),
+        sign_commits(git, &repository, &plan, &cancel, |_| ()).wait(),
         Err(SignError::Moved)
     ));
     assert_eq!(rev(git, &repo, "main"), late);
@@ -674,7 +697,7 @@ fn signing_says_what_was_pushed_and_refuses_what_it_cant_sign() {
         .run(&repo, "switch", &["--quiet", "--detach", "main"])
         .unwrap();
     assert!(matches!(
-        plan_signing(git, &repository, &[adas], &cancel),
+        plan_signing(git, &repository, &[adas], &cancel).wait(),
         Err(SignError::Detached)
     ));
 }

@@ -775,8 +775,9 @@ fn offers(
 
 /// Who wrote the recent commits, most commits first.
 async fn read_authors(git: Git, repository: Arc<Repository>) -> Result<Vec<Author>, Problem> {
-    crate::jobs::blocking(move || {
+    crate::jobs::blocking(async move {
         egit_git::recent_authors(&git, &repository, AUTHORS_READ, &CancelToken::new())
+            .await
             .map_err(|error| Problem::git("The recent authors couldn't be read", &error))
     })
     .await

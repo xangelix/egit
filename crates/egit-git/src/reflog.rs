@@ -32,7 +32,7 @@ pub struct ReflogEntry {
 /// # Errors
 ///
 /// When git fails otherwise, prints what isn't a reflog entry, or is cancelled.
-pub fn reflog(
+pub async fn reflog(
     git: &Git,
     repository: &Repository,
     reference: &BStr,
@@ -55,7 +55,8 @@ pub fn reflog(
         .arg("--")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if !done.status.success() {
         // No reflog (no commit yet, no such ref, or none kept): nothing to show.
         let said = done.stderr.message();
@@ -113,7 +114,7 @@ fn is_ref_name(name: &BStr) -> bool {
 /// # Errors
 ///
 /// When git can't be run.
-pub fn ref_target(
+pub async fn ref_target(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -126,7 +127,8 @@ pub fn ref_target(
         .args(["--verify", "--quiet"])
         .arg(name.to_os_str_lossy())
         .current_dir(repository.work_tree())
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     Ok(done
         .status
         .success()
@@ -140,7 +142,7 @@ pub fn ref_target(
 /// # Errors
 ///
 /// When it exists already, or git fails or is cancelled.
-pub fn create_ref(
+pub async fn create_ref(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -155,6 +157,7 @@ pub fn create_ref(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -163,7 +166,7 @@ pub fn create_ref(
 /// # Errors
 ///
 /// When it moved, or git fails or is cancelled.
-pub fn delete_ref(
+pub async fn delete_ref(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -177,5 +180,6 @@ pub fn delete_ref(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }

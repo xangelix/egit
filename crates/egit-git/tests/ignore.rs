@@ -17,8 +17,8 @@ use std::path::Path;
 use bstr::{BString, ByteSlice as _};
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, IgnoreError, IgnoreIn, Repository, extension_pattern, ignore, ignore_again,
-    path_pattern, unignore,
+    CancelToken, IgnoreError, IgnoreIn, Repository, Wait as _, extension_pattern, ignore,
+    ignore_again, path_pattern, unignore,
 };
 
 /// The untracked files git lists (not ignored), sorted.
@@ -50,7 +50,7 @@ fn touch(repo: &Path, path: &str) {
 fn each_name_is_ignored_alone_and_taken_back() {
     let sandbox = Sandbox::new().unwrap();
     let repo = sandbox.init("repo").unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
     // Each name, and what a careless pattern of it would match too.
     let mut names = vec![
@@ -83,6 +83,7 @@ fn each_name_is_ignored_alone_and_taken_back() {
         &patterns,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert!(ignored.file.ends_with("info/exclude"), "{ignored:?}");
     let mut left: Vec<&str> = names.iter().map(|(_, look_alike)| *look_alike).collect();
@@ -97,24 +98,25 @@ fn each_name_is_ignored_alone_and_taken_back() {
         &patterns,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert!(again.added.is_empty());
 
     // Taken back, every name is listed again; added again, ignored again.
     let before = std::fs::read(&ignored.file).unwrap();
-    unignore(sandbox.git(), &ignored).unwrap();
+    unignore(sandbox.git(), &ignored).wait().unwrap();
     assert_eq!(untracked(&sandbox, &repo).len(), names.len() * 2);
-    let redone = ignore_again(sandbox.git(), &ignored).unwrap();
+    let redone = ignore_again(sandbox.git(), &ignored).wait().unwrap();
     assert_eq!(std::fs::read(&ignored.file).unwrap(), before);
     assert_eq!(untracked(&sandbox, &repo), left);
-    unignore(sandbox.git(), &redone).unwrap();
+    unignore(sandbox.git(), &redone).wait().unwrap();
 }
 
 #[test]
 fn an_extension_or_a_folder_is_ignored_in_the_shared_file() {
     let sandbox = Sandbox::new().unwrap();
     let repo = sandbox.init("repo").unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     let cancel = CancelToken::new();
     for path in [
         "a.log",
@@ -138,6 +140,7 @@ fn an_extension_or_a_folder_is_ignored_in_the_shared_file() {
         &patterns,
         &cancel,
     )
+    .wait()
     .unwrap();
     assert_eq!(
         std::fs::read(repo.join(".gitignore")).unwrap(),
@@ -152,11 +155,11 @@ fn an_extension_or_a_folder_is_ignored_in_the_shared_file() {
     let changed = std::fs::read(repo.join(".gitignore")).unwrap();
     std::fs::write(repo.join(".gitignore"), [&changed[..], b"more\n"].concat()).unwrap();
     assert!(matches!(
-        unignore(sandbox.git(), &ignored),
+        unignore(sandbox.git(), &ignored).wait(),
         Err(IgnoreError::Changed(_))
     ));
     std::fs::write(repo.join(".gitignore"), &changed).unwrap();
-    unignore(sandbox.git(), &ignored).unwrap();
+    unignore(sandbox.git(), &ignored).wait().unwrap();
     assert_eq!(
         std::fs::read(repo.join(".gitignore")).unwrap(),
         b"*.tmp\r\n/target"
@@ -171,9 +174,10 @@ fn an_extension_or_a_folder_is_ignored_in_the_shared_file() {
         &patterns[..1],
         &cancel,
     )
+    .wait()
     .unwrap();
     assert!(made.created);
     assert_eq!(std::fs::read(repo.join(".gitignore")).unwrap(), b"*.log\n");
-    unignore(sandbox.git(), &made).unwrap();
+    unignore(sandbox.git(), &made).wait().unwrap();
     assert!(!repo.join(".gitignore").exists());
 }

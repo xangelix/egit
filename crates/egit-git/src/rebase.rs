@@ -87,7 +87,7 @@ pub enum RangeError {
 ///
 /// [`RangeError::NotInBranch`] or [`RangeError::TooMany`] when the
 /// range can't be rebased so, and [`RangeError::Git`] when git fails.
-pub fn rebase_range(
+pub async fn rebase_range(
     git: &Git,
     repository: &Repository,
     from: ObjectId,
@@ -99,7 +99,8 @@ pub fn rebase_range(
         .args(["--is-ancestor", &from.to_string(), "HEAD"])
         .current_dir(work_tree)
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     match reached.status.code() {
         Some(0) => {}
         Some(1) => return Err(RangeError::NotInBranch),
@@ -113,7 +114,8 @@ pub fn rebase_range(
         .args(["--parents", "--max-count=1", &from.to_string()])
         .current_dir(work_tree)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let parents = parents.stdout.trim_ascii().split_str(b" ").skip(1).count();
     let range = if parents >= 1 {
         format!("{from}^..HEAD")
@@ -134,7 +136,8 @@ pub fn rebase_range(
         .arg("--")
         .current_dir(work_tree)
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     parse_range(&listed.stdout, from)
 }
 
@@ -254,7 +257,7 @@ pub enum RebaseError {
 ///
 /// A [`RebaseError`] for a plan git would refuse (nothing changes then), and
 /// [`RebaseError::Git`] when git fails (local changes in the way, say) or is cancelled.
-pub fn rebase_interactive(
+pub async fn rebase_interactive(
     git: &Git,
     repository: &Repository,
     base: Option<ObjectId>,
@@ -264,10 +267,14 @@ pub fn rebase_interactive(
     let todo = todo(plan)?;
     // Where git runs (on another computer, there).
     let files = git.files();
-    let scratch = files.temp_dir("egit-rebase-").map_err(RebaseError::Todo)?;
+    let scratch = files
+        .temp_dir("egit-rebase-")
+        .await
+        .map_err(RebaseError::Todo)?;
     let ours = scratch.path().join("todo");
     files
         .write(&ours, todo.as_bytes())
+        .await
         .map_err(RebaseError::Todo)?;
     // Git runs the sequence editor with the todo's path after it: `cp -- ours theirs`.
     let editor = format!("cp -- {}", quote(&shell_path(&ours)));
@@ -287,8 +294,8 @@ pub fn rebase_interactive(
         Some(base) => command.arg(base.to_string()),
         None => command.arg("--root"),
     };
-    let done = command.output().map(drop);
-    Ok(stopped(git, repository, done, cancel)?)
+    let done = command.output().await.map(drop);
+    Ok(stopped(git, repository, done, cancel).await?)
 }
 
 /// Rebases the current branch onto `base` (`None`: from the root), keeping its merges.
@@ -302,7 +309,7 @@ pub fn rebase_interactive(
 /// merge dropped, [`RebaseError::Mismatch`] when git wouldn't replay a planned commit (nothing
 /// changes then), and [`RebaseError::Git`] when git fails (local changes in the way, say) or
 /// is cancelled.
-pub fn rebase_keeping_merges(
+pub async fn rebase_keeping_merges(
     git: &Git,
     repository: &Repository,
     base: Option<ObjectId>,
@@ -323,14 +330,20 @@ pub fn rebase_keeping_merges(
     }
     // Where git runs (on another computer, there).
     let files = git.files();
-    let scratch = files.temp_dir("egit-rebase-").map_err(RebaseError::Todo)?;
+    let scratch = files
+        .temp_dir("egit-rebase-")
+        .await
+        .map_err(RebaseError::Todo)?;
     let theirs = scratch.path().join("theirs");
     // Git's todo, copied out by a sequence editor that then fails: git gives up before
     // anything moves.
     let copy = format!("cp -- \"$1\" {}; exit 1 #", quote(&shell_path(&theirs)));
-    let tried = merging_rebase(git, repository, base, copy, cancel).output_unchecked()?;
+    let tried = merging_rebase(git, repository, base, copy, cancel)
+        .output_unchecked()
+        .await?;
     let generated = files
         .read(&theirs)
+        .await
         .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .unwrap_or_default();
     if generated.trim().is_empty() {
@@ -340,12 +353,14 @@ pub fn rebase_keeping_merges(
     let ours = scratch.path().join("ours");
     files
         .write(&ours, todo.as_bytes())
+        .await
         .map_err(RebaseError::Todo)?;
     let editor = format!("cp -- {}", quote(&shell_path(&ours)));
     let done = merging_rebase(git, repository, base, editor, cancel)
         .output()
+        .await
         .map(drop);
-    Ok(stopped(git, repository, done, cancel)?)
+    Ok(stopped(git, repository, done, cancel).await?)
 }
 
 /// `git rebase --interactive --rebase-merges` onto `base`, its todo given to `editor`; commands

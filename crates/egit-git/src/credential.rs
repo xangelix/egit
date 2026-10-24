@@ -10,6 +10,7 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 
 use bstr::ByteSlice as _;
 use zeroize::Zeroizing;
@@ -172,7 +173,7 @@ impl fmt::Debug for Credential {
 /// # Errors
 ///
 /// When git fails otherwise (a helper that breaks, say) or is cancelled.
-pub fn fill_credential(
+pub async fn fill_credential(
     git: &Git,
     repository: Option<&Repository>,
     place: CredentialPlace<'_>,
@@ -190,7 +191,7 @@ pub fn fill_credential(
         Asking::Never => command.non_interactive(),
         Asking::As(context) => command.prompt_context(context),
     };
-    let filled = command.secret_output()?;
+    let filled = command.secret_output().await?;
     if filled.status.success() {
         return Ok(Credential::parse(filled.stdout));
     }
@@ -207,7 +208,7 @@ pub fn fill_credential(
 /// # Errors
 ///
 /// When git fails.
-pub fn approve_credential(
+pub async fn approve_credential(
     git: &Git,
     repository: Option<&Repository>,
     credential: &Credential,
@@ -215,6 +216,7 @@ pub fn approve_credential(
     credential_command(git, repository, "approve")
         .secret_stdin(credential.description())
         .output()
+        .await
         .map(drop)
 }
 
@@ -225,8 +227,8 @@ pub fn approve_credential(
 /// # Errors
 ///
 /// When git can't say where its exec path is.
-pub fn installed_helpers<'n>(git: &Git, names: &[&'n str]) -> Result<Vec<&'n str>, GitError> {
-    let said = git.read("--exec-path").output()?;
+pub async fn installed_helpers<'n>(git: &Git, names: &[&'n str]) -> Result<Vec<&'n str>, GitError> {
+    let said = git.read("--exec-path").output().await?;
     let exec_path = said.stdout.trim_ascii_end().to_path_lossy().into_owned();
     let mut folders = vec![exec_path];
     // Another computer's `PATH` is its login shell's, which egit doesn't read.
@@ -236,16 +238,30 @@ pub fn installed_helpers<'n>(git: &Git, names: &[&'n str]) -> Result<Vec<&'n str
         ));
     }
     let suffix = if cfg!(windows) { ".exe" } else { "" };
-    let files = git.files();
+    // Every candidate looked at in one go (one command on another computer).
+    let candidates: Vec<PathBuf> = names
+        .iter()
+        .flat_map(|name| {
+            let program = format!("git-credential-{name}{suffix}");
+            folders.iter().map(move |folder| folder.join(&program))
+        })
+        .collect();
+    let paths: Vec<&Path> = candidates.iter().map(PathBuf::as_path).collect();
+    let runnable = git
+        .files()
+        .runnable(&paths)
+        .await
+        .map_err(|source| GitError::Io {
+            subcommand: "credential",
+            source,
+        })?;
+    let per_name = folders.len().max(1);
     Ok(names
         .iter()
         .copied()
-        .filter(|name| {
-            let program = format!("git-credential-{name}{suffix}");
-            folders
-                .iter()
-                .any(|folder| files.is_file(&folder.join(&program)))
-        })
+        .zip(runnable.chunks(per_name))
+        .filter(|(_, found)| found.contains(&true))
+        .map(|(name, _)| name)
         .collect())
 }
 
@@ -254,7 +270,7 @@ pub fn installed_helpers<'n>(git: &Git, names: &[&'n str]) -> Result<Vec<&'n str
 /// # Errors
 ///
 /// When git fails.
-pub fn reject_credential(
+pub async fn reject_credential(
     git: &Git,
     repository: Option<&Repository>,
     credential: &Credential,
@@ -262,6 +278,7 @@ pub fn reject_credential(
     credential_command(git, repository, "reject")
         .secret_stdin(credential.description())
         .output()
+        .await
         .map(drop)
 }
 
@@ -273,7 +290,7 @@ pub fn reject_credential(
 /// # Errors
 ///
 /// When the place or secret would inject attributes (a line break), or git fails.
-pub fn store_credential(
+pub async fn store_credential(
     git: &Git,
     repository: Option<&Repository>,
     place: CredentialPlace<'_>,
@@ -291,6 +308,7 @@ pub fn store_credential(
     credential_command(git, repository, "approve")
         .secret_stdin(place.attributes(Some(secret)))
         .output()
+        .await
         .map(drop)
 }
 
@@ -299,7 +317,7 @@ pub fn store_credential(
 /// # Errors
 ///
 /// When git fails.
-pub fn erase_credential(
+pub async fn erase_credential(
     git: &Git,
     repository: Option<&Repository>,
     place: CredentialPlace<'_>,
@@ -310,6 +328,7 @@ pub fn erase_credential(
     credential_command(git, repository, "reject")
         .secret_stdin(place.attributes(None))
         .output()
+        .await
         .map(drop)
 }
 

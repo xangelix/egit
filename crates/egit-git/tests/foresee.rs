@@ -17,8 +17,8 @@ use std::path::Path;
 use bstr::BString;
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, Foreseen, MAX_REPLAYED, ObjectId, Repository, foresee_merge, foresee_pick,
-    foresee_rebase,
+    CancelToken, Foreseen, MAX_REPLAYED, ObjectId, Repository, Wait as _, foresee_merge,
+    foresee_pick, foresee_rebase,
 };
 
 fn id(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -40,6 +40,7 @@ fn attempt(sandbox: &Sandbox, repo: &Path, subcommand: &'static str, args: &[&st
         .args(args)
         .current_dir(repo)
         .output_unchecked()
+        .wait()
         .unwrap()
         .status
         .success()
@@ -77,7 +78,7 @@ fn diverged(sandbox: &Sandbox) -> (std::path::PathBuf, Repository) {
         .commit_file(&repo, "f", "a\nb\nC\n", "Main f")
         .unwrap();
     sandbox.commit_file(&repo, "g", "z\n", "Main g").unwrap();
-    let repository = Repository::discover(sandbox.git(), &repo).unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
     (repo, repository)
 }
 
@@ -88,7 +89,9 @@ fn merges_are_foreseen_as_git_then_merges_them() {
     let cancel = CancelToken::new();
     let at = |name| id(&sandbox, &repo, name);
     let foresee = |head, other| {
-        foresee_merge(sandbox.git(), &repository, at(head), at(other), &cancel).unwrap()
+        foresee_merge(sandbox.git(), &repository, at(head), at(other), &cancel)
+            .wait()
+            .unwrap()
     };
     let head = at("HEAD");
 
@@ -124,6 +127,7 @@ fn picks_and_reverts_are_foreseen() {
             (at(commit), revert),
             &cancel,
         )
+        .wait()
         .unwrap()
     };
 
@@ -164,7 +168,9 @@ fn rebases_are_foreseen_to_the_commit_they_stop_at() {
     let cancel = CancelToken::new();
     let at = |name| id(&sandbox, &repo, name);
     let foresee = |head, onto| {
-        foresee_rebase(sandbox.git(), &repository, at(head), at(onto), &cancel).unwrap()
+        foresee_rebase(sandbox.git(), &repository, at(head), at(onto), &cancel)
+            .wait()
+            .unwrap()
     };
 
     assert_eq!(foresee("main", "main~1"), Foreseen::UpToDate);

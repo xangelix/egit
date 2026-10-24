@@ -77,22 +77,25 @@ pub(crate) enum Reading {
 /// # Errors
 ///
 /// When git can't be run, or git-lfs fails listing its patterns.
-pub(crate) fn read_lfs(
+pub(crate) async fn read_lfs(
     git: &Git,
     repository: &Repository,
     reading: Reading,
 ) -> Result<LfsState, Problem> {
-    if reading == Reading::WhereUsed && attributes_patterns(git, repository).is_empty() {
+    if reading == Reading::WhereUsed && attributes_patterns(git, repository).await.is_empty() {
         return Ok(LfsState::default());
     }
     let failed = |error| Problem::git("Git LFS couldn't be read", &error);
-    let version = lfs_version(git).map_err(failed)?;
+    let version = lfs_version(git).await.map_err(failed)?;
     let config = ConfigSnapshot::read(git, ConfigPlace::Repository(repository.work_tree()))
+        .await
         .map_err(failed)?;
     let patterns = if version.is_some() {
-        lfs_patterns(git, repository, &CancelToken::new()).map_err(failed)?
+        lfs_patterns(git, repository, &CancelToken::new())
+            .await
+            .map_err(failed)?
     } else {
-        attributes_patterns(git, repository)
+        attributes_patterns(git, repository).await
     };
     Ok(LfsState {
         version,
@@ -103,10 +106,11 @@ pub(crate) fn read_lfs(
 
 /// The patterns the top `.gitattributes` gives LFS's filter (`*.psd filter=lfs …`): whether
 /// LFS is used at all, and what it tracks where git-lfs isn't installed to say.
-fn attributes_patterns(git: &Git, repository: &Repository) -> Vec<LfsPattern> {
+async fn attributes_patterns(git: &Git, repository: &Repository) -> Vec<LfsPattern> {
     let Ok(text) = git
         .files()
         .read(&repository.work_tree().join(".gitattributes"))
+        .await
     else {
         return Vec::new();
     };
@@ -135,7 +139,12 @@ pub(crate) async fn read_all(
     git: Git,
     repository: Arc<Repository>,
 ) -> Result<Arc<LfsState>, Problem> {
-    jobs::blocking(move || read_lfs(&git, &repository, Reading::All).map(Arc::new)).await
+    jobs::blocking(async move {
+        read_lfs(&git, &repository, Reading::All)
+            .await
+            .map(Arc::new)
+    })
+    .await
 }
 
 /// What the LFS page shows of the files and locks, read when it opens and after tasks.
@@ -143,8 +152,9 @@ pub(crate) async fn read_lfs_files(
     git: Git,
     repository: Arc<Repository>,
 ) -> Result<Arc<[LfsFile]>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         lfs_files(&git, &repository, &CancelToken::new())
+            .await
             .map(Into::into)
             .map_err(|error| Problem::git("The LFS files couldn't be listed", &error))
     })
@@ -156,8 +166,9 @@ pub(crate) async fn read_lfs_locks(
     git: Git,
     repository: Arc<Repository>,
 ) -> Result<Arc<[LfsLock]>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         lfs_locks(&git, &repository, &CancelToken::new())
+            .await
             .map(Into::into)
             .map_err(|error| Problem::git("The LFS locks couldn't be read", &error))
     })
@@ -238,7 +249,7 @@ impl LfsTask {
 }
 
 /// Runs an LFS task.
-pub(crate) fn run(
+pub(crate) async fn run(
     git: &Git,
     repository: &Repository,
     task: &LfsTask,
@@ -246,15 +257,17 @@ pub(crate) fn run(
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
     let result = match task {
-        LfsTask::Install => lfs_install(git, repository),
-        LfsTask::Track { pattern, lockable } => lfs_track(git, repository, pattern, *lockable),
-        LfsTask::Untrack(pattern) => lfs_untrack(git, repository, &pattern.to_str_lossy()),
-        LfsTask::Transfer(transfer) => {
-            lfs_transfer(git, repository, transfer, progress, cancel).map(drop)
+        LfsTask::Install => lfs_install(git, repository).await,
+        LfsTask::Track { pattern, lockable } => {
+            lfs_track(git, repository, pattern, *lockable).await
         }
-        LfsTask::Prune => lfs_prune(git, repository, cancel).map(drop),
-        LfsTask::Lock(path) => lfs_lock(git, repository, path, None),
-        LfsTask::Unlock { path, force } => lfs_lock(git, repository, path, Some(*force)),
+        LfsTask::Untrack(pattern) => lfs_untrack(git, repository, &pattern.to_str_lossy()).await,
+        LfsTask::Transfer(transfer) => lfs_transfer(git, repository, transfer, progress, cancel)
+            .await
+            .map(drop),
+        LfsTask::Prune => lfs_prune(git, repository, cancel).await.map(drop),
+        LfsTask::Lock(path) => lfs_lock(git, repository, path, None).await,
+        LfsTask::Unlock { path, force } => lfs_lock(git, repository, path, Some(*force)).await,
     };
     result.map(|()| Outcome::Done).map_err(|error| {
         let title = match task {

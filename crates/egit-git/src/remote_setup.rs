@@ -16,7 +16,7 @@ use crate::repo::Repository;
 /// # Errors
 ///
 /// When it exists already, its name isn't one git takes, or git fails or is cancelled.
-pub fn add_remote(
+pub async fn add_remote(
     git: &Git,
     repository: &Repository,
     name: &str,
@@ -28,6 +28,7 @@ pub fn add_remote(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -37,7 +38,7 @@ pub fn add_remote(
 /// # Errors
 ///
 /// When `new` exists already or isn't a name git takes, or git fails or is cancelled.
-pub fn rename_remote(
+pub async fn rename_remote(
     git: &Git,
     repository: &Repository,
     old: &BStr,
@@ -51,6 +52,7 @@ pub fn rename_remote(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -60,7 +62,7 @@ pub fn rename_remote(
 /// # Errors
 ///
 /// When there's no such remote, or git fails or is cancelled.
-pub fn remove_remote(
+pub async fn remove_remote(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -72,6 +74,7 @@ pub fn remove_remote(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }
 
@@ -81,7 +84,7 @@ pub fn remove_remote(
 /// # Errors
 ///
 /// When there's no such remote, or git fails or is cancelled.
-pub fn set_remote_url(
+pub async fn set_remote_url(
     git: &Git,
     repository: &Repository,
     name: &BStr,
@@ -100,5 +103,6 @@ pub fn set_remote_url(
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
+        .await
         .map(drop)
 }

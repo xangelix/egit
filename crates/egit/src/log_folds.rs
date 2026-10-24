@@ -349,7 +349,7 @@ impl Folding {
                     self.folds.clone(),
                     waker.clone(),
                 );
-                crate::jobs::detached(move || {
+                crate::jobs::detached(async move {
                     *into.lock() = Some(FoldedLog::build(whole, &folds));
                     waker.request_repaint();
                 });

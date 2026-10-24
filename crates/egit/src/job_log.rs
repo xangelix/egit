@@ -334,7 +334,7 @@ impl JobFollower {
         };
         let started = std::thread::Builder::new()
             .name(format!("job {id}'s log"))
-            .spawn(move || follower.run());
+            .spawn(move || egit_git::block_on(follower.run()));
         if let Err(error) = started {
             shared.lock().problem = Some(Problem::new(
                 "The job's log couldn't be followed",
@@ -361,10 +361,25 @@ struct Follower {
     options: egit_text::Options,
 }
 
+/// How long to wait before reading a log again: a large one is read less often, a second more
+/// for each MiB sent whole each time (`read` so far), or for each 4 MiB laid out again (sent
+/// as `ranges`).
+fn pause_after(read: u64, ranges: bool) -> Duration {
+    let mib = read.checked_div(1024 * 1024).unwrap_or(0);
+    let extra = if ranges {
+        mib.checked_div(4).unwrap_or(0)
+    } else {
+        mib
+    };
+    EVERY
+        .saturating_add(Duration::from_secs(extra))
+        .min(LONGEST)
+}
+
 impl Follower {
     /// Asks, reads, lays out, and waits, until the job has ended and its log is whole (or it
     /// is dropped).
-    fn run(self) {
+    async fn run(self) {
         let github = self.repository.host().kind() == ForgeKind::GitHub;
         let mut log = JobLog::of(self.repository.host().kind());
         let (mut read, mut ranges) = (0_u64, true);
@@ -374,7 +389,7 @@ impl Follower {
             if self.cancel.is_cancelled() {
                 return;
             }
-            let ended = match job(&self.account, &self.repository, self.id, &self.cancel) {
+            let ended = match job(&self.account, &self.repository, self.id, &self.cancel).await {
                 Ok(run) => {
                     let ended = !run.status.is_moving();
                     self.shared.lock().job = Some(run);
@@ -405,7 +420,8 @@ impl Follower {
                 (self.id, read, ranges),
                 &self.cancel,
                 &mut sink,
-            );
+            )
+            .await;
             match took {
                 Ok(LogRead::Read { new, ranged }) => {
                     // A host sending it whole, asked for a range: asked whole (compressed)
@@ -452,21 +468,7 @@ impl Follower {
                     continue;
                 }
             }
-            if ended {
-                return;
-            }
-            // A large log is read less often: a second more for each MiB sent whole each time,
-            // or for each 4 MiB laid out again (a range sent).
-            let mib = read.checked_div(1024 * 1024).unwrap_or(0);
-            let extra = if ranges {
-                mib.checked_div(4).unwrap_or(0)
-            } else {
-                mib
-            };
-            let pause = EVERY
-                .saturating_add(Duration::from_secs(extra))
-                .min(LONGEST);
-            if !self.wait(pause) {
+            if ended || !self.wait(pause_after(read, ranges)) {
                 return;
             }
         }

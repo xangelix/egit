@@ -129,7 +129,7 @@ impl<S: TreeSource> TreeTable<S> {
             self.stale = true;
         } else {
             let source = Arc::clone(source);
-            self.making.request(crate::jobs::blocking(move || {
+            self.making.request(crate::jobs::blocking(async move {
                 let tree = FileTree::new(source.files(), |entry| source.path(entry));
                 Ok((source, Arc::new(tree)))
             }));

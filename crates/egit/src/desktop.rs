@@ -63,7 +63,7 @@ impl Opener {
         }
         match &mut self.revealed {
             Some(revealed) => revealed.push((how, path)),
-            None => jobs::detached(move || reveal(&path, how)),
+            None => jobs::detached(async move { reveal(&path, how) }),
         }
     }
 
@@ -75,7 +75,7 @@ impl Opener {
         }
         match &mut self.recorded {
             Some(recorded) => recorded.push(url),
-            None => jobs::detached(move || open_web_page(&url)),
+            None => jobs::detached(async move { open_web_page(&url) }),
         }
     }
 }

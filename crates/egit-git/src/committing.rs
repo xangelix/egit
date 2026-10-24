@@ -43,7 +43,7 @@ pub struct Committed {
 ///
 /// When git refuses (nothing to commit, no identity, a hook said no, signing failed: the
 /// failure's standard error says which, a hook's output included) or is cancelled.
-pub fn create_commit(
+pub async fn create_commit(
     git: &Git,
     repository: &Repository,
     commit: &NewCommit,
@@ -73,7 +73,7 @@ pub fn create_commit(
         Some(false) => command = command.arg("--no-gpg-sign"),
         None => {}
     }
-    let done = command.output()?;
+    let done = command.output().await?;
     let mut output = done.stderr.as_bytes().to_str_lossy().into_owned();
     output.push_str(&done.stdout.to_str_lossy());
     Ok(Committed {
@@ -91,7 +91,7 @@ pub fn create_commit(
 /// # Errors
 ///
 /// When git refuses (a hook, signing), or can't be run.
-pub fn reword_head(
+pub async fn reword_head(
     git: &Git,
     repository: &Repository,
     message: &str,
@@ -110,7 +110,8 @@ pub fn reword_head(
         .current_dir(repository.work_tree())
         .stdin(message.as_bytes().to_vec())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let mut output = done.stderr.as_bytes().to_str_lossy().into_owned();
     output.push_str(&done.stdout.to_str_lossy());
     Ok(Committed {

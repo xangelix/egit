@@ -69,10 +69,11 @@ impl FileHistoryView {
         if let Some(git) = shared.git {
             let (git, repository) = (git.clone(), Arc::clone(shared.repository));
             let (finding, walked, stop) = (Arc::clone(&found), path.clone(), cancel.clone());
-            jobs::detached(move || {
+            jobs::detached(async move {
                 let walk = file_log(&git, &repository, walked.as_ref(), &stop, |commit| {
                     finding.commits.lock().push(commit);
-                });
+                })
+                .await;
                 if let Err(error) = walk
                     && !stop.is_cancelled()
                 {

@@ -152,7 +152,7 @@ pub struct PatchSummary {
 /// # Errors
 ///
 /// When it isn't a patch, or git fails or is cancelled.
-pub fn summarize_patch(
+pub async fn summarize_patch(
     git: &Git,
     repository: &Repository,
     patch: &Arc<[u8]>,
@@ -161,14 +161,14 @@ pub fn summarize_patch(
     let kind =
         patch_kind(patch).ok_or_else(|| GitError::unexpected("apply", "nothing git can apply"))?;
     let (commits, commit_count) = match kind {
-        PatchKind::Mailbox => mail_commits(git, repository, patch, cancel)?,
+        PatchKind::Mailbox => mail_commits(git, repository, patch, cancel).await?,
         PatchKind::Diff => (Vec::new(), 0),
     };
-    let files = patch_files(git, repository, patch, cancel)?;
+    let files = patch_files(git, repository, patch, cancel).await?;
     let applies = if commit_count > 1 {
         Applies::Unchecked
     } else {
-        check(git, repository, patch, cancel)?
+        check(git, repository, patch, cancel).await?
     };
     Ok(PatchSummary {
         kind,
@@ -180,7 +180,7 @@ pub fn summarize_patch(
 }
 
 /// A mailbox's commits (the first [`MAX_SUMMARIZED`]) and how many it holds.
-fn mail_commits(
+async fn mail_commits(
     git: &Git,
     repository: &Repository,
     patch: &Arc<[u8]>,
@@ -190,7 +190,7 @@ fn mail_commits(
         subcommand: "mailsplit",
         source,
     };
-    let split = git.files().temp_dir("egit-mails-").map_err(io)?;
+    let split = git.files().temp_dir("egit-mails-").await.map_err(io)?;
     let mut option = std::ffi::OsString::from("-o");
     option.push(split.path());
     let done = git
@@ -199,7 +199,8 @@ fn mail_commits(
         .stdin(Arc::clone(patch))
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output()?;
+        .output()
+        .await?;
     let count: usize = done
         .stdout
         .trim_ascii()
@@ -214,6 +215,7 @@ fn mail_commits(
     let mails = git
         .files()
         .read_all(&paths.iter().map(PathBuf::as_path).collect::<Vec<_>>())
+        .await
         .map_err(io)?;
     for mail in mails {
         let mail =
@@ -224,7 +226,8 @@ fn mail_commits(
             .stdin(mail)
             .current_dir(repository.work_tree())
             .cancel_token(cancel)
-            .output()?;
+            .output()
+            .await?;
         commits.push(mail_info(&info.stdout));
     }
     Ok((commits, count))
@@ -252,23 +255,24 @@ fn mail_info(printed: &[u8]) -> PatchCommit {
 }
 
 /// The files `patch` changes, each once (its lines summed over the commits).
-fn patch_files(
+async fn patch_files(
     git: &Git,
     repository: &Repository,
     patch: &Arc<[u8]>,
     cancel: &CancelToken,
 ) -> Result<Vec<PatchFile>, GitError> {
-    let apply = |args: &[&str]| {
+    let apply = async |args: &[&str]| {
         git.read("apply")
             .args(args)
             .stdin(Arc::clone(patch))
             .current_dir(repository.work_tree())
             .cancel_token(cancel)
             .output()
+            .await
             .map(|done| done.stdout)
     };
-    let numstat = apply(&["--numstat", "-z"])?;
-    let summary = apply(&["--summary"])?;
+    let numstat = apply(&["--numstat", "-z"]).await?;
+    let summary = apply(&["--summary"]).await?;
     let mut files: Vec<PatchFile> = Vec::new();
     let mut fields = numstat.split_str(b"\0");
     while let Some(record) = fields.next() {
@@ -338,7 +342,7 @@ fn summary_change(summary: &[u8], path: &[u8]) -> PatchChange {
 }
 
 /// `git apply --check`, then with `--3way` where that fails.
-fn check(
+async fn check(
     git: &Git,
     repository: &Repository,
     patch: &Arc<[u8]>,
@@ -353,10 +357,10 @@ fn check(
             .cancel_token(cancel)
             .output_unchecked()
     };
-    if check(false)?.status.success() {
+    if check(false).await?.status.success() {
         return Ok(Applies::Cleanly);
     }
-    let merged = check(true)?;
+    let merged = check(true).await?;
     let said = merged.stderr.message();
     Ok(if merged.status.success() {
         Applies::Merging {
@@ -389,7 +393,7 @@ pub enum ApplyAs {
 /// # Errors
 ///
 /// When it doesn't apply (and nothing is left to resolve), or git fails or is cancelled.
-pub fn apply_patch(
+pub async fn apply_patch(
     git: &Git,
     repository: &Repository,
     patch: &Arc<[u8]>,
@@ -408,12 +412,14 @@ pub fn apply_patch(
         .stdin(Arc::clone(patch))
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     if done.status.success() {
         return Ok(Integrated::Done);
     }
     let applying = repository
         .operations(git)
+        .await
         .map_err(|source| GitError::Io {
             subcommand: "am",
             source,
@@ -423,7 +429,7 @@ pub fn apply_patch(
         ApplyAs::Commits { .. } => "am",
         ApplyAs::Changes { .. } => "apply",
     };
-    if has_conflicts(git, repository, cancel)? {
+    if has_conflicts(git, repository, cancel).await? {
         Ok(Integrated::Conflicts)
     } else if applying {
         Ok(Integrated::Stopped)
@@ -450,14 +456,14 @@ impl Repository {
     /// # Errors
     ///
     /// When the files can't be read.
-    pub fn mailbox_progress(&self, git: &Git) -> io::Result<Option<MailboxProgress>> {
+    pub async fn mailbox_progress(&self, git: &Git) -> io::Result<Option<MailboxProgress>> {
         let dir = self.git_dir().join("rebase-apply");
         let paths = ["applying", "next", "last", "info"].map(|name| dir.join(name));
         let files = git.files();
-        if !files.exists(&paths[0])? {
+        if !files.exists(&paths[0]).await? {
             return Ok(None);
         }
-        let read = files.read_all(&[&paths[1], &paths[2], &paths[3]])?;
+        let read = files.read_all(&[&paths[1], &paths[2], &paths[3]]).await?;
         let [next, last, info] = <[Option<Vec<u8>>; 3]>::try_from(read)
             .map_err(|_| io::Error::other("a stopped `git am`'s files came back garbled"))?;
         let number = |read: Option<Vec<u8>>| -> u32 {
@@ -487,11 +493,12 @@ impl Repository {
 /// # Errors
 ///
 /// When no `git am` is stopped, or git fails.
-pub fn current_patch(git: &Git, repository: &Repository) -> Result<Vec<u8>, GitError> {
+pub async fn current_patch(git: &Git, repository: &Repository) -> Result<Vec<u8>, GitError> {
     git.read("am")
         .arg("--show-current-patch=diff")
         .current_dir(repository.work_tree())
         .output()
+        .await
         .map(|done| done.stdout)
 }
 

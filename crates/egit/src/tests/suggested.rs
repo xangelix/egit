@@ -5,6 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
+use egit_git::Wait as _;
 use egit_git::testing::Sandbox;
 use egui_kittest::kittest::Queryable as _;
 
@@ -25,6 +26,7 @@ fn dated(sandbox: &Sandbox, name: &str, date: &str) -> PathBuf {
         .args(["--quiet", "--message", "Start"])
         .current_dir(&repo)
         .output()
+        .wait()
         .unwrap();
     repo
 }

@@ -272,7 +272,7 @@ impl Prompts {
         self.answering = None;
         // egui keeps the field's text for undo; that copy goes too.
         ctx.data_mut(|data| data.remove::<egui::text_edit::TextEditState>(field_id));
-        jobs::detached(move || {
+        jobs::detached(async move {
             let handed = match answer {
                 Some(answer) => prompt.answer(&answer),
                 None => prompt.refuse(),

@@ -651,7 +651,7 @@ impl GridSource for SideSource<'_> {
 
 /// Splits `unified` in two, in a job.
 pub(crate) async fn split_diff(unified: Arc<DiffDocument>) -> Result<Arc<SplitDiff>, Problem> {
-    jobs::blocking(move || Ok(Arc::new(SplitDiff::new(unified)))).await
+    jobs::blocking(async move { Ok(Arc::new(SplitDiff::new(unified))) }).await
 }
 
 /// Reads the diff of the file at `paths` (a rename's old path first) in `commit`, against
@@ -665,10 +665,11 @@ pub(crate) async fn read_diff(
     options: DiffOptions,
     cancel: CancelToken,
 ) -> Result<Arc<DiffDocument>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let path = paths.last().cloned().unwrap_or_default();
         let paths: Vec<&bstr::BStr> = paths.iter().map(AsRef::as_ref).collect();
         file_diff(&git, &repository, commit, parent, &paths, &options, &cancel)
+            .await
             .map(|diff| Arc::new(DiffDocument::new(diff, path)))
             .map_err(|error| Problem::git("The diff couldn't be read", &error))
     })
@@ -685,10 +686,11 @@ pub(crate) async fn read_uncommitted_diff(
     options: DiffOptions,
     cancel: CancelToken,
 ) -> Result<Arc<DiffDocument>, Problem> {
-    jobs::blocking(move || {
+    jobs::blocking(async move {
         let path = paths.last().cloned().unwrap_or_default();
         let paths: Vec<&bstr::BStr> = paths.iter().map(AsRef::as_ref).collect();
         uncommitted_diff(&git, &repository, &paths, which, &options, &cancel)
+            .await
             .map(|diff| Arc::new(DiffDocument::new(diff, path)))
             .map_err(|error| Problem::git("The diff couldn't be read", &error))
     })

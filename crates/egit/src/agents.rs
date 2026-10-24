@@ -75,7 +75,7 @@ impl AgentAccount {
 
     /// Who it runs as: its folder, or its key filled from git's helpers (never asking). Blocks:
     /// in a job.
-    fn signer(&self, git: Option<&Git>) -> Result<Signer, Problem> {
+    async fn signer(&self, git: Option<&Git>) -> Result<Signer, Problem> {
         if let AccountKind::Folder(folder) = &self.kind {
             return Ok(Signer::Folder(folder.to_path()));
         }
@@ -88,6 +88,7 @@ impl AgentAccount {
         };
         let git = git.ok_or_else(missing)?;
         let filled = fill_credential(git, None, self.place(), Asking::Never, &CancelToken::new())
+            .await
             .map_err(|error| {
                 Problem::git(
                     format!("The API key for {} couldn't be read", self.name),
@@ -282,7 +283,7 @@ impl AgentsSetup {
     /// Looks for Node and the SDK again (after installing either).
     pub(crate) fn look_again(&mut self) {
         let (install, there) = (self.install.clone(), self.there.clone());
-        self.found.request(jobs::blocking(move || {
+        self.found.request(jobs::blocking(async move {
             let missing = |error: egit_agents::AgentError| {
                 Problem::new("Node.js wasn't found", error.to_string())
             };
@@ -297,8 +298,14 @@ impl AgentsSetup {
                     (node, Some(install))
                 }
             };
-            let ready = install.as_ref().is_some_and(Install::is_ready);
-            let claude = install.as_ref().filter(|_| ready).and_then(Install::claude);
+            let ready = match &install {
+                Some(install) => install.is_ready().await,
+                None => false,
+            };
+            let claude = match &install {
+                Some(install) if ready => install.claude().await,
+                _ => None,
+            };
             Ok(Found {
                 node,
                 ready,
@@ -319,9 +326,10 @@ impl AgentsSetup {
         self.install_problem = None;
         self.cancel = CancelToken::new();
         let cancel = self.cancel.clone();
-        self.installing.request(jobs::blocking(move || {
+        self.installing.request(jobs::blocking(async move {
             install
                 .install(&node, &cancel)
+                .await
                 .map_err(|error| Problem::new("Claude couldn't be set up", error.to_string()))
         }));
     }
@@ -350,9 +358,9 @@ impl AgentsSetup {
                 Some(install) => {
                     let signer =
                         folder.map_or(Signer::Default, |folder| Signer::Folder(folder.to_owned()));
-                    status.request(jobs::blocking(move || {
+                    status.request(jobs::blocking(async move {
                         // Finding its binary is a command there, too: in the job.
-                        let claude = install.claude().ok_or_else(|| {
+                        let claude = install.claude().await.ok_or_else(|| {
                             Problem::new("Claude Code isn't installed", String::new())
                         })?;
                         auth_status(&claude, &signer, there.as_ref()).map_err(|error| {
@@ -388,13 +396,13 @@ impl AgentsSetup {
         key: zeroize::Zeroizing<String>,
     ) {
         let git = git.cloned();
-        self.adding.request(jobs::blocking(move || {
+        self.adding.request(jobs::blocking(async move {
             if account.kind == AccountKind::ApiKey {
                 let git = git.ok_or_else(|| Problem::new("The API key couldn't be kept", "git isn't ready."))?;
                 let title = format!("The API key for {} couldn't be kept", account.name);
-                store_credential(&git, None, account.place(), &key).map_err(|error| Problem::git(&title, &error))?;
+                store_credential(&git, None, account.place(), &key).await.map_err(|error| Problem::git(&title, &error))?;
                 let kept = fill_credential(&git, None, account.place(), Asking::Never, &CancelToken::new())
-                    .map_err(|error| Problem::git(&title, &error))?;
+                    .await.map_err(|error| Problem::git(&title, &error))?;
                 if kept.is_none_or(|kept| kept.password() != key.as_str()) {
                     return Err(Problem::new(
                         title,
@@ -531,7 +539,7 @@ impl RepoAgents {
             return;
         };
         let dir = work_tree.to_owned();
-        self.past.request(jobs::blocking(move || {
+        self.past.request(jobs::blocking(async move {
             list_sessions(&launch, &dir, PAST)
                 .map(Arc::from)
                 .map_err(|error| {
@@ -577,7 +585,7 @@ impl RepoAgents {
         if let Some(launch) = launch {
             let dir = work_tree.to_owned();
             let id = session.session_id.clone();
-            conversation.history.request(jobs::blocking(move || {
+            conversation.history.request(jobs::blocking(async move {
                 session_history(&launch, &dir, &id)
                     .map(Arc::new)
                     .map_err(|error| {
@@ -842,11 +850,13 @@ impl Conversation {
             },
         );
         let account = self.account.clone();
-        self.starting.request(jobs::blocking(move || {
+        self.starting.request(jobs::blocking(async move {
             // As its account: a folder's login (there, the same folder under the home folder
             // there), or its key from git's helpers.
-            let signer =
-                account.map_or(Ok(Signer::Default), |account| account.signer(git.as_ref()))?;
+            let signer = match account {
+                Some(account) => account.signer(git.as_ref()).await?,
+                None => Signer::Default,
+            };
             let signer = homes.place(signer);
             let (env, unset) = signer.environment();
             launch.unset.extend(unset);

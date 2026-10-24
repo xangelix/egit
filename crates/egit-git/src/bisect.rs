@@ -103,19 +103,21 @@ impl BisectLeft {
 /// # Errors
 ///
 /// When git fails or prints what isn't a ref, or the repository's state can't be read.
-pub fn bisection(git: &Git, repository: &Repository) -> Result<Option<Bisection>, GitError> {
+pub async fn bisection(git: &Git, repository: &Repository) -> Result<Option<Bisection>, GitError> {
     let operations = repository
         .operations(git)
+        .await
         .map_err(|error| GitError::unexpected("bisect", error.to_string()))?;
     if !operations.contains(&Operation::Bisect) {
         return Ok(None);
     }
-    let terms = terms(git, repository)?;
+    let terms = terms(git, repository).await?;
     let listed = git
         .read("for-each-ref")
         .args(["--format=%(refname)%00%(objectname)", "refs/bisect/"])
         .current_dir(repository.work_tree())
-        .output()?;
+        .output()
+        .await?;
     let (mut bad, mut good, mut skipped) = (None, Vec::new(), Vec::new());
     let bad_ref = format!("refs/bisect/{}", terms.bad);
     let good_prefix = format!("refs/bisect/{}-", terms.good);
@@ -134,7 +136,7 @@ pub fn bisection(git: &Git, repository: &Repository) -> Result<Option<Bisection>
     let left = match (bad, good.is_empty()) {
         (None, _) => BisectLeft::NeedsBad,
         (Some(_), true) => BisectLeft::NeedsGood,
-        (Some(bad), false) => left(git, repository, bad, &good, &skipped)?,
+        (Some(bad), false) => left(git, repository, bad, &good, &skipped).await?,
     };
     Ok(Some(Bisection {
         terms,
@@ -146,13 +148,14 @@ pub fn bisection(git: &Git, repository: &Repository) -> Result<Option<Bisection>
 }
 
 /// The bisection's words for its two sides (`git bisect terms`).
-fn terms(git: &Git, repository: &Repository) -> Result<BisectTerms, GitError> {
-    let term = |which: &str| -> Result<String, GitError> {
+async fn terms(git: &Git, repository: &Repository) -> Result<BisectTerms, GitError> {
+    let term = async |which: &str| -> Result<String, GitError> {
         let said = git
             .read("bisect")
             .args(["terms", which])
             .current_dir(repository.work_tree())
-            .output()?;
+            .output()
+            .await?;
         let term = said.stdout.trim_ascii().to_str_lossy().into_owned();
         if term.is_empty() {
             return Err(GitError::unexpected("bisect", "a term"));
@@ -160,14 +163,14 @@ fn terms(git: &Git, repository: &Repository) -> Result<BisectTerms, GitError> {
         Ok(term)
     };
     Ok(BisectTerms {
-        bad: term("--term-bad")?,
-        good: term("--term-good")?,
+        bad: term("--term-bad").await?,
+        good: term("--term-good").await?,
     })
 }
 
 /// What is left between `bad` and the `good` commits: the commits `bad` reaches that none of
 /// them does, `skipped` ones aside.
-fn left(
+async fn left(
     git: &Git,
     repository: &Repository,
     bad: ObjectId,
@@ -191,7 +194,7 @@ fn left(
             .current_dir(repository.work_tree())
             .output()
     };
-    let counted = listing(true)?;
+    let counted = listing(true).await?;
     let candidates: u64 = counted
         .stdout
         .trim_ascii()
@@ -202,7 +205,7 @@ fn left(
     if candidates > LISTED {
         return Ok(BisectLeft::Testing { candidates });
     }
-    let listed = listing(false)?;
+    let listed = listing(false).await?;
     let all: Vec<ObjectId> = listed
         .stdout
         .lines()
@@ -236,7 +239,7 @@ fn left(
 ///
 /// When git refuses (changes in the work tree in the way of the commit to test, say) or is
 /// cancelled.
-pub fn bisect_mark(
+pub async fn bisect_mark(
     git: &Git,
     repository: &Repository,
     mark: BisectMark,
@@ -245,16 +248,18 @@ pub fn bisect_mark(
 ) -> Result<(), GitError> {
     let bisecting = repository
         .operations(git)
+        .await
         .map_err(|error| GitError::unexpected("bisect", error.to_string()))?
         .contains(&Operation::Bisect);
     let terms = if bisecting {
-        terms(git, repository)?
+        terms(git, repository).await?
     } else {
         git.write("bisect")
             .arg("start")
             .current_dir(repository.work_tree())
             .cancel_token(cancel)
-            .output()?;
+            .output()
+            .await?;
         BisectTerms::default()
     };
     let term: BString = match mark {
@@ -268,7 +273,8 @@ pub fn bisect_mark(
         .arg(commit.to_string())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
-        .output_unchecked()?;
+        .output_unchecked()
+        .await?;
     // Status 2: only skipped commits are left, one of which is the first bad commit
     // (`bisection` says which).
     if done.status.success() || done.status.code() == Some(2) {
