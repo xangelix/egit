@@ -32,6 +32,10 @@ pub(super) const TOPICS: &[Topic] = &[
                 "Committed to the wrong branch?",
                 "Undo takes the commit back (its changes staged again); switch, then commit there.",
             ),
+            (
+                "Commit and push?",
+                "Commits, then pushes the branch as Push would (⇧⌘Enter): to its upstream, or asking where the first time. A commit a hook refused isn't pushed.",
+            ),
         ],
     },
     Topic {

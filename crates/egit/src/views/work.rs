@@ -45,7 +45,8 @@ pub(super) enum WorkEvent {
     /// Stage or unstage.
     Stage(StageRequest),
     /// Commit what is staged.
-    Commit(NewCommit),
+    /// A commit to make, and whether to push the branch once it is made.
+    Commit(NewCommit, bool),
     /// Stop the commit under way (its hooks with it).
     CancelCommit,
     /// Show the output panel (what the hooks printed).
@@ -80,6 +81,8 @@ pub(super) struct CommitSide<'a> {
     pub(super) run: Option<&'a crate::output::Run>,
     /// The hooks the repository has.
     pub(super) hooks: Option<&'a egit_git::Hooks>,
+    /// Whether a commit can be pushed after it is made: on a branch, with a remote.
+    pub(super) can_push: bool,
 }
 
 /// Up to this many recent commits' authors are offered as co-authors.
@@ -402,35 +405,61 @@ fn commit_form(
     let in_form = fields.iter().any(Response::has_focus);
     let keys_free = !ui.ctx().text_edit_focused()
         && ui.ctx().memory(|memory| memory.top_modal_layer().is_none());
-    let shortcut = (in_form || keys_free)
-        && ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Enter));
+    // ⇧⌘Enter pushes too: taken first, as ⌘Enter's would match it.
+    let keys_taken = in_form || keys_free;
+    let push_shortcut = keys_taken
+        && side.can_push
+        && ui.input_mut(|input| {
+            input.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter)
+        });
+    let shortcut =
+        keys_taken && ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::Enter));
     let keys = crate::commands::keys_text("⌘Enter");
     let mut asked = None;
-    ui.horizontal(|ui| {
-        // Why it can't yet, under the pointer.
-        let why = if busy {
-            "A task is running"
-        } else if staged == 0 && !form.amend {
-            "Stage the changes to commit first"
-        } else {
-            "Write a summary first"
-        };
-        let button = widgets::primary(ui, ready, &label)
-            .on_hover_text(format!("Commit what is staged ({keys})"))
-            .on_disabled_hover_text(why);
-        // Its keys beside it, not in it: its name stays its words.
-        ui.label(muted(ui, keys.as_ref()).small());
-        if button.clicked() || (shortcut && ready) {
-            asked = Some(WorkEvent::Commit(NewCommit {
+    // Why it can't yet, under the pointer.
+    let why = if busy {
+        "A task is running"
+    } else if staged == 0 && !form.amend {
+        "Stage the changes to commit first"
+    } else {
+        "Write a summary first"
+    };
+    // Each button on a row of its own, its keys beside it, not in it: its name stays its words.
+    let commit = ui
+        .horizontal(|ui| {
+            let button = widgets::primary(ui, ready, &label)
+                .on_hover_text(format!("Commit what is staged ({keys})"))
+                .on_disabled_hover_text(why);
+            ui.label(muted(ui, keys.as_ref()).small());
+            button.clicked() || (shortcut && ready)
+        })
+        .inner;
+    let push = side.can_push
+        && ui
+            .horizontal(|ui| {
+                let keys = crate::commands::keys_text("⇧⌘Enter");
+                let button = widgets::secondary(ui, ready, "Commit and push")
+                    .on_hover_text(format!(
+                        "Commit, then push the branch as Push would ({keys})"
+                    ))
+                    .on_disabled_hover_text(why);
+                ui.label(muted(ui, keys.as_ref()).small());
+                button.clicked() || (push_shortcut && ready)
+            })
+            .inner;
+    if commit || push {
+        asked = Some(WorkEvent::Commit(
+            NewCommit {
                 message: form.message(),
                 amend: form.amend,
                 sign_off: form.sign_off,
                 sign: Some(form.sign.unwrap_or(side.sign_by_default)),
                 trailers: form.trailers(),
                 no_verify: form.skip_hooks,
-            }));
-        }
-    });
+            },
+            push,
+        ));
+    }
     if side.committing.is_pending()
         && let Some(running) = committing(ui, side)
     {

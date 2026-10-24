@@ -1631,6 +1631,8 @@ fn details_panel(
                             .config
                             .and_then(|config| config.get("user.email"))
                             .and_then(|entry| entry.value),
+                        can_push: shared.head.reference.is_some()
+                            && shared.config.is_some_and(crate::tasks::has_remotes),
                     };
                     work_details(ui, shared, view, staging, commit, actions);
                 } else {
@@ -4441,7 +4443,9 @@ fn work_details(
     match shown {
         Some(WorkEvent::Open(work)) => view.open_work(shared, work),
         Some(WorkEvent::Stage(request)) => actions.push(Action::Stage(shared.id, request)),
-        Some(WorkEvent::Commit(made)) => actions.push(Action::Commit(shared.id, made)),
+        Some(WorkEvent::Commit(made, push)) => {
+            actions.push(Action::Commit(shared.id, made, push));
+        }
         Some(WorkEvent::CancelCommit) => {
             actions.push(Action::Output(shared.id, OutputAsk::CancelCommit));
         }

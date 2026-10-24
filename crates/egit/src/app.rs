@@ -195,8 +195,8 @@ pub(crate) enum Action {
     WriteCommitGraph(RepoId),
     /// Stage or unstage in a repository.
     Stage(RepoId, StageRequest),
-    /// Commit what a repository's index holds.
-    Commit(RepoId, NewCommit),
+    /// Commit what a repository's index holds (`true`: then push the branch, as Push would).
+    Commit(RepoId, NewCommit, bool),
     /// Something of a repository's output: its commit stopped, its panel opened or toggled.
     Output(RepoId, OutputAsk),
     /// Fetch, pull, push, or give up or carry on an operation, in a repository.
@@ -483,7 +483,9 @@ impl EgitApp {
                     repo.output_asked(asked);
                 }
             }
-            Action::Commit(id, commit) => state.with_repo(id, |git, repo| repo.commit(git, commit)),
+            Action::Commit(id, commit, push) => {
+                state.with_repo(id, |git, repo| repo.commit(git, commit, push));
+            }
             Action::Task(id, task) => state.with_repo(id, |git, repo| repo.run_task(git, task)),
             Action::Undo(id, redo) => state.with_repo(id, |git, repo| repo.undo(git, redo)),
             Action::CancelTask(id) => {

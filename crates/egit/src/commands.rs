@@ -290,7 +290,7 @@ pub(crate) fn keys_text(mac: &'static str) -> Cow<'static, str> {
 pub(crate) const SWITCH_TO: &str = "Switch to ";
 
 /// Every shortcut, and what it does, as the Preferences tab lists them.
-const SHORTCUTS: [(&str, &str); 26] = [
+const SHORTCUTS: [(&str, &str); 27] = [
     ("⌘K, ⇧⌘P", "Show every command"),
     ("F1", "Help: every topic"),
     (
@@ -311,6 +311,7 @@ const SHORTCUTS: [(&str, &str); 26] = [
     ("↑ ↓, PgUp PgDn, Home End", "Move through a list"),
     ("Escape", "Back to the history (from a file, the reflog, …)"),
     ("⌘Enter", "Commit what is staged (the working tree's form)"),
+    ("⇧⌘Enter", "Commit what is staged, then push the branch"),
     (
         "P R S F D",
         "Pick, reword, squash, fix up, drop (the rebase editor)",

@@ -1392,6 +1392,29 @@ fn fetches_pulls_and_pushes_from_the_history() {
             icon::ARROW_RIGHT
         ),
     );
+    commit_and_push(&mut harness, &sandbox, (&colleague, &mine));
+}
+
+/// A change committed and pushed at once, from the commit form, on a branch with an upstream.
+fn commit_and_push(
+    harness: &mut Harness<'_, EgitApp>,
+    sandbox: &Sandbox,
+    (colleague, mine): (&Path, &Path),
+) {
+    std::fs::write(mine.join("mine"), "m\nmore\n").unwrap();
+    wait_for_label(harness, &uncommitted(1));
+    harness.get_by_label(&uncommitted(1)).click();
+    wait_for_label(harness, "Stage all");
+    harness.get_by_label("Stage all").click();
+    wait_for_label(harness, "Commit 1 file");
+    type_into(harness, Role::TextInput, "Summary", "More of mine");
+    render(harness, "commit-and-push");
+    harness.get_by_label("Commit and push").click();
+    wait_for_label(harness, "Pushed to topic.");
+    let pushed = sandbox
+        .run(colleague, "fetch", &["--quiet"])
+        .and_then(|_| sandbox.run(colleague, "log", &["-1", "--format=%s", "origin/topic"]));
+    assert_eq!(pushed.unwrap().stdout.trim_ascii(), b"More of mine");
 }
 
 #[test]

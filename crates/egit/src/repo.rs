@@ -112,8 +112,8 @@ pub(crate) struct RepoTab {
     staging_open: bool,
     /// The last commit made, while it is made and after (its output or problem stays shown).
     pub(crate) committing: Bind<Committed, Problem>,
-    /// Whether a commit is under way.
-    committing_open: bool,
+    /// A commit under way, and whether the branch is pushed once it is made.
+    committing_open: Option<bool>,
     /// How many commits egit has made here (the form clears when it grows).
     pub(crate) commits_made: u64,
     /// What the user asked of it: fetching, pulling, pushing, ….
@@ -192,7 +192,7 @@ impl RepoTab {
             staging: Bind::new(true),
             staging_open: false,
             committing: Bind::new(true),
-            committing_open: false,
+            committing_open: None,
             commits_made: 0,
             tasks: Tasks::new(Instant::now()),
             output: Output::default(),
@@ -230,10 +230,16 @@ impl RepoTab {
             self.work_tree.refresh_now();
         }
         // The history and `HEAD` follow through the repository's watcher.
-        if self.committing_open && !self.committing.is_pending() {
-            self.committing_open = false;
+        if let Some(push) = self.committing_open
+            && !self.committing.is_pending()
+        {
+            self.committing_open = None;
             let ended = if self.committing.is_ok() {
                 self.commits_made = self.commits_made.wrapping_add(1);
+                // Pushed as Push would, where it still can be (a task started meanwhile).
+                if push && self.allows(&RepoCommand::Push).is_ok() {
+                    self.history_view.queue(RepoCommand::Push);
+                }
                 Ended::Done
             } else if self.commit_cancel.is_cancelled() {
                 Ended::Cancelled
@@ -247,8 +253,9 @@ impl RepoTab {
         }
     }
 
-    /// Commits what the index holds (after the repository's other writes).
-    pub(crate) fn commit(&mut self, git: &Git, commit: NewCommit) {
+    /// Commits what the index holds (after the repository's other writes), then pushes the
+    /// branch if `push` (as Push would: its upstream, or asking where).
+    pub(crate) fn commit(&mut self, git: &Git, commit: NewCommit, push: bool) {
         // Its hooks' output, as git prints it, in a run of its own.
         self.commit_cancel = CancelToken::new();
         let hooks = self.installed_hooks(commit_hooks(commit.no_verify));
@@ -291,7 +298,7 @@ impl RepoTab {
                 )
             })
         }));
-        self.committing_open = true;
+        self.committing_open = Some(push);
     }
 
     /// Stages or unstages as `request` says (after the repository's other writes).

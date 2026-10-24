@@ -1763,7 +1763,8 @@ writes paths), never `OsStrExt`.
     the commit form: summary
     (warned past 72 characters), description (⌘Enter commits from either, or from anywhere
     while no other field or dialog has the keys; the keys shown beside the commit button, not
-    in its name), co-authors (chips with their
+    in its name; "Commit and push" (⇧⌘Enter) below it on a branch with a remote: once made,
+    the branch pushed as Push would, `RepoCommand::Push` queued), co-authors (chips with their
     avatars, each removable; "Co-author" opens a picker: a field typed into at once, the
     recent authors (`recent_authors` of the last 5,000 commits, read when it first opens; the
     user's own `user.email` left out) matching it by name or email, most commits first, eight
