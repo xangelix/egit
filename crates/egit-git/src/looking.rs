@@ -29,8 +29,9 @@ use std::time::Duration;
 use bstr::{ByteSlice as _, ByteVec as _};
 
 use crate::git::Git;
-use crate::host::{self, GitStdout, Remote};
+use crate::host::{self, GitStdout, Host, Remote};
 use crate::process::Detached;
+use crate::relay::{self, Relay};
 use crate::repo::Repository;
 
 /// The session following a repository: `$1` the git directory, `$2` the common one, `$3` the
@@ -219,10 +220,21 @@ impl Follow {
 /// A session following a repository, or a work tree's folders, there; stopped when dropped.
 #[derive(Debug)]
 pub struct Looking {
-    process: Detached,
-    /// Its input, kept open: closed, the session stops its watchers there at once.
-    _input: Option<ChildStdin>,
+    session: Session,
     liveness: Liveness,
+}
+
+/// What runs the session.
+#[derive(Debug)]
+enum Session {
+    /// The ssh running it.
+    Ssh {
+        process: Detached,
+        /// Its input, kept open: closed, the session stops its watchers there at once.
+        _input: Option<ChildStdin>,
+    },
+    /// A relay, which runs it as process `id`.
+    Relayed { relay: Relay, id: u32 },
 }
 
 impl Looking {
@@ -269,8 +281,12 @@ impl Liveness {
 
 impl Drop for Looking {
     fn drop(&mut self) {
-        // The session closes; there, its input ends, which stops its watchers.
-        self.process.stop(Duration::ZERO);
+        match &mut self.session {
+            // The session closes; there, its input ends, which stops its watchers.
+            Session::Ssh { process, .. } => process.stop(Duration::ZERO),
+            // Its group there stopped: the script, and its watchers with it.
+            Session::Relayed { relay, id } => relay.terminate(*id),
+        }
     }
 }
 
@@ -294,7 +310,7 @@ pub fn look_there(
         OsStr::new(&seconds),
         &inotifywait,
     ];
-    let (process, stdout, input) = start(git, REPOSITORY, &args)?;
+    let started = start(git, REPOSITORY, &args)?;
     let (git_dir, common_dir) = (
         repository.git_dir().to_owned(),
         repository.common_dir().to_owned(),
@@ -305,7 +321,7 @@ pub fn look_there(
     let mut first = true;
     // Told at once once both of its watchers have set up their watches.
     let mut established = 0_u8;
-    read_lines(git, (stdout, process), (input, &[]), move |line, live| {
+    read_lines(git, started, &[], move |line, live| {
         let looked = match line {
             // A look done, or told from now on.
             b"." | b"live" => {
@@ -396,7 +412,7 @@ pub fn look_at_folders_there<'p>(
         }
     }
     let size = list.len().to_string();
-    let (process, stdout, input) = start(git, FOLDERS, &[program, OsStr::new(&size)])?;
+    let started = start(git, FOLDERS, &[program, OsStr::new(&size)])?;
     let git_dir = repository.git_dir().to_owned();
     let mut complaint = String::new();
     let mut handle = move |line: &[u8], live: &AtomicBool| {
@@ -432,24 +448,32 @@ pub fn look_at_folders_there<'p>(
             said => said.to_str_lossy().trim().clone_into(&mut complaint),
         }
     };
-    read_lines(git, (stdout, process), (input, &list), move |line, live| {
+    read_lines(git, started, &list, move |line, live| {
         handle(line, live);
     })
 }
 
-/// Starts `script` (with `args` as `$1` on) there in a session of its own: the session, its
-/// output (from the script's marker on), and its input.
-fn start(
-    git: &Git,
-    script: &str,
-    args: &[&OsStr],
-) -> io::Result<(Detached, ChildStdout, Option<ChildStdin>)> {
-    let Some(ssh) = git.host().ssh() else {
-        return Err(io::Error::other("the repository is on this computer"));
-    };
-    let environment = git.remote_environment();
+/// A session started there: through ssh (its process, output, and input), or a relay.
+enum Started {
+    Ssh(Detached, ChildStdout, Option<ChildStdin>),
+    Relayed(relay::Process),
+}
+
+/// Starts `script` (with `args` as `$1` on) there in a session of its own.
+fn start(git: &Git, script: &str, args: &[&OsStr]) -> io::Result<Started> {
     let mut words = vec![OsStr::new("-c"), OsStr::new(script), OsStr::new("sh")];
     words.extend_from_slice(args);
+    let ssh = match git.host() {
+        Host::Ssh(ssh) => ssh,
+        Host::Relay(relay) => {
+            let mut program = relay::program_there(git, OsStr::new("sh"), &words, None, &[]);
+            program.stdin = true;
+            // What it says on standard error (`inotifywait`'s complaints) goes with its output.
+            return Ok(Started::Relayed(relay.start(program, Box::new(|_| {}))));
+        }
+        Host::Local => return Err(io::Error::other("the repository is on this computer")),
+    };
+    let environment = git.remote_environment();
     let script = host::script(&Remote {
         program: OsStr::new("sh"),
         args: words,
@@ -474,21 +498,52 @@ fn start(
         .take()
         .ok_or_else(|| io::Error::other("ssh's output wasn't set up"))?;
     let input = process.child_mut().stdin.take();
-    Ok((process, stdout, input))
+    Ok(Started::Ssh(process, stdout, input))
 }
 
-/// Reads the session's lines on a thread of its own, each trimmed, handing them to `handle`
-/// with the flag saying whether it is told at once; marks it ended when its output ends. Its
-/// input is given `written` once its reader is up (so neither side waits on the other's pipe),
-/// then kept open.
+/// Reads the session's lines on a thread of its own (through a relay, a task of its own),
+/// each trimmed, handing them to `handle` with the flag saying whether it is told at once;
+/// marks it ended when its output ends. Its input is given `written` once its reader is up (so
+/// neither side waits on the other's pipe), then kept open.
 fn read_lines(
     git: &Git,
-    (stdout, process): (ChildStdout, Detached),
-    (mut input, written): (Option<ChildStdin>, &[u8]),
+    started: Started,
+    written: &[u8],
     mut handle: impl FnMut(&[u8], &AtomicBool) + Send + 'static,
 ) -> io::Result<Looking> {
     let liveness = Liveness::default();
     let (marking, telling) = (Arc::clone(&liveness.ended), Arc::clone(&liveness.live));
+    let (process, stdout, mut input) = match started {
+        Started::Ssh(process, stdout, input) => (process, stdout, input),
+        Started::Relayed(mut process) => {
+            let session = Session::Relayed {
+                relay: process.relay().clone(),
+                id: process.id(),
+            };
+            let written = written.to_vec();
+            crate::exec::spawn("looking there", async move {
+                if !written.is_empty() && process.write(&written).await.is_err() {
+                    marking.store(true, Ordering::Release);
+                    return;
+                }
+                let mut lines = LineSplitter::default();
+                let mut buffer = vec![0; 4096];
+                loop {
+                    match process.read(&mut buffer).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => lines.feed(buffer.get(..read).unwrap_or_default(), |line| {
+                            handle(line, &telling);
+                        }),
+                    }
+                }
+                telling.store(false, Ordering::Release);
+                marking.store(true, Ordering::Release);
+                // Its end, told: the relay forgets it.
+                let _ended = process.wait().await;
+            })?;
+            return Ok(Looking { session, liveness });
+        }
+    };
     let host = git.host().clone();
     std::thread::Builder::new()
         .name("looking there".to_owned())
@@ -513,10 +568,32 @@ fn read_lines(
         input.flush()?;
     }
     Ok(Looking {
-        process,
-        _input: input,
+        session: Session::Ssh {
+            process,
+            _input: input,
+        },
         liveness,
     })
+}
+
+/// Lines split from chunks as they come, each handed over trimmed of its end.
+#[derive(Default)]
+struct LineSplitter {
+    pending: Vec<u8>,
+}
+
+impl LineSplitter {
+    fn feed(&mut self, chunk: &[u8], mut each: impl FnMut(&[u8])) {
+        let mut rest = chunk;
+        while let Some(at) = rest.iter().position(|byte| *byte == b'\n') {
+            let (line, after) = rest.split_at(at);
+            self.pending.extend_from_slice(line);
+            each(self.pending.trim_ascii_end());
+            self.pending.clear();
+            rest = after.get(1..).unwrap_or_default();
+        }
+        self.pending.extend_from_slice(rest);
+    }
 }
 
 #[cfg(test)]

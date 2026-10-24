@@ -11,8 +11,8 @@ workspace = true
 
 [features]
 # `testing`: a sandboxed git (a temporary `HOME`, no system configuration) for tests in this
-# workspace.
-testing = []
+# workspace, here, over ssh, or through a relay (a WebSocket client of its own).
+testing = ["dep:futures-util", "dep:tokio", "dep:tokio-tungstenite"]
 
 [dependencies]
 # Scripts handed to the shell on another computer.
@@ -27,6 +27,10 @@ tempfile = { workspace = true }
 thiserror.workspace = true
 tracing.workspace = true
 zeroize.workspace = true
+# The tests' WebSocket to a relay (`testing`).
+futures-util = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true, features = ["macros", "net", "rt", "sync", "time"] }
+tokio-tungstenite = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true

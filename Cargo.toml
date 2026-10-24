@@ -7,6 +7,7 @@ members = [
     "crates/egit-gix",
     "crates/egit-git",
     "crates/egit-graph",
+    "crates/egit-relay",
     "crates/egit-text",
 ]
 
@@ -51,6 +52,10 @@ parking_lot = "0.12.5"
 rfd = { version = "0.17.2", default-features = false }
 # The settings as eframe stores them, in tests.
 ron = "0.12.2"
+# A relay's WebSocket halves, read and written apart.
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+# A browser's request to a relay, read before it is answered or upgraded.
+httparse = "1.10.1"
 # The operating system's randomness, wherever egit runs (an askpass token).
 getrandom = "0.4.3"
 # `getpeereid` where rustix doesn't wrap the peer's credentials (macOS and the BSDs).
@@ -72,6 +77,9 @@ syntect = { version = "5.3.0", default-features = false, features = ["default-sy
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 tokio = { version = "1.53.3", default-features = false }
+# A relay's WebSocket (the handshake egit answers itself; no TLS: a relay is reached through ssh
+# or a proxy of the user's).
+tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["handshake"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false }
 # TLS through rustls on aws-lc-rs (never ring), certificates checked by the system's verifier

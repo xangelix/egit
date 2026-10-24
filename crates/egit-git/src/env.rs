@@ -69,6 +69,12 @@ pub(crate) fn is_local_only(name: &std::ffi::OsStr) -> bool {
     LOCAL_ONLY.iter().any(|local| name == *local)
 }
 
+/// Whether `name` tells the askpass helper about the command asking (what it is doing, whether
+/// it may ask at all): through a relay, whose own helper asks, it goes along.
+pub(crate) fn tells_the_helper(name: &std::ffi::OsStr) -> bool {
+    name == crate::askpass::CONTEXT_VAR || name == crate::askpass::INTERACTIVE_VAR
+}
+
 /// The changes made to the inherited environment for every git process.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Environment {

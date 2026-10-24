@@ -73,6 +73,13 @@ pub enum GitError {
         source: io::Error,
     },
 
+    /// The relay git runs through refused egit, or the connection to it was lost.
+    #[error("the relay: {why}")]
+    Relay {
+        /// Why, in the relay's words or the connection's.
+        why: String,
+    },
+
     /// The other computer git runs on didn't say where its home folder is.
     #[error("the home folder there couldn't be read: {source}")]
     NoHome {

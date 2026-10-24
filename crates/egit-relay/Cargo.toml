@@ -1,0 +1,34 @@
+[package]
+name = "egit-relay"
+description = "egit in a browser: runs git, and the files egit reads and writes, on this computer for an egit served from here."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "egit-relay"
+path = "src/main.rs"
+
+[dependencies]
+bstr.workspace = true
+egit-git.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+httparse.workspace = true
+parking_lot.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["ansi", "env-filter", "fmt", "std"] }
+zeroize.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["system"] }
+
+[dev-dependencies]
+egit-git = { workspace = true, features = ["testing"] }
+tempfile.workspace = true

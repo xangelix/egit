@@ -17,6 +17,8 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use base64::Engine as _;
+
+use crate::relay::Relay;
 use bstr::ByteSlice as _;
 
 /// Where a repository's git runs.
@@ -27,15 +29,26 @@ pub enum Host {
     Local,
     /// Another computer, over SSH.
     Ssh(SshHost),
+    /// The computer a relay runs on (`egit-relay`), which runs every program egit asks for.
+    Relay(Relay),
 }
 
 impl Host {
-    /// The other computer, if it is one.
+    /// The other computer reached over SSH, if it is one.
     #[must_use]
     pub const fn ssh(&self) -> Option<&SshHost> {
         match self {
-            Self::Local => None,
             Self::Ssh(host) => Some(host),
+            Self::Local | Self::Relay(_) => None,
+        }
+    }
+
+    /// The relay, if git runs through one.
+    #[must_use]
+    pub const fn relay(&self) -> Option<&Relay> {
+        match self {
+            Self::Relay(relay) => Some(relay),
+            Self::Local | Self::Ssh(_) => None,
         }
     }
 
@@ -202,7 +215,7 @@ impl GitStdout {
         Self {
             pipe,
             marker: match host {
-                Host::Local => None,
+                Host::Local | Host::Relay(_) => None,
                 Host::Ssh(_) => Some(0),
             },
         }

@@ -8,6 +8,8 @@ use std::path::PathBuf;
 use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
+
+use parking_lot::Mutex;
 use std::time::Duration;
 
 use zeroize::Zeroizing;
@@ -20,6 +22,7 @@ use crate::host::{self, GitStdout, Host, PidReader, Remote, RemotePid};
 use crate::output::{Completed, Exit, Stderr, TailBuffer};
 use crate::process::{self, Group};
 use crate::progress::{Progress, ProgressReader};
+use crate::relay::{self, Missing, NotRun, Relay};
 use crate::transcript::{Stream, Transcript};
 
 /// Whether a command only reads the repository or may change it.
@@ -303,7 +306,7 @@ impl GitCommand {
     pub async fn output_unchecked(self) -> Result<Completed, GitError> {
         let mut delays = LOCK_RETRY_DELAYS.iter();
         loop {
-            let completed = self.collect_once()?;
+            let completed = self.collect_once().await?;
             if completed.status.success() || self.access == Access::Read {
                 return Ok(completed);
             }
@@ -339,31 +342,32 @@ impl GitCommand {
     pub async fn secret_output(mut self) -> Result<SecretOutput, GitError> {
         // Nothing of it in a transcript.
         self.secret = true;
-        let (attempt, stdout) = self.run_once(|stdout| {
-            let mut collected = Zeroizing::new(Vec::with_capacity(4096));
-            let mut chunk = Zeroizing::new([0_u8; 4096]);
-            loop {
-                let read = match stdout.read(chunk.as_mut()) {
-                    Ok(0) => return Ok((collected, false)),
-                    Ok(read) => read,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(ReadError::Io(error)),
-                };
-                let total = collected.len().saturating_add(read);
-                if total > SECRET_LIMIT {
-                    return Err(ReadError::TooLarge(SECRET_LIMIT));
+        let (attempt, stdout) = self
+            .run_once(async |stdout: &mut Pipe<'_>| {
+                let mut collected = Zeroizing::new(Vec::with_capacity(4096));
+                let mut chunk = Zeroizing::new([0_u8; 4096]);
+                loop {
+                    let read = match stdout.read(chunk.as_mut()).await {
+                        Ok(0) => return Ok((collected, false)),
+                        Ok(read) => read,
+                        Err(error) => return Err(ReadError::Io(error)),
+                    };
+                    let total = collected.len().saturating_add(read);
+                    if total > SECRET_LIMIT {
+                        return Err(ReadError::TooLarge(SECRET_LIMIT));
+                    }
+                    if total > collected.capacity() {
+                        let mut grown = Zeroizing::new(Vec::with_capacity(
+                            collected.capacity().saturating_mul(2).max(total),
+                        ));
+                        grown.extend_from_slice(&collected);
+                        // The smaller buffer is wiped as it goes.
+                        collected = grown;
+                    }
+                    collected.extend_from_slice(chunk.get(..read).unwrap_or_default());
                 }
-                if total > collected.capacity() {
-                    let mut grown = Zeroizing::new(Vec::with_capacity(
-                        collected.capacity().saturating_mul(2).max(total),
-                    ));
-                    grown.extend_from_slice(&collected);
-                    // The smaller buffer is wiped as it goes.
-                    collected = grown;
-                }
-                collected.extend_from_slice(chunk.get(..read).unwrap_or_default());
-            }
-        })?;
+            })
+            .await?;
         Ok(SecretOutput {
             status: attempt.status,
             stdout,
@@ -389,24 +393,25 @@ impl GitCommand {
         self,
         mut consume: impl FnMut(&[u8]) -> ControlFlow<()>,
     ) -> Result<Streamed, GitError> {
-        let (attempt, ()) = self.run_once(|stdout| {
-            let mut buffer = vec![0; STREAM_CHUNK].into_boxed_slice();
-            loop {
-                let read = match stdout.read(&mut buffer) {
-                    Ok(0) => return Ok(((), false)),
-                    Ok(read) => read,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                    Err(error) => return Err(ReadError::Io(error)),
-                };
-                let chunk = buffer.get(..read).unwrap_or_default();
-                if let Some(transcript) = self.transcript() {
-                    transcript.feed(Stream::Out, chunk);
+        let (attempt, ()) = self
+            .run_once(async |stdout: &mut Pipe<'_>| {
+                let mut buffer = vec![0; STREAM_CHUNK].into_boxed_slice();
+                loop {
+                    let read = match stdout.read(&mut buffer).await {
+                        Ok(0) => return Ok(((), false)),
+                        Ok(read) => read,
+                        Err(error) => return Err(ReadError::Io(error)),
+                    };
+                    let chunk = buffer.get(..read).unwrap_or_default();
+                    if let Some(transcript) = self.transcript() {
+                        transcript.feed(Stream::Out, chunk);
+                    }
+                    if consume(chunk).is_break() {
+                        return Ok(((), true));
+                    }
                 }
-                if consume(chunk).is_break() {
-                    return Ok(((), true));
-                }
-            }
-        })?;
+            })
+            .await?;
         if attempt.stopped || attempt.status.success() {
             Ok(Streamed {
                 status: attempt.status,
@@ -441,6 +446,13 @@ impl GitCommand {
             return Err(self.cancelled());
         }
         tracing::debug!(subcommand = self.subcommand, "starting git");
+        if let Host::Relay(relay) = self.git.host() {
+            let tail = Arc::new(Mutex::new(TailBuffer::default()));
+            let mut program = self.program_there();
+            program.stdin = true;
+            let process = relay.start(program, self.stderr_sink(&tail));
+            return Ok(GitProcess::relayed(self.subcommand, process, tail));
+        }
         let mut command = self.build();
         command.stdin(Stdio::piped());
         let mut child = process::spawn_in_new_session(&mut command)
@@ -476,23 +488,20 @@ impl GitCommand {
     }
 
     /// Runs git once, collecting standard output up to the limit.
-    fn collect_once(&self) -> Result<Completed, GitError> {
+    async fn collect_once(&self) -> Result<Completed, GitError> {
         let limit = self.stdout_limit;
         let transcript = self.transcript();
-        let (attempt, stdout) = self.run_once(|stdout| {
-            let mut collected = Vec::new();
-            let allowed = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
-            let read = match transcript {
-                // Read as it comes, so the transcript shows it as it comes.
-                Some(transcript) => read_teeing(stdout.take(allowed), &mut collected, transcript),
-                None => stdout.take(allowed).read_to_end(&mut collected),
-            };
-            match read {
-                Ok(_) if collected.len() > limit => Err(ReadError::TooLarge(limit)),
-                Ok(_) => Ok((collected, false)),
-                Err(error) => Err(ReadError::Io(error)),
-            }
-        })?;
+        let (attempt, stdout) = self
+            .run_once(async |stdout: &mut Pipe<'_>| {
+                let mut collected = Vec::new();
+                let allowed = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+                match stdout.collect(&mut collected, allowed, transcript).await {
+                    Ok(()) if collected.len() > limit => Err(ReadError::TooLarge(limit)),
+                    Ok(()) => Ok((collected, false)),
+                    Err(error) => Err(ReadError::Io(error)),
+                }
+            })
+            .await?;
         Ok(Completed {
             status: attempt.status,
             stdout,
@@ -500,23 +509,33 @@ impl GitCommand {
         })
     }
 
-    /// Spawns git, feeds it, reads it with `read`, and waits for it.
+    /// Runs git, feeds it, reads it with `read`, and waits for it: here (or over ssh), or
+    /// through its relay.
     ///
     /// `read` returns what it read and whether it stopped before the end of the output. Git is
     /// stopped (SIGTERM to its process group) whenever reading ends early.
-    fn run_once<R>(
+    async fn run_once<R>(
         &self,
-        read: impl FnOnce(&mut GitStdout) -> Result<(R, bool), ReadError>,
+        read: impl AsyncFnOnce(&mut Pipe<'_>) -> Result<(R, bool), ReadError>,
     ) -> Result<(Attempt, R), GitError> {
         if self.cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
             return Err(self.cancelled());
         }
         tracing::debug!(subcommand = self.subcommand, access = ?self.access, "running git");
-        let transcript = self.transcript();
-        if let Some(transcript) = transcript {
+        if let Some(transcript) = self.transcript() {
             transcript.command(self.command_line());
         }
+        match self.git.host() {
+            Host::Relay(relay) => self.run_relayed(relay, read).await,
+            Host::Local | Host::Ssh(_) => self.run_here(read).await,
+        }
+    }
 
+    /// [`Self::run_once`] with git's process here (or the ssh running it there).
+    async fn run_here<R>(
+        &self,
+        read: impl AsyncFnOnce(&mut Pipe<'_>) -> Result<(R, bool), ReadError>,
+    ) -> Result<(Attempt, R), GitError> {
         let mut command = self.build();
         let mut child = process::spawn_in_new_session(&mut command)
             .map_err(|source| self.launch_error(source))?;
@@ -542,7 +561,7 @@ impl GitCommand {
             }
         };
 
-        let reading = read(&mut stdout);
+        let reading = read(&mut Pipe::Here(&mut stdout)).await;
         let started = stdout.started();
         drop(stdout);
         if !matches!(reading, Ok((_, false))) {
@@ -559,17 +578,69 @@ impl GitCommand {
         let status = Exit::from(status.map_err(|error| self.io_error(error))?);
 
         // There, its script couldn't go into its directory: said as here.
-        if !started
-            && status.code() == Some(host::NO_DIRECTORY)
-            && let Some(dir) = &self.dir
-        {
-            return Err(self.io_error(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("{} isn't a directory", dir.display()),
-            )));
+        if !started && status.code() == Some(host::NO_DIRECTORY) {
+            return Err(self.no_directory());
         }
+        self.conclude((status, stderr), reading, fed)
+    }
+
+    /// [`Self::run_once`] through `relay`: git runs on its computer, its standard error handed
+    /// on as it comes.
+    async fn run_relayed<R>(
+        &self,
+        relay: &Relay,
+        read: impl AsyncFnOnce(&mut Pipe<'_>) -> Result<(R, bool), ReadError>,
+    ) -> Result<(Attempt, R), GitError> {
+        let tail = Arc::new(Mutex::new(TailBuffer::default()));
+        let mut process = relay.start(self.program_there(), self.stderr_sink(&tail));
+        let registration = self
+            .cancel
+            .as_ref()
+            .map(|token| token.register_relayed(&process));
+        let fed = match &self.stdin {
+            Some(input) => process.write(input.bytes()).await,
+            None => Ok(()),
+        };
+        process.close_input();
+        let reading = read(&mut Pipe::Relayed(&mut process)).await;
+        if !matches!(reading, Ok((_, false))) {
+            process.terminate();
+        }
+        let ended = process.wait().await;
+        drop(registration);
+        if let Some(transcript) = self.transcript() {
+            transcript.finish(Stream::Err);
+        }
+        let stderr = std::mem::take(&mut *tail.lock()).finish();
+        let status = match ended {
+            Ok(exit) => exit,
+            Err(NotRun::Missing(Missing::Folder, _)) => return Err(self.no_directory()),
+            Err(NotRun::Missing(missing, message)) => {
+                let kind = if missing == Missing::Program {
+                    io::ErrorKind::NotFound
+                } else {
+                    io::ErrorKind::Other
+                };
+                return Err(GitError::Launch {
+                    program: self.git.program().to_owned(),
+                    source: io::Error::new(kind, message),
+                });
+            }
+            Err(NotRun::Lost(why)) => return Err(self.io_error(io::Error::other(why))),
+        };
+        self.conclude((status, stderr), reading, fed)
+    }
+
+    /// How a run went, now that git ended as `status` (having said `stderr`): cancelled,
+    /// what was read, or why it couldn't be.
+    fn conclude<R>(
+        &self,
+        (status, stderr): (Exit, Stderr),
+        reading: Result<(R, bool), ReadError>,
+        fed: io::Result<()>,
+    ) -> Result<(Attempt, R), GitError> {
         let cancelled = self.cancel.as_ref().is_some_and(CancelToken::is_cancelled);
-        if let Some(transcript) = transcript {
+        if let Some(transcript) = self.transcript() {
             transcript.finish(Stream::Out);
             if cancelled && !status.success() {
                 transcript.ended(false, "Cancelled.".to_owned());
@@ -600,6 +671,50 @@ impl GitCommand {
                 stopped,
             },
             output,
+        ))
+    }
+
+    /// Where a relayed command's standard error goes as it comes: its tail kept in `tail`, its
+    /// progress reported, and its transcript shown it.
+    fn stderr_sink(&self, tail: &Arc<Mutex<TailBuffer>>) -> relay::StderrSink {
+        let tail = Arc::clone(tail);
+        let mut reader = self.progress.as_ref().map(Progress::reader);
+        let transcript = self.transcript().cloned();
+        Box::new(move |chunk: &[u8]| {
+            tail.lock().push(chunk);
+            if let Some(reader) = &mut reader {
+                reader.feed(chunk);
+            }
+            if let Some(transcript) = &transcript {
+                transcript.feed(Stream::Err, chunk);
+            }
+        })
+    }
+
+    /// Git as its relay runs it: with git's environment there and this command's variables.
+    fn program_there(&self) -> relay::Program {
+        let args = self.git_args();
+        let variables: Vec<(&OsStr, &OsStr)> = self.variables().collect();
+        let mut program = relay::program_there(
+            &self.git,
+            self.git.program().as_os_str(),
+            &args,
+            self.dir.as_deref(),
+            &variables,
+        );
+        program.stdin = self.stdin.is_some();
+        program
+    }
+
+    /// That the command's directory isn't one.
+    fn no_directory(&self) -> GitError {
+        let dir = self
+            .dir
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new(""));
+        self.io_error(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("{} isn't a directory", dir.display()),
         ))
     }
 
@@ -641,7 +756,7 @@ impl GitCommand {
     /// The process, ready to spawn: git here, or the ssh running it on another computer.
     fn build(&self) -> Command {
         let mut command = match self.git.host() {
-            Host::Local => {
+            Host::Local | Host::Relay(_) => {
                 let mut command = Command::new(self.git.program());
                 self.git.environment().apply(&mut command);
                 for (key, value) in self.variables() {
@@ -873,6 +988,64 @@ fn drain(
         }
     }
     tail.finish()
+}
+
+/// Where a command's standard output is read from: git's pipe here (or ssh's), or its relay.
+enum Pipe<'a> {
+    Here(&'a mut GitStdout),
+    Relayed(&'a mut relay::Process),
+}
+
+impl Pipe<'_> {
+    /// Reads what comes next into `buffer`: how much, 0 at the end.
+    async fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Here(stdout) => loop {
+                match stdout.read(buffer) {
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                    read => return read,
+                }
+            },
+            Self::Relayed(process) => process.read(buffer).await,
+        }
+    }
+
+    /// Reads to the end, or `allowed` bytes, into `collected`; each chunk into `transcript` too
+    /// as it comes.
+    async fn collect(
+        &mut self,
+        collected: &mut Vec<u8>,
+        allowed: u64,
+        transcript: Option<&Transcript>,
+    ) -> io::Result<()> {
+        match self {
+            Self::Here(stdout) => match transcript {
+                // Read as it comes, so the transcript shows it as it comes.
+                Some(transcript) => read_teeing(stdout.take(allowed), collected, transcript),
+                None => stdout.take(allowed).read_to_end(collected),
+            }
+            .map(drop),
+            Self::Relayed(process) => {
+                let allowed = usize::try_from(allowed).unwrap_or(usize::MAX);
+                let mut buffer = vec![0; STREAM_CHUNK];
+                while collected.len() < allowed {
+                    let wanted = allowed.saturating_sub(collected.len()).min(buffer.len());
+                    let read = process
+                        .read(buffer.get_mut(..wanted).unwrap_or_default())
+                        .await?;
+                    if read == 0 {
+                        break;
+                    }
+                    let chunk = buffer.get(..read).unwrap_or_default();
+                    if let Some(transcript) = transcript {
+                        transcript.feed(Stream::Out, chunk);
+                    }
+                    collected.extend_from_slice(chunk);
+                }
+                Ok(())
+            }
+        }
+    }
 }
 
 /// Reads `stdout` to its end into `collected`, each chunk into `transcript` too as it comes.

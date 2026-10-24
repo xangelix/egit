@@ -12,7 +12,10 @@
 
 use std::io;
 use std::process::{Child, Command, ExitStatus};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use parking_lot::Mutex;
 
 #[cfg(unix)]
 mod unix;
@@ -29,13 +32,32 @@ pub(crate) use windows::{
 /// A program egit runs beside git (an agent's bridge, say), started and stopped as git is.
 ///
 /// It leads a group of its own without a terminal (on Windows, without a console window), and
-/// is stopped together with everything it started, gently first. Its group is only signalled while its leader isn't reaped, so its id can't have been reused.
+/// is stopped together with everything it started, gently first. Its group is only signalled
+/// while its leader isn't reaped, so its id can't have been reused.
 #[derive(Debug)]
 pub struct Detached {
     child: Child,
     group: Group,
     /// Reaped: its id may belong to another process now.
     reaped: bool,
+    /// Its group, for whoever stops it from elsewhere, until it is reaped.
+    stopper: Stopper,
+}
+
+/// Stops a [`Detached`]'s group from any thread, as cancelling git does, while its leader isn't
+/// reaped (then nothing: its id may be another's). Cheap to clone: clones share it.
+#[derive(Clone, Debug)]
+pub struct Stopper(Arc<Mutex<Option<Group>>>);
+
+impl Stopper {
+    /// Asks its group to stop (SIGTERM on Unix; on Windows, Git for Windows' gentle way).
+    pub fn terminate(&self) {
+        // Held while signalling: it can't be reaped meanwhile.
+        let group = self.0.lock();
+        if let Some(group) = *group {
+            terminate_group(group);
+        }
+    }
 }
 
 impl Detached {
@@ -51,7 +73,28 @@ impl Detached {
             child,
             group,
             reaped: false,
+            stopper: Stopper(Arc::new(Mutex::new(Some(group)))),
         })
+    }
+
+    /// What stops its group from elsewhere, until it is reaped.
+    #[must_use]
+    pub fn stopper(&self) -> Stopper {
+        self.stopper.clone()
+    }
+
+    /// Waits for it to end, and reaps it.
+    ///
+    /// # Errors
+    ///
+    /// When it can't be waited on.
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
+        // Its leader exited, its id still reserved: nothing signals it from now on.
+        wait_until_exited(self.group)?;
+        *self.stopper.0.lock() = None;
+        let status = self.child.wait();
+        self.reaped |= status.is_ok();
+        status
     }
 
     /// The process, to take its pipes.
@@ -65,8 +108,14 @@ impl Detached {
     ///
     /// When it can't be waited on.
     pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        // Reaped under the stopper's lock: nothing signals its id once it may be another's.
+        let mut group = self.stopper.0.lock();
         let status = self.child.try_wait()?;
-        self.reaped |= status.is_some();
+        if status.is_some() {
+            *group = None;
+            self.reaped = true;
+        }
+        drop(group);
         Ok(status)
     }
 
@@ -85,7 +134,10 @@ impl Detached {
         if let Err(error) = self.child.kill() {
             tracing::debug!(%error, "couldn't kill a detached process");
         }
+        let mut group = self.stopper.0.lock();
+        *group = None;
         self.reaped |= self.child.wait().is_ok();
+        drop(group);
     }
 
     /// Whether it ended within `patience`, looking every few milliseconds.

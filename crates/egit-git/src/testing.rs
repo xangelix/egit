@@ -9,7 +9,9 @@
 //! instead of the one on `PATH`. Set `EGIT_TEST_SSH` to run every sandbox's git as on another
 //! computer: this one, through an sshd of the tests' own on the loopback address (Linux, where
 //! sshd runs as any user), each command a session of one shared connection, as egit runs git
-//! over SSH.
+//! over SSH. Set `EGIT_TEST_RELAY` to an `egit-relay` executable to run it through a relay
+//! instead, as egit in a browser does: one relay a process, on the loopback address, every
+//! sandbox's commands over one WebSocket.
 
 use crate::exec::Wait as _;
 use std::error::Error;
@@ -95,12 +97,31 @@ pub fn ssh_host() -> Result<SshHost, SandboxError> {
     ssh::host()
 }
 
-/// Whether sandboxes run git as on another computer (`EGIT_TEST_SSH`): a test of what only
-/// this computer does (its askpass, git's own ssh) skips then.
+/// Whether sandboxes run git as on another computer (`EGIT_TEST_SSH`, or through a relay:
+/// `EGIT_TEST_RELAY`): a test of what only this computer does (its askpass, git's own ssh)
+/// skips then.
 #[must_use]
 pub fn on_another_computer() -> bool {
-    std::env::var_os("EGIT_TEST_SSH").is_some()
+    std::env::var_os("EGIT_TEST_SSH").is_some() || through_a_relay()
 }
+
+/// Whether sandboxes run git through a relay (`EGIT_TEST_RELAY`).
+#[must_use]
+pub fn through_a_relay() -> bool {
+    std::env::var_os("EGIT_TEST_RELAY").is_some_and(|relay| !relay.is_empty())
+}
+
+/// The tests' own relay (started the first time, and connected to): how egit in a browser
+/// reaches this computer.
+///
+/// # Errors
+///
+/// When `EGIT_TEST_RELAY` names none, or it can't be started or reached.
+pub fn relay() -> Result<crate::Relay, SandboxError> {
+    relay::connection()
+}
+
+pub use relay::TestRelay;
 
 impl Sandbox {
     /// A new sandbox around the git named by `EGIT_TEST_GIT`, or the one on `PATH`.
@@ -142,7 +163,9 @@ impl Sandbox {
     }
 
     fn git_from(env: Vec<(OsString, OsString)>) -> Result<Git, SandboxError> {
-        let host = if on_another_computer() {
+        let host = if through_a_relay() {
+            Host::Relay(relay::connection()?)
+        } else if on_another_computer() {
             Host::Ssh(ssh::host()?)
         } else {
             Host::Local
@@ -174,6 +197,39 @@ impl Sandbox {
                 .collect(),
             env,
         }
+    }
+
+    /// The sandbox's git through `relay`, with more environment variables.
+    ///
+    /// # Errors
+    ///
+    /// When the relay refuses, or git there can't be started.
+    pub fn git_through<K, V>(
+        &self,
+        relay: &crate::Relay,
+        extra: impl IntoIterator<Item = (K, V)>,
+    ) -> Result<Git, SandboxError>
+    where
+        K: Into<OsString>,
+        V: Into<OsString>,
+    {
+        // The relay's own askpass asks, and only where the test takes its prompts.
+        let mut env: Vec<(OsString, OsString)> = self
+            .env
+            .iter()
+            .filter(|(key, _)| key != "GIT_ASKPASS" && key != "SSH_ASKPASS")
+            .cloned()
+            .collect();
+        env.extend(
+            extra
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into())),
+        );
+        Ok(Git::new(GitOptions {
+            host: Host::Relay(relay.clone()),
+            ..Self::options_from(env)
+        })
+        .wait()?)
     }
 
     /// The sandbox's git with more environment variables, such as git's own test switches
@@ -274,6 +330,195 @@ impl Sandbox {
         self.run(repo, "add", &["--", file])?;
         self.run(repo, "commit", &["--quiet", "--message", message])?;
         Ok(())
+    }
+}
+
+/// The tests' own relay, for `EGIT_TEST_RELAY`: the executable it names, started once a
+/// process through a shell that stops it when the process ends (its input closes), and one
+/// connection to it, a WebSocket on a thread of its own.
+mod relay {
+    use std::io::{BufRead as _, BufReader};
+    use std::path::Path;
+    use std::process::{ChildStdin, Command, Stdio};
+    use std::sync::OnceLock;
+
+    use futures_util::{SinkExt as _, StreamExt as _};
+    use parking_lot::Mutex;
+    use tokio::sync::mpsc::{self, UnboundedSender};
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+
+    use super::SandboxError;
+    use crate::{Relay, Transport};
+
+    static CONNECTED: OnceLock<Result<(Relay, TestRelay), String>> = OnceLock::new();
+
+    /// The connection every sandbox's git runs through, the relay started the first time.
+    pub(super) fn connection() -> Result<Relay, SandboxError> {
+        CONNECTED
+            .get_or_init(|| {
+                let started = || -> Result<(Relay, TestRelay), SandboxError> {
+                    let program = std::env::var_os("EGIT_TEST_RELAY")
+                        .ok_or("EGIT_TEST_RELAY names no relay")?;
+                    let relay = TestRelay::start(Path::new(&program))?;
+                    Ok((relay.connect(&relay.token)?, relay))
+                };
+                started().map_err(|error| error.to_string())
+            })
+            .as_ref()
+            .map(|(relay, _)| relay.clone())
+            .map_err(|error| SandboxError::from(error.clone()))
+    }
+
+    /// What a test's connection sends: into its WebSocket's writer (`None` closes it).
+    struct Socket(UnboundedSender<Option<Vec<u8>>>);
+
+    impl Transport for Socket {
+        fn send(&self, message: Vec<u8>) {
+            let _sent = self.0.send(Some(message));
+        }
+
+        fn close(&self) {
+            let _sent = self.0.send(None);
+        }
+    }
+
+    /// A relay of a test's own: `egit-relay` on the loopback address, stopped when dropped.
+    #[derive(Debug)]
+    pub struct TestRelay {
+        /// Where it listens (`127.0.0.1:PORT`).
+        pub address: String,
+        /// Its token.
+        pub token: String,
+        /// The input of the shell keeping it: closed, the relay stops.
+        keeper: Mutex<Option<ChildStdin>>,
+    }
+
+    impl TestRelay {
+        /// Starts `program` (an `egit-relay`) on a port of its own.
+        ///
+        /// # Errors
+        ///
+        /// When it can't be started, or doesn't say where it listens.
+        pub fn start(program: &Path) -> Result<Self, SandboxError> {
+            Self::start_with(program, &[])
+        }
+
+        /// Starts `program` (an `egit-relay`) on a port of its own, with more of its options.
+        ///
+        /// # Errors
+        ///
+        /// When it can't be started, or doesn't say where it listens.
+        pub fn start_with(program: &Path, options: &[&str]) -> Result<Self, SandboxError> {
+            let mut keeper = Command::new("sh")
+                .args([
+                    "-c",
+                    "prog=$1; shift; \"$prog\" --listen 127.0.0.1:0 \"$@\" & pid=$!; \
+                     cat >/dev/null; kill \"$pid\"; wait \"$pid\"",
+                    "sh",
+                ])
+                .arg(program)
+                .args(options)
+                // Its errors alone: a test refusing a browser on purpose warns.
+                .env(
+                    "EGIT_LOG",
+                    std::env::var_os("EGIT_LOG").unwrap_or_else(|| "error".into()),
+                )
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()?;
+            let input = keeper
+                .stdin
+                .take()
+                .ok_or("the relay's keeper has no input")?;
+            let output = keeper
+                .stdout
+                .take()
+                .ok_or("the relay's keeper has no output")?;
+            let mut line = String::new();
+            BufReader::new(output).read_line(&mut line)?;
+            // `http://127.0.0.1:PORT/#TOKEN`
+            let (address, token) = line
+                .trim()
+                .strip_prefix("http://")
+                .and_then(|rest| rest.split_once("/#"))
+                .ok_or_else(|| format!("the relay said {line:?}, not where it listens"))?;
+            Ok(Self {
+                address: address.to_owned(),
+                token: token.to_owned(),
+                keeper: Mutex::new(Some(input)),
+            })
+        }
+
+        /// A connection to it, saying `token`: a WebSocket on a thread of its own.
+        ///
+        /// # Errors
+        ///
+        /// When the thread can't be started (one that can't connect ends at once, saying why).
+        pub fn connect(&self, token: &str) -> Result<Relay, SandboxError> {
+            let address = self.address.clone();
+            let (sender, mut sending) = mpsc::unbounded_channel::<Option<Vec<u8>>>();
+            let relay = Relay::new(Socket(sender), token.as_bytes());
+            let reading = relay.clone();
+            let mut request = format!("ws://{address}/relay").into_client_request()?;
+            request
+                .headers_mut()
+                .insert("Origin", format!("http://{address}").parse()?);
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            std::thread::Builder::new()
+                .name("a test's relay".to_owned())
+                .spawn(move || {
+                    runtime.block_on(async move {
+                        let connected = async {
+                            let stream = tokio::net::TcpStream::connect(&address).await?;
+                            stream.set_nodelay(true)?;
+                            let (socket, _) =
+                                tokio_tungstenite::client_async(request, stream).await?;
+                            Ok::<_, SandboxError>(socket)
+                        };
+                        let socket = match connected.await {
+                            Ok(socket) => socket,
+                            Err(error) => {
+                                reading.closed(&format!("the relay can't be reached: {error}"));
+                                return;
+                            }
+                        };
+                        let (mut sink, mut stream) = socket.split();
+                        let writing = async {
+                            while let Some(Some(message)) = sending.recv().await {
+                                if sink.send(Message::Binary(message.into())).await.is_err() {
+                                    break;
+                                }
+                            }
+                            let _closed = sink.close().await;
+                        };
+                        let read = async {
+                            while let Some(Ok(message)) = stream.next().await {
+                                if let Message::Binary(bytes) = message {
+                                    reading.receive(&bytes);
+                                }
+                            }
+                            reading.closed("the relay went away");
+                        };
+                        tokio::select! {
+                            () = writing => {}
+                            () = read => {}
+                        }
+                        // Closed this side, or that: whichever said first is why.
+                        reading.closed("the connection to the relay closed");
+                    });
+                })?;
+            Ok(relay)
+        }
+    }
+
+    impl Drop for TestRelay {
+        fn drop(&mut self) {
+            // Its keeper's input closes: the relay is stopped.
+            self.keeper.lock().take();
+        }
     }
 }
 

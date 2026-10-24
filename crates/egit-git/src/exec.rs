@@ -51,6 +51,19 @@ pub trait Wait: Future + Sized {
 
 impl<F: Future> Wait for F {}
 
+/// Runs `future` to its end apart, on a thread of its own named `name` (in a browser, a task
+/// of the page's).
+///
+/// # Errors
+///
+/// When the thread can't be started.
+pub fn spawn(name: &str, future: impl Future<Output = ()> + Send + 'static) -> std::io::Result<()> {
+    thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(move || block_on(future))
+        .map(drop)
+}
+
 /// Waits `duration`.
 #[allow(
     clippy::unused_async,

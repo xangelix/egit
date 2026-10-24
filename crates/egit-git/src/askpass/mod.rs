@@ -14,6 +14,7 @@
 //! environment, every field is bounded, and answers are wiped from memory once written.
 
 mod client;
+mod prompt;
 mod protocol;
 mod server;
 
@@ -27,8 +28,9 @@ mod platform;
 pub use client::run_helper;
 #[cfg(unix)]
 pub(crate) use platform::{ensure_private, is_stale, make_private_dir};
+pub use prompt::Prompt;
 pub use protocol::PromptKind;
-pub use server::{AskpassServer, Prompt};
+pub use server::AskpassServer;
 
 /// The name of the helper. egit runs as the helper when started under this name.
 pub const HELPER_NAME: &str = platform::HELPER_NAME;

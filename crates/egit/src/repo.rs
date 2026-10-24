@@ -733,6 +733,8 @@ fn watch(git: &Git, repository: &Repository, ctx: &egui::Context) -> notify::Res
     match git.host() {
         egit_git::Host::Local => Watcher::repository(repository, wake),
         // There, a session of its own looking every few seconds.
-        egit_git::Host::Ssh(_) => Watcher::elsewhere(git, repository, wake),
+        egit_git::Host::Ssh(_) | egit_git::Host::Relay(_) => {
+            Watcher::elsewhere(git, repository, wake)
+        }
     }
 }

@@ -1,13 +1,14 @@
 //! Cancelling running git commands.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Condvar, Mutex};
 
 use crate::host::{RemotePid, SshHost};
 use crate::process::{self, Group};
+use crate::relay::Relay;
 
 /// A command running on another computer: where, and its process id there once it said it.
 #[derive(Clone, Debug)]
@@ -39,7 +40,10 @@ impl Elsewhere {
                 }
                 // Still registered: its leader hasn't been reaped, so the id is still its.
                 let running = shared.running.lock();
-                if running.iter().any(|(running, _)| *running == group) {
+                if running
+                    .iter()
+                    .any(|(_, running)| matches!(running, Running::Group(running, _) if *running == group))
+                {
                     process::terminate_group(group);
                 }
             });
@@ -53,8 +57,8 @@ impl Elsewhere {
 /// Cancels the git commands run with it.
 ///
 /// Cancelling sends SIGTERM to each running command's process group (git, its hooks, ssh, and
-/// helpers), which lets git remove its lock files; a command started after the token was
-/// cancelled stops as soon as it starts. Every command that observes the cancellation returns
+/// helpers; through a relay, it asks the relay to), which lets git remove its lock files; a
+/// command started after the token was cancelled stops as soon as it starts. Every command that observes the cancellation returns
 /// [`GitError::Cancelled`](crate::GitError::Cancelled).
 ///
 /// Clones share the same state, so one can be handed to the interface while another runs the
@@ -65,12 +69,36 @@ pub struct CancelToken(Arc<Shared>);
 #[derive(Debug, Default)]
 struct Shared {
     cancelled: AtomicBool,
-    /// The process groups running under this token right now (and, for a command on another
-    /// computer, where). Each is removed only after its leader has exited and before it is
-    /// reaped, so a group id here is never a reused one.
-    running: Mutex<Vec<(Group, Option<Elsewhere>)>>,
+    /// What runs under this token right now, each under the number of its registration.
+    running: Mutex<Vec<(u64, Running)>>,
+    /// The number of the next registration.
+    next: AtomicU64,
     /// Wakes [`CancelToken::sleep`] when the token is cancelled.
     woken: Condvar,
+}
+
+/// A command running under a token.
+#[derive(Debug)]
+enum Running {
+    /// A process group here (and, for a command on another computer, where): removed only after
+    /// its leader has exited and before it is reaped, so its id here is never a reused one.
+    Group(Group, Option<Elsewhere>),
+    /// A process a relay runs, by its id there.
+    Relayed(Relay, u32),
+}
+
+impl Running {
+    /// Asks it to stop.
+    fn stop(&self, shared: &Arc<Shared>) {
+        match self {
+            // There first: the session here ending doesn't stop it.
+            Self::Group(group, Some(elsewhere)) => {
+                elsewhere.terminate(Arc::clone(shared), *group);
+            }
+            Self::Group(group, None) => process::terminate_group(*group),
+            Self::Relayed(relay, id) => relay.terminate(*id),
+        }
+    }
 }
 
 impl CancelToken {
@@ -84,12 +112,8 @@ impl CancelToken {
     pub fn cancel(&self) {
         self.0.cancelled.store(true, Ordering::Release);
         let running = self.0.running.lock();
-        for (group, elsewhere) in running.iter() {
-            match elsewhere {
-                // There first: the session here ending doesn't stop it.
-                Some(elsewhere) => elsewhere.terminate(Arc::clone(&self.0), *group),
-                None => process::terminate_group(*group),
-            }
+        for (_, running) in running.iter() {
+            running.stop(&self.0);
         }
         drop(running);
         self.0.woken.notify_all();
@@ -129,32 +153,45 @@ impl CancelToken {
     ///
     /// Drop the guard after the group's leader has exited and before reaping it.
     pub(crate) fn register(&self, group: Group, elsewhere: Option<Elsewhere>) -> Registration<'_> {
-        let mut running = self.0.running.lock();
-        // A cancel that came between the check before spawning and now: it may not have seen
-        // this group, so stop it here.
+        self.record(Running::Group(group, elsewhere))
+    }
+
+    /// Records a process a relay runs under this token until the returned guard is dropped.
+    pub(crate) fn register_relayed(&self, process: &crate::relay::Process) -> Registration<'_> {
+        self.record(Running::Relayed(process.relay().clone(), process.id()))
+    }
+
+    fn record(&self, running: Running) -> Registration<'_> {
+        let number = self.0.next.fetch_add(1, Ordering::Relaxed);
+        let mut list = self.0.running.lock();
+        // A cancel that came between the check before starting and now: it may not have seen
+        // this one, so stop it here.
         if self.is_cancelled() {
-            match &elsewhere {
-                Some(elsewhere) => elsewhere.terminate(Arc::clone(&self.0), group),
-                None => process::terminate_group(group),
-            }
+            running.stop(&self.0);
         }
-        running.push((group, elsewhere));
-        drop(running);
-        Registration { token: self, group }
+        list.push((number, running));
+        drop(list);
+        Registration {
+            token: self,
+            number,
+        }
     }
 }
 
-/// A process group running under a [`CancelToken`].
-#[must_use = "the group stays signallable only while the registration lives"]
+/// Something running under a [`CancelToken`].
+#[must_use = "it stays stoppable only while the registration lives"]
 pub(crate) struct Registration<'a> {
     token: &'a CancelToken,
-    group: Group,
+    number: u64,
 }
 
 impl Drop for Registration<'_> {
     fn drop(&mut self) {
         let mut running = self.token.0.running.lock();
-        if let Some(index) = running.iter().position(|(group, _)| *group == self.group) {
+        if let Some(index) = running
+            .iter()
+            .position(|(number, _)| *number == self.number)
+        {
             running.swap_remove(index);
         }
     }

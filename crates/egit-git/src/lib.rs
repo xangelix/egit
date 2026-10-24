@@ -50,6 +50,7 @@ mod profile;
 mod progress;
 mod rebase;
 mod reflog;
+pub mod relay;
 mod remote;
 mod remote_setup;
 mod repo;
@@ -144,7 +145,7 @@ pub use objects::{Object, ObjectKind, ObjectReader};
 pub use output::{Completed, Exit, Stderr};
 pub use patch::{Direction, LinesError, apply_lines, write_index_content};
 pub use people::{Author, map_contacts, recent_authors};
-pub use process::Detached;
+pub use process::{Detached, Stopper};
 pub use profile::{PullFastForward, PullRebase, Setting, Signing, SigningFormat};
 pub use progress::{Progress, ProgressReport};
 pub use rebase::{
@@ -152,6 +153,7 @@ pub use rebase::{
     rebase_interactive, rebase_keeping_merges, rebase_range,
 };
 pub use reflog::{ReflogEntry, create_ref, delete_ref, ref_target, reflog};
+pub use relay::{Relay, Transport, Welcome};
 pub use remote::{
     CloneOptions, FetchOptions, PullMode, Pulled, PushFlag, PushOptions, Pushed, PushedRef,
     abort_operation, clone, continue_operation, delete_remote_branch, fetch, fetch_refspecs,

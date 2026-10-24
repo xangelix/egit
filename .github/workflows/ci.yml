@@ -80,6 +80,11 @@ jobs:
           EGIT_TEST_SSH: "1"
         run: cargo test --package egit-git --locked
 
+      - name: Tests of git through a relay (as egit in a browser runs it)
+        run: |
+          cargo build --package egit-relay --locked
+          EGIT_TEST_RELAY="$PWD/target/debug/egit-relay" cargo test --package egit-git --locked
+
       - name: Upload the rendered screens
         if: always()
         uses: actions/upload-artifact@v7

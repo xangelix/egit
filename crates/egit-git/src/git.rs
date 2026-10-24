@@ -70,10 +70,20 @@ impl Git {
                     None,
                 ),
             },
-            Host::Ssh(_) => (
+            Host::Ssh(_) | Host::Relay(_) => (
                 options.program.unwrap_or_else(|| PathBuf::from("git")),
                 Some(Environment::remote(&options.env, &options.unset)),
             ),
+        };
+        // Through a relay, it is reached first: welcomed, or refused.
+        let welcome = match &options.host {
+            Host::Relay(relay) => Some(
+                relay
+                    .welcome()
+                    .await
+                    .map_err(|why| GitError::Relay { why })?,
+            ),
+            Host::Local | Host::Ssh(_) => None,
         };
         let mut environment = Environment::plan(std::env::vars_os());
         for (key, value) in options.env {
@@ -105,11 +115,14 @@ impl Git {
             return Err(GitError::Unsupported { found: version });
         }
         inner.version = version;
-        if let Some(ssh) = inner.host.ssh() {
+        if let Some(welcome) = welcome {
+            inner.home_there =
+                Some(bstr::ByteSlice::to_path_lossy(welcome.home.as_slice()).into_owned());
+        } else if inner.host.ssh().is_some() {
             inner.home_there = Some(
                 unchecked
                     .files()
-                    .home_there(ssh)
+                    .home_there()
                     .await
                     .map_err(|source| GitError::NoHome { source })?,
             );

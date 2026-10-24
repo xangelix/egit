@@ -39,7 +39,9 @@ pub enum PromptKind {
 }
 
 impl PromptKind {
-    const fn code(self) -> u8 {
+    /// Its number, as a helper (or a relay) sends it.
+    #[must_use]
+    pub const fn code(self) -> u8 {
         match self {
             Self::Visible => 0,
             Self::Secret => 1,
@@ -49,7 +51,9 @@ impl PromptKind {
         }
     }
 
-    const fn from_code(code: u8) -> Option<Self> {
+    /// The kind numbered `code`, if any is.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
         match code {
             0 => Some(Self::Visible),
             1 => Some(Self::Secret),

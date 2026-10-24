@@ -11,7 +11,8 @@ use std::time::Duration;
 use super::platform::{
     self, Listener, Presence, Stopper, Stream, ensure_private, make_private_dir, private_base,
 };
-use super::protocol::{self, PromptKind, Token};
+use super::prompt::Prompt;
+use super::protocol::{self, Token};
 use super::{HELPER_NAME, SOCKET_VAR, TOKEN_VAR};
 
 /// How long a connecting helper has to send its request.
@@ -36,20 +37,6 @@ pub struct AskpassServer {
     /// Marks the directory as in use, where that needs something kept.
     presence: Option<Presence>,
     accept: Option<JoinHandle<()>>,
-}
-
-/// A prompt waiting for the window's answer.
-///
-/// Answer it with [`Self::answer`] or [`Self::refuse`]; dropping it refuses it. Meanwhile the
-/// asker may give up (git was cancelled, ssh no longer needs the touch): check
-/// [`Self::is_abandoned`] while it is shown.
-#[derive(Debug)]
-pub struct Prompt {
-    id: u64,
-    kind: PromptKind,
-    text: String,
-    context: Option<String>,
-    stream: Option<Stream>,
 }
 
 impl AskpassServer {
@@ -168,77 +155,10 @@ impl Drop for AskpassServer {
     }
 }
 
-impl Prompt {
-    /// A number telling this prompt apart from others while it is shown.
-    #[must_use]
-    pub const fn id(&self) -> u64 {
-        self.id
-    }
-
-    /// What it asks for.
-    #[must_use]
-    pub const fn kind(&self) -> PromptKind {
-        self.kind
-    }
-
-    /// The prompt as git or ssh wrote it, such as `Password for 'https://me@example.com': `.
-    #[must_use]
-    pub fn text(&self) -> &str {
-        &self.text
-    }
-
-    /// What egit was doing when it was asked, when the command said
-    /// ([`GitCommand::prompt_context`](crate::GitCommand::prompt_context)).
-    #[must_use]
-    pub fn context(&self) -> Option<&str> {
-        self.context.as_deref()
-    }
-
-    /// Answers: the text typed (for [`PromptKind::Confirm`], any answer accepts).
-    ///
-    /// # Errors
-    ///
-    /// When the asker is gone or the answer is longer than a helper accepts.
-    pub fn answer(mut self, answer: &[u8]) -> io::Result<()> {
-        self.respond(Some(answer))
-    }
-
-    /// Refuses: the asker fails as if the user had cancelled.
-    ///
-    /// # Errors
-    ///
-    /// When the asker is gone.
-    pub fn refuse(mut self) -> io::Result<()> {
-        self.respond(None)
-    }
-
-    /// Whether the asker has gone away without waiting for an answer.
-    #[must_use]
-    pub fn is_abandoned(&self) -> bool {
-        self.stream.as_ref().is_none_or(platform::hung_up)
-    }
-
-    fn respond(&mut self, answer: Option<&[u8]>) -> io::Result<()> {
-        self.stream.take().map_or(Ok(()), |mut stream| {
-            protocol::write_response(&mut stream, answer)
-        })
-    }
-}
-
-impl Drop for Prompt {
-    fn drop(&mut self) {
-        if let Err(error) = self.respond(None) {
-            tracing::debug!(%error, "couldn't refuse a dropped prompt");
-        }
-    }
-}
-
 /// Accepts helpers until the server is stopped.
 fn accept_loop(listener: &Listener, token: &Token, prompts: &Sender<Prompt>, notify: &impl Fn()) {
-    let mut next_id = 0_u64;
     listener.serve(|stream| {
-        next_id = next_id.wrapping_add(1);
-        match receive(stream, token, next_id) {
+        match receive(stream, token, Prompt::next_id()) {
             Ok(prompt) => {
                 if prompts.send(prompt).is_err() {
                     // Nobody is listening any more; the prompt was refused as it dropped.
@@ -272,13 +192,13 @@ fn receive(stream: Stream, token: &Token, id: u64) -> io::Result<Prompt> {
     stream.set_read_timeout(None)?;
     stream.set_write_timeout(Some(ANSWER_TIMEOUT))?;
     let lossy = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
-    Ok(Prompt {
+    Ok(Prompt::from_helper(
         id,
-        kind: request.kind,
-        text: lossy(&request.prompt),
-        context: (!request.context.is_empty()).then(|| lossy(&request.context)),
-        stream: Some(stream),
-    })
+        request.kind,
+        lossy(&request.prompt),
+        (!request.context.is_empty()).then(|| lossy(&request.context)),
+        stream,
+    ))
 }
 
 /// Removes the directories of servers whose process is gone (egit crashed, or was killed).

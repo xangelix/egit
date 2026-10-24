@@ -48,6 +48,7 @@ it.
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
 | 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
+| 37 | egit in a browser: WebAssembly, git through a relay | under way: async egit-git, the relay and its protocol |
 
 ## Toolchain & commands
 
@@ -69,6 +70,11 @@ it.
   are built or run, or anything reading files directly (CI does it). Following changes there
   at once needs inotify-tools (`inotifywait`): its tests skip without it unless
   `EGIT_REQUIRE_INOTIFYWAIT` is set (CI sets it).
+- Git through a relay: `cargo build -p egit-relay && EGIT_TEST_RELAY=$PWD/target/debug/egit-relay
+  cargo test -p egit-git` runs every egit-git test with each command, and each file read or
+  written, going through one relay on the loopback address over one WebSocket, as egit in a
+  browser runs git. Do this after touching how commands are run, the relay, or its protocol (CI
+  does it).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
 - Agents: the bridge's tests need Node.js (`EGIT_REQUIRE_NODE=1` makes their absence fail);
   `cargo test -p egit-agents --test install -- --ignored` installs the Claude Agent SDK for real
@@ -179,8 +185,8 @@ writes paths), never `OsStrExt`.
     program `git` there unless named, and its home folder read once reached (`home_there`:
     `$HOME` there, `GitError::NoHome` when it isn't a folder). `Git::files`: that computer's
     files (`files.rs`).
-  - `host.rs` — `Host` (`Local`, `Ssh(SshHost)`: a destination as ssh takes it, more of ssh's
-    options (before egit's own: ssh keeps the first value of each), and the folder its
+  - `host.rs` — `Host` (`Local`, `Relay(Relay)`: `relay/`'s, `Ssh(SshHost)`: a destination
+    as ssh takes it, more of ssh's options (before egit's own: ssh keeps the first value of each), and the folder its
     connection is shared through, an `SshSharing`'s: `ControlMaster=auto`, `ControlPersist=1h`).
     A command there is a session (`ssh -T -e none`, its key held and connection shared as
     git's ssh: `AddKeysToAgent`, `ControlMaster`) whose remote line is fixed, `exec /bin/sh
@@ -259,7 +265,9 @@ writes paths), never `OsStrExt`.
     time (commits signed) the same way.
   - `process.rs` — `Detached`: a program other than git (an agent's bridge, npm) run as git is:
     leading a group of its own without a terminal, `stop` waiting, then asking the group to
-    stop (SIGTERM; Windows' gentle way), then killing; never signalled once reaped.
+    stop (SIGTERM; Windows' gentle way), then killing; `wait`; never signalled once reaped:
+    its `Stopper` (another thread's way to ask its group to stop) holds the group under a lock
+    that reaping clears.
     Git leading a group of its own, stopped and waited on safely, per platform
     (with the askpass's `getpeereid`, the crate's only `unsafe`). `process/unix.rs`: `setsid`
     in `pre_exec` (no controlling terminal; git leads its process group), SIGTERM to the
@@ -726,6 +734,27 @@ writes paths), never `OsStrExt`.
     blobs), a series applied (signed off, its author kept; stopped at a conflict with its
     progress and patch, skipped, aborted; stopped where a patch doesn't apply at all), a diff
     applied as changes (staged or not, conflicting), and a stopped cherry-pick skipped.
+  - `relay/` — git through a relay (`egit-relay`): egit's side of a connection, the transport
+    the platform's (`Transport`: a browser's WebSocket, a test's; it hands `Relay::receive`
+    each message, and `closed` its end). `protocol.rs`: binary messages, each its kind (a
+    byte), an id (four bytes), and its fields (numbers little-endian, byte strings their
+    length then their bytes), read strictly (`Garbled`: cut short, more than its fields, a list
+    longer than its message, past `MOST`, 16 MiB); `ToRelay` (`Hello` with the token, never
+    shown in debug output; `Start` a `Program`: program, arguments, folder, variables set and
+    unset, whether it reads input; `Stdin`, `CloseStdin`, `Terminate`, `Credit`, `Answer`) and
+    `FromRelay` (`Welcome`: home folder, computer; `Refused`, `Failed` with what was `Missing`,
+    `Stdout`, `Stderr`, `Exited`, `Prompt`, `Withdrawn`). `Relay` (`new` says hello; `welcome`
+    awaited; `send_prompts_to` the window's queue, refused until then; `close`): each process a
+    slot (`process.rs`: its output queued, read as it comes by `Process::read`, at most
+    `WINDOW` (1 MiB) waiting, the relay told what was taken in every quarter of it; its
+    standard error handed to a sink as it comes; its end, or `NotRun`: couldn't start, or the
+    connection was lost; dropped before its end, it is stopped and what comes after dropped);
+    prompts relayed as `askpass::Prompt`s answered through it. `program_there`: a program
+    with git's environment there, as over ssh (this computer's helpers left out, but what tells
+    the helper about the command). A command through a relay (`command.rs`'s `run_relayed`,
+    one `Pipe` read here or there), `GitProcess` (its answers buffered), `Files` (`sh` scripts,
+    as over ssh), `looking.rs`'s sessions (read by a task, `exec::spawn`), and a `CancelToken`
+    (`Terminate`) all work as over ssh.
   - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test;
     `EGIT_TEST_SSH` runs it as on another computer (`on_another_computer`): an sshd started once
     a process (`/tmp/egit-ts-<pid>`: keys of its own, `-F /dev/null`, `BatchMode`,
@@ -733,7 +762,12 @@ writes paths), never `OsStrExt`.
     process's end closes its input; tests of what only this computer does (the askpass, git's
     own ssh) skip then. `set_mode` (a script's permission bits, where files have them). The
     environment's identity and dates are taken away, unless a test names its own
-    (`git_with`: a commit at a set date).
+    (`git_with`: a commit at a set date). `EGIT_TEST_RELAY` (an `egit-relay` executable) runs it
+    through a relay instead (`through_a_relay`, counted as on another computer): one a process,
+    on the loopback address, kept by a shell as the sshd is, one WebSocket to it (tokio and
+    tokio-tungstenite, the `testing` feature's alone) on a thread of its own; `TestRelay` (a
+    relay of a test's own, its address and token, `connect`ed to with any token) and
+    `Sandbox::git_through` (a sandbox's git through one, whose own askpass asks).
 - `crates/egit-forge` — forges' web APIs: GitHub's (github.com, Enterprise Server) and GitLab's
   (gitlab.com, self-managed), and people's pictures; no egui. egit's only network connections
   of its own (git makes every other).
@@ -1006,6 +1040,36 @@ writes paths), never `OsStrExt`.
     each against git's (every kind of ref, packed and loose, another worktree; 50 random
     histories; a blobless clone read by both; replaced objects and reftable left to git);
     `tests/measure.rs` measures them against a large repository (`EGIT_SCALE_REPO`).
+- `crates/egit-relay` — `egit-relay`, egit in a browser's computer: serves egit's web build
+  and runs git (and `sh`, for the files egit reads and writes) for it, over a WebSocket at
+  `/relay` (`egit_git::relay`'s protocol); no egui. `main.rs`: `--listen` (the loopback
+  address, `127.0.0.1:7171`: reached through `ssh -L` or a proxy of the user's), `--web` (a
+  folder; `web` beside it), `--host` (a proxy's name); prints the address to open, its token
+  after `#` (random, or `EGIT_RELAY_TOKEN`); started as `egit-askpass` it is the helper.
+  `lib.rs`: `Options`, `Token` (32 random bytes in hex, compared in constant time), `bind`,
+  `Bound::url` and `serve` (tokio), what connections share (its ssh connections shared, an
+  `SshSharing`). `http.rs`: one request a connection, its head read within 10 s and 16 KiB;
+  the host it names must be the relay's (loopback names on any port, a tunnel's; the address
+  listened on; those given), else 421 (DNS rebinding); `/relay` upgraded (version 13, its
+  `Origin` the host's own, else 403; `derive_accept_key`; messages and frames at most `MOST`),
+  else a file of the build (`/` is `index.html`; plain names only, nothing hidden or outside;
+  `.br` or `.gz` beside it where the browser takes it; `application/wasm`), each answer with
+  a strict content security policy (its own files alone, its WebAssembly compiled), no
+  sniffing, no referrer, and no other site's framing or reading. `session.rs`: the first
+  message the token (`Refused` otherwise, or for another version), then `Welcome`; each
+  program started as it is asked, its input fed, its room for output added to, stopped; an
+  askpass server of the session's own, its questions relayed by number (`Withdrawn` once their
+  asker went away, looked at every 250 ms) and answered; the connection's end stops them all
+  and refuses what was asked. `running.rs`: a program as egit runs git (`Detached`: its own
+  group, no terminal), in its folder (`Failed` with `Missing::Folder` when it isn't one) with
+  the relay's environment, the session's, then the program's (unset first, as `env -u … K=V`);
+  its standard output sent no faster than the browser makes room (`Room`, a condition
+  variable), its standard error as it comes, its input fed by a thread; `Exited` after both;
+  abandoned (the session gone), read and dropped so it isn't held up. `tests/relay.rs` runs the
+  real binary: its build served to its own host alone (another host 421, a proxy's and a
+  tunnel's names let in, compressed, nothing outside), another site's page and a wrong token
+  refused, git run through it (a 9 MiB file read and fed back, a folder that isn't one,
+  cancelled), git's questions relayed and answered, and a session's programs stopped with it.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
   - `layout.rs` — `GraphBuilder::push` lays out each commit as `walk_history` yields it, in
