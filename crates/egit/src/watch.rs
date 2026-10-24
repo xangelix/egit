@@ -17,7 +17,8 @@
 //! A repository on another computer is followed by sessions there (`egit_git::look_there`,
 //! `look_at_folders_there`): told at once where `inotifywait` is installed there, else looking
 //! at its git directories every [`LOOKING_THERE`] (and its work tree's status read every few
-//! seconds by its owner).
+//! seconds by its owner). So is the user's configuration where git runs elsewhere (in a
+//! browser, its relay's computer: `look_at_files_there`).
 
 #[cfg(target_arch = "wasm32")]
 use crate::web::notify;
@@ -293,6 +294,27 @@ impl Watcher {
             },
             wake,
         )
+    }
+
+    /// Follows configuration files on the computer `git` runs on, another (a session there:
+    /// see [`Self::elsewhere`]).
+    pub(crate) fn files_there(
+        git: &Git,
+        files: &[PathBuf],
+        wake: impl Fn(Duration) + Send + 'static,
+    ) -> notify::Result<Self> {
+        let pending = Arc::new(Mutex::new(Pending::default()));
+        let shared = Arc::clone(&pending);
+        let follow = Follow::at_once(LOOKING_THERE);
+        let looking = egit_git::look_at_files_there(git, files, &follow, move || {
+            shared.lock().note(Changes::CONFIG, Instant::now());
+            wake(SETTLE);
+        })
+        .map_err(notify::Error::io)?;
+        Ok(Self {
+            inner: Inner::There(looking),
+            pending,
+        })
     }
 
     /// What changed, once things have settled for [`SETTLE`] at `now`.

@@ -146,8 +146,8 @@ pub use lfs::{
     lfs_version,
 };
 pub use looking::{
-    Follow, INOTIFYWAIT, Liveness, Looked, Looking, Seen, classify, look_at_folders_there,
-    look_there,
+    Follow, INOTIFYWAIT, Liveness, Looked, Looking, Seen, classify, look_at_files_there,
+    look_at_folders_there, look_there,
 };
 pub use object_id::{Abbreviated, ObjectFormat, ObjectId};
 pub use objects::{Object, ObjectKind, ObjectReader};

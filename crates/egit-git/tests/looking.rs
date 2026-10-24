@@ -3,8 +3,8 @@
 //! once by `inotifywait` (skipped without inotify-tools, unless `EGIT_REQUIRE_INOTIFYWAIT` is
 //! set) of refs, the index, an operation's state, and the configuration, the repository's and the
 //! user's; looking every second where it isn't installed, or stops; a work tree's folders
-//! followed, those not named left alone; and every watcher there stopped as soon as the session
-//! is dropped.
+//! followed, those not named left alone; files followed, told or looked at, others in their
+//! folder left alone; and every watcher there stopped as soon as the session is dropped.
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
 #![allow(
@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use egit_git::testing::Sandbox;
 use egit_git::{
     Follow, Git, GitOptions, Host, INOTIFYWAIT, Looked, Looking, Repository, Seen, Wait as _,
-    look_at_folders_there, look_there,
+    look_at_files_there, look_at_folders_there, look_there,
 };
 
 /// The sandbox's git, run on "another computer"; `None` (the test skipped) without the tests'
@@ -287,4 +287,77 @@ fn a_work_trees_folders_are_followed_and_no_others() {
     )
     .unwrap();
     assert_eq!(seen.recv_timeout(soon), Ok(Seen::Missing));
+}
+
+/// Follows `files` as `follow` says; each change comes through the receiver.
+fn follow_files(git: &Git, files: &[PathBuf], follow: &Follow) -> (Looking, Receiver<()>) {
+    let (sender, changes) = mpsc::channel();
+    let looking = look_at_files_there(git, files, follow, move || {
+        let _ = sender.send(());
+    })
+    .unwrap();
+    (looking, changes)
+}
+
+#[test]
+fn files_are_followed_and_no_others() {
+    if !inotifywait_installed() {
+        return;
+    }
+    let sandbox = Sandbox::new().unwrap();
+    let tmp = sandbox.path("tmp-files");
+    let Some(git) = there(&sandbox, &tmp) else {
+        return;
+    };
+    let home = sandbox.home();
+    // One whose folder isn't there is left out, rather than failing the rest.
+    let files = [home.join(".gitconfig"), home.join(".config/nowhere/config")];
+    // Looking only every minute: whatever comes sooner was told.
+    let (looking, changes) = follow_files(&git, &files, &Follow::at_once(Duration::from_secs(60)));
+    assert!(
+        eventually(Duration::from_secs(10), || looking.is_live()),
+        "never told at once"
+    );
+    let soon = Duration::from_secs(5);
+    sandbox
+        .run(home, "config", &["--global", "egit.test", "user"])
+        .unwrap();
+    assert!(changes.recv_timeout(soon).is_ok(), "the file written");
+    while changes.recv_timeout(Duration::from_millis(300)).is_ok() {}
+    std::fs::write(home.join("other"), "x\n").unwrap();
+    assert!(
+        changes.recv_timeout(Duration::from_secs(1)).is_err(),
+        "another file in its folder"
+    );
+
+    let marker = tmp.into_os_string();
+    assert!(running(&marker));
+    drop(looking);
+    assert!(
+        eventually(Duration::from_secs(3), || !running(&marker)),
+        "the watcher left running there"
+    );
+}
+
+#[test]
+fn files_are_looked_at_where_inotifywait_isnt_there() {
+    let sandbox = Sandbox::new().unwrap();
+    let Some(git) = there(&sandbox, &sandbox.path("tmp")) else {
+        return;
+    };
+    let home = sandbox.home();
+    let looking_only = Follow {
+        every: Duration::from_secs(1),
+        inotifywait: Some("egit-no-such-inotifywait".into()),
+    };
+    let (looking, changes) = follow_files(&git, &[home.join(".gitconfig")], &looking_only);
+    // Its first look only notes how things are.
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert!(!looking.is_live());
+    assert!(changes.try_recv().is_err());
+    sandbox
+        .run(home, "config", &["--global", "egit.test", "user"])
+        .unwrap();
+    assert!(changes.recv_timeout(Duration::from_secs(5)).is_ok());
+    assert!(!looking.has_ended());
 }

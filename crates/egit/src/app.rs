@@ -1001,7 +1001,7 @@ impl AppState {
             files.dedup();
             let watched = self.user_watcher.as_ref().map(|(watched, _)| watched);
             if watched != Some(&files) {
-                let watching = Watching::new(now, || watch_files(files.clone(), ctx));
+                let watching = Watching::new(now, || watch_files(git, &files, ctx));
                 self.user_watcher = Some((files, watching));
             }
         }
@@ -1009,18 +1009,18 @@ impl AppState {
             .user_watcher
             .as_mut()
             .map_or(Taken::Nothing, |(files, watching)| {
-                watching.take(now, || watch_files(files.clone(), ctx))
+                watching.take(now, || watch_files(git, files, ctx))
             });
         match taken {
             Taken::Nothing => {}
             Taken::Wait(delay) => wait = sooner(wait, Some(delay)),
             Taken::Changed(_) => {
                 self.refresh_user_config(git);
-                // A repository here reads this computer's configuration too.
+                // A repository on the same computer reads this configuration too.
                 for repo in self
                     .repos
                     .iter_mut()
-                    .filter(|repo| repo.git.host().is_local())
+                    .filter(|repo| repo.git.host() == git.host())
                 {
                     let git = repo.git.clone();
                     repo.refresh_config(&git);
@@ -1385,10 +1385,16 @@ fn pointing_hand(ctx: &egui::Context) {
     }
 }
 
-/// Watches the user's configuration `files`, waking `ctx` when one changes.
-fn watch_files(files: Vec<PathBuf>, ctx: &egui::Context) -> notify::Result<Watcher> {
+/// Watches the user's configuration `files`, where `git` runs, waking `ctx` when one changes.
+fn watch_files(git: &Git, files: &[PathBuf], ctx: &egui::Context) -> notify::Result<Watcher> {
     let waker = ctx.clone();
-    Watcher::files(files, move |delay| waker.request_repaint_after(delay))
+    let wake = move |delay| waker.request_repaint_after(delay);
+    if git.host().is_local() {
+        Watcher::files(files.to_vec(), wake)
+    } else {
+        // In a browser, the relay's computer's.
+        Watcher::files_there(git, files, wake)
+    }
 }
 
 /// The sooner of two optional delays.

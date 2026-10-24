@@ -238,15 +238,18 @@ compile.
     configuration's and index's times), as where it isn't installed. `look_at_folders_there`:
     a work tree's folders (each on its own, NUL-separated on its input, those gone left out by
     `xargs`, listed in a temporary file for `inotifywait --fromfile`), each change `Seen`
-    (ready, changed, a folder created, missing, failed with its words). Every session says `.`
+    (ready, changed, a folder created, missing, failed with its words). `look_at_files_there`:
+    some files (the user's configuration, before any repository is open), through their
+    folders where `inotifywait` is installed (each path changed matched against them), else
+    their times, sizes, and inodes looked at every few seconds. Every session says `.`
     every 5 s (a reader gone without a word ends it) and stops its watchers, and itself, as soon
     as its input ends (`Looking` holds it: dropped, the session closes). `Liveness`, how one
     stands, shared. `tests/looking.rs` (through the tests' sshd; the live ones skipped without
     inotify-tools unless `EGIT_REQUIRE_INOTIFYWAIT`, which CI sets): told at once of a commit,
     a file staged, a bisection, both configurations, branches in a new folder; looking every
     second without it, or with one that stops; folders followed and no others, a folder made
-    seen; every watcher there stopped at once when dropped. Through the tests' relay too
-    (`EGIT_TEST_RELAY`).
+    seen; files followed (told, or looked at), another in their folder not; every watcher
+    there stopped at once when dropped. Through the tests' relay too (`EGIT_TEST_RELAY`).
   - `command.rs` — `GitCommand` from `Git::read` / `Git::write`: `-c` settings, arguments,
     directory, stdin, and a `CancelToken`; `output` (collected up to `stdout_limit`, failing
     unless git succeeds), `output_unchecked` (any exit), `stream` (chunks through one reused

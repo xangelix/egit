@@ -12,7 +12,9 @@
 //!
 //! A work tree's folders are followed by a session of their own ([`look_at_folders_there`]):
 //! those its owner names, each on its own, as here, through `inotifywait` only (without it, the
-//! work tree's status is read every few seconds instead).
+//! work tree's status is read every few seconds instead). So are some files
+//! ([`look_at_files_there`]: the user's configuration, before any repository is open), through
+//! their folders, or looked at every few seconds.
 //!
 //! Every session says `.` every few seconds, so one whose reader went away without a word (a
 //! network gone) ends soon after; one whose reader closed it ends at once, as it stops its
@@ -101,6 +103,47 @@ while sleep 5; do
   rm -f "$list"
   kill -0 $watcher 2>/dev/null || { echo failed; exit 0; }
   echo . || exit 0
+done
+"#;
+
+/// The session following some files: `$1` the seconds between looks, `$2` the `inotifywait` to
+/// be told by (empty: only look), the files after. Told, it watches their folders (editors and
+/// `git config` replace a file, renaming another over it), each path changed said for its reader
+/// to match; looking, it says `changed` when their times, sizes, or inodes did.
+const FILES: &str = r#"
+every=$1 inotifywait=$2
+shift 2
+if [ -n "$inotifywait" ] && command -v "$inotifywait" >/dev/null 2>&1; then
+  list=$(mktemp "${TMPDIR:-/tmp}/egit-files.XXXXXXXX") || exit 1
+  for file do
+    folder=$(dirname -- "$file")
+    [ -d "$folder" ] && printf '%s\n' "$folder"
+  done | sort -u > "$list"
+  trap '' PIPE
+  "$inotifywait" -m --format 'e %w%f' -e modify,close_write,create,delete,moved_to,moved_from --fromfile "$list" 2>&1 &
+  watcher=$!
+  exec 3<&0
+  { cat <&3 >/dev/null; kill $watcher $$ 2>/dev/null; } &
+  guard=$!
+  trap 'kill $watcher $guard 2>/dev/null; rm -f "$list"' EXIT
+  while sleep 5; do
+    rm -f "$list"
+    kill -0 $watcher 2>/dev/null || break
+    echo . || exit 0
+  done
+  kill $watcher $guard 2>/dev/null
+  rm -f "$list"
+  trap - EXIT
+  trap - PIPE
+  echo failed
+fi
+old=
+while :; do
+  now=$(stat -c '%n %y %s %i' -- "$@" 2>/dev/null | cksum)
+  [ -z "$old" ] || [ "$now" = "$old" ] || echo changed
+  echo . || exit 0
+  old=$now
+  sleep "$every"
 done
 "#;
 
@@ -450,6 +493,52 @@ pub fn look_at_folders_there<'p>(
     };
     read_lines(git, started, &list, move |line, live| {
         handle(line, live);
+    })
+}
+
+/// Follows `files` there as `follow` says, calling `changed` on a thread of its own (through a
+/// relay, a task of its own) whenever one of them changes: made, written, replaced, removed.
+///
+/// A file whose path holds a line break can't be matched to what `inotifywait` says, and isn't
+/// followed.
+///
+/// # Errors
+///
+/// When the session can't be started, or `git` runs here (where a watch does better).
+pub fn look_at_files_there(
+    git: &Git,
+    files: &[PathBuf],
+    follow: &Follow,
+    mut changed: impl FnMut() + Send + 'static,
+) -> io::Result<Looking> {
+    let files: Vec<PathBuf> = files
+        .iter()
+        .filter(|file| {
+            let bytes = Vec::from_path_lossy(file);
+            crate::is_absolute(file) && !bytes.contains(&b'\n') && !bytes.contains(&0)
+        })
+        .cloned()
+        .collect();
+    let seconds = follow.every.as_secs().max(1).to_string();
+    let inotifywait = follow.inotifywait.clone().unwrap_or_default();
+    let mut args = vec![OsStr::new(&seconds), inotifywait.as_os_str()];
+    args.extend(files.iter().map(|file| file.as_os_str()));
+    let started = start(git, FILES, &args)?;
+    read_lines(git, started, &[], move |line, live| match line {
+        b"." | b"Setting up watches." => {}
+        b"Watches established." => live.store(true, Ordering::Release),
+        b"failed" => live.store(false, Ordering::Release),
+        b"changed" => changed(),
+        _ => {
+            if let Some(path) = line.strip_prefix(b"e ") {
+                let path = path.to_path_lossy();
+                if files.iter().any(|file| *file == *path) {
+                    changed();
+                }
+            } else {
+                tracing::debug!(said = %line.as_bstr(), "looking at files there");
+            }
+        }
     })
 }
 
