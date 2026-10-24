@@ -123,13 +123,13 @@ pub(super) fn show(
         Some(Err(problem)) => {
             let problem = problem.clone();
             Frame::new()
-                .inner_margin(Margin::same(16))
+                .inner_margin(Margin::symmetric(12, 16))
                 .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
             return event;
         }
         None => {
             Frame::new()
-                .inner_margin(Margin::same(16))
+                .inner_margin(Margin::symmetric(12, 16))
                 .show(ui, |ui| widgets::working(ui, "Reading Git LFS…"));
             return event;
         }
@@ -148,23 +148,25 @@ pub(super) fn show(
         .id_salt(("lfs-page", shared.id))
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            Frame::new().inner_margin(Margin::same(16)).show(ui, |ui| {
-                // A comfortable measure on a wide screen, the room there is on a narrow one.
-                ui.set_max_width(ui.available_width().min(860.0));
-                let mut ask = |task| event = Some(LfsEvent::Task(Task::Lfs(task)));
-                state_card(ui, shared, lfs, &mut ask);
-                if lfs.version.is_none() {
-                    return;
-                }
-                ui.add_space(12.0);
-                transfers_card(ui, shared, lfs, &mut ask);
-                ui.add_space(12.0);
-                patterns_card(ui, shared, lfs, view, &mut ask);
-                ui.add_space(12.0);
-                files_card(ui, shared, view);
-                ui.add_space(12.0);
-                locks_card(ui, shared, view, &mut ask);
-            });
+            Frame::new()
+                .inner_margin(Margin::symmetric(12, 16))
+                .show(ui, |ui| {
+                    // A comfortable measure on a wide screen, the room there is on a narrow one.
+                    ui.set_max_width(ui.available_width().min(860.0));
+                    let mut ask = |task| event = Some(LfsEvent::Task(Task::Lfs(task)));
+                    state_card(ui, shared, lfs, &mut ask);
+                    if lfs.version.is_none() {
+                        return;
+                    }
+                    ui.add_space(12.0);
+                    transfers_card(ui, shared, lfs, &mut ask);
+                    ui.add_space(12.0);
+                    patterns_card(ui, shared, lfs, view, &mut ask);
+                    ui.add_space(12.0);
+                    files_card(ui, shared, view);
+                    ui.add_space(12.0);
+                    locks_card(ui, shared, view, &mut ask);
+                });
         });
     event
 }

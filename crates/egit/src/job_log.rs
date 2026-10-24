@@ -15,8 +15,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egit_forge::{
-    Account, ForgeError, ForgeKind, ForgeRepository, JobLog, JobRun, LogParts, LogRead, Run,
-    Section, job, read_log,
+    Account, ForgeError, ForgeKind, ForgeRepository, JobLog, JobRun, LogMark, LogParts, LogRead,
+    Run, Section, job, read_log, with_steps,
 };
 use egit_git::{CancelToken, Style};
 use egit_text::{Measure, Text};
@@ -44,7 +44,10 @@ const GITHUB_LOG_EVERY: u32 = 5;
 const LOOKS_AFTER_END: u32 = 5;
 
 /// A log laid out for the text grid: its text measured, styles, each line's time (where the
-/// runner wrote them), and sections.
+/// runner wrote them), its sections (a GitHub job's steps among them, each a line of its own:
+/// [`with_steps`]), and the lines its runner marks as errors or warnings. Each section's header
+/// has a caret in the gutter (▾, or ▸ once folded: [`crate::log_folds`]) and how long it took at
+/// its right.
 #[derive(Debug)]
 pub(crate) struct LogSource {
     text: Text,
@@ -52,15 +55,18 @@ pub(crate) struct LogSource {
     runs: Vec<Run>,
     times: Vec<i64>,
     pub(crate) sections: Vec<Section>,
+    pub(crate) marks: Vec<LogMark>,
     /// Whether the log was longer than egit keeps.
     pub(crate) truncated: bool,
     /// The viewer's time zone, for each line's time.
     zone: jiff::tz::TimeZone,
+    /// How it was measured, for its folded views.
+    pub(crate) options: egit_text::Options,
 }
 
 impl LogSource {
     /// `parts`, measured (on the calling thread: the follower's).
-    fn of(parts: LogParts, options: egit_text::Options) -> Option<Self> {
+    pub(crate) fn of(parts: LogParts, options: egit_text::Options) -> Option<Self> {
         let text = Text::new(parts.text).ok()?;
         let measure = Measure::all(&text, options);
         Some(Self {
@@ -69,8 +75,110 @@ impl LogSource {
             runs: parts.runs,
             times: parts.times,
             sections: parts.sections,
+            marks: parts.marks,
             truncated: parts.truncated,
             zone: crate::format::local_zone(),
+            options,
+        })
+    }
+
+    /// The outermost section whose header is line `line`, if any (the sections are in the
+    /// order of their headers).
+    pub(crate) fn header(&self, line: u32) -> Option<&Section> {
+        self.header_place(line)
+            .and_then(|place| self.sections.get(place))
+    }
+
+    /// The place of the outermost section whose header is line `line`, if any.
+    pub(crate) fn header_place(&self, line: u32) -> Option<usize> {
+        let at = self.sections.partition_point(|section| section.line < line);
+        self.sections
+            .get(at)
+            .is_some_and(|section| section.line == line)
+            .then_some(at)
+    }
+
+    /// The last line section `section` holds: where it ended, or the log's last while it runs.
+    pub(crate) fn last_line(&self, section: &Section) -> u32 {
+        section
+            .ended
+            .map_or_else(|| self.measure.lines().saturating_sub(1), |(_, last)| last)
+    }
+
+    /// Whether `section` holds lines below its header, which folding it would hide.
+    pub(crate) fn folds(&self, section: &Section) -> bool {
+        self.last_line(section) > section.line
+    }
+
+    /// The innermost section holding line `line`.
+    pub(crate) fn section_at(&self, line: u32) -> Option<usize> {
+        let before = self
+            .sections
+            .partition_point(|section| section.line <= line);
+        (0..before).rev().find(|at| {
+            self.sections
+                .get(*at)
+                .is_some_and(|section| self.last_line(section) >= line)
+        })
+    }
+
+    /// How long `section` took, or has so far (none without times).
+    pub(crate) fn took(section: &Section, now: i64) -> Option<u64> {
+        if section.started == 0 {
+            return None;
+        }
+        let until = section.ended.map_or(now, |(ended, _)| ended);
+        u64::try_from(until.saturating_sub(section.started)).ok()
+    }
+
+    /// Line `line`'s gutter: its number, its time where the runner wrote one, and a section's
+    /// caret (`folded` or not).
+    pub(crate) fn gutter_of(&self, line: u32, folded: bool, out: &mut String) {
+        use std::fmt::Write as _;
+        let _ = write!(out, "{}", u64::from(line).saturating_add(1));
+        let time = usize::try_from(line)
+            .ok()
+            .and_then(|line| self.times.get(line))
+            .copied()
+            .filter(|time| *time != 0);
+        if let Some(time) = time {
+            let offset = i64::from(crate::format::offset_minutes(time, &self.zone));
+            let local = time.saturating_add(offset.saturating_mul(60));
+            let of_day = local.rem_euclid(86_400);
+            let _ = write!(
+                out,
+                " {:02}:{:02}:{:02}",
+                of_day.div_euclid(3_600),
+                of_day.div_euclid(60).rem_euclid(60),
+                of_day.rem_euclid(60)
+            );
+        } else if !self.times.is_empty() {
+            out.push_str("         ");
+        }
+        if !self.sections.is_empty() {
+            let caret = match self.header(line) {
+                Some(section) if self.folds(section) => {
+                    if folded {
+                        " ▸"
+                    } else {
+                        " ▾"
+                    }
+                }
+                _ => "  ",
+            };
+            out.push_str(caret);
+        }
+    }
+
+    /// What shows at the right of line `line`: a section's header, how long it took.
+    pub(crate) fn trailing_of(&self, line: u32) -> Option<String> {
+        let section = self.header(line)?;
+        let now = i64::try_from(crate::format::now()).unwrap_or(i64::MAX);
+        let took = crate::format::duration(Self::took(section, now)?);
+        Some(if section.ended.is_some() {
+            took
+        } else {
+            format!("{took} so far")
         })
     }
 
@@ -143,42 +251,36 @@ impl GridSource for LogSource {
     }
 
     fn background(&self, line: u32, palette: &Palette) -> Option<Color32> {
-        // A section's header stands out as GitLab's does.
-        self.sections
-            .iter()
-            .any(|section| section.line == line)
-            .then_some(palette.surface)
+        // A section's header stands out as GitLab's does: a step's (a depth of none) more.
+        self.header(line).map(|section| {
+            if section.depth == 0 {
+                palette.surface_alt
+            } else {
+                palette.surface
+            }
+        })
     }
 
     fn gutter(&self, line: u32, out: &mut String) {
-        use std::fmt::Write as _;
-        let _ = write!(out, "{}", u64::from(line).saturating_add(1));
-        let time = usize::try_from(line)
-            .ok()
-            .and_then(|line| self.times.get(line))
-            .copied()
-            .filter(|time| *time != 0);
-        if let Some(time) = time {
-            let offset = i64::from(crate::format::offset_minutes(time, &self.zone));
-            let local = time.saturating_add(offset.saturating_mul(60));
-            let of_day = local.rem_euclid(86_400);
-            let _ = write!(
-                out,
-                " {:02}:{:02}:{:02}",
-                of_day.div_euclid(3_600),
-                of_day.div_euclid(60).rem_euclid(60),
-                of_day.rem_euclid(60)
-            );
-        }
+        self.gutter_of(line, false, out);
     }
 
     fn gutter_cells(&self) -> u32 {
-        let number = self.measure.lines().max(1).ilog10().saturating_add(2);
-        if self.times.is_empty() {
-            number
-        } else {
-            number.saturating_add(9)
-        }
+        // At least five digits: a log growing past 9,999 lines doesn't move its text.
+        let number = self
+            .measure
+            .lines()
+            .max(1)
+            .ilog10()
+            .saturating_add(2)
+            .max(6);
+        let timed = if self.times.is_empty() { 0 } else { 9 };
+        let caret = if self.sections.is_empty() { 0 } else { 2 };
+        number.saturating_add(timed).saturating_add(caret)
+    }
+
+    fn trailing(&self, line: u32) -> Option<String> {
+        self.trailing_of(line)
     }
 }
 
@@ -370,9 +472,21 @@ impl Follower {
         }
     }
 
-    /// Lays `log` out for the grid (`whole`: the job ended) and hands it over.
+    /// Lays `log` out for the grid (`whole`: the job ended) and hands it over, a GitHub job's
+    /// steps made its sections.
     fn lay_out(&self, log: &JobLog, whole: bool) {
-        let source = LogSource::of(log.parts(), self.options);
+        let steps = self
+            .shared
+            .lock()
+            .job
+            .as_ref()
+            .map(|run| run.steps.clone())
+            .unwrap_or_default();
+        let mut parts = log.parts();
+        if !steps.is_empty() {
+            parts = with_steps(parts, &steps);
+        }
+        let source = LogSource::of(parts, self.options);
         let mut shared = self.shared.lock();
         if let Some(source) = source {
             shared.log = Some(Arc::new(source));
@@ -444,6 +558,7 @@ mod tests {
         let mut gutter = String::new();
         source.gutter(1, &mut gutter);
         assert_eq!(gutter, "2 11:19:21");
-        assert_eq!(source.gutter_cells(), 11);
+        // At least five digits' room: a log growing past 9,999 lines doesn't move its text.
+        assert_eq!(source.gutter_cells(), 15);
     }
 }

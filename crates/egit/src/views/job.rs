@@ -2,18 +2,23 @@
 //! GitHub Actions job's: a bar (back to the pipeline, the job's status and how long it has run,
 //! why it failed, its runs (the latest and those retried before it) to switch between,
 //! retrying, cancelling, or starting it as its forge allows (in its words: [`CiWords`]), its
-//! sections to jump to, wrapping, its page on the forge), then the log in the text grid as the
-//! forge shows it (colours, each line's time beside its number where the runner wrote them,
-//! sections' headers marked), read again every few seconds while the job runs, the view
-//! following its end while it rests there (scrolled up, it stays; back at the end, it follows
-//! again). GitHub gives a job's log once it has ended: meanwhile its steps show as they go. A
-//! retry shows the new run as it starts. Escape, or the back button, goes back to the pipeline
-//! (read again).
+//! sections' outline shown or not, wrapping, its page on the forge), then the log in the text
+//! grid as the forge shows it (colours, each line's time beside its number where the runner
+//! wrote them, sections' headers marked with a caret and how long they took, folded as the
+//! forge folds them: `log_folds`), its outline at its left (`log_outline`). A click on a
+//! section's header folds or unfolds it; Alt+↑ and Alt+↓ go to the section before or after.
+//! It is read again every few seconds while the job runs, the view following its end while it
+//! rests there (scrolled up, it stays, "Follow the end" a click away). GitHub gives a job's
+//! log once it has ended: meanwhile its steps show as they go. A retry shows the new run as it
+//! starts. Escape, or the back button, goes back to the pipeline (read again).
+
+use std::sync::Arc;
 
 use egit_forge::{CiAction, CiStatus, EarlierRun, ForgeKind, Job, JobRun, JobStep};
 use egui::{Align, Frame, Id, Key, Layout, Modifiers, RichText, Ui};
 
 use super::history::Shared;
+use super::log_outline::{Outline, OutlineAsk, Standing};
 use super::pipeline::{
     ARTIFACTS_TOPIC, Acting, CiWords, PipelineView, Reach, artifact_items, ci_look, ci_words,
     duration,
@@ -23,6 +28,7 @@ use crate::forge::RepoForge;
 use crate::format;
 use crate::grid::TextGrid;
 use crate::job_log::{Following, JobFollower, LogSource};
+use crate::log_folds::{Folding, Shown};
 use crate::problem::Problem;
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
@@ -31,8 +37,8 @@ use crate::widgets::{self, Look, muted};
 /// The help topic explaining it.
 const TOPIC: &str = "job-log";
 
-/// The most sections the Sections menu lists.
-const MOST_SECTIONS: usize = 500;
+/// Where whether the outline shows is kept (for every job's log).
+const OUTLINE_SHOWN: &str = "job-log-outline-shown";
 
 /// A job's log, shown.
 #[derive(Debug)]
@@ -59,6 +65,14 @@ pub(super) struct JobView {
     follow: bool,
     /// What was last asked of the forge, and how it went.
     acting: Acting,
+    /// Which sections are folded, and what is shown of the log.
+    folding: Folding,
+    /// What was shown last frame (to keep its top in place as folds change).
+    shown: Option<Shown>,
+    /// The outline's state.
+    outline: Outline,
+    /// A line of the whole log asked for, shown once what is shown has it.
+    going: Option<u32>,
 }
 
 /// What the view asks of the history view.
@@ -97,6 +111,10 @@ impl JobView {
             drawn: 0,
             follow: true,
             acting: Acting::new(),
+            folding: Folding::default(),
+            shown: None,
+            outline: Outline::default(),
+            going: None,
         };
         view.show_run(run, waker);
         view
@@ -109,6 +127,10 @@ impl JobView {
         self.drawn = 0;
         self.follow = true;
         self.follower = None;
+        self.folding = Folding::default();
+        self.shown = None;
+        self.outline = Outline::default();
+        self.going = None;
         match self.reach.clone() {
             Some(reach) => {
                 self.problem = None;
@@ -194,6 +216,12 @@ impl JobView {
         ))
     }
 
+    /// What the grid shows of the log, its folded sections left out.
+    pub(super) fn shown_text(&self) -> Option<String> {
+        let shown = self.shown.as_ref()?;
+        Some(String::from_utf8_lossy(shown.source().text().bytes()).into_owned())
+    }
+
     /// The number of the run shown.
     pub(super) const fn run_shown(&self) -> u64 {
         self.run
@@ -270,15 +298,11 @@ pub(super) fn show(ui: &mut Ui, shared: &Shared<'_>, view: &mut JobView) -> Opti
                         ));
                     });
                 }
-                // New lines while at the end (or the first): the end shows.
-                if seen.version != view.drawn {
-                    if view.follow {
-                        view.grid.scroll_to_end();
-                    }
-                    view.drawn = seen.version;
-                }
-                view.grid.show(ui, &**log);
-                view.follow = view.grid.is_at_end();
+                let status = seen
+                    .run
+                    .as_ref()
+                    .map_or_else(|| view.known().status, |run| run.status);
+                log_view(ui, view, (log, seen.version), status);
             } else {
                 padded(ui, |ui| waiting(ui, &seen, view.known().status));
             }
@@ -296,7 +320,7 @@ pub(super) fn show(ui: &mut Ui, shared: &Shared<'_>, view: &mut JobView) -> Opti
 /// What shows inside the page's margins.
 fn padded(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     Frame::new()
-        .inner_margin(egui::Margin::symmetric(16, 12))
+        .inner_margin(egui::Margin::symmetric(12, 12))
         .show(ui, add);
 }
 
@@ -321,22 +345,33 @@ fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -
                     .semibold(),
             );
             crate::help::note_topic(ui, name.rect, TOPIC);
-            let mut said = ci_words(status, false);
-            if let Some(took) = ran(run, &known, status) {
-                said.push_str(" · ");
-                said.push_str(&took);
-            }
-            if status.is_moving() {
-                widgets::ticking(ui, said);
-            } else {
-                ui.label(muted(ui, said));
+            let said = ci_words(status, false);
+            match ran(run, &known, status) {
+                // The clock in a column as wide as the longest it says: ticking (each second),
+                // it moves nothing after it.
+                Some(took) if status.is_moving() => {
+                    ui.label(muted(ui, format!("{said} ·")));
+                    let width = widgets::duration_width(ui, &egui::TextStyle::Body)
+                        + widgets::text_width(ui, " so far");
+                    widgets::column(ui, (width, crate::theme::CONTROL), Align::Min, |ui| {
+                        ui.label(muted(ui, took));
+                    });
+                    ui.ctx()
+                        .request_repaint_after(std::time::Duration::from_secs(1));
+                }
+                Some(took) => {
+                    ui.label(muted(ui, format!("{said} · {took}")));
+                }
+                None => {
+                    ui.label(muted(ui, said));
+                }
             }
             if let Some(why) = run
                 .filter(|run| run.status == CiStatus::Failed)
                 .and_then(|run| run.failure.as_deref())
             {
                 ui.label(
-                    RichText::new(format!("{}  {}", icon::WARNING, why.replace('_', " ")))
+                    RichText::new(format!("{}  {}", icon::WARNING, failure_words(why)))
                         .color(palette.danger),
                 );
             }
@@ -393,9 +428,21 @@ fn runs(
     let asked = artifacts(ui, view);
     run_actions(ui, view, status);
     if let Some(log) = seen.and_then(|seen| seen.log.as_ref())
-        && !log.sections.is_empty()
+        && has_outline(log)
     {
-        sections(ui, view, log);
+        let shown = outline_shown(ui.ctx());
+        if widgets::tool(ui, icon::SIDEBAR_SIMPLE, "Sections", shown, Look::Full)
+            .on_hover_text(if shown {
+                "Hide the log's sections"
+            } else {
+                "Show the log's sections beside it"
+            })
+            .clicked()
+        {
+            ui.ctx().data_mut(|data| {
+                data.insert_persisted(Id::new(OUTLINE_SHOWN), !shown);
+            });
+        }
     }
     if let Some(doing) = view.acting.doing() {
         widgets::working(ui, &format!("{doing}…"));
@@ -613,21 +660,73 @@ fn runs_width(ui: &Ui, view: &mut JobView, (seen, status): (Option<&Seen>, CiSta
     );
     if seen
         .and_then(|seen| seen.log.as_ref())
-        .is_some_and(|log| !log.sections.is_empty())
+        .is_some_and(|log| has_outline(log))
     {
         widths.push(widgets::tool_width(
             ui,
-            (icon::LIST_BULLETS, "Sections"),
+            (icon::SIDEBAR_SIMPLE, "Sections"),
             Look::Full,
-            true,
+            false,
         ));
     }
+    // The spinner's room always: the bar keeps its rows as the job ends.
     if let Some(doing) = view.acting.doing() {
         widths.push(widgets::button_width(ui, &format!("{doing}…  ")));
-    } else if seen.is_some_and(|seen| !seen.done && seen.problem.is_none()) {
+    } else {
         widths.push(widgets::TARGET);
     }
     widths
+}
+
+/// Why a job failed, in words: GitLab's reasons said as a sentence, others as they come.
+fn failure_words(why: &str) -> String {
+    let said = match why {
+        "script_failure" => "Its script failed",
+        "stuck_or_timeout_failure" | "job_execution_timeout" => "It timed out",
+        "runner_system_failure" => "The runner failed",
+        "missing_dependency_failure" => "A job it needs left no artifacts (expired, or failed)",
+        "runner_unsupported" => "The runner can't run it",
+        "stale_schedule" => "Its schedule went by",
+        "archived_failure" => "Its project is archived",
+        "unmet_prerequisites" => "What it needs wasn't there",
+        "scheduler_failure" => "GitLab couldn't schedule it",
+        "data_integrity_failure" => "GitLab lost track of it",
+        "api_failure" => "GitLab's API failed it",
+        "no_matching_runner" => "No runner can take it",
+        "trace_size_exceeded" => "Its log grew too large",
+        "ci_quota_exceeded" => "Out of CI/CD minutes",
+        "builds_disabled" => "CI/CD is off for the project",
+        "user_blocked" => "Its user is blocked",
+        "environment_creation_failure" => "Its environment couldn't be made",
+        "deployment_rejected" => "Its deployment was rejected",
+        "protected_environment_failure" => "It may not deploy to a protected environment",
+        "failed_outdated_deployment_job" | "forward_deployment_failure" => {
+            "A newer deployment went first"
+        }
+        "downstream_pipeline_creation_failed" => "The pipeline it starts couldn't be made",
+        "ip_restriction_failure" => "Its runner's address isn't allowed",
+        "unknown_failure" => "It failed",
+        other => return capitalized(&other.replace('_', " ")),
+    };
+    said.to_owned()
+}
+
+/// `text` with its first letter capitalized.
+fn capitalized(text: &str) -> String {
+    let mut letters = text.chars();
+    letters.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(letters).collect()
+    })
+}
+
+/// Whether a log has an outline: sections, or lines marked as errors or warnings.
+const fn has_outline(log: &LogSource) -> bool {
+    !log.sections.is_empty() || !log.marks.is_empty()
+}
+
+/// Whether the outline shows (for every job's log, kept).
+fn outline_shown(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|data| *data.get_persisted_mut_or(Id::new(OUTLINE_SHOWN), true))
 }
 
 /// How long the run ran, or has run so far.
@@ -648,42 +747,177 @@ fn ran(run: Option<&JobRun>, job: &EarlierRun, status: CiStatus) -> Option<Strin
     job.duration.map(duration)
 }
 
-/// The Sections menu: each section (stepped in under those it is inside) and how long it took,
-/// a click scrolling to its header.
-fn sections(ui: &mut Ui, view: &mut JobView, log: &LogSource) {
-    let mut chosen = None;
-    widgets::tool_menu_of(
-        ui,
-        (icon::LIST_BULLETS, "Sections"),
-        Look::Full,
-        TOPIC,
-        |ui| {
-            super::actions::menu_rows(ui);
-            egui::ScrollArea::vertical()
-                .max_height(420.0)
-                .show(ui, |ui| {
-                    for section in log.sections.iter().take(MOST_SECTIONS) {
-                        let took = section.ended.map_or_else(
-                            || "under way".to_owned(),
-                            |(ended, _)| {
-                                duration(
-                                    u64::try_from(ended.saturating_sub(section.started))
-                                        .unwrap_or(0),
-                                )
-                            },
-                        );
-                        let indent = "    ".repeat(usize::from(section.depth));
-                        let words = format!("{indent}{}  ·  {took}", section.name);
-                        if super::actions::item_of(ui, (icon::CARET_RIGHT, &words), Ok(()), TOPIC) {
-                            chosen = Some(section.line);
-                        }
-                    }
-                });
-        },
-    );
-    if let Some(line) = chosen {
-        view.grid.scroll_to_line(line);
+/// The log and its outline: what is shown of it as folds change (its top kept in place), the
+/// end followed while the view rests there, a click on a section's header folding it.
+fn log_view(
+    ui: &mut Ui,
+    view: &mut JobView,
+    (log, version): (&Arc<LogSource>, u64),
+    status: CiStatus,
+) {
+    let (shown, changed) = view.folding.shown(log, version, ui.ctx());
+    if changed
+        && !view.follow
+        && let Some(before) = &view.shown
+    {
+        let top = before.whole_line(view.grid.top().line);
+        view.grid.scroll_to_line(shown.shown_line(top));
+    }
+    // New lines while at the end (or the first): the end shows.
+    if version != view.drawn || changed {
+        if view.follow {
+            view.grid.scroll_to_end();
+        }
+        view.drawn = version;
+    }
+    // A section or line asked for, once what shows has it unfolded.
+    if let Some(line) = view.going
+        && view.folding.is_settled(version)
+    {
+        view.going = None;
+        view.grid.scroll_to_line(shown.shown_line(line));
         view.follow = false;
+    }
+    let whole = shown.whole();
+    let now = i64::try_from(format::now()).unwrap_or(i64::MAX);
+    let lit = whole.section_at(shown.whole_line(view.grid.top().line));
+    let mut asked = if outline_shown(ui.ctx()) && has_outline(whole) {
+        let palette = Palette::of(ui.ctx());
+        egui::Panel::left(Id::new("job-log-outline"))
+            .resizable(true)
+            .default_size(260.0)
+            .size_range(200.0..=480.0)
+            .frame(
+                Frame::new()
+                    .fill(palette.panel)
+                    .inner_margin(egui::Margin::symmetric(6, 0)),
+            )
+            .show(ui, |ui| {
+                super::log_outline::show(
+                    ui,
+                    (whole, &view.folding.folds),
+                    (lit, Standing { status, now }),
+                    &mut view.outline,
+                )
+            })
+            .inner
+    } else {
+        None
+    };
+    let response = view.grid.show(ui, shown.source());
+    view.follow = view.grid.is_at_end();
+    // A click on a section's header folds or unfolds it; the pointer says it can.
+    let header_at = |pointer: egui::Pos2| {
+        view.grid
+            .line_at(pointer)
+            .map(|line| shown.whole_line(line))
+            .and_then(|line| whole.header_place(line))
+            .filter(|place| {
+                whole
+                    .sections
+                    .get(*place)
+                    .is_some_and(|section| whole.folds(section))
+            })
+    };
+    if let Some(pointer) = response.hover_pos()
+        && header_at(pointer).is_some()
+    {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    if response.clicked()
+        && let Some(place) = response.interact_pointer_pos().and_then(header_at)
+    {
+        asked = Some(OutlineAsk::Fold(place));
+    }
+    // Alt+↑ and Alt+↓: the section before or after the top.
+    let step = ui.input_mut(|input| {
+        if input.consume_key(Modifiers::ALT, Key::ArrowDown) {
+            Some(true)
+        } else if input.consume_key(Modifiers::ALT, Key::ArrowUp) {
+            Some(false)
+        } else {
+            None
+        }
+    });
+    if let Some(down) = step
+        && let Some(line) = neighbour(&shown, shown.whole_line(view.grid.top().line), down)
+    {
+        asked = Some(OutlineAsk::Go(line));
+    }
+    follow_button(ui, view, response.rect, status.is_moving());
+    if let Some(asked) = asked {
+        carry_out(view, whole, asked);
+    }
+    view.shown = Some(shown);
+}
+
+/// The header of the section shown before (or after: `down`) whole line `top`, the first
+/// shown one.
+fn neighbour(shown: &Shown, top: u32, down: bool) -> Option<u32> {
+    let whole = shown.whole();
+    let visible = |section: &&egit_forge::Section| {
+        shown.whole_line(shown.shown_line(section.line)) == section.line
+    };
+    if down {
+        whole
+            .sections
+            .iter()
+            .filter(|section| section.line > top)
+            .find(visible)
+            .map(|section| section.line)
+    } else {
+        whole
+            .sections
+            .iter()
+            .rev()
+            .filter(|section| section.line < top)
+            .find(visible)
+            .map(|section| section.line)
+    }
+}
+
+/// Does what the outline (or a header's click, or a key) asked.
+fn carry_out(view: &mut JobView, whole: &LogSource, asked: OutlineAsk) {
+    match asked {
+        OutlineAsk::Fold(place) => {
+            if let Some(section) = whole.sections.get(place) {
+                view.folding.folds.toggle(whole, section);
+            }
+        }
+        OutlineAsk::Every(folded) => view.folding.folds.every(whole, folded),
+        OutlineAsk::Go(line) => {
+            view.folding.folds.reveal(whole, line);
+            view.going = Some(line);
+        }
+    }
+}
+
+/// While the view isn't at the log's end, a button at the log's bottom right going there (and
+/// following it, while the job runs).
+fn follow_button(ui: &Ui, view: &mut JobView, log: egui::Rect, running: bool) {
+    if view.follow {
+        return;
+    }
+    let words = if running {
+        format!("{}  Follow the end", icon::ARROW_DOWN)
+    } else {
+        format!("{}  Go to the end", icon::ARROW_DOWN)
+    };
+    let width = widgets::button_width(ui, &words);
+    let at = egui::pos2(
+        log.right() - width - 28.0,
+        log.bottom() - widgets::TARGET - 20.0,
+    );
+    let clicked = egui::Area::new(Id::new("job-log-follow"))
+        .order(egui::Order::Middle)
+        .fixed_pos(at)
+        .show(ui.ctx(), |ui| {
+            widgets::secondary(ui, true, &words).clicked()
+        })
+        .inner;
+    if clicked {
+        view.grid.scroll_to_end();
+        view.follow = true;
     }
 }
 
@@ -697,7 +931,11 @@ fn waiting(ui: &mut Ui, seen: &Seen, known: CiStatus) {
     }
     if let Some(run) = seen.run.as_ref().filter(|run| !run.steps.is_empty()) {
         if status.is_moving() {
-            widgets::working(ui, "Running: GitHub gives its log once it has ended…");
+            // The bar's spinner says it is followed: one is enough.
+            ui.label(muted(
+                ui,
+                "Running: GitHub gives its log once it has ended.",
+            ));
         } else if !seen.done {
             widgets::working(ui, "Its log is on its way…");
         } else {
@@ -739,8 +977,18 @@ fn steps(ui: &mut Ui, steps: &[JobStep]) {
         .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
         .inner_margin(egui::Margin::symmetric(12, 8))
         .show(ui, |ui| {
-            ui.set_width(ui.available_width().min(720.0));
+            ui.set_width(ui.available_width());
             crate::help::note_topic(ui, ui.max_rect(), TOPIC);
+            // Numbers and times in columns of one width: they line up, and a time growing
+            // moves nothing.
+            let number = widgets::text_width(ui, "99");
+            let took_width = widgets::duration_width(ui, &egui::TextStyle::Body)
+                + widgets::text_width(ui, " so far");
+            let running = steps.iter().any(|step| step.status.is_moving());
+            if running {
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_secs(1));
+            }
             for step in steps {
                 let (glyph, color) = ci_look(step.status, palette);
                 let took = match (step.started, step.finished) {
@@ -756,9 +1004,13 @@ fn steps(ui: &mut Ui, steps: &[JobStep]) {
                 ui.horizontal(|ui| {
                     ui.set_min_height(crate::widgets::TARGET);
                     ui.label(RichText::new(glyph).color(color));
-                    ui.label(muted(ui, format!("{:>2}", step.number)));
+                    widgets::column(ui, (number, widgets::TARGET), Align::Max, |ui| {
+                        ui.label(muted(ui, step.number.to_string()));
+                    });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(muted(ui, took));
+                        widgets::column(ui, (took_width, widgets::TARGET), Align::Max, |ui| {
+                            ui.label(muted(ui, took));
+                        });
                         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                             ui.add(egui::Label::new(&step.name).truncate());
                         });

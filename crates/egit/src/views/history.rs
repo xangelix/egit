@@ -662,6 +662,15 @@ impl HistoryView {
         }
     }
 
+    /// What the job's log shows, its folded sections left out.
+    #[cfg(test)]
+    pub(crate) fn job_log_shown(&self) -> Option<String> {
+        match &self.tool {
+            Some(Tool::Job(view)) => view.shown_text(),
+            _ => None,
+        }
+    }
+
     /// The number of the job's run whose log shows.
     #[cfg(test)]
     pub(crate) fn job_run(&self) -> Option<u64> {
@@ -1499,9 +1508,20 @@ fn panels(
         hooks,
     } = work;
     side_panel(ui, shared, history, view, lists, actions);
-    // A pipeline's page and a job's log take the details' room too: its graph and lines are
-    // wide, and nothing is selected.
-    let details_shown = !matches!(view.tool, Some(Tool::Job(_) | Tool::Pipeline(_)));
+    // Pages that aren't about one commit (a pipeline's, a job's log, the requests, Stats, …)
+    // have the room the details would take.
+    let details_shown = !matches!(
+        view.tool,
+        Some(
+            Tool::Job(_)
+                | Tool::Pipeline(_)
+                | Tool::PullRequests(_)
+                | Tool::Patch(_)
+                | Tool::Lfs(_)
+                | Tool::Submodules(_)
+                | Tool::Stats(_)
+        )
+    );
     // Never so wide the commit table (or a file) is left without room, where there is room.
     let widest = (ui.available_width() - CENTRAL_LEAST).clamp(260.0, 900.0);
     if details_shown {

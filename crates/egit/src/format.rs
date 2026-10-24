@@ -214,6 +214,20 @@ pub(crate) fn progress(doing: &str, report: &ProgressReport) -> String {
     text
 }
 
+/// A number of seconds as a person says it: "42 s", "1 min 35 s", "2 h 5 min", "3 d 4 h".
+pub(crate) fn duration(seconds: u64) -> String {
+    let days = seconds.checked_div(86_400).unwrap_or(0);
+    let hours = seconds.checked_div(3_600).unwrap_or(0) % 24;
+    let minutes = seconds.checked_div(60).unwrap_or(0) % 60;
+    let rest = seconds % 60;
+    match (days, hours, minutes) {
+        (0, 0, 0) => format!("{rest} s"),
+        (0, 0, _) => format!("{minutes} min {rest} s"),
+        (0, _, _) => format!("{hours} h {minutes} min"),
+        _ => format!("{days} d {hours} h"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -281,6 +295,14 @@ mod tests {
         assert_eq!(offset(540), "+0900");
         assert_eq!(offset(-330), "-0530");
         assert_eq!(offset(0), "+0000");
+    }
+
+    #[test]
+    fn durations_are_said_as_people_say_them() {
+        assert_eq!(duration(42), "42 s");
+        assert_eq!(duration(95), "1 min 35 s");
+        assert_eq!(duration(7_500), "2 h 5 min");
+        assert_eq!(duration(3 * 86_400 + 4 * 3_600 + 59), "3 d 4 h");
     }
 
     #[test]

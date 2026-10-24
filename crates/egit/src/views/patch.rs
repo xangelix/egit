@@ -185,20 +185,22 @@ pub(super) fn show(ui: &mut Ui, shared: &Shared<'_>, view: &mut PatchView) -> Op
         None if view.source == PatchSource::Pasted && !view.asked => paste(ui, shared, view),
         None => {
             Frame::new()
-                .inner_margin(Margin::same(16))
+                .inner_margin(Margin::symmetric(12, 16))
                 .show(ui, |ui| widgets::working(ui, "Reading the patch…"));
         }
         Some(Err(problem)) => {
-            Frame::new().inner_margin(Margin::same(16)).show(ui, |ui| {
-                widgets::problem_box(ui, &problem, |ui| {
-                    if view.source == PatchSource::Pasted
-                        && widgets::secondary(ui, true, "Paste another").clicked()
-                    {
-                        view.asked = false;
-                        view.read = Bind::new(true);
-                    }
+            Frame::new()
+                .inner_margin(Margin::symmetric(12, 16))
+                .show(ui, |ui| {
+                    widgets::problem_box(ui, &problem, |ui| {
+                        if view.source == PatchSource::Pasted
+                            && widgets::secondary(ui, true, "Paste another").clicked()
+                        {
+                            view.asked = false;
+                            view.read = Bind::new(true);
+                        }
+                    });
                 });
-            });
         }
         Some(Ok(read)) => {
             if let Some(asked) = summary(ui, shared, view, &read) {

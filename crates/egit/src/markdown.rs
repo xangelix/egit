@@ -914,6 +914,49 @@ fn measure_ahead(
 }
 
 /// How a block is drawn (an image's words are its link's: no hover needed).
+/// A short Markdown text (a pull request's description) drawn whole in `ui`, its HTML comments
+/// (which a page doesn't show: a template's notes) left out; the web pages its links asked to
+/// open, for egit's opener.
+pub(crate) fn show_text(ui: &mut Ui, cache: &mut CommonMarkCache, text: &str) -> Vec<String> {
+    let commands = ui.ctx().output(|output| output.commands.len());
+    viewer().show(ui, cache, &without_comments(text));
+    ui.ctx().output_mut(|output| {
+        let mut pages = Vec::new();
+        let added = output
+            .commands
+            .split_off(commands.min(output.commands.len()));
+        for command in added {
+            match command {
+                egui::OutputCommand::OpenUrl(open) if crate::desktop::is_web_page(&open.url) => {
+                    pages.push(open.url);
+                }
+                egui::OutputCommand::OpenUrl(_) => {}
+                command => output.commands.push(command),
+            }
+        }
+        pages
+    })
+}
+
+/// `text` without its HTML comments (`<!-- … -->`).
+fn without_comments(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains("<!--") {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("<!--") {
+        kept.push_str(rest.get(..start).unwrap_or_default());
+        let after = rest.get(start..).unwrap_or_default();
+        rest = after
+            .find("-->")
+            .and_then(|end| after.get(end.saturating_add(3)..))
+            .unwrap_or_default();
+    }
+    kept.push_str(rest);
+    std::borrow::Cow::Owned(kept)
+}
+
 fn viewer() -> CommonMarkViewer<'static> {
     CommonMarkViewer::new().show_alt_text_on_hover(false)
 }

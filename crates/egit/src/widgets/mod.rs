@@ -443,22 +443,57 @@ pub(crate) fn muted(ui: &Ui, text: impl Into<String>) -> RichText {
     RichText::new(text).color(Palette::of(ui.ctx()).muted)
 }
 
-/// Muted words holding a clock that ticks ("running · 1 min 30 s so far"), as wide as they
-/// would be with every digit at its widest, so what follows them in a row stays where it is as
-/// the seconds go by.
-pub(crate) fn ticking(ui: &mut Ui, text: String) -> Response {
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let width = |text: String| {
+/// A chip: a few small words in a thin outline of their colour ("may fail", "Draft", a label),
+/// 18 points tall however tall its row, so chips read as marks rather than buttons.
+pub(crate) fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
+    const HEIGHT: f32 = 18.0;
+    let galley =
         ui.painter()
-            .layout_no_wrap(text, font.clone(), Color32::PLACEHOLDER)
-            .size()
-            .x
-    };
+            .layout_no_wrap(text.to_owned(), egui::FontId::proportional(SMALL), color);
+    let size = egui::vec2(galley.size().x + 12.0, HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(crate::theme::RADIUS_INNER),
+        Stroke::new(1.0, color.gamma_multiply(0.7)),
+        StrokeKind::Inside,
+    );
+    let at = egui::pos2(
+        rect.center().x - galley.size().x / 2.0,
+        rect.center().y - galley.size().y / 2.0,
+    );
+    ui.painter().galley(at, galley, color);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
+    response
+}
+
+/// How wide `text` is in the body's font.
+pub(crate) fn text_width(ui: &Ui, text: &str) -> f32 {
+    text_width_as(ui, text, &egui::TextStyle::Body)
+}
+
+/// How wide `text` is in `style`'s font.
+pub(crate) fn text_width_as(ui: &Ui, text: &str, style: &egui::TextStyle) -> f32 {
+    let font = style.resolve(ui.style());
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), font, Color32::PLACEHOLDER)
+        .size()
+        .x
+}
+
+/// `text` with every digit the widest of them (in `style`'s font): as wide as it can get while
+/// its digits change.
+fn steadied(ui: &Ui, text: &str, style: &egui::TextStyle) -> String {
     let widest = ('0'..='9')
-        .max_by(|one, other| width(one.to_string()).total_cmp(&width(other.to_string())))
+        .max_by(|one, other| {
+            text_width_as(ui, &one.to_string(), style).total_cmp(&text_width_as(
+                ui,
+                &other.to_string(),
+                style,
+            ))
+        })
         .unwrap_or('0');
-    let steady: String = text
-        .chars()
+    text.chars()
         .map(|character| {
             if character.is_ascii_digit() {
                 widest
@@ -466,17 +501,39 @@ pub(crate) fn ticking(ui: &mut Ui, text: String) -> Response {
                 character
             }
         })
-        .collect();
-    let room = width(steady).max(width(text.clone()));
-    let words = muted(ui, text);
-    ui.allocate_ui_with_layout(
-        egui::vec2(room, CONTROL),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_width(room);
-            ui.label(words)
-        },
-    )
+        .collect()
+}
+
+/// How wide the longest duration egit writes is ("59 min 59 s", "23 h 59 min", "99 d 23 h") in
+/// `style`'s font, digits at their widest: a column of durations that never moves what is
+/// beside it.
+pub(crate) fn duration_width(ui: &Ui, style: &egui::TextStyle) -> f32 {
+    ["59 min 59 s", "23 h 59 min", "99 d 23 h"]
+        .iter()
+        .map(|longest| text_width_as(ui, &steadied(ui, longest, style), style))
+        .fold(0.0_f32, f32::max)
+}
+
+/// A column `width` wide and `height` tall in a row, its contents against its start, end, or
+/// centre (`align`, across): as wide whatever it holds, so what follows doesn't move as that
+/// changes, and columns of rows line up.
+pub(crate) fn column<R>(
+    ui: &mut Ui,
+    (width, height): (f32, f32),
+    align: egui::Align,
+    add: impl FnOnce(&mut Ui) -> R,
+) -> R {
+    let layout = match align {
+        egui::Align::Max => egui::Layout::right_to_left(egui::Align::Center),
+        egui::Align::Min | egui::Align::Center => {
+            egui::Layout::left_to_right(egui::Align::Center).with_main_align(align)
+        }
+    };
+    ui.allocate_ui_with_layout(egui::vec2(width, height), layout, |ui| {
+        ui.set_min_size(egui::vec2(width, height));
+        ui.set_max_width(width);
+        add(ui)
+    })
     .inner
 }
 
@@ -750,7 +807,13 @@ pub(crate) fn quiet<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
 /// it, and a slim inset, which it hangs into, so its words line up with text beside or above
 /// it.
 pub(crate) fn link(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
-    let text = text.into();
+    // Plain words in the links' colour: they read as something to follow.
+    let text = match text.into() {
+        WidgetText::Text(plain) => {
+            WidgetText::from(RichText::new(plain).color(ui.visuals().hyperlink_color))
+        }
+        other => other,
+    };
     let words = text.text().to_owned();
     let response = ui
         .scope(|ui| {

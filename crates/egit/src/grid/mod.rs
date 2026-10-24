@@ -96,6 +96,12 @@ pub(crate) trait GridSource {
     fn gutter_cells(&self) -> u32 {
         self.measure().lines().max(1).ilog10().saturating_add(2)
     }
+
+    /// Muted words at the right of line `line`'s first row, over its text (a log section's
+    /// header: how long the section took).
+    fn trailing(&self, _line: u32) -> Option<String> {
+        None
+    }
 }
 
 /// A text as it is, numbered, and highlighted in its language.
@@ -354,7 +360,6 @@ impl TextGrid {
     }
 
     /// The row at the top.
-    #[cfg(test)]
     pub(crate) const fn top(&self) -> Position {
         self.top
     }
@@ -661,6 +666,18 @@ impl TextGrid {
             if !job.text.is_empty() {
                 let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
                 text_painter.galley(pos2(text.left(), y), galley, palette.text);
+            }
+            if at.cell == 0
+                && let Some(words) = source.trailing(at.line)
+            {
+                paint_trailing(
+                    &row_painter,
+                    (source, at.line),
+                    (text, y),
+                    frame,
+                    (font, palette),
+                    &words,
+                );
             }
             y += frame.row;
             position = frame.wrap.next(measure, at);
@@ -1166,6 +1183,36 @@ fn paint_row_frame(
     }
 }
 
+/// Paints `words` at the right of a row (of line `line`, at `y`), over its line's background so
+/// a long line doesn't show through.
+fn paint_trailing(
+    painter: &Painter,
+    (source, line): (&dyn GridSource, u32),
+    (text, y): (Rect, f32),
+    frame: &Frame,
+    (font, palette): (&FontId, Palette),
+    words: &str,
+) {
+    let galley = painter.layout_no_wrap(words.to_owned(), font.clone(), palette.muted);
+    let right = text.right() - frame.cell;
+    let rect = Rect::from_min_max(
+        pos2(right - galley.size().x - frame.cell, y),
+        pos2(text.right(), y + frame.row),
+    );
+    let behind = source
+        .background(line, &palette)
+        .unwrap_or(palette.background);
+    painter.rect_filled(rect, CornerRadius::ZERO, behind);
+    painter.galley(
+        pos2(
+            right - galley.size().x,
+            y + (frame.row - galley.size().y) / 2.0,
+        ),
+        galley,
+        palette.muted,
+    );
+}
+
 /// Paints the part of `selected` in a row showing cells `cells` of line `line`, at `row`.
 #[allow(clippy::too_many_arguments)]
 fn paint_selection(
@@ -1400,7 +1447,7 @@ const fn whole_rows(rows: f32) -> i64 {
     clippy::cast_possible_truncation,
     reason = "a scroll bar's precision is a pixel"
 )]
-fn ratio(part: u64, whole: u64) -> f32 {
+pub(crate) fn ratio(part: u64, whole: u64) -> f32 {
     if whole == 0 {
         return 0.0;
     }

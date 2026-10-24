@@ -491,7 +491,29 @@ fn a_job_s_log_shows_and_follows_it_as_it_runs() {
          stage of the job script\n$ cargo test\nrunning 3 tests\n"
     );
     assert!(following);
-    harness.get_by_label_contains("Sections");
+
+    // Its sections beside it, each with how long it took; one folded leaves its lines out.
+    wait_for_label(&mut harness, "Preparing the docker executor · 4 s");
+    harness
+        .get_by_label("Fold Preparing the docker executor")
+        .click();
+    settle(&mut harness, "the section folded", |app| {
+        app.state.repos[0]
+            .history_view
+            .job_log_shown()
+            .is_some_and(|shown| {
+                shown.starts_with("Preparing the docker executor  ⋯ 1 line\nExecuting")
+            })
+    });
+    harness
+        .get_by_label("Unfold Preparing the docker executor")
+        .click();
+    settle(&mut harness, "the section unfolded", |app| {
+        app.state.repos[0]
+            .history_view
+            .job_log_shown()
+            .is_some_and(|shown| shown.contains("Using docker image"))
+    });
     render(&mut harness, "job-log");
 
     // As it runs, what it writes comes; once it ends, it says so and stops.
@@ -675,7 +697,7 @@ fn jobs_are_laid_out_by_what_they_wait_for_and_retried_cancelled_and_started() {
 
     // A job cancelled and another started from their rows.
     click_when_enabled(&mut harness, "Cancel e2e");
-    wait_for_label(&mut harness, "e2e: canceled");
+    wait_for_label(&mut harness, "e2e: cancelled");
     click_when_enabled(&mut harness, "Start production");
     wait_for_label(&mut harness, "production: pending");
 
@@ -686,8 +708,8 @@ fn jobs_are_laid_out_by_what_they_wait_for_and_retried_cancelled_and_started() {
     );
     wait_for_label(&mut harness, "Cancel it");
     harness.get_by_label("Cancel it").click();
-    wait_for_label(&mut harness, "unit: canceled");
-    wait_for_label(&mut harness, "production: canceled");
+    wait_for_label(&mut harness, "unit: cancelled");
+    wait_for_label(&mut harness, "production: cancelled");
     click_when_enabled(
         &mut harness,
         &format!("{}  Retry failed jobs", icon::ARROW_CLOCKWISE),

@@ -40,6 +40,7 @@ mod ignoring;
 mod job_log;
 mod jobs;
 mod lfs;
+mod log_folds;
 mod markdown;
 mod merge;
 mod output;

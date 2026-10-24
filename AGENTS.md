@@ -47,6 +47,7 @@ it.
 | 33 | Pipelines acted on (retry, cancel, start), a job's earlier runs, the jobs as a graph; repositories suggested on Home | done; awaiting the owner's review |
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
+| 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | under way |
 
 ## Toolchain & commands
 
@@ -834,7 +835,13 @@ writes paths), never `OsStrExt`.
     (`2024-05-14T11:19:20.1234567Z `) taken off, a byte order mark dropped, `##[group]` a
     section (its name its header line) and `##[endgroup]` its end, `##[error]`,
     `##[warning]`, `##[notice]` said ("Error: …") and coloured, `##[command]` blue,
-    `##[debug]` faint; GitLab's markers left as text.
+    `##[debug]` faint; GitLab's markers left as text. The lines a runner marks (`LogMark`,
+    `MarkKind`): GitHub's `##[error]` and `##[warning]`, a GitLab runner's own `ERROR:` and
+    `WARNING:`. `with_steps`: a GitHub job's steps made its sections, as GitHub shows a job:
+    each step's name a line of its own heading what it wrote (from the first line timed once it
+    started, `step_lines`, to the next step's; times, styles, sections, and marks moved past the
+    names inserted), its time and status its own (`Section::status`), the groups a step in; a
+    step that didn't fail folded (`collapsed`), as GitHub folds them.
   - `pipelines/` — CI/CD pipelines, GitLab's and GitHub Actions' workflow runs alike
     (`has_pipelines`: both), each call sent to its forge's (`mod.rs`). `gitlab.rs`: through
     GitLab's GraphQL API: `pipelines` (a project's newest, 100 a
@@ -1202,10 +1209,22 @@ writes paths), never `OsStrExt`.
     `LOOKS_AFTER_END` times more once it ended, as GitHub writes it out after) every `EVERY` (2 s; a
     second more for each MiB sent whole or 4 MiB laid out, at most `LONGEST`, 15 s), a log
     begun again read from the start, a failure tried again after 10 s; each read laid out
-    (`LogSource`: its text measured, colours by `views::terminal_color`, faint ones nearer the
-    background, section headers on the surface's tone, each line's time beside its number in
-    the viewer's zone) and handed over (`Following`: the job, the log, its version, missing,
-    the problem, done) until the job has ended and its log is whole.
+    (`LogSource`: a GitHub job's steps made its sections first, `with_steps`; its text
+    measured, colours by `views::terminal_color`, faint ones nearer the background, section
+    headers on the surface's tone (a step's stronger), each line's time beside its number in
+    the viewer's zone, at least five digits' room so a growing log doesn't move, a header's
+    caret (▾, ▸ once folded) and how long its section took at its right (`trailing`);
+    `header`, `section_at`, `last_line`, `folds`, `took`) and handed over (`Following`: the
+    job, the log, its version, missing, the problem, done) until the job has ended and its log
+    is whole.
+  - `log_folds.rs` — a job's log with sections folded, as GitLab's and GitHub's pages fold
+    them: `Folds` (as the user set each, else as its forge shows it: `collapsed`, never one
+    under way; `toggle`, `every`, `reveal` unfolding what hides a line), `FoldedLog` (the
+    lines shown copied out with each folded header ending in "⋯ 120 lines", muted; runs of
+    lines mapping each shown line to the whole log's and back, `whole_line`, `shown_line`;
+    numbers, times, and carets the whole log's), `Shown` (whole, or folded), and `Folding`
+    (made again as the log's version or the folds change: on the interface's thread up to
+    `FOLDED_AT_ONCE`, 8 MiB, else in a job, what was shown showing meanwhile; `is_settled`).
   - `downloads.rs` — artifacts downloaded to disk (`RepoForge::downloads`, a tab's
     `Downloads`): each `ArtifactWanted` (the forge's repository, the `Artifact`, what it is of:
     a GitLab job's name, a GitHub run's title) on a thread of its own, through its
@@ -1215,8 +1234,9 @@ writes paths), never `OsStrExt`.
     part removed when cancelled or failed (those under way stopped as their tab closes);
     `Stage`: running, saved, failed (a `Problem`).
     `views/downloads.rs` says each under the commit table (or what shows in its place: a
-    pipeline, a job's log): "Downloading artifacts.zip of build: 1.2 MB of 40.0 MB" and
-    Cancel; "Saved … to …", Show in folder, Dismiss; failed, why (a problem box, Dismiss).
+    pipeline, a job's log): "Downloading artifacts.zip of build", a bar of fixed width saying
+    "1.2 MB of 40.0 MB", and Cancel at the row's end; "Saved … to …", Open, Show in folder,
+    Dismiss; failed, why (a problem box, Dismiss).
     `Action::Download` (`DownloadAsk`: cancel, dismiss).
   - `ci.rs` — a repository's pipelines (GitLab's, GitHub Actions' workflow runs), for the
     commit table's marks (`Pipelines`, its
@@ -1327,7 +1347,8 @@ writes paths), never `OsStrExt`.
     100,000 matches a pane; matches on screen are marked, the current one stronger, and moving
     to one scrolls it a few rows below the top and sideways into view. `Plain` is a text,
     numbered, and highlighted when `named`. A source's `colors` give its text colours,
-    `backgrounds` its highlights; `begin_frame` and `needs_repaint` let a source work a little
+    `backgrounds` its highlights, `trailing` muted words at the right of a line's first row
+    (over its background: a log section's time); `begin_frame` and `needs_repaint` let a source work a little
     each frame (a repaint 30 ms later while it isn't done).
   - `diff.rs` — `DiffDocument`: a `FileDiff` measured as a `GridSource` (lines on their kind's
     background, hunk headers muted, the gutter numbering both files with a `+`/`-` marker), and
@@ -1641,7 +1662,10 @@ writes paths), never `OsStrExt`.
     column titles are small and muted, and so is all but the subject (author, date, commit),
     which leads its row; the author's column shows the author's avatar and the co-authors'
     (`authors_cell`), and their names ("Ada and Alan", "Ada and 3 others"). Details (never so wide the commit table keeps under
-    360 points, `CENTRAL_LEAST`, where the window has room): the subject as the panel's title, the description in a box
+    360 points, `CENTRAL_LEAST`, where the window has room; left out for the pages that aren't
+    about one commit: a pipeline, a job's log, the requests, patches, Git LFS, submodules,
+    Stats; pages in the table's place start their content 12 points in, where their bar's
+    controls do): the subject as the panel's title, the description in a box
     of its own (`widgets::text_box`), then facts: names,
     parents (buttons: egui announces links as plain text), each person (their avatar, the
     name, leading, the email beneath, muted) and their date as a fact of its own, the
@@ -1990,39 +2014,57 @@ writes paths), never `OsStrExt`.
     job as its status as last read allows (GitLab's own say while that is as the page read it;
     on GitHub, Re-run this job as the page read it: once the whole run has ended) and the
     account may, a retry's new run becoming the latest, shown as it starts
-    (`JobEvent::Acted`: the marks read again); Sections: each section stepped in by depth with
-    how long it took, a click scrolling to its header; a spinner while followed, or what is
-    asked of GitLab while it is), then GitLab's refusal (a problem box, Dismiss), then the log in
-    the text grid (find, select, copy), following its end while it rests there
-    (`TextGrid::is_at_end`, `scroll_to_end`): scrolled up it stays, back at the end it follows;
-    before there is a log, why (waiting for a runner, manual, scheduled, skipped, cancelled); a
-    GitHub job's steps as they go, each's status, number, name, and how long (`steps`: GitHub
-    gives its log once the job has ended); Escape goes back.
+    (`JobEvent::Acted`: the marks read again); Sections, the outline shown or not (kept, for
+    every log); a spinner while followed (its room kept always: the bar keeps its rows), or what
+    is asked of GitLab while it is), its clock in a column as wide as the longest it says,
+    ticking each second, and why a job failed in words (`failure_words`, GitLab's reasons as
+    sentences); then GitLab's refusal (a problem box, Dismiss), then the log in the text grid
+    (find, select, copy) as `Folding` shows it, its top kept on its line as folds change,
+    following its end while it rests there (`TextGrid::is_at_end`, `scroll_to_end`): scrolled
+    up it stays, "Follow the end" (or "Go to the end") over its bottom right; a click on a
+    section's header folds or unfolds it (the pointer a hand there), Alt+↑ and Alt+↓ go to the
+    section before or after (`neighbour`); its outline at its left (`log_outline.rs`, a
+    resizable panel: each section not inside a folded one, stepped in by depth, its caret a
+    target folding it, how it went (a step's own; else failed where it holds an error, running
+    while open), its header's words, how long it took in a column, and a bar on the job's
+    timeline (where it began and how long it ran) under it; the one the log shows lit and
+    brought into view; then the lines marked as errors and warnings, a click going to one,
+    unfolding what hides it; Fold every section, Unfold every section). Before there is a log,
+    why (waiting for a runner, manual, scheduled, skipped, cancelled); a GitHub job's steps as
+    they go, each's status, number, name, and how long in columns (`steps`: GitHub gives its
+    log once the job has ended); Escape goes back.
     `views/pipeline/` — `PipelineView` (`mod.rs`), a pipeline in the commit table's place (a
     GitLab pipeline, a GitHub workflow's run; from its mark; the details panel left out; Escape
     or History goes back), its forge's words its buttons' (`CiWords`: GitLab's or GitHub's): a
-    bar (its title and status in words, Refresh, Open on its forge, the commit's other runs (a
-    menu, "2 more workflow runs for this commit": another GitHub workflow's, each showing it in
-    this one's place, `PipelineEvent::Other`); then Artifacts where it has any (a menu: a
+    bar (its title, where its commit ran others a menu of them ("2 more workflow runs for this
+    commit": another GitHub workflow's, each showing it in this one's place,
+    `PipelineEvent::Other`), and status in words, Refresh (always pressable: a read under way
+    reads again after it), Open on its forge; then Artifacts where it has any (a menu: a
     GitHub run's, each GitLab job's under its name, "Download artifacts.zip of build · 12.3
     MB", an expired one disabled, saying so; `artifact_items`; one chosen asks where it goes,
     `PipelineEvent::Download`); then, as the forge allows and the account may,
     Retry failed jobs and Cancel the pipeline (GitHub's Re-run failed jobs, Re-run all jobs,
     Cancel workflow), asked first in place ("Cancel the pipeline?", Cancel it, Keep it
-    running), on a row of their own where they don't fit; a spinner while read, or what is
-    asked of the forge), its refusal (`Acting`, the page's and the log's: the action asked in a
+    running), on a row of their own where they don't fit (the spinner's room always counted);
+    a spinner while read, or what is asked of the forge), its refusal (`Acting`, the page's and the log's: the action asked in a
     job, its refusal said with what to do, by forge, `refusal`), what it ran for, its commit
-    (Show the commit), who started it and how (GitLab's sources, GitHub's events), how long it
-    ran (or has so far), which attempt (GitHub's, past the first); then its jobs laid out as
-    chosen (`JobsLayout`, a segmented control kept in egui's memory: List, Stages, Dependencies;
-    Stages only where stages run in order, GitLab's). A GitHub run's workflow is read at its
+    (Show the commit), who started it (the moment on hover) and how (GitLab's sources, GitHub's
+    events), how long it ran (or has so far, ticking each second), which attempt (GitHub's,
+    past the first); then its jobs laid out as chosen (`JobsLayout`, a segmented control kept in
+    egui's memory, what each shows on hover: List, Stages, Dependencies; Stages only where
+    stages run in order, GitLab's). A GitHub run's workflow is read at its
     commit in the read's job (`git cat-file blob <commit>:<file>`, kept for the reads after:
     `workflow_at`) and laid over its details. `list.rs`: each stage a card (a band: its status, name, how many
-    jobs; its jobs' rows touching under it, the last's corners rounded) drawn as far as they
-    show (`show_rows`); a job's row: status, name, "may fail", "manual", "3 runs", and at its
-    right Start, Cancel, or Retry as an icon (named "Retry unit", "Re-run unit"), status in words, duration, a
-    log's icon or the arrow of a page outside. `graph.rs`: the jobs as cards (status, name,
-    duration) in columns, by stage (each titled) or by what each waits for (`Wait`: its needs
+    jobs; its jobs' rows touching under it, the last's corners rounded), a GitHub run's job that
+    stands alone (not one of a matrix) a card of its own (`card_rows`; rows of two heights, so
+    placed by the view, drawn as far as they show); a job's row: status (an allowed failure's a
+    warning, `job_look`), name, "may fail", "manual", "3 runs" (`widgets::chip`s), and at its
+    right Start, Cancel, or Retry as an icon (named "Retry unit", "Re-run unit"), then status
+    in words, duration, and a log's icon or the arrow of a page outside, in columns as wide on
+    every row (`Columns`: the widest status word here, the longest duration): they line up, and
+    a time growing moves nothing. `graph.rs`: the jobs as cards (status, name,
+    duration in a place of its own width, where under the pointer what can be done to it
+    shows, `slot`) in columns, by stage (each titled) or by what each waits for (`Wait`: its needs
     by name, else every job of the stage before, kept as the stage; a column after the
     furthest, a round of waits broken), lines from what a job needs to it (curves; a stage's
     waits only while lit), the pointer resting on a card lighting what it waits for and what
@@ -2037,8 +2079,8 @@ writes paths), never `OsStrExt`.
     job of it, may still change (`READ_AGAIN`), and at once after the forge did what was asked
     (`PipelineEvent::Acted`: the marks too), what was read shown meanwhile. `ci_look` (each
     status's icon and colour: the theme's `ok`, `danger`, `running`, `paused`, `muted`),
-    `ci_words` ("passed with warnings", "waiting for someone to start a job"), `duration` ("1
-    min 35 s").
+    `ci_words` ("passed with warnings", "waiting for someone to start a job"), `duration`
+    (`format::duration`: "1 min 35 s", "3 d 4 h").
     `views/forge_overview.rs` — the repository's Overview's "GitHub and GitLab" card: the hosts
     egit knows, then each remote (its address, "Recognized as" a GitHub repository or GitLab
     project, or nothing: its host isn't one egit knows, "Open Profile"; reached over ssh on a
@@ -2053,17 +2095,21 @@ writes paths), never `OsStrExt`.
     show says why.
     `views/pulls.rs` — `PullRequestView`, the pull (or merge) requests in the commit table's
     place, named their forge's way (a `Tool`, from the top bar's "N pull requests" or "N merge
-    requests" button, or a badge): a bar (repositories,
+    requests" button, or a badge; the details panel left out): a bar (repositories,
     "12 open" or "1,000 of 5,512 open: the most recently updated", Refresh, a problem), the
-    rows (`show_rows`: number, checks, title, a draft's chip, author, head → base and a
-    fork, review, age; ↑ ↓), and the selected one's details (read when selected:
+    list at full height at the left (resizable) with the selected one's details beside it, as
+    GitKraken's Launchpad has them; its rows (`show_rows`) of two lines: checks, title, a
+    draft's chip, the review's mark and age in columns of their own; under them, muted, number,
+    author, head → base and a fork; ↑ ↓; the details (read when selected:
     `pull_request_details`): "Show the commit" (when its head is in the history: looked for
     once a selection, a scan), "Check out" (a same-repository one fetches its branch into the
     remote-tracking one and switches to the local branch, tracking it; a fork's fetches its
     forge's ref for it into `pr/<n>` or `mr/<n>` (`fork_head`); disabled, saying why, while a
     task runs or an
     operation is in progress), "Open on GitHub", its size and mergeability, labels, checks
-    (each with its page), latest reviews, description. Without credentials, a card saying why,
+    (each with its page), latest reviews, and its description as Markdown
+    (`markdown::show_text`: its HTML comments, a template's notes, left out; its links to the
+    opener), each under a section title. Without credentials, a card saying why,
     its Sign in… opening the dialog. `check_look` gives a checks state's
     icon and colour, which the commit table's pull request badges (`#12`, on head commits,
     their title on hover; a click shows it, the menu opens its page) share.
@@ -2319,8 +2365,12 @@ writes paths), never `OsStrExt`.
     lines, 8 points from every edge; `bounded_text_area` at most so tall, scrolling inside its
     edge, as every message, description, and pasted patch is), `show_overflow` (scroll bars
     shown while text is cut, thin, in room of their own: egui's floating ones show only under
-    the pointer), `link` (hanging into its inset, its words aligned with
-    text above and below), `icon_button` exactly its place, `row_fill` a list row's background (a selected
+    the pointer), `link` (in the links' colour, hanging into its inset, its words aligned with
+    text above and below), `icon_button` exactly its place, `chip` (a few small words in a thin
+    outline of their colour, 18 points tall: "may fail", "Draft", a label), `column` (a place of
+    fixed width in a row, its contents at its start, end, or centre: rows' columns line up, and
+    what changes width moves nothing), `duration_width` (the longest duration's width, digits at
+    their widest) and `text_width`, `row_fill` a list row's background (a selected
     one lightens under the pointer), cards, origin labels, problem boxes; `avatar.rs`: someone
     as their initials (their name's first and last words', else their email's) on a colour
     of the palette's `avatars` hashed from their email (FNV-1a, any case), so one person looks
@@ -2485,8 +2535,9 @@ writes paths), never `OsStrExt`.
     Overview's card (rendered): a remote on a host egit doesn't know, the project, the
     credential, 2 open, 3 pipelines read and the newest, 2 of their 3 commits in this history
     (the fork's isn't fetched), then GitLab listing none to the account, read again; a running
-    job's log (rendered): its sections' markers and the runner's timestamps out, lines it writes
-    coming as it runs, its end said and the following stopped, Escape back to the pipeline;
+    job's log (rendered): its sections' markers and the runner's timestamps out, its sections
+    beside it with their times, one folded from its caret (its lines left out) and unfolded,
+    lines it writes coming as it runs, its end said and the following stopped, Escape back to the pipeline;
     jobs laid out by what they wait for and by stage (columns checked; both rendered), an
     earlier run's log from a job's menu and the latest's from the runs' menu, a retry GitLab
     refuses (said; rendered), then one it doesn't (its new run shown), back on the page a job
@@ -2503,7 +2554,8 @@ writes paths), never `OsStrExt`.
     `src/tests/workflows.rs` serves a fake GitHub's Actions: a commit's runs of two workflows
     marked as one (the failure, "CI #57: failed"), its page laid out by what its workflow's file
     (committed here) says the jobs need (no Stages to choose; rendered), a failed job's log
-    through GitHub's redirect, its failed jobs re-run (a second attempt said), the other
+    through GitHub's redirect (its steps heading their lines, the failed one open, the others
+    folded, its error listed beside it; rendered), its failed jobs re-run (a second attempt said), the other
     workflow's run from the menu, a running job's steps (rendered), the run cancelled (asked
     first), a job re-run from its row, and the mark following; and the run's artifacts (an
     expired one listed, disabled; rendered): one downloaded, one whose digest doesn't match

@@ -127,7 +127,7 @@ fn fill(
     ui.add_space(12.0);
     let mut close = false;
     let ready = !signing && !dialog.token.trim().is_empty();
-    ui.horizontal(|ui| {
+    widgets::buttons_row(ui, |ui| {
         if widgets::primary(ui, ready, "Sign in").clicked() || (submitted && ready) {
             dialog.with_token();
         }
@@ -302,7 +302,11 @@ fn signed(
     }
     ui.add_space(12.0);
     let setting_up = keeping.is_some_and(|keeping| keeping.setting_up.is_some());
-    widgets::primary(ui, !setting_up, "Done").clicked()
+    let mut done = false;
+    widgets::buttons_row(ui, |ui| {
+        done = widgets::primary(ui, !setting_up, "Done").clicked();
+    });
+    done
 }
 
 /// Keeping sign-ins past this run, in a `Ui` of its own `id`: a button for each credential

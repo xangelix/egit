@@ -551,16 +551,12 @@ fn card(
             .max_rect(rect.shrink2(egui::vec2(10.0, 0.0)))
             .layout(Layout::left_to_right(Align::Center)),
     );
-    let (glyph, color) = ci_look(job.status, palette);
+    let (glyph, color) = super::list::job_look(job, palette);
     inside.label(RichText::new(glyph).color(fade(color)));
+    let pointed = ui.rect_contains_pointer(rect) && !dim;
+    let mut acted = None;
     inside.with_layout(Layout::right_to_left(Align::Center), |ui| {
-        if let Some(took) = job.duration {
-            ui.label(
-                RichText::new(duration(took))
-                    .color(fade(palette.muted))
-                    .small(),
-            );
-        }
+        acted = slot(ui, (job, at), (pointed, said), fade(palette.muted));
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
             ui.add(
                 egui::Label::new(RichText::new(&job.name).color(fade(palette.text)))
@@ -595,7 +591,44 @@ fn card(
     if response.clicked() {
         asked = clicked(job);
     }
+    if let Some(action) = acted {
+        asked = Some(JobAsk::Act(action));
+    }
     (asked, is_hovered)
+}
+
+/// A card's right: how long its job took, in a place as wide whatever it says (the name beside
+/// it keeps its room as it grows); under the pointer (`pointed`), what can be done to it
+/// (retry, cancel, start) in its place. Returns what was asked.
+fn slot(
+    ui: &mut Ui,
+    (job, at): (&Job, usize),
+    (pointed, said): (bool, CiWords),
+    muted: egui::Color32,
+) -> Option<egit_forge::CiAction> {
+    let width = crate::widgets::duration_width(ui, &egui::TextStyle::Small);
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .id(Id::new(("pipeline-card-slot", at)))
+            .layout(Layout::right_to_left(Align::Center)),
+        |ui| {
+            ui.set_min_width(width);
+            let acting = pointed && job.can_update && job.id.is_some() && has_action(job);
+            if acting {
+                return super::list::quick_actions(ui, job, said);
+            }
+            if let Some(took) = job.duration {
+                ui.label(RichText::new(duration(took)).color(muted).small());
+            }
+            None
+        },
+    )
+    .inner
+}
+
+/// Whether a job offers something to do (start, cancel, retry).
+const fn has_action(job: &Job) -> bool {
+    job.actions.play || job.actions.cancel || job.actions.retry
 }
 
 #[cfg(test)]

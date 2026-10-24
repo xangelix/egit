@@ -1,7 +1,7 @@
 //! A tab's downloads, under its commit table (whatever shows in its place): each artifact's
-//! file and what it is of, how far it has come (of how much), and Cancel; once saved, where it
-//! went, Show in folder, and Dismiss; failed, why. Each in a `Ui` of its own id, as they come
-//! and go.
+//! file and what it is of, how far it has come (a bar of fixed width, of how much), and Cancel at
+//! the row's end, where it stays; once saved, where it went, Open, Show in folder, and Dismiss;
+//! failed, why. Each in a `Ui` of its own id, as they come and go.
 
 use egui::{Align, Id, Layout, RichText, Ui};
 
@@ -15,6 +15,9 @@ use crate::widgets::{self, muted};
 
 /// The help topic explaining downloads.
 const TOPIC: &str = "pipeline-artifacts";
+
+/// The progress bar's width.
+const PROGRESS: f32 = 200.0;
 
 /// Whether the tab has downloads to show.
 pub(super) fn any(shared: &Shared<'_>) -> bool {
@@ -50,25 +53,34 @@ fn notice(
     let ask = |asked| Some(Action::Download(shared.id, asked));
     match download.stage() {
         Stage::Running => {
-            let done = format::size(download.done());
-            let words = wanted.artifact.size.map_or_else(
-                || format!("Downloading {file} of {}: {done}", wanted.of),
+            let done = download.done();
+            let (fraction, said) = wanted.artifact.size.filter(|size| *size > 0).map_or_else(
+                || (None, format::size(done)),
                 |size| {
-                    format!(
-                        "Downloading {file} of {}: {done} of {}",
-                        wanted.of,
-                        format::size(size)
+                    (
+                        Some(crate::grid::ratio(done, size)),
+                        format!("{} of {}", format::size(done), format::size(size)),
                     )
                 },
             );
             let mut asked = None;
             ui.horizontal(|ui| {
-                ui.spinner();
-                let said = ui.add(egui::Label::new(words).truncate());
-                crate::help::note_topic(ui, said.rect, TOPIC);
-                if widgets::secondary(ui, true, "Cancel").clicked() {
-                    asked = ask(DownloadAsk::Cancel(download.id));
-                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::secondary(ui, true, "Cancel").clicked() {
+                        asked = ask(DownloadAsk::Cancel(download.id));
+                    }
+                    // A bar of its own width, its words inside: what comes moves nothing.
+                    let bar = egui::ProgressBar::new(fraction.unwrap_or(0.0))
+                        .desired_width(PROGRESS)
+                        .text(said)
+                        .animate(fraction.is_none());
+                    ui.add(bar);
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        let words = format!("Downloading {file} of {}", wanted.of);
+                        let said = ui.add(egui::Label::new(words).truncate());
+                        crate::help::note_topic(ui, said.rect, TOPIC);
+                    });
+                });
             });
             asked
         }
@@ -76,15 +88,23 @@ fn notice(
             let to = format::display_path(&download.to, shared.home);
             let mut asked = None;
             ui.horizontal(|ui| {
-                ui.label(RichText::new(icon::CHECK_CIRCLE).color(palette.ok));
-                let said = ui.add(egui::Label::new(format!("Saved {file} to {to}")).truncate());
-                crate::help::note_topic(ui, said.rect, TOPIC);
-                if widgets::secondary(ui, true, "Show in folder").clicked() {
-                    asked = Some(Action::Reveal(download.to.clone(), Reveal::InFolder));
-                }
-                if widgets::secondary(ui, true, "Dismiss").clicked() {
-                    asked = ask(DownloadAsk::Dismiss(download.id));
-                }
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if widgets::secondary(ui, true, "Dismiss").clicked() {
+                        asked = ask(DownloadAsk::Dismiss(download.id));
+                    }
+                    if widgets::secondary(ui, true, "Show in folder").clicked() {
+                        asked = Some(Action::Reveal(download.to.clone(), Reveal::InFolder));
+                    }
+                    if widgets::secondary(ui, true, "Open").clicked() {
+                        asked = Some(Action::Reveal(download.to.clone(), Reveal::Open));
+                    }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.label(RichText::new(icon::CHECK_CIRCLE).color(palette.ok));
+                        let words = format!("Saved {file} to {to}");
+                        let said = ui.add(egui::Label::new(words).truncate());
+                        crate::help::note_topic(ui, said.rect, TOPIC);
+                    });
+                });
             });
             asked
         }

@@ -1106,6 +1106,7 @@ pub(super) const TOPICS: &[Topic] = &[
         on: &[
             "Pull requests",
             "Merge requests",
+            "Description",
             "Pull and merge requests",
             "1 pull request",
             "1 merge request",
@@ -1167,7 +1168,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "pull-request-checks",
         group: Group::Remotes,
         title: "A request's checks",
-        on: &[],
+        on: &["Checks"],
         what: "What the forge's CI reported for the request's latest commit: passed, failed, \
                running, neither (skipped or neutral), or none at all. On GitLab these are the \
                head pipeline's jobs; a job allowed to fail counts as neutral. Details opens the \
@@ -1188,7 +1189,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "pull-request-review",
         group: Group::Remotes,
         title: "Reviews",
-        on: &[],
+        on: &["Reviews"],
         what: "Where the request stands with reviewers: approved, changes requested, or a review \
                still required by the repository's rules. The details list each reviewer's \
                latest review: approved, asked for changes, commented, dismissed, or pending.",
@@ -1256,15 +1257,22 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "pipeline-page",
         group: Group::Remotes,
         title: "A pipeline",
-        on: &["Ran for", "Started", "Ran", "Attempt", "* #*: *"],
+        on: &[
+            "Ran for",
+            "Started",
+            "Ran",
+            "Attempt",
+            "* #*: *",
+            "* more * for this commit",
+        ],
         what: "A pipeline in the history's place (a GitLab pipeline, \"Pipeline #9003\"; a \
                GitHub Actions workflow's run, \"CI #57\"): how it stands, the branch or tag it \
                ran for, its commit (Show the commit selects it in the history), who started it \
                and how, how long it ran, and which attempt it is (GitHub runs a workflow again \
-               in place); the commit's other runs (another GitHub workflow's), a menu away; what \
-               can be done to it, in its forge's words; then its jobs, laid out as you choose: \
-               List, each stage a card of its jobs (a GitHub workflow's jobs, each with its \
-               matrix's), or a graph, by Stages (GitLab's) or by Dependencies. It is read again \
+               in place); the commit's other runs (another GitHub workflow's) in its title's \
+               menu; what can be done to it, in its forge's words; then its jobs, laid out as \
+               you choose: List, each stage a card of its jobs (a GitHub workflow's jobs, each \
+               with its matrix's), or a graph, by Stages (GitLab's) or by Dependencies. It is read again \
                every few seconds while it is under way, and at once after anything asked of the \
                forge. Escape, or History, goes back.",
         git: "GitLab's GraphQL API: project { pipeline(iid) { stages { jobs } } }; GitHub's REST API: GET /repos/:owner/:name/actions/runs/:id and …/jobs?filter=all",
@@ -1429,15 +1437,60 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "job-log-sections",
+        group: Group::Remotes,
+        title: "A log's sections",
+        on: &[
+            "Sections",
+            "Fold every section",
+            "Unfold every section",
+            "Fold *",
+            "Unfold *",
+            "Errors and warnings",
+            "Line *: *",
+            "Follow the end",
+            "Go to the end",
+        ],
+        what: "A job's log in parts, as its forge writes them: a GitLab job's sections (the \
+               runner's own, preparing, getting the source, the script, and those its script \
+               marks), a GitHub job's steps (each a line of its own, from the steps GitHub \
+               lists, at the first line written once it started) and the groups inside them. \
+               Each header has a caret in the gutter and how long its part took at its right; a \
+               click on it folds or unfolds it, leaving its lines out (\"⋯ 120 lines\"). Parts \
+               fold as their forge folds them: a GitLab section marked collapsed, every GitHub \
+               group, and every GitHub step but one that failed. Sections, in the bar, shows \
+               them beside the log as a tree: how each went, how long it took, and a bar on the \
+               job's timeline (where it began, how long it ran: where the time went), the one \
+               the log shows lit; then the lines the runner marked as errors or warnings. A \
+               click goes to one, unfolding what hides it; Alt+↑ and Alt+↓ go to the part \
+               before or after. Scrolled up while the job runs, Follow the end goes back to \
+               following it.",
+        git: "Nothing of git's: GitLab's section_start and section_end markers (with [collapsed=true]), GitHub's ##[group] and ##[endgroup], ##[error] and ##[warning], a GitLab runner's ERROR: and WARNING: lines; GitHub's steps from GET /repos/:owner/:name/actions/jobs/:id",
+        cases: &[
+            (
+                "A GitHub step's time is its own?",
+                "Yes: GitHub says when each step started and finished, and egit heads each step's lines with it; its lines are those written from its start until the next step's.",
+            ),
+            (
+                "Find (⌘F) misses a line?",
+                "Find searches what shows: a folded part's lines are left out until it is unfolded (Unfold every section, in Sections' head).",
+            ),
+            (
+                "Which part failed?",
+                "A part holding a line the runner marked as an error (or open when the job failed) is marked failed; a GitHub step says how it went itself. The errors are listed under the parts, a click away.",
+            ),
+        ],
+    },
+    Topic {
         id: "job-log",
         group: Group::Remotes,
         title: "A job's log",
         on: &["Pipeline #*", "* #*", "Run #* · *", "Latest #* · *"],
         what: "A job's log as its forge shows it, in the pipeline's place: its colours, each \
                line's time beside its number (where the runner writes them), progress lines as \
-               their last state, and its sections' headers marked (a GitHub log's groups, \
-               ##[group]); Sections jumps to one and says how long it took; where the job ran \
-               more than once, Run 2 of 3 switches between its runs' logs. While the job runs, \
+               their last state, and its sections' headers marked, each with how long it took \
+               (folded as the forge folds them: Sections explains); where the job ran more than \
+               once, Run 2 of 3 switches between its runs' logs. While the job runs, \
                egit asks how it stands and reads what its log gained every two seconds, the \
                view following its end while it rests there: scrolled up, it stays put; back at \
                the end, it follows again. GitHub gives a job's log once the job has ended: \

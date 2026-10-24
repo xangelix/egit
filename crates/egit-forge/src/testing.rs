@@ -1225,14 +1225,16 @@ fn github_job(
         .enumerate()
         .map(|(at, (name, step))| {
             let (status, conclusion) = github_status(step);
+            // Each step a second after the one before.
+            let second = u64::try_from(at).unwrap_or(0);
             let started = if status == "in_progress" {
                 github_lately()
             } else {
-                github_time(0)
+                github_time(second)
             };
             json!({ "name": name, "number": at + 1, "status": status,
                     "conclusion": conclusion, "started_at": started,
-                    "completed_at": (status == "completed").then(|| github_time(1)) })
+                    "completed_at": (status == "completed").then(|| github_time(second + 1)) })
         })
         .collect();
     let started = if status == "in_progress" {

@@ -107,10 +107,12 @@ fn ran() -> (Sandbox, FakeForge, egui_kittest::Harness<'static, EgitApp>) {
         .unwrap();
     let head = commit_of(&sandbox, &work, "HEAD");
     let mut failed = job(803, "test (macos)", "FAILED");
-    failed.log = "\u{feff}2024-05-01T10:21:00.1234567Z ##[group]Run make test\n\
-                  2024-05-01T10:21:01.0000000Z FAIL parse\n\
-                  2024-05-01T10:21:02.0000000Z ##[endgroup]\n\
-                  2024-05-01T10:21:03.0000000Z ##[error]Process completed with exit code 2.\n"
+    failed.log = "\u{feff}2024-05-01T10:21:00.1234567Z Current runner version: '2.316.1'\n\
+                  2024-05-01T10:21:01.0000000Z ##[group]Run make test\n\
+                  2024-05-01T10:21:01.0000000Z make test\n\
+                  2024-05-01T10:21:01.0000000Z ##[endgroup]\n\
+                  2024-05-01T10:21:01.5000000Z FAIL parse\n\
+                  2024-05-01T10:21:02.0000000Z ##[error]Process completed with exit code 2.\n"
         .to_owned();
     let ci = run(
         (8001, 57),
@@ -157,7 +159,7 @@ fn a_commit_s_workflow_runs_are_marked_shown_and_run_again() {
         .get_by_role_and_label(Role::Button, "CI #57: failed")
         .click();
     wait_for_label(&mut harness, "test (macos): failed");
-    harness.get_by_label_contains("1 more workflow run for this commit");
+    harness.get_by_role_and_label(Role::Button, "CI #57");
 
     // By what each needs, as the workflow's file says: no stages to lay out by.
     harness.get_by_label("Dependencies").click();
@@ -183,6 +185,20 @@ fn a_commit_s_workflow_runs_are_marked_shown_and_run_again() {
         "the error said",
         log_holds("Error: Process completed with exit code 2."),
     );
+    // Its steps head what they wrote, as GitHub shows them: the one that failed open.
+    settle(&mut harness, "its steps", |app| {
+        app.state.repos[0]
+            .history_view
+            .job_log_shown()
+            .is_some_and(|shown| {
+                shown.starts_with("Set up job  ⋯ 1 line\nRun make\nRun make test  ⋯ 1 line\n")
+            })
+    });
+    wait_for_label(
+        &mut harness,
+        "Line 7: Error: Process completed with exit code 2.",
+    );
+    render(&mut harness, "workflow-job-log");
     harness.key_press(egui::Key::Escape);
     wait_for_label(&mut harness, "test (macos): failed");
 
@@ -197,7 +213,7 @@ fn a_commit_s_workflow_runs_are_marked_shown_and_run_again() {
 
     // The commit's other workflow's run, from the menu.
     harness
-        .get_by_label_contains("1 more workflow run for this commit")
+        .get_by_role_and_label(Role::Button, "CI #57")
         .click();
     wait_for_label(&mut harness, "Docs #9: passed");
     harness.get_by_label("Docs #9: passed").click();
@@ -238,7 +254,7 @@ fn a_commit_s_workflow_runs_are_marked_shown_and_run_again() {
     );
     wait_for_label(&mut harness, "Cancel it");
     harness.get_by_label("Cancel it").click();
-    wait_for_label(&mut harness, "test (macos): canceled");
+    wait_for_label(&mut harness, "test (macos): cancelled");
 
     // A job run again from its row; the mark follows.
     click_when_enabled(&mut harness, "Re-run test (macos)");

@@ -237,6 +237,24 @@ pub struct Run {
     pub style: Style,
 }
 
+/// What a line of a log says of the job, where its runner marks it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarkKind {
+    /// An error: GitHub's `##[error]`, a GitLab runner's `ERROR:` (its job failing, say).
+    Error,
+    /// A warning: GitHub's `##[warning]`, a GitLab runner's `WARNING:`.
+    Warning,
+}
+
+/// A line of a log its runner marks as an error or a warning.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogMark {
+    /// The line.
+    pub line: u32,
+    /// What it says.
+    pub kind: MarkKind,
+}
+
 /// A section of a log, as its markers name it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
@@ -248,10 +266,13 @@ pub struct Section {
     pub started: i64,
     /// When it ended, and its last line, once it has.
     pub ended: Option<(i64, u32)>,
-    /// Whether GitLab shows it folded (`[collapsed=true]`).
+    /// Whether its forge shows it folded (GitLab's `[collapsed=true]`, every GitHub group, a
+    /// GitHub step that didn't fail).
     pub collapsed: bool,
     /// How many sections it is inside.
     pub depth: u16,
+    /// How it went, where its forge says: a GitHub job's step ([`with_steps`]).
+    pub status: Option<CiStatus>,
 }
 
 /// Whose log it is: how its lines are written.
@@ -276,6 +297,8 @@ pub struct JobLog {
     /// Whether any line had one.
     timed: bool,
     sections: Vec<Section>,
+    /// The lines its runner marks as errors or warnings, in order.
+    marks: Vec<LogMark>,
     /// The sections open, innermost last.
     open: Vec<usize>,
     /// How many lines it holds.
@@ -303,6 +326,8 @@ pub struct LogParts {
     pub times: Vec<i64>,
     /// The sections, in the order they start.
     pub sections: Vec<Section>,
+    /// The lines its runner marks as errors or warnings, in order.
+    pub marks: Vec<LogMark>,
     /// Whether the text reached [`MOST_TEXT`] (the rest was left out).
     pub truncated: bool,
 }
@@ -368,6 +393,7 @@ impl JobLog {
             runs: whole.runs,
             times: whole.times,
             sections: whole.sections,
+            marks: whole.marks,
             truncated: whole.truncated,
         }
     }
@@ -430,6 +456,7 @@ impl JobLog {
                 ended: None,
                 collapsed: true,
                 depth,
+                status: None,
             });
             self.commit(name, time);
             return;
@@ -443,17 +470,28 @@ impl JobLog {
             }
             return;
         }
-        let said: [(&[u8], &[u8], &[u8]); 5] = [
-            (b"##[error]", b"Error: ", b"\x1b[31m"),
-            (b"##[warning]", b"Warning: ", b"\x1b[33m"),
-            (b"##[notice]", b"Notice: ", b"\x1b[36m"),
-            (b"##[command]", b"", b"\x1b[34m"),
-            (b"##[debug]", b"", b"\x1b[2m"),
+        let said: [Command; 5] = [
+            (b"##[error]", b"Error: ", b"\x1b[31m", Some(MarkKind::Error)),
+            (
+                b"##[warning]",
+                b"Warning: ",
+                b"\x1b[33m",
+                Some(MarkKind::Warning),
+            ),
+            (b"##[notice]", b"Notice: ", b"\x1b[36m", None),
+            (b"##[command]", b"", b"\x1b[34m", None),
+            (b"##[debug]", b"", b"\x1b[2m", None),
         ];
-        for (command, words, colour) in said {
+        for (command, words, colour, mark) in said {
             if let Some(rest) = content.strip_prefix(command) {
                 let line = [colour, words, rest, b"\x1b[0m"].concat();
+                let at = self.lines;
                 self.commit(&line, time);
+                if let Some(kind) = mark
+                    && self.lines > at
+                {
+                    self.marks.push(LogMark { line: at, kind });
+                }
                 return;
             }
         }
@@ -509,6 +547,19 @@ impl JobLog {
                 });
             }
         }
+        // A GitLab runner's own errors and warnings ("ERROR: Job failed: exit code 1").
+        if self.dialect == Dialect::GitLab {
+            let said = if text.starts_with(b"ERROR: ") {
+                Some(MarkKind::Error)
+            } else if text.starts_with(b"WARNING: ") {
+                Some(MarkKind::Warning)
+            } else {
+                None
+            };
+            if let Some(kind) = said {
+                self.marks.push(LogMark { line, kind });
+            }
+        }
         self.text.extend_from_slice(&text);
         // The line ends in the default style: a newline has none.
         if self
@@ -561,6 +612,7 @@ impl JobLog {
                         ended: None,
                         collapsed,
                         depth,
+                        status: None,
                     });
                 }
                 Marker::End { name, at: ended } => {
@@ -583,6 +635,186 @@ impl JobLog {
         marked
     }
 }
+
+/// A GitHub job's log with its steps made its sections, as GitHub shows a job.
+///
+/// Each step is a line of its own (its name) heading what it wrote, from the first line written
+/// once it started (by the lines' times) to the next step's, its time and how it went its own;
+/// the groups inside it a step in. A step that didn't fail is folded, as GitHub folds them. A
+/// step that wrote nothing, or a log without times, adds nothing.
+#[must_use]
+pub fn with_steps(parts: LogParts, steps: &[JobStep]) -> LogParts {
+    let starts = line_starts(&parts.text);
+    let lines = u32::try_from(starts.len()).unwrap_or(u32::MAX);
+    let headed = step_lines(&parts.times, steps);
+    if headed.is_empty() {
+        return parts;
+    }
+    let (text, inserted) = with_names(&parts.text, &starts, &headed);
+    let mut times = Vec::with_capacity(parts.times.len().saturating_add(headed.len()));
+    let mut names = headed.iter().peekable();
+    for (line, time) in parts.times.iter().enumerate() {
+        if let Some((_, step)) = names.next_if(|(at, _)| usize::try_from(*at).ok() == Some(line)) {
+            times.push(step.started.unwrap_or(0));
+        }
+        times.push(*time);
+    }
+    // A line's place once the names are in: each inserted at it or before moves it down one.
+    let moved = |line: u32| -> u32 {
+        let before = headed.partition_point(|(at, _)| *at <= line);
+        line.saturating_add(u32::try_from(before).unwrap_or(u32::MAX))
+    };
+    let runs = parts
+        .runs
+        .iter()
+        .map(|run| {
+            let shift = inserted
+                .iter()
+                .take_while(|(at, _)| *at <= run.at)
+                .map(|(_, length)| *length)
+                .fold(0_u32, u32::saturating_add);
+            Run {
+                at: run.at.saturating_add(shift),
+                style: run.style,
+            }
+        })
+        .collect();
+    let total = lines.saturating_add(u32::try_from(headed.len()).unwrap_or(u32::MAX));
+    // Each step's name's line: just before its first line, as it now is.
+    let headers: Vec<u32> = headed
+        .iter()
+        .map(|(line, _)| moved(*line).saturating_sub(1))
+        .collect();
+    let mut sections: Vec<Section> = headed
+        .iter()
+        .zip(&headers)
+        .enumerate()
+        .map(|(at, ((_, step), header))| {
+            let last = headers
+                .get(at.saturating_add(1))
+                .map_or(total, |next| *next)
+                .saturating_sub(1)
+                .max(*header);
+            Section {
+                name: step.name.clone(),
+                line: *header,
+                started: step.started.unwrap_or(0),
+                ended: step.finished.map(|finished| (finished, last)),
+                collapsed: step.status != CiStatus::Failed,
+                depth: 0,
+                status: Some(step.status),
+            }
+        })
+        .collect();
+    sections.extend(parts.sections.into_iter().map(|section| Section {
+        line: moved(section.line),
+        ended: section.ended.map(|(time, last)| (time, moved(last))),
+        depth: section.depth.saturating_add(1),
+        ..section
+    }));
+    sections.sort_by_key(|section| (section.line, section.depth));
+    let marks = parts
+        .marks
+        .into_iter()
+        .map(|mark| LogMark {
+            line: moved(mark.line),
+            ..mark
+        })
+        .collect();
+    LogParts {
+        text,
+        runs,
+        times,
+        sections,
+        marks,
+        truncated: parts.truncated,
+    }
+}
+
+/// `text` with each step's name (one of `headed`, at its first line) inserted before its
+/// first line (`starts`: where each line starts); and where each went in `text` (a byte) and
+/// how long it is, for what points into the text to move past it.
+fn with_names(
+    text: &[u8],
+    starts: &[usize],
+    headed: &[(u32, &JobStep)],
+) -> (Vec<u8>, Vec<(u32, u32)>) {
+    let mut named = Vec::with_capacity(text.len().saturating_add(headed.len().saturating_mul(32)));
+    let mut inserted: Vec<(u32, u32)> = Vec::with_capacity(headed.len());
+    let mut copied = 0_usize;
+    for (line, step) in headed {
+        let start = starts
+            .get(usize::try_from(*line).unwrap_or(usize::MAX))
+            .copied()
+            .unwrap_or(text.len());
+        named.extend_from_slice(text.get(copied..start).unwrap_or_default());
+        let name: String = step.name.chars().filter(|c| *c != '\n').collect();
+        named.extend_from_slice(name.as_bytes());
+        named.push(b'\n');
+        inserted.push((
+            u32::try_from(start).unwrap_or(u32::MAX),
+            u32::try_from(name.len().saturating_add(1)).unwrap_or(u32::MAX),
+        ));
+        copied = start;
+    }
+    named.extend_from_slice(text.get(copied..).unwrap_or_default());
+    (named, inserted)
+}
+
+/// Each step's first line (by `times`, each line's): the first written once it started, after
+/// the step before's; two starting on one line, the later one has it.
+fn step_lines<'a>(times: &[i64], steps: &'a [JobStep]) -> Vec<(u32, &'a JobStep)> {
+    let mut headed: Vec<(u32, &JobStep)> = Vec::new();
+    let mut from = 0_usize;
+    let mut ordered: Vec<&JobStep> = steps.iter().collect();
+    ordered.sort_by_key(|step| step.number);
+    for step in ordered {
+        let Some(started) = step.started else {
+            continue;
+        };
+        let Some(first) = times
+            .iter()
+            .enumerate()
+            .skip(from)
+            .find(|(_, time)| **time != 0 && **time >= started)
+            .map(|(line, _)| line)
+        else {
+            continue;
+        };
+        if headed
+            .last()
+            .is_some_and(|(line, _)| usize::try_from(*line).ok() == Some(first))
+        {
+            headed.pop();
+        }
+        headed.push((u32::try_from(first).unwrap_or(u32::MAX), step));
+        from = first;
+    }
+    headed
+}
+
+/// Where each line of `text` starts.
+fn line_starts(text: &[u8]) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut at = 0_usize;
+    while at < text.len() {
+        starts.push(at);
+        at = text
+            .get(at..)
+            .and_then(|rest| rest.find_byte(b'\n'))
+            .map_or(text.len(), |end| at.saturating_add(end).saturating_add(1));
+    }
+    starts
+}
+
+/// A GitHub workflow command a log's line starts with, as egit says it: the command, the words
+/// before what follows it, its colour, and what it marks the line as.
+type Command = (
+    &'static [u8],
+    &'static [u8],
+    &'static [u8],
+    Option<MarkKind>,
+);
 
 /// A section's marker.
 enum Marker {
@@ -851,6 +1083,125 @@ mod tests {
             .find(|run| run.style.color == Some(Color::Indexed(1)))
             .unwrap();
         assert_eq!(red.at, 54);
+        assert_eq!(
+            parts.marks,
+            [LogMark {
+                line: 3,
+                kind: MarkKind::Error
+            }]
+        );
+    }
+
+    #[test]
+    fn a_github_job_s_steps_head_what_they_wrote() {
+        let mut log = JobLog::github();
+        log.feed(
+            "2024-05-14T11:19:20.0000000Z Current runner version: '2.316.1'\n\
+             2024-05-14T11:19:22.0000000Z ##[group]Run make test\n\
+             2024-05-14T11:19:22.0000000Z make test\n\
+             2024-05-14T11:19:22.0000000Z ##[endgroup]\n\
+             2024-05-14T11:19:30.0000000Z FAIL parse\n\
+             2024-05-14T11:19:31.0000000Z ##[error]Process completed with exit code 2.\n"
+                .as_bytes(),
+        );
+        let step = |number, name: &str, status, (started, finished)| JobStep {
+            number,
+            name: name.to_owned(),
+            status,
+            started: Some(started),
+            finished: Some(finished),
+        };
+        let steps = [
+            step(
+                2,
+                "Run make test",
+                CiStatus::Failed,
+                (1_715_685_562, 1_715_685_571),
+            ),
+            step(
+                1,
+                "Set up job",
+                CiStatus::Success,
+                (1_715_685_559, 1_715_685_561),
+            ),
+            // It wrote nothing: no section.
+            step(
+                3,
+                "Post job cleanup",
+                CiStatus::Skipped,
+                (1_715_685_600, 1_715_685_600),
+            ),
+        ];
+        let parts = with_steps(log.parts(), &steps);
+        assert_eq!(
+            text(&parts),
+            "Set up job\nCurrent runner version: '2.316.1'\nRun make test\nRun make test\n\
+             make test\nFAIL parse\nError: Process completed with exit code 2.\n"
+        );
+        assert_eq!(
+            parts
+                .sections
+                .iter()
+                .map(|section| (
+                    section.name.as_str(),
+                    section.line,
+                    section.ended.map(|(_, last)| last),
+                    section.depth,
+                    section.collapsed,
+                    section.status
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("Set up job", 0, Some(1), 0, true, Some(CiStatus::Success)),
+                (
+                    "Run make test",
+                    2,
+                    Some(6),
+                    0,
+                    false,
+                    Some(CiStatus::Failed)
+                ),
+                ("Run make test", 3, Some(4), 1, true, None),
+            ]
+        );
+        // Each line keeps its time, a step's name its start; the error its mark.
+        assert_eq!(parts.times.len(), 7);
+        assert_eq!(parts.times.get(2), Some(&1_715_685_562));
+        assert_eq!(parts.times.get(5), Some(&1_715_685_570));
+        assert_eq!(
+            parts.marks,
+            [LogMark {
+                line: 6,
+                kind: MarkKind::Error
+            }]
+        );
+        // The error's colour moved with its line.
+        let red = parts
+            .runs
+            .iter()
+            .find(|run| run.style.color == Some(Color::Indexed(1)))
+            .unwrap();
+        assert_eq!(
+            parts
+                .text
+                .get(usize::try_from(red.at).unwrap()..)
+                .unwrap()
+                .get(..6),
+            Some(&b"Error:"[..])
+        );
+    }
+
+    #[test]
+    fn a_gitlab_runner_s_errors_are_marked() {
+        let mut log = JobLog::new();
+        log.feed(b"$ make\n\x1b[0;31mERROR: Job failed: exit code 1\x1b[0;m\n");
+        assert_eq!(
+            log.parts().marks,
+            [LogMark {
+                line: 1,
+                kind: MarkKind::Error
+            }]
+        );
     }
 
     #[test]

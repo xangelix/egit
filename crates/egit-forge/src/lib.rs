@@ -35,7 +35,8 @@ pub use artifacts::{Artifact, ArtifactKind, ArtifactSource, download_artifact};
 pub use error::ForgeError;
 pub use host::{ForgeHost, ForgeHosts, ForgeKind};
 pub use job_log::{
-    JobLog, JobRun, JobStep, LogParts, LogRead, MOST_TEXT, Run, Section, job, read_log,
+    JobLog, JobRun, JobStep, LogMark, LogParts, LogRead, MOST_TEXT, MarkKind, Run, Section, job,
+    read_log, with_steps,
 };
 pub use model::{
     Check, CheckState, Mergeable, NewPullRequest, Opened, PullRequest, PullRequestDetails,

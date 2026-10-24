@@ -46,6 +46,11 @@ pub(super) fn card(
                     &format!("{}  Read again", icon::ARROWS_CLOCKWISE),
                 )
                 .on_hover_text("Read the requests and pipelines again")
+                .on_disabled_hover_text(if reading {
+                    "Reading them now"
+                } else {
+                    "No remote is a GitHub repository or a GitLab project egit knows"
+                })
                 .clicked()
                 {
                     actions.push(Action::RefreshPullRequests(id));
@@ -163,9 +168,9 @@ fn unknown(ui: &mut Ui, seen: &SeenRemote, hosts: &[ForgeHost], actions: &mut Ve
     widgets::fact_top_of(ui, widgets::FACT_LABEL, ("Recognized as", TOPIC), |ui| {
         let words = match (&ssh, listed.is_empty()) {
             (Some(ssh), false) => format!(
-                "{}  Nothing: {ssh} isn't a host egit knows. A GitLab Profile lists says where \
-                 its ssh is once you are signed in to it; or, if {ssh} is the ssh host of one, \
-                 say which:",
+                "{}  Nothing: {ssh} isn't a host egit knows. A GitLab listed in Profile says \
+                 where its ssh is once you are signed in to it; or, if {ssh} is the ssh host of \
+                 one, say which:",
                 icon::WARNING
             ),
             (Some(ssh), true) => format!(

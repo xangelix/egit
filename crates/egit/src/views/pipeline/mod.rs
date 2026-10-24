@@ -633,7 +633,7 @@ pub(super) fn show(
     let palette = shared.palette;
     let mut asked = None;
     egui::CentralPanel::default()
-        .frame(Frame::new().inner_margin(Margin::same(16)))
+        .frame(Frame::new().inner_margin(Margin::symmetric(12, 16)))
         .show(ui, |ui| {
             view.acting.problem(ui);
             if let Some(summary) = summary(ui, palette, &pipeline, details.as_deref()) {
@@ -694,23 +694,21 @@ fn layout_choice(ui: &mut Ui, ordered_stages: bool) -> JobsLayout {
     ];
     let choices: &[(JobsLayout, &str)] = if ordered_stages { &all } else { &unordered };
     let mut picked = chosen;
-    ui.horizontal(|ui| {
-        widgets::segmented(ui, &mut picked, choices);
-        ui.label(muted(
-            ui,
-            match (picked, ordered_stages) {
-                (JobsLayout::List, true) => "Each stage's jobs, in the order they run.",
-                (JobsLayout::List, false) => "Each job, with its matrix's beside it.",
-                (JobsLayout::Stages, _) => "Each stage a column; lines to what each job needs.",
-                (JobsLayout::Dependencies, true) => {
-                    "Columns by what each job waits for: its needs, else the stages before it."
-                }
-                (JobsLayout::Dependencies, false) => {
-                    "Columns by what each job needs, as its workflow's file says."
-                }
-            },
-        ));
-    });
+    // What each layout shows, on hover: the page keeps to the jobs.
+    let explained = match (picked, ordered_stages) {
+        (JobsLayout::List, true) => "Each stage's jobs, in the order they run.",
+        (JobsLayout::List, false) => "Each job, with its matrix's beside it.",
+        (JobsLayout::Stages, _) => "Each stage a column; lines to what each job needs.",
+        (JobsLayout::Dependencies, true) => {
+            "Columns by what each job waits for: its needs, else the stages before it."
+        }
+        (JobsLayout::Dependencies, false) => {
+            "Columns by what each job needs, as its workflow's file says."
+        }
+    };
+    ui.horizontal(|ui| widgets::segmented(ui, &mut picked, choices))
+        .response
+        .on_hover_text(explained);
     if picked != chosen {
         picked.choose(ui.ctx());
     }
@@ -748,8 +746,11 @@ fn bar(
             if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked() {
                 event = Some(BarAsk::Close);
             }
-            let title = ui.label(RichText::new(pipeline.title()).semibold());
-            crate::help::note_topic(ui, title.rect, TOPIC);
+            // Its title; where the commit ran others (a GitHub commit's other workflows), a menu
+            // of them, as GitHub's run page has it.
+            if let Some(other) = title(ui, (palette, words), pipeline, &view.mark) {
+                event = Some(BarAsk::Other(Box::new(other)));
+            }
             let (glyph, color) = ci_look(pipeline.status, palette);
             ui.label(
                 RichText::new(format!(
@@ -758,15 +759,13 @@ fn bar(
                 ))
                 .color(color),
             );
-            if widgets::secondary(ui, !reading, "Refresh").clicked() {
+            // Always pressable: a read under way just reads again after it.
+            if widgets::secondary(ui, true, "Refresh").clicked() {
                 event = Some(BarAsk::Refresh);
             }
             let open = format!("{}  Open on {}", icon::ARROW_SQUARE_OUT, words.forge);
             if widgets::secondary(ui, true, &open).clicked() {
                 event = Some(BarAsk::Open(pipeline.url.clone()));
-            }
-            if let Some(other) = others(ui, (palette, words), &view.mark) {
-                event = Some(BarAsk::Other(Box::new(other)));
             }
             // What comes and goes follows the buttons, on a row of its own where it doesn't fit.
             let widths = action_widths(ui, (details, words), view);
@@ -797,14 +796,22 @@ fn bar(
     event
 }
 
-/// The commit's other pipelines (another GitHub workflow's runs), a menu of them, each as it
-/// stands; the one chosen.
-fn others(ui: &mut Ui, (palette, words): (Palette, CiWords), mark: &CiMark) -> Option<CiMark> {
+/// The pipeline's title; where its commit ran others (another GitHub workflow's runs), a menu of
+/// them under it, each as it stands. The one chosen.
+fn title(
+    ui: &mut Ui,
+    (palette, words): (Palette, CiWords),
+    pipeline: &egit_forge::Pipeline,
+    mark: &CiMark,
+) -> Option<CiMark> {
+    let title = pipeline.title();
     if mark.others.is_empty() {
+        let shown = ui.label(RichText::new(title).semibold());
+        crate::help::note_topic(ui, shown.rect, TOPIC);
         return None;
     }
     let count = mark.others.len();
-    let label = format!(
+    let header = format!(
         "{count} more {}{} for this commit",
         words.noun,
         if count == 1 { "" } else { "s" }
@@ -812,11 +819,12 @@ fn others(ui: &mut Ui, (palette, words): (Palette, CiWords), mark: &CiMark) -> O
     let mut chosen = None;
     widgets::tool_menu_of(
         ui,
-        (icon::STACK, &label),
+        (icon::STACK, &title),
         widgets::Look::Full,
         TOPIC,
         |ui| {
             super::actions::menu_rows(ui);
+            super::actions::menu_header(ui, &header);
             for (at, (_, other)) in mark.others.iter().enumerate() {
                 let (glyph, _) = ci_look(other.status, palette);
                 let words = format!(
@@ -866,6 +874,8 @@ fn action_widths(
         texts.push(format!("{doing}…  "));
     }
     widths.extend(texts.iter().map(|text| widgets::button_width(ui, text)));
+    // The spinner's room always: a read coming and going never moves the bar's rows.
+    widths.push(widgets::TARGET);
     widths
 }
 
@@ -1056,7 +1066,13 @@ fn summary(
         .and_then(|details| details.source.as_deref())
         .map(source_words);
     widgets::fact_of(ui, width, ("Started", TOPIC), |ui| {
-        ui.label(started);
+        // The moment itself on hover, in the viewer's zone.
+        ui.label(started).on_hover_ui(|ui| {
+            ui.label(format::local_date_time(
+                pipeline.created,
+                &format::local_zone(),
+            ));
+        });
         if let Some(how) = how {
             ui.label(muted(ui, how));
         }
@@ -1065,6 +1081,12 @@ fn summary(
         widgets::fact_of(ui, width, ("Ran", TOPIC), |ui| {
             ui.label(took);
         });
+        // A clock under way ticks each second.
+        if details.is_some_and(|details| details.duration.is_none()) && pipeline.status.is_moving()
+        {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs(1));
+        }
     }
     if pipeline.attempt > 1 {
         widgets::fact_of(ui, width, ("Attempt", TOPIC), |ui| {
@@ -1113,17 +1135,7 @@ fn ran_for(details: &PipelineDetails, now: u64) -> Option<String> {
     Some(duration(finished.saturating_sub(started)))
 }
 
-/// A number of seconds as a person says it: "42 s", "1 min 35 s", "2 h 5 min".
-pub(super) fn duration(seconds: u64) -> String {
-    let hours = seconds.checked_div(3_600).unwrap_or(0);
-    let minutes = seconds.checked_div(60).unwrap_or(0) % 60;
-    let rest = seconds % 60;
-    match (hours, minutes) {
-        (0, 0) => format!("{rest} s"),
-        (0, _) => format!("{minutes} min {rest} s"),
-        _ => format!("{hours} h {minutes} min"),
-    }
-}
+pub(crate) use crate::format::duration;
 
 /// The notice under the commit table where the pipelines couldn't be read: `why` (cut to its
 /// line, whole on hover), and Dismiss; returns whether it was dismissed.
@@ -1155,16 +1167,4 @@ pub(super) fn unread(ui: &mut Ui, repo: crate::repo::RepoId, why: &str) -> bool 
         },
     );
     dismissed
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn durations_are_said_as_people_say_them() {
-        assert_eq!(duration(42), "42 s");
-        assert_eq!(duration(95), "1 min 35 s");
-        assert_eq!(duration(7_500), "2 h 5 min");
-    }
 }

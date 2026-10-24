@@ -13,6 +13,7 @@ pub(crate) mod history;
 pub(crate) mod home;
 mod job;
 mod lfs;
+mod log_outline;
 mod merge;
 mod output;
 pub(crate) mod palette;

@@ -27,7 +27,7 @@ use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
 
 /// A row's height in the list.
-const ROW_HEIGHT: f32 = 26.0;
+const ROW_HEIGHT: f32 = 46.0;
 
 /// The pull request view's state.
 #[derive(Debug)]
@@ -43,6 +43,8 @@ pub(super) struct PullRequestView {
     /// history's length then: a longer history is looked through again).
     head_row: Option<((usize, u32), u64, Option<u64>)>,
     cancel: CancelToken,
+    /// What drawing the description's Markdown keeps.
+    markdown: egui_commonmark::CommonMarkCache,
 }
 
 impl Drop for PullRequestView {
@@ -71,6 +73,7 @@ impl PullRequestView {
             details_of: None,
             head_row: None,
             cancel: CancelToken::new(),
+            markdown: egui_commonmark::CommonMarkCache::default(),
         }
     }
 
@@ -139,7 +142,7 @@ pub(super) fn show(
     }
     if count == 0 {
         egui::CentralPanel::default()
-            .frame(Frame::new().inner_margin(Margin::same(16)))
+            .frame(Frame::new().inner_margin(Margin::symmetric(12, 16)))
             .show(ui, |ui| {
                 if let Some(asked) = empty(ui, shared, problem.as_ref()) {
                     event = Some(asked);
@@ -147,10 +150,12 @@ pub(super) fn show(
             });
         return event;
     }
-    egui::Panel::top(Id::new(("pull-request-list", shared.id)))
+    // The list at full height, the one selected's details beside it.
+    let room = ui.available_width();
+    egui::Panel::left(Id::new(("pull-request-list", shared.id)))
         .resizable(true)
-        .default_size(260.0)
-        .size_range(96.0..=700.0)
+        .default_size((room * 0.55).max(360.0))
+        .size_range(320.0..=(room - 320.0).max(320.0))
         .frame(Frame::new())
         .show(ui, |ui| list(ui, shared, view));
     egui::CentralPanel::default()
@@ -417,77 +422,81 @@ fn row(
     });
     crate::widgets::row_fill(ui, rect, 0.0, selected, response.hovered());
     crate::help::note_topic(ui, rect, "pull-request-list");
-    let mut row = ui.new_child(
+    // Two lines, as the forges list them: how its checks went, its title, how its review
+    // stands and how long ago it moved; under it, muted, its number, who, and which branches.
+    let line = ROW_HEIGHT / 2.0 - 2.0;
+    let top = egui::Rect::from_min_size(
+        egui::pos2(rect.left() + 10.0, rect.top() + 3.0),
+        egui::vec2(rect.width() - 20.0, line),
+    );
+    let bottom = egui::Rect::from_min_size(
+        egui::pos2(top.left(), top.bottom()),
+        egui::vec2(top.width(), line),
+    );
+    let mut first = ui.new_child(
         egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(8.0, 0.0)))
+            .max_rect(top)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    let mut number = request_number(shared.forge.kind_of(listed.repository), pull.number);
-    if several && let Some(repository) = shared.forge.repositories.get(listed.repository) {
-        number = format!("{} {number}", repository.name());
-    }
-    row.add_sized(
-        [56.0, ROW_HEIGHT],
-        egui::Label::new(RichText::new(number).monospace().color(palette.muted))
-            .selectable(false)
-            .truncate(),
-    );
     let (glyph, color, meaning) = check_look(pull.checks, palette);
-    row.add(egui::Label::new(RichText::new(glyph).color(color)).selectable(false))
+    first
+        .add(egui::Label::new(RichText::new(glyph).color(color)).selectable(false))
         .on_hover_text(meaning);
-    row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+    first.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         let age = u64::try_from(pull.updated).map_or_else(
             |_| String::new(),
             |updated| crate::blame::compact_age(updated, now),
         );
-        ui.add_sized(
-            [32.0, ROW_HEIGHT],
-            egui::Label::new(muted(ui, age)).selectable(false),
-        );
-        if let Some((glyph, color, meaning)) = review_look(pull.review, palette) {
-            ui.add(egui::Label::new(RichText::new(glyph).color(color)).selectable(false))
-                .on_hover_text(meaning);
-        }
-        let mut whose = format!(
-            "{} · {} {} {}",
-            pull.author,
-            pull.head_branch,
-            icon::ARROW_RIGHT,
-            pull.base_branch
-        );
-        if pull.cross_repository
-            && let Some(fork) = &pull.head_repository
-        {
-            let _ = write!(whose, " (from {fork})");
-        }
-        ui.add(
-            egui::Label::new(muted(ui, whose))
-                .selectable(false)
-                .truncate(),
-        );
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            if pull.draft {
-                chip(ui, "Draft", palette.muted);
+        let age_width = widgets::text_width(ui, "12mo");
+        widgets::column(ui, (age_width, line), egui::Align::Max, |ui| {
+            ui.add(egui::Label::new(muted(ui, age)).selectable(false));
+        });
+        // The review's mark in a column of its own, there or not: titles end alike.
+        widgets::column(ui, (18.0, line), egui::Align::Center, |ui| {
+            if let Some((glyph, color, meaning)) = review_look(pull.review, palette) {
+                ui.add(egui::Label::new(RichText::new(glyph).color(color)).selectable(false))
+                    .on_hover_text(meaning);
             }
+        });
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.add(
                 egui::Label::new(RichText::new(&pull.title).color(palette.text))
                     .selectable(false)
                     .truncate(),
             );
+            if pull.draft {
+                widgets::chip(ui, "Draft", palette.muted);
+            }
         });
     });
+    let mut second = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(bottom)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    second.add_space(20.0);
+    let mut number = request_number(shared.forge.kind_of(listed.repository), pull.number);
+    if several && let Some(repository) = shared.forge.repositories.get(listed.repository) {
+        number = format!("{} {number}", repository.name());
+    }
+    let mut whose = format!(
+        "{number} · {} · {} {} {}",
+        pull.author,
+        pull.head_branch,
+        icon::ARROW_RIGHT,
+        pull.base_branch
+    );
+    if pull.cross_repository
+        && let Some(fork) = &pull.head_repository
+    {
+        let _ = write!(whose, " (from {fork})");
+    }
+    second.add(
+        egui::Label::new(RichText::new(whose).small().color(palette.muted))
+            .selectable(false)
+            .truncate(),
+    );
     response.clicked()
-}
-
-/// A small label in a frame.
-fn chip(ui: &mut Ui, text: &str, color: Color32) {
-    Frame::new()
-        .stroke(egui::Stroke::new(1.0, color))
-        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_INNER))
-        .inner_margin(Margin::symmetric(4, 0))
-        .show(ui, |ui| {
-            ui.add(egui::Label::new(RichText::new(text).size(11.0).color(color)).selectable(false));
-        });
 }
 
 /// A checks state's icon, colour, and meaning.
@@ -549,7 +558,7 @@ fn details(
                 widgets::panel_title(ui, pull.title.as_str());
                 ui.label(muted(ui, request_number(kind, pull.number)));
                 if pull.draft {
-                    chip(ui, "Draft", palette.muted);
+                    widgets::chip(ui, "Draft", palette.muted);
                 }
             });
             let mut whose = format!(
@@ -611,7 +620,7 @@ fn details(
                 }
                 Some(Ok(details)) => {
                     let details = Arc::clone(details);
-                    if let Some(asked) = described(ui, palette, &details) {
+                    if let Some(asked) = described(ui, palette, &details, &mut view.markdown) {
                         event = Some(asked);
                     }
                 }
@@ -715,6 +724,7 @@ fn described(
     ui: &mut Ui,
     palette: Palette,
     details: &PullRequestDetails,
+    markdown: &mut egui_commonmark::CommonMarkCache,
 ) -> Option<PullRequestEvent> {
     let mut event = None;
     let mut size = format!(
@@ -735,13 +745,18 @@ fn described(
     if !details.labels.is_empty() {
         ui.horizontal_wrapped(|ui| {
             for label in &details.labels {
-                chip(ui, label, palette.accent);
+                widgets::chip(ui, label, palette.accent);
             }
         });
     }
     if !details.checks.is_empty() {
-        ui.add_space(8.0);
-        ui.label(RichText::new("Checks").semibold());
+        ui.add_space(12.0);
+        widgets::section_title(
+            ui,
+            "Checks",
+            Some(details.checks.len()),
+            &format!("Checks: {}", details.checks.len()),
+        );
         for check in &details.checks {
             ui.horizontal(|ui| {
                 let (glyph, color, meaning) = check_look(check.state, palette);
@@ -761,8 +776,13 @@ fn described(
         }
     }
     if !details.reviews.is_empty() {
-        ui.add_space(8.0);
-        ui.label(RichText::new("Reviews").semibold());
+        ui.add_space(12.0);
+        widgets::section_title(
+            ui,
+            "Reviews",
+            Some(details.reviews.len()),
+            &format!("Reviews: {}", details.reviews.len()),
+        );
         for review in &details.reviews {
             let (glyph, color, said) = match review.state {
                 ReviewState::Approved => (icon::CHECK, palette.ok, "approved"),
@@ -779,19 +799,23 @@ fn described(
             });
         }
     }
-    ui.add_space(8.0);
-    ui.label(RichText::new("Description").semibold());
+    ui.add_space(12.0);
+    widgets::section_title(ui, "Description", None, "Description");
     let body = details.body.trim();
     if body.is_empty() {
         ui.label(muted(ui, "No description."));
     } else {
+        // As its forge shows it: Markdown, its HTML comments (a template's) left out.
         Frame::new()
             .fill(palette.surface)
+            .stroke(egui::Stroke::new(1.0, palette.border))
             .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_BOX))
-            .inner_margin(Margin::same(8))
+            .inner_margin(Margin::same(12))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.add(egui::Label::new(body).wrap());
+                for page in crate::markdown::show_text(ui, markdown, body) {
+                    event = Some(PullRequestEvent::Open(page));
+                }
             });
     }
     event

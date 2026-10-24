@@ -102,29 +102,31 @@ pub(super) fn show(
         .id_salt(("submodules-page", shared.id))
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            Frame::new().inner_margin(Margin::same(16)).show(ui, |ui| {
-                ui.set_max_width(ui.available_width().min(900.0));
-                let mut ask = |asked| event = Some(asked);
-                if adding(ui, shared, view, &mut ask) {
+            Frame::new()
+                .inner_margin(Margin::symmetric(12, 16))
+                .show(ui, |ui| {
+                    ui.set_max_width(ui.available_width().min(900.0));
+                    let mut ask = |asked| event = Some(asked);
+                    if adding(ui, shared, view, &mut ask) {
+                        ui.add_space(12.0);
+                    }
+                    standing_card(ui, shared, (modules, standing), &mut ask);
+                    if states.is_empty() {
+                        return;
+                    }
                     ui.add_space(12.0);
-                }
-                standing_card(ui, shared, (modules, standing), &mut ask);
-                if states.is_empty() {
-                    return;
-                }
-                ui.add_space(12.0);
-                list_card(ui, shared, states, view);
-                if let Some(path) = view.selected.clone() {
-                    ui.add_space(12.0);
-                    details_card(
-                        ui,
-                        shared,
-                        (modules, states),
-                        (view, path.as_ref()),
-                        &mut ask,
-                    );
-                }
-            });
+                    list_card(ui, shared, states, view);
+                    if let Some(path) = view.selected.clone() {
+                        ui.add_space(12.0);
+                        details_card(
+                            ui,
+                            shared,
+                            (modules, states),
+                            (view, path.as_ref()),
+                            &mut ask,
+                        );
+                    }
+                });
         });
     event
 }

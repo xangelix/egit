@@ -202,13 +202,13 @@ pub(super) fn show(
         Some(Err(problem)) => {
             let problem = problem.clone();
             Frame::new()
-                .inner_margin(Margin::same(16))
+                .inner_margin(Margin::symmetric(12, 16))
                 .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
             return event;
         }
         None => {
             Frame::new()
-                .inner_margin(Margin::same(16))
+                .inner_margin(Margin::symmetric(12, 16))
                 .show(ui, |ui| widgets::working(ui, "Reading the reflog…"));
             return event;
         }

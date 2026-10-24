@@ -200,7 +200,7 @@ pub(super) fn show(
         Some(Err(problem)) => {
             let problem = problem.clone();
             Frame::new()
-                .inner_margin(Margin::same(16))
+                .inner_margin(Margin::symmetric(12, 16))
                 .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
             return event;
         }
@@ -215,7 +215,7 @@ pub(super) fn show(
                 )
             };
             Frame::new()
-                .inner_margin(Margin::same(16))
+                .inner_margin(Margin::symmetric(12, 16))
                 .show(ui, |ui| widgets::working(ui, &said));
             return event;
         }
@@ -230,10 +230,12 @@ pub(super) fn show(
         .id_salt(("stats-page", shared.id))
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            Frame::new().inner_margin(Margin::same(16)).show(ui, |ui| {
-                ui.set_max_width(ui.available_width().min(1_200.0));
-                body(ui, shared, &stats, &lines);
-            });
+            Frame::new()
+                .inner_margin(Margin::symmetric(12, 16))
+                .show(ui, |ui| {
+                    ui.set_max_width(ui.available_width().min(1_200.0));
+                    body(ui, shared, &stats, &lines);
+                });
         });
     event
 }
