@@ -143,4 +143,16 @@ fn picked_commits_are_exported_and_compared() {
     wait_for_label(&mut harness, "2 files changed");
     harness.get_by_label("Close the comparison").click();
     wait_for_label(&mut harness, "2 commits selected");
+
+    // A commit compared with the current branch from its menu: from HEAD (Four) to Two, the
+    // two picked (the history back in the file's place first).
+    harness.key_press(egui::Key::Escape);
+    wait_for_label(&mut harness, "Three");
+    harness.get_by_role_and_label(Role::Button, "One").click();
+    harness.run_steps(2);
+    picked_menu(&mut harness, ("Two", None), "Compare with main");
+    wait_for_label(&mut harness, "Comparing two commits");
+    wait_for_label(&mut harness, "2 files changed");
+    harness.get_by_label("Close the comparison").click();
+    wait_for_label(&mut harness, "2 commits selected");
 }

@@ -1895,7 +1895,10 @@ writes paths), never `OsStrExt`.
     clipboard", and "Copy as a changelog" (`Task::Export`). Compared, two show in the details'
     place (`views/history.rs`'s `Comparison`: From and To, Swap them, Close the comparison; the
     files changed from one to the other, their lines counted, each opening its diff in a
-    `FileView`), as long as they are the two picked.
+    `FileView`), as long as they are the two picked. A commit's, branch's, or tag's menu
+    compares it with the current branch ("Compare with main", `Ask::Compare`: from `HEAD` to
+    it, the two picked by `Picked::pick_two`; where one isn't in the history shown, kept while
+    nothing is picked and the selection stays, `Kept`).
     `views/output.rs` — the output panel at a repository tab's bottom (once anything ran): a
     bar (show or hide it, ⌘J; the run shown and how it stands: its hooks running and for how
     long, done, failed, cancelled; the runs kept; Cancel while one runs; Copy; Clear) over the

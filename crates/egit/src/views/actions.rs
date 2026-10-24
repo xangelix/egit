@@ -38,6 +38,8 @@ pub(super) enum Ask {
         from: ObjectId,
         reword: Option<ObjectId>,
     },
+    /// What changes from `HEAD` to this commit, compared in the details' place.
+    Compare(ObjectId),
     /// A web page, in the browser.
     Open(String),
     /// A file or folder here, opened in its app or shown in its folder.
@@ -533,8 +535,9 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
         ) {
             ask(Ask::Open(repository.commit_url(id)));
         }
-        ui.separator();
     }
+    compare_item(ui, menus, id, &mut ask);
+    ui.separator();
     here_items(ui, menus, id, other, &mut ask);
     ui.separator();
     into_items(ui, menus, id, (other, can), &mut ask);
@@ -561,6 +564,23 @@ pub(super) fn commit_menu(ui: &mut Ui, menus: &Menus<'_>, id: ObjectId, asked: &
             ask(Ask::Dialog(Dialog::HardReset { at: id }));
         }
     });
+}
+
+/// "Compare with <the current branch>": what changes from `HEAD` to `target`, in the details'
+/// place (nothing to compare where `HEAD` is already there; none before the first commit).
+fn compare_item(ui: &mut Ui, menus: &Menus<'_>, target: ObjectId, ask: &mut impl FnMut(Ask)) {
+    let Some(head) = menus.head else {
+        return;
+    };
+    let allowed = if head == target {
+        Err("It is where HEAD is")
+    } else {
+        Ok(())
+    };
+    let words = format!("Compare with {}", menus.current());
+    if item(ui, (icon::ARROWS_LEFT_RIGHT, &words), allowed) {
+        ask(Ask::Compare(target));
+    }
 }
 
 /// What of a commit can be copied (a submenu): its name, its subject, a link to it on its
@@ -874,6 +894,7 @@ pub(super) fn ref_menu(
                     ask(Ask::Task(Task::Switch(to)));
                 }
             }
+            compare_item(ui, menus, reference.target, &mut ask);
             ui.separator();
             ref_into_items(ui, menus, reference, (is_current, other), &mut ask);
             if reference.kind == RefKind::Branch {
@@ -902,6 +923,8 @@ pub(super) fn ref_menu(
             }
         }
         RefKind::Tag => {
+            compare_item(ui, menus, reference.target, &mut ask);
+            ui.separator();
             let busy = menus.idle();
             let remotes = menus.remotes();
             if let Some(remote) = remotes

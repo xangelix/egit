@@ -84,6 +84,28 @@ impl Picked {
         self.set.clear();
     }
 
+    /// Picks just these two, as a ⌘-click on each would; returns whether the history shows
+    /// both.
+    pub(super) fn pick_two(
+        &mut self,
+        history: &History,
+        (one, other): (ObjectId, ObjectId),
+    ) -> bool {
+        self.clear();
+        for id in [one, other] {
+            if let Some(row) = history.row_of(&id, 0) {
+                self.insert(row, id);
+            }
+        }
+        if self.is_several() {
+            self.anchor = Some(other);
+            true
+        } else {
+            self.clear();
+            false
+        }
+    }
+
     fn insert(&mut self, row: u64, id: ObjectId) {
         if self.set.insert(id) {
             let at = self.rows.partition_point(|(other, _)| *other < row);

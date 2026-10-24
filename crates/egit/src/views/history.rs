@@ -219,6 +219,8 @@ pub(crate) struct HistoryView {
     picked: Picked,
     /// Two of them compared, in the details' place.
     compare: Option<Comparison>,
+    /// Two commits a menu asked to compare (`HEAD`'s first), picked and compared next frame.
+    compare_asked: Option<(ObjectId, ObjectId)>,
     /// What their panel asked for this frame.
     picked_asked: Option<PickedEvent>,
     /// The Stats page, kept while it is closed: opened again, it shows at once (and reads
@@ -368,6 +370,17 @@ struct Comparison {
     details: Bind<Arc<CommitDetails>, Problem>,
     counting: Counting,
     changes: ChangesTable,
+    kept: Kept,
+}
+
+/// What keeps a comparison shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kept {
+    /// The two being what is picked.
+    Picked,
+    /// Asked from a menu with one of them outside the history shown (so they couldn't be
+    /// picked): nothing picked, and this commit still the one selected.
+    Selected(Option<ObjectId>),
 }
 
 impl Comparison {
@@ -389,6 +402,7 @@ impl Comparison {
             details,
             counting: Counting::default(),
             changes: ChangesTable::new(format!("comparison-changes-{}", shared.id)),
+            kept: Kept::Picked,
         }
     }
 }
@@ -437,6 +451,7 @@ impl HistoryView {
             pipelines_dismissed: None,
             picked: Picked::default(),
             compare: None,
+            compare_asked: None,
             picked_asked: None,
             stats_kept: None,
         }
@@ -3243,6 +3258,14 @@ fn carry_out(asked: Ask, shared: &Shared<'_>, view: &mut HistoryView, actions: &
         }
         Ask::Open(url) => actions.push(Action::OpenUrl(url)),
         Ask::Reveal(path, how) => actions.push(Action::Reveal(path, how)),
+        Ask::Compare(to) => {
+            if let Some(head) = shared.head.commit {
+                // Back to the history: the two are picked in it, compared beside it.
+                view.file = None;
+                view.tool = None;
+                view.compare_asked = Some((head, to));
+            }
+        }
         Ask::Dropped { dragged, onto, at } => view.dropped = Some(Dropped { dragged, onto, at }),
         Ask::Preferences(preferences) => actions.push(Action::SetPreferences(preferences)),
         Ask::Scope(scope) => actions.push(Action::Scope(shared.id, scope)),
@@ -4495,12 +4518,28 @@ fn compare_details(
     history: &HistoryState,
     view: &mut HistoryView,
 ) -> bool {
+    // Two commits a menu asked to compare: picked, as a ⌘-click on each would, where both show.
+    if let Some((from, to)) = view.compare_asked.take() {
+        let mut compare = Comparison::new(shared, &history.objects, from, to);
+        if !view.picked.pick_two(&history.shown, (from, to)) {
+            compare.kept = Kept::Selected(view.selected.map(|selected| selected.id));
+        }
+        view.compare = Some(compare);
+    }
     let Some(compare) = &view.compare else {
         return false;
     };
-    // Only while those two are what is picked.
+    // Only while those two are what is picked (or, compared alone, while nothing is and the
+    // selection stays).
     let (from, to) = (compare.from, compare.to);
-    let still = view.picked.len() == 2 && view.picked.contains(&from) && view.picked.contains(&to);
+    let still = match compare.kept {
+        Kept::Picked => {
+            view.picked.len() == 2 && view.picked.contains(&from) && view.picked.contains(&to)
+        }
+        Kept::Selected(selected) => {
+            view.picked.len() == 0 && view.selected.map(|selected| selected.id) == selected
+        }
+    };
     if !still || view.peeked().is_some() {
         view.compare = None;
         return false;

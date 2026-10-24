@@ -1042,6 +1042,7 @@ pub(super) const TOPICS: &[Topic] = &[
         title: "Comparing two commits",
         on: &[
             "Compare these two",
+            "Compare with *",
             "Comparing two commits",
             "Close the comparison",
             "Swap them",
@@ -1052,7 +1053,8 @@ pub(super) const TOPICS: &[Topic] = &[
                the newer: every file that differs between them, with the lines gained and lost, \
                each opening its diff. It is the difference between the two snapshots, whatever \
                lies between them; they needn't be on one branch. Swap compares the other way \
-               round.",
+               round. A commit's, branch's, or tag's menu compares it with the current branch \
+               (Compare with main): from HEAD to it, the two picked in the history.",
         git: "git diff-tree -r -M <from> <to>; git diff <from> <to> -- <file>",
         cases: &[
             (
