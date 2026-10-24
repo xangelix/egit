@@ -431,7 +431,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "submodule-against",
         group: Group::Inside,
         title: "Past and behind the commit recorded",
-        on: &["Against it"],
+        on: &["Against the recorded"],
         what: "How the commit checked out compares with the commit recorded: commits it has that \
                the recorded one doesn't (past it: usually your work, to record), and commits the \
                recorded one has that it lacks (behind it: update it). Those it has beyond are \
@@ -452,7 +452,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "submodules-page",
         group: Group::Inside,
         title: "The submodules' page",
-        on: &["Each one, and adding one…", "Each one"],
+        on: &["Each one, and adding one…"],
         what: "Every submodule (nested ones under theirs) with where it stands; a click shows one: \
                what its state means, its addresses, the branch it follows, the commits recorded \
                and checked out, and what can be done to it. The card above mends, updates, or \
@@ -504,7 +504,7 @@ pub(super) const TOPICS: &[Topic] = &[
         on: &[
             "LFS",
             "Git LFS",
-            "Large files, kept apart",
+            "Git LFS here",
             "Patterns, files, and locks…",
             "Open Git LFS",
         ],
@@ -707,7 +707,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "lfs-track",
         group: Group::Inside,
         title: "Tracking a pattern",
-        on: &["Track", "Tracked patterns"],
+        on: &["Track", "Tracked patterns", "Pattern"],
         what: "Tells Git LFS to keep files matching a pattern (*.psd, assets/**) apart: a line \
                in .gitattributes giving them LFS's filter, to commit. Files added or changed \
                from then on are stored as pointers; files already committed stay in git's \

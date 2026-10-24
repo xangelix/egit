@@ -187,7 +187,7 @@ const fn ready(shared: &Shared<'_>, lfs: &LfsState) -> Result<(), &'static str> 
 /// What LFS is, and whether it is installed and set up here (with the way to, when it isn't).
 fn state_card(ui: &mut Ui, shared: &Shared<'_>, lfs: &LfsState, ask: &mut impl FnMut(LfsTask)) {
     widgets::card(ui, |ui| {
-        widgets::heading(ui, "Large files, kept apart");
+        widgets::heading(ui, "Git LFS here");
         ui.add(
             egui::Label::new(muted(
                 ui,
@@ -358,7 +358,7 @@ fn patterns_card(
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let label = ui.label(muted(ui, "Track"));
+            let label = ui.label(muted(ui, "Pattern"));
             ui.add(
                 widgets::line_field(&mut view.pattern)
                     .hint_text("*.psd, assets/**")

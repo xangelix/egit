@@ -265,7 +265,7 @@ fn list_card(
 ) {
     let palette = shared.palette;
     widgets::card(ui, |ui| {
-        widgets::heading(ui, "Each one");
+        widgets::heading(ui, "Submodules");
         let shown = f32::from(u16::try_from(states.len().min(14)).unwrap_or(14));
         ScrollArea::vertical()
             .id_salt(("submodules-list", shared.id))
@@ -485,7 +485,7 @@ fn inside(ui: &mut Ui, shared: &Shared<'_>, view: &mut SubmodulesView) {
                 || "no branch: detached at a commit, as submodules usually are".to_owned(),
                 |branch| format!("the branch {}", branch.to_str_lossy()),
             );
-            widgets::fact(ui, label, "On", |ui| {
+            widgets::fact(ui, label, "Branch", |ui| {
                 ui.add(egui::Label::new(on).truncate());
             });
             if !details.has_recorded {
@@ -496,11 +496,24 @@ fn inside(ui: &mut Ui, shared: &Shared<'_>, view: &mut SubmodulesView) {
                     .color(shared.palette.warn),
                 );
             } else if details.ahead > 0 || details.behind > 0 {
-                let said = format!(
-                    "{} commits past the commit recorded, {} behind it",
-                    details.ahead, details.behind
-                );
-                widgets::fact(ui, label, "Against it", |ui| {
+                // Each side said only where it has commits, in their number.
+                let commits = |count: u64| {
+                    if count == 1 {
+                        "1 commit".to_owned()
+                    } else {
+                        format!("{} commits", crate::format::count(count))
+                    }
+                };
+                let said = match (details.ahead, details.behind) {
+                    (0, behind) => format!("{} behind the commit recorded", commits(behind.into())),
+                    (ahead, 0) => format!("{} past the commit recorded", commits(ahead.into())),
+                    (ahead, behind) => format!(
+                        "{} past the commit recorded, {} behind it",
+                        commits(ahead.into()),
+                        commits(behind.into())
+                    ),
+                };
+                widgets::fact(ui, label, "Against the recorded", |ui| {
                     ui.label(said);
                 });
             }

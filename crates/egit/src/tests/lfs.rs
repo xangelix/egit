@@ -82,7 +82,7 @@ fn lfs_is_set_up_tracked_and_listed() {
     render(&mut harness, "lfs-page");
 
     // A pattern tracked, then untracked.
-    type_into(&mut harness, Role::TextInput, "Track", "*.psd");
+    type_into(&mut harness, Role::TextInput, "Pattern", "*.psd");
     harness.get_by_role_and_label(Role::Button, "Track").click();
     wait_for_label(&mut harness, "*.psd");
     let attributes = std::fs::read_to_string(repo.join(".gitattributes")).unwrap();

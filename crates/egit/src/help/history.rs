@@ -932,10 +932,14 @@ pub(super) const TOPICS: &[Topic] = &[
         title: "Branch",
         on: &["Branch"],
         what: "In the overview: the branch checked out, and the one it pulls from and pushes to. \
-               For a submodule: the branch it follows, whose latest commit Update to latest \
-               brings (its remote's default branch when none is set).",
+               Inside a submodule: the branch its checkout is on, when it is on one; usually \
+               none, as git leaves a submodule detached at the commit recorded. Adding one: the \
+               branch it follows (Follows), whose latest commit Update to latest brings.",
         git: "git config submodule.<name>.branch",
-        cases: &[],
+        cases: &[(
+            "Committing inside a submodule?",
+            "Switch it to a branch first, or the commits belong to no branch there.",
+        )],
     },
     Topic {
         id: "into",
@@ -950,17 +954,13 @@ pub(super) const TOPICS: &[Topic] = &[
     },
     Topic {
         id: "on-word",
-        group: Group::Inside,
+        group: Group::Branches,
         title: "On",
         on: &["On"],
-        what: "The branch a submodule's checkout is on, when it is on one. Usually none: a \
-               submodule is checked out at the commit this repository records, detached, as \
-               git leaves it after an update.",
-        git: "",
-        cases: &[(
-            "Committing inside a submodule?",
-            "Switch it to a branch first, or the commits belong to no branch there.",
-        )],
+        what: "The branch checked out here: the one a commit adds to, and the one Pull and Push \
+               work on.",
+        git: "git symbolic-ref HEAD",
+        cases: &[],
     },
     Topic {
         id: "named",
