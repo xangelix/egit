@@ -8,7 +8,12 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "agents",
         group: Group::Agents,
         title: "Agents",
-        on: &["Agents", "Hide the agents", "Show or hide the agents"],
+        on: &[
+            "Agents",
+            "Hide the agents",
+            "Show or hide the agents",
+            "Show the details (the agents step aside)",
+        ],
         what: "Claude Code working in this repository's work tree, beside the history and the \
                changes it makes: the same Claude Code as in a terminal or an editor (its \
                system prompt, tools, your settings, the project's CLAUDE.md, hooks, MCP servers, \

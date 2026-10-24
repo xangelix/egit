@@ -296,7 +296,7 @@ impl Default for Sidebar {
 
 /// Compares two names as people read them: runs of digits by their value (`v2.9` before
 /// `v2.10`), letters in either case alike, then byte by byte, so only equal names are equal.
-fn natural(a: &[u8], b: &[u8]) -> Ordering {
+pub(super) fn natural(a: &[u8], b: &[u8]) -> Ordering {
     let (mut left, mut right) = (a, b);
     loop {
         match (left.first(), right.first()) {

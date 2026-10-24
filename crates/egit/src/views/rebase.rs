@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use bstr::ByteSlice as _;
 use egit_git::{CancelToken, ObjectId, Planned, RebaseRange, Step, rebase_range};
-use egui::{Frame, Id, Key, Margin, Modifiers, RichText, Sense, Ui};
+use egui::{Align, Frame, Id, Key, Layout, Margin, Modifiers, RichText, Sense, Ui};
 use egui_async::Bind;
 
 use super::history::{ID_DIGITS, Shared};
@@ -359,6 +359,9 @@ fn keys(ui: &Ui, view: &mut RebaseView, range: &RebaseRange) {
     }
 }
 
+/// The width of a row's step menu, the widest step's.
+const STEP_WIDTH: f32 = 104.0;
+
 /// The bar: back, what is rebased onto, how the plan stands, and Start rebase.
 fn bar(
     ui: &mut Ui,
@@ -377,29 +380,45 @@ fn bar(
     );
     let plan = view.plan(range);
     widgets::bar(ui, |ui| {
-        ui.horizontal_wrapped(|ui| {
+        // Start rebase at the right, where it stays; what the plan says and the keys on a line
+        // of their own below.
+        ui.horizontal(|ui| {
             if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked() {
                 event = Some(RebaseEvent::Close);
             }
-            ui.label(RichText::new(format!("Rebase {branch} interactively")).semibold());
-            ui.label(muted(
-                ui,
-                format!("{} commits, {onto}", range.commits.len()),
-            ));
-            let start = widgets::primary(ui, plan.is_ok(), "Start rebase");
-            let start = match &plan {
-                Err(why) => start.on_disabled_hover_text(*why),
-                Ok(_) => start,
-            };
-            if start.clicked()
-                && let Ok(plan) = &plan
-            {
-                event = Some(RebaseEvent::Start(Task::InteractiveRebase {
-                    base: range.base,
-                    plan: plan.clone(),
-                    keep_merges: range.merges() > 0,
-                }));
-            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let start = widgets::primary(ui, plan.is_ok(), "Start rebase");
+                let start = match &plan {
+                    Err(why) => start.on_disabled_hover_text(*why),
+                    Ok(_) => start,
+                };
+                if start.clicked()
+                    && let Ok(plan) = &plan
+                {
+                    event = Some(RebaseEvent::Start(Task::InteractiveRebase {
+                        base: range.base,
+                        plan: plan.clone(),
+                        keep_merges: range.merges() > 0,
+                    }));
+                }
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(format!("Rebase {branch} interactively")).semibold(),
+                        )
+                        .truncate(),
+                    );
+                    ui.add(
+                        egui::Label::new(muted(
+                            ui,
+                            format!("{} commits, {onto}", range.commits.len()),
+                        ))
+                        .truncate(),
+                    );
+                });
+            });
+        });
+        ui.horizontal_wrapped(|ui| {
             match &plan {
                 Err(why) => {
                     ui.label(muted(ui, format!("{why}.")));
@@ -515,16 +534,19 @@ fn row(
     move_buttons(ui, view, range, at);
     let keeping = range.merges() > 0;
     let mut kind = planned.kind;
-    let step = egui::ComboBox::from_id_salt(("rebase-step", commit.id))
-        .width(84.0)
-        .selected_text(kind.name())
-        .show_ui(ui, |ui| {
-            for choice in Kind::ALL {
-                if choice.allowed(commit.merge, keeping) {
-                    ui.selectable_value(&mut kind, choice, choice.name());
+    // In a place of one width whichever step it says: the names after it line up.
+    let step = crate::widgets::column(ui, (STEP_WIDTH, ui.available_height()), Align::Min, |ui| {
+        egui::ComboBox::from_id_salt(("rebase-step", commit.id))
+            .width(84.0)
+            .selected_text(kind.name())
+            .show_ui(ui, |ui| {
+                for choice in Kind::ALL {
+                    if choice.allowed(commit.merge, keeping) {
+                        ui.selectable_value(&mut kind, choice, choice.name());
+                    }
                 }
-            }
-        });
+            })
+    });
     crate::help::note_topic(ui, step.response.rect, kind.topic());
     if kind != planned.kind {
         view.selected = at;

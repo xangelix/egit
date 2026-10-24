@@ -600,7 +600,11 @@ fn agents_panel(
     let palette = crate::theme::Palette::of(ui.ctx());
     egui::Panel::right(egui::Id::new(("agents", id)))
         .resizable(true)
-        .default_size(super::agents::WIDTH)
+        // At first a third of the window at most: the history keeps its room.
+        .default_size(
+            (ui.available_width() * 0.35)
+                .clamp(*super::agents::WIDTHS.start(), super::agents::WIDTH),
+        )
         .size_range(super::agents::WIDTHS)
         .frame(
             // Its parts keep their own margins: the transcript scrolls to the panel's edges.

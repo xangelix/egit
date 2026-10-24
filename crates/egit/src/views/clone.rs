@@ -254,17 +254,27 @@ pub(crate) fn card(
             // The progress moves on its own, without input.
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
+            // Cancel first, where it stays; a bar of its own width for the phase under way; then
+            // git's words, which change as it goes.
+            let report = view.progress.report();
             ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(muted(
-                    ui,
-                    format::progress("Cloning", &view.progress.report()),
-                ));
                 let cancel = widgets::secondary(ui, true, "Cancel");
                 crate::help::note_topic(ui, cancel.rect, "clone");
                 if cancel.clicked() {
                     actions.push(Action::CancelClone);
                 }
+                let fraction = report
+                    .total
+                    .filter(|total| *total > 0)
+                    .map(|total| crate::grid::ratio(report.done, total));
+                ui.add(
+                    egui::ProgressBar::new(fraction.unwrap_or(0.0))
+                        .desired_width(160.0)
+                        .animate(fraction.is_none()),
+                );
+                ui.add(
+                    egui::Label::new(muted(ui, format::progress("Cloning", &report))).truncate(),
+                );
             });
         } else {
             ui.horizontal(|ui| {

@@ -652,7 +652,7 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "palette",
         group: Group::Egit,
         title: "Commands",
-        on: &["Commands"],
+        on: &["Commands", "Every command"],
         what: "The command palette (⌘K or ⇧⌘P): every command, a switch to each branch, and \
                the recent repositories, found by typing a few letters of their words in \
                order. A command that can't run now says why. ↑ and ↓ choose, Enter runs.",

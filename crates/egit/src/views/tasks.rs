@@ -4,7 +4,6 @@
 //! under the commit table, where it goes by itself a few seconds after it went well; and the
 //! banner of an operation git stopped in the middle of.
 
-use std::fmt::Write as _;
 use std::path::Path;
 
 use bstr::{BString, ByteSlice as _};
@@ -41,6 +40,8 @@ pub(crate) struct TasksView {
     /// The task whose outcome that went well is shown, and since when (egui's clock, put
     /// forward while the pointer rests on it): it goes by itself after [`outcome_lasts`].
     shown_since: Option<(u64, f64)>,
+    /// The branch switcher's state.
+    switcher: super::switcher::Switcher,
 }
 
 /// How long an outcome that went well stays before it goes by itself, in seconds.
@@ -78,6 +79,8 @@ pub(crate) struct TaskPane<'a> {
     pub(crate) config: Option<&'a ConfigSnapshot>,
     /// The stashes, the latest first.
     pub(crate) stashes: &'a [Stash],
+    /// The refs, for the branch switcher, and which read of them they are.
+    pub(crate) refs: (std::sync::Arc<[egit_git::Reference]>, u64),
     pub(crate) tasks: &'a mut Tasks,
     pub(crate) actions: &'a mut Vec<Action>,
 }
@@ -217,22 +220,53 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         if cancel.clicked() {
             pane.actions.push(Action::CancelTask(pane.id));
         }
-        capped(ui, muted(ui, progress_text(pane.tasks)));
+        // The spinner beside Cancel, the words after it: as they change, nothing else moves.
         ui.spinner();
+        capped(ui, muted(ui, progress_text(pane.tasks)));
         return;
     }
     let has_remotes = pane.config.is_some_and(has_remotes);
     let on_branch = matches!(pane.head, Some(Head::Branch(_)));
-    let push = widgets::secondary(
-        ui,
-        on_branch && has_remotes,
-        &format!("{}  Push", icon::ARROW_UP),
-    );
+    // How far the branch is from its upstream, on the buttons that would close the gap: the one
+    // with work to do leads.
+    let (ahead, behind) = match pane.head {
+        Some(Head::Branch(branch)) => match branch.upstream.as_ref().map(|up| up.tracking) {
+            Some(Tracking::Diverged { ahead, behind }) => (ahead, behind),
+            _ => (0, 0),
+        },
+        _ => (0, 0),
+    };
+    let push_words = if ahead > 0 {
+        format!("{}  Push {}{ahead}", icon::ARROW_UP, icon::ARROW_UP)
+    } else {
+        format!("{}  Push", icon::ARROW_UP)
+    };
+    let can_push = on_branch && has_remotes;
+    let push = if ahead > 0 {
+        widgets::primary(ui, can_push, &push_words)
+    } else {
+        widgets::secondary(ui, can_push, &push_words)
+    };
+    let push = push.on_disabled_hover_text(if has_remotes {
+        "Not on a branch: switch to one to push it"
+    } else {
+        "The repository has no remote to push to"
+    });
     if push.clicked() {
         push_branch(view, pane);
     }
     let has_upstream = matches!(pane.head, Some(Head::Branch(branch)) if branch.upstream.is_some());
-    if widgets::secondary(ui, has_upstream, &format!("{}  Pull", icon::ARROW_DOWN))
+    let pull_words = if behind > 0 {
+        format!("{}  Pull {}{behind}", icon::ARROW_DOWN, icon::ARROW_DOWN)
+    } else {
+        format!("{}  Pull", icon::ARROW_DOWN)
+    };
+    let pull = if behind > 0 {
+        widgets::primary(ui, has_upstream, &pull_words)
+    } else {
+        widgets::secondary(ui, has_upstream, &pull_words)
+    };
+    if pull
         .on_disabled_hover_text("The branch has no upstream to pull from")
         .clicked()
     {
@@ -258,55 +292,97 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         ));
     }
     ui.add_space(8.0);
-    branch_label(ui, pane.head, palette);
+    branch_switcher(ui, view, pane);
 }
 
-/// The branch and how it compares with its upstream: `main → origin/main ↑1 ↓2`.
-fn branch_label(ui: &mut Ui, head: Option<&Head>, palette: Palette) {
-    let text = match head {
+/// The branch and its upstream (`main → origin/main`, or "(gone)"), a menu of where to go: the
+/// branch switcher.
+fn branch_switcher(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
+    let (text, current) = match pane.head {
         Some(Head::Branch(branch)) => {
             let name = branch.name.to_str_lossy();
-            branch.upstream.as_ref().map_or_else(
-                || format!("{}  {name} (not pushed yet)", icon::GIT_BRANCH),
+            let text = branch.upstream.as_ref().map_or_else(
+                || {
+                    if pane.config.is_some_and(has_remotes) {
+                        format!("{name} (not pushed yet)")
+                    } else {
+                        name.to_string()
+                    }
+                },
                 |upstream| {
+                    let gone = if upstream.tracking == Tracking::Gone {
+                        " (gone)"
+                    } else {
+                        ""
+                    };
                     format!(
-                        "{}  {name} {} {}{}",
-                        icon::GIT_BRANCH,
+                        "{name} {} {}{gone}",
                         icon::ARROW_RIGHT,
-                        upstream.name.to_str_lossy(),
-                        compared(upstream.tracking)
+                        upstream.name.to_str_lossy()
                     )
                 },
-            )
+            );
+            (text, Some(branch.name.as_bstr()))
         }
-        Some(Head::Detached(commit)) => format!(
-            "{}  Detached at {}",
-            icon::GIT_COMMIT,
-            commit.id.abbreviated(8)
-        ),
+        Some(Head::Detached(commit)) => (format!("Detached at {}", commit.id.abbreviated(8)), None),
         None => return,
     };
     fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &text);
-    let shown = capped(ui, RichText::new(text.clone()).color(palette.muted));
-    crate::help::note_topic(ui, shown.rect, "upstream");
-    shown.on_hover_text(text);
-}
-
-/// How a branch compares with its upstream: ` ↑1 ↓2`, nothing when even, ` (gone)`.
-fn compared(tracking: Tracking) -> String {
-    let mut text = String::new();
-    match tracking {
-        Tracking::Gone => text.push_str(" (gone)"),
-        Tracking::Diverged { ahead, behind } => {
-            if ahead > 0 {
-                let _ = write!(text, " {}{ahead}", icon::ARROW_UP);
-            }
-            if behind > 0 {
-                let _ = write!(text, " {}{behind}", icon::ARROW_DOWN);
+    let glyph = if current.is_some() {
+        icon::GIT_BRANCH
+    } else {
+        icon::GIT_COMMIT
+    };
+    let allowed = if pane.tasks.is_busy() {
+        Err("Another task is running")
+    } else if !pane.operations.is_empty() {
+        Err("Finish or abort the operation in progress first")
+    } else {
+        Ok(())
+    };
+    let refs = &pane.refs;
+    let mut asked = None;
+    // Its words cut at the task bar's widest (a long name loses its end).
+    let width = (widgets::tool_width(ui, (glyph, &text), widgets::Look::Full, true)).min(WORDS);
+    ui.allocate_ui_with_layout(
+        egui::vec2(width, crate::theme::CONTROL),
+        egui::Layout::right_to_left(egui::Align::Center),
+        |ui| {
+            ui.set_max_width(width);
+            let (shown, _) = widgets::tool_menu_of(
+                ui,
+                (glyph, &text),
+                widgets::Look::Full,
+                super::switcher::TOPIC,
+                |ui| {
+                    asked =
+                        super::switcher::contents(ui, (refs, current), allowed, &mut view.switcher);
+                },
+            );
+            // Named as it reads, its icon too: apart from the branch's own row elsewhere.
+            let named = format!("{glyph}  {text}");
+            shown.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &named));
+            shown.on_hover_text(format!("{text}: switch to another branch"));
+        },
+    );
+    match asked {
+        Some(super::switcher::Switch::To(to)) => pane.start(Task::Switch(to)),
+        Some(super::switcher::Switch::Create) => {
+            let at = match pane.head {
+                Some(Head::Branch(branch)) => branch.commit.as_ref().map(|commit| commit.id),
+                Some(Head::Detached(commit)) => Some(commit.id),
+                None => None,
+            };
+            if let Some(at) = at {
+                view.dialog = Some(Dialog::CreateBranch {
+                    at,
+                    name: String::new(),
+                    switch: true,
+                });
             }
         }
+        None => {}
     }
-    text
 }
 
 /// What the running task is doing.
@@ -1044,11 +1120,8 @@ pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent>
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
                 crate::help::note_topic(ui, ui.max_rect(), "fetched-notice");
+                // Its buttons from the right first; its words in what they leave, cut short.
                 ui.horizontal(|ui| {
-                    let headline = format!("{}  {commits} on {name}", icon::ARROW_DOWN);
-                    fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
-                    ui.add(egui::Label::new(RichText::new(headline).semibold()).truncate());
-                    ui.label(muted(ui, "fetched in the background"));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let dismiss = widgets::icon_tool(ui, true, icon::X, "Dismiss");
                         if dismiss.clicked() {
@@ -1064,6 +1137,14 @@ pub(crate) fn brought(ui: &mut Ui, pane: &mut TaskPane<'_>) -> Option<TaskEvent>
                         {
                             pane.start(Task::Pull(PullMode::AsConfigured));
                         }
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            let headline = format!("{}  {commits} on {name}", icon::ARROW_DOWN);
+                            fonts::note_text(ui, &TextStyle::Body.resolve(ui.style()), &headline);
+                            ui.add(egui::Label::new(RichText::new(headline).semibold()).truncate());
+                            ui.add(
+                                egui::Label::new(muted(ui, "fetched in the background")).truncate(),
+                            );
+                        });
                     });
                 });
             });

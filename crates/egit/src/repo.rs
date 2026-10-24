@@ -464,7 +464,12 @@ impl RepoTab {
             RepoCommand::Undo if self.journal.next_undo().is_none() => Err("Nothing to undo"),
             RepoCommand::Redo if self.journal.next_redo().is_none() => Err("Nothing to redo"),
             RepoCommand::Stash if !has_changes => Err("There are no changes to stash"),
-            RepoCommand::CreateBranch if !has_commit => Err("There is no commit yet"),
+            RepoCommand::CreateBranch | RepoCommand::CreateTag if !has_commit => {
+                Err("There is no commit yet")
+            }
+            RepoCommand::OpenFolder if !self.git.host().is_local() => {
+                Err("It is on another computer")
+            }
             RepoCommand::Switch(_) if operation => Err("An operation is in progress"),
             RepoCommand::Fetch
             | RepoCommand::Pull
@@ -475,6 +480,8 @@ impl RepoTab {
             | RepoCommand::ApplyPatches
             | RepoCommand::PastePatch
             | RepoCommand::CreateBranch
+            | RepoCommand::CreateTag
+            | RepoCommand::AddRemote
             | RepoCommand::Switch(_) => idle,
             RepoCommand::Search
             | RepoCommand::FilterSidebar
@@ -484,6 +491,13 @@ impl RepoTab {
             | RepoCommand::Reflog
             | RepoCommand::WorkTree
             | RepoCommand::PullRequests
+            | RepoCommand::GoTo(_)
+            | RepoCommand::Stats
+            | RepoCommand::Overview
+            | RepoCommand::Settings
+            | RepoCommand::GitLfs
+            | RepoCommand::Submodules
+            | RepoCommand::OpenFolder
             | RepoCommand::Refresh => Ok(()),
         }
     }

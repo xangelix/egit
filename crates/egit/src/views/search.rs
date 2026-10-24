@@ -297,14 +297,27 @@ fn status(
     selected: Option<u64>,
     palette: Palette,
 ) {
-    if let Some(problem) = search.found().and_then(Found::problem) {
-        ui.label(
-            RichText::new(format!("{}  {}", icon::WARNING_CIRCLE, problem.title))
-                .color(palette.danger),
-        )
-        .on_hover_text(problem.detail);
-        return;
-    }
-    let text = search.status(history, selected);
-    ui.add(egui::Label::new(RichText::new(text).color(palette.muted)).selectable(false));
+    // A place of its own width ("Searching… 45% · 120 found" at its widest, a third of the bar
+    // at most): as the search goes on, the field beside it keeps its size. Cut short there.
+    let room =
+        widgets::text_width(ui, "Searching… 100% · 999,999 found").min(ui.available_width() / 3.0);
+    widgets::column(ui, (room, crate::theme::CONTROL), Align::Max, |ui| {
+        if let Some(problem) = search.found().and_then(Found::problem) {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(format!("{}  {}", icon::WARNING_CIRCLE, problem.title))
+                        .color(palette.danger),
+                )
+                .truncate(),
+            )
+            .on_hover_text(problem.detail);
+            return;
+        }
+        let text = search.status(history, selected);
+        ui.add(
+            egui::Label::new(RichText::new(text).color(palette.muted))
+                .selectable(false)
+                .truncate(),
+        );
+    });
 }

@@ -34,6 +34,7 @@ pub(crate) mod sign_in;
 mod stats;
 pub(crate) mod status_bar;
 mod submodules;
+mod switcher;
 mod tasks;
 mod work;
 

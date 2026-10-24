@@ -572,13 +572,14 @@ fn file_bar(
         // Narrow (panels open beside it), the tools show their icons alone, and narrower
         // still, they go on a row of their own.
         let room = ui.available_width();
-        let full = file_tools_width(ui, widgets::Look::Full);
+        let full = file_tools_width(ui, widgets::Look::Full, file.merge.is_some());
         let look = if room >= full + BAR_LEFT {
             widgets::Look::Full
         } else {
             widgets::Look::Compact
         };
-        let apart = room < file_tools_width(ui, widgets::Look::Compact) + BAR_LEFT;
+        let apart =
+            room < file_tools_width(ui, widgets::Look::Compact, file.merge.is_some()) + BAR_LEFT;
         let back = |ui: &mut Ui, open: &mut bool| {
             if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
                 .on_hover_text("Back to the history (Escape)")
@@ -615,23 +616,30 @@ fn file_bar(
 const BAR_LEFT: f32 = 240.0;
 
 /// How wide the file bar's tools draw, as `look` says.
-fn file_tools_width(ui: &Ui, look: widgets::Look) -> f32 {
+fn file_tools_width(ui: &Ui, look: widgets::Look, merging: bool) -> f32 {
     let gap = ui.spacing().item_spacing.x;
     let compact = widgets::Look::Compact;
-    [
-        widgets::tool_width(
-            ui,
-            (icon::CLOCK_COUNTER_CLOCKWISE, "File history"),
-            look,
-            false,
-        ),
-        widgets::tool_width(ui, (icon::USER_LIST, "Blame"), look, false),
-        widgets::tool_width(ui, (icon::FOLDER_OPEN, "Show in folder"), compact, false),
-        widgets::tool_width(ui, (icon::ARROW_SQUARE_OUT, "Open file"), compact, false),
-    ]
-    .iter()
-    .map(|width| width + gap)
-    .sum()
+    // A conflict's wrapping goes among them: its box and words.
+    let wrapping = if merging {
+        widgets::TARGET + gap + widgets::text_width(ui, "Wrap lines") + gap
+    } else {
+        0.0
+    };
+    wrapping
+        + [
+            widgets::tool_width(
+                ui,
+                (icon::CLOCK_COUNTER_CLOCKWISE, "File history"),
+                look,
+                false,
+            ),
+            widgets::tool_width(ui, (icon::USER_LIST, "Blame"), look, false),
+            widgets::tool_width(ui, (icon::FOLDER_OPEN, "Show in folder"), compact, false),
+            widgets::tool_width(ui, (icon::ARROW_SQUARE_OUT, "Open file"), compact, false),
+        ]
+        .iter()
+        .map(|width| width + gap)
+        .sum::<f32>()
 }
 
 /// The file bar's tools, from the right: its history, its blame, and the work tree's file

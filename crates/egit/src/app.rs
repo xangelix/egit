@@ -1153,6 +1153,19 @@ fn offers(state: &mut AppState, front: Option<Pane>) -> Offers {
             })
             .map(|(_, place)| place)
             .collect();
+        // Then the remotes' branches and the tags, to go to.
+        offers.goes = offers
+            .refs
+            .iter()
+            .zip(0_u32..)
+            .filter(|(reference, _)| {
+                matches!(
+                    reference.kind,
+                    egit_git::RefKind::RemoteBranch | egit_git::RefKind::Tag
+                )
+            })
+            .map(|(_, place)| place)
+            .collect();
     }
     for command in Command::listed() {
         if !command.needs_repo() {

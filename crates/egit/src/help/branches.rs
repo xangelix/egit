@@ -135,6 +135,30 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "branch-switcher",
+        group: Group::Branches,
+        title: "The branch switcher",
+        on: &[],
+        what: "The branch checked out, at the top bar's right with the upstream it follows \
+               (main → origin/main; \"(gone)\" once the remote's branch is deleted), is a \
+               menu of where to go: type a few letters of a branch's name (in order, smart case), \
+               then ↑ ↓ and Enter, or a click. The local branches come first, the one checked \
+               out marked; then the remotes' branches, each through a local branch of its name \
+               (made to track it, unless one exists). Create a branch here makes one where HEAD \
+               is. While a task runs, or an operation is in progress, nothing switches.",
+        git: "git switch --no-guess <branch> (git switch --create <name> --track <remote>/<name> for a remote's)",
+        cases: &[
+            (
+                "Changes in the way?",
+                "git refuses a switch that would overwrite them: egit says which files and offers to stash them first.",
+            ),
+            (
+                "A branch isn't listed?",
+                "It lists the branches this repository has: Fetch to see a remote's new ones.",
+            ),
+        ],
+    },
+    Topic {
         id: "switch-tracking",
         group: Group::Branches,
         title: "Switching to a remote's branch",

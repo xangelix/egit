@@ -1283,33 +1283,46 @@ fn fetches_pulls_and_pushes_from_the_history() {
     harness.state_mut().state.repos[0]
         .tasks
         .hold_background_fetch();
-    let branch = |compared: &str| {
-        format!(
-            "{}  main {} origin/main{compared}",
-            icon::GIT_BRANCH,
-            icon::ARROW_RIGHT
-        )
+    let branch = format!(
+        "{}  main {} origin/main",
+        icon::GIT_BRANCH,
+        icon::ARROW_RIGHT
+    );
+    // The buttons say how far the branch is from its upstream.
+    let pull = |behind: u32| {
+        if behind == 0 {
+            format!("{}  Pull", icon::ARROW_DOWN)
+        } else {
+            format!("{}  Pull {}{behind}", icon::ARROW_DOWN, icon::ARROW_DOWN)
+        }
     };
-    wait_for_label(&mut harness, &branch(""));
+    let push = |ahead: u32| {
+        if ahead == 0 {
+            format!("{}  Push", icon::ARROW_UP)
+        } else {
+            format!("{}  Push {}{ahead}", icon::ARROW_UP, icon::ARROW_UP)
+        }
+    };
+    wait_for_label(&mut harness, &branch);
 
     // Fetched, the branch is behind; pulled, it isn't.
     colleague_pushes(&sandbox, &colleague, "theirs", "x\n");
     click_when_enabled(&mut harness, &format!("{}  Fetch", icon::ARROWS_CLOCKWISE));
-    wait_for_label(&mut harness, &branch(&format!(" {}1", icon::ARROW_DOWN)));
-    click_when_enabled(&mut harness, &format!("{}  Pull", icon::ARROW_DOWN));
+    wait_for_label(&mut harness, &pull(1));
+    click_when_enabled(&mut harness, &pull(1));
     wait_for_label(&mut harness, "Pulled.");
-    wait_for_label(&mut harness, &branch(""));
+    wait_for_label(&mut harness, &pull(0));
     settle(&mut harness, "the pulled history", history_of(2));
 
     // Behind again when pushing: refused, the pull it suggests asks how to bring the
     // diverged branches together.
     colleague_pushes(&sandbox, &colleague, "theirs", "y\n");
     sandbox.commit_file(&mine, "mine", "m\n", "Mine").unwrap();
-    click_when_enabled(&mut harness, &format!("{}  Push", icon::ARROW_UP));
+    click_when_enabled(&mut harness, &push(1));
     wait_for_label(&mut harness, "Force push…");
     // The commit made shown, and the branch ahead by it (the refused push moved nothing).
     wait_for_label(&mut harness, "Mine");
-    wait_for_label(&mut harness, &branch(&format!(" {}1", icon::ARROW_UP)));
+    wait_for_label(&mut harness, &push(1));
     settle(&mut harness, "the commit made", history_shown);
     render(&mut harness, "sync-refused");
     harness.get_by_label("Pull").click();
@@ -1318,7 +1331,7 @@ fn fetches_pulls_and_pushes_from_the_history() {
     render(&mut harness, "sync-diverged");
     harness.get_by_label("Rebase").click();
     wait_for_label(&mut harness, "Pulled.");
-    click_when_enabled(&mut harness, &format!("{}  Push", icon::ARROW_UP));
+    click_when_enabled(&mut harness, &push(1));
     wait_for_label(&mut harness, "Pushed to main.");
     let pushed = sandbox
         .run(&colleague, "fetch", &["--quiet"])
@@ -1333,7 +1346,7 @@ fn fetches_pulls_and_pushes_from_the_history() {
             &["--quiet", "--amend", "--message", "Mine, amended"],
         )
         .unwrap();
-    click_when_enabled(&mut harness, &format!("{}  Push", icon::ARROW_UP));
+    click_when_enabled(&mut harness, &push(1));
     wait_for_label(&mut harness, "Force push…");
     harness.get_by_label("Force push…").click();
     wait_for_label(&mut harness, "Force push to origin/main?");
@@ -1712,7 +1725,8 @@ fn branches_are_switched_to_made_and_deleted_from_the_graph() {
     open_path(&mut harness, &repo);
     settle(&mut harness, "the history", history_shown);
     let badge = |name: &str| format!("{} {name}", icon::GIT_BRANCH);
-    let on = |name: &str| format!("{}  {name} (not pushed yet)", icon::GIT_BRANCH);
+    // No remote: the branch alone.
+    let on = |name: &str| format!("{}  {name}", icon::GIT_BRANCH);
     wait_for_label(&mut harness, &on("main"));
 
     // A branch's menu switches to it; double-clicking another switches back.

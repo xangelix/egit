@@ -1103,7 +1103,7 @@ writes paths), never `OsStrExt`.
     same place; at the frame's end (`show`) the smallest noted rect under the pointer on the
     topmost layer picks the topic (`for_label`: the pattern naming most of the words, exact
     words best; a commit's name, 7–64 hex digits, its own topic), drawn in an overlay beside
-    it; tooltips wait while Alt is held (`begin_frame`). `HelpWindow` (F1, the status bar's
+    it; tooltips wait while Alt is held (`begin_frame`). `HelpWindow` (framed as a dialog is; F1, the status bar's
     Help, the palette): every topic by group, found by what is typed (titles, words, texts,
     cases; the list made again only when the query changes, drawn a row at a time). Its
     tests: ids once, every pattern claimed by one topic, every `note_topic` in the sources
@@ -1342,7 +1342,8 @@ writes paths), never `OsStrExt`.
     against the rows drawn last frame;
     dragging past an edge scrolls), ⌘A selects a pane, Escape clears (focused or not: egui
     drops focus on Escape), and ⌘C (`Event::Copy`) copies the bytes as they are. `find.rs`:
-    ⌘F opens a find bar over the top right (Enter, Shift+Enter, Previous, Next; Escape or
+    ⌘F opens a find bar over the top right (against the grid's edge, what it says in a place of
+    its own width; Enter, Shift+Enter, Previous, Next; Escape or
     Close); every pane is searched in a job as the query changes (its text shared), at most
     100,000 matches a pane; matches on screen are marked, the current one stronger, and moving
     to one scrolls it a few rows below the top and sideways into view. `Plain` is a text,
@@ -1610,20 +1611,23 @@ writes paths), never `OsStrExt`.
     (Search, Reflog, Agents (the agents' panel at the tab's right), Stash, Patches, LFS where the repository keeps files in it (its state;
     pull, fetch, check out, push to each remote, prune; its page), Submodules where it has
     some (how they stand; mend everything, update all to the commits recorded or their
-    branches' latest, sync addresses; their page), and Repository: its Overview, Settings,
-    the submodules' and Git LFS's pages, opening its folder, and reading it again), their words beside their icons where the bar has room for all it shows
-    (`Look::Full`), their icons alone elsewhere (`Look::Compact`, their words on hover), the
-    commit count as a button, "Stats: 222 commits", opening the Stats page in the commit
+    branches' latest, sync addresses; their page), and Repository (a folder's icon): its
+    Overview, Settings, the submodules' and Git LFS's pages, opening its folder, and reading it
+    again), then the requests (or, while they want a sign-in, "Sign in to GitLab", opening the
+    dialog; `requests_tool`), why the work tree couldn't be read (when it couldn't), and last
+    the commit count as a button, "Stats: 222 commits", opening the Stats page in the commit
     table's place (`Tool::Stats`; closed, it is kept, `stats_kept`, and shows again at once
     while the history is the same: `Names::identity`) (a spinner beside it while the history is
-    read), why the work tree couldn't
-    be read (when it couldn't), the requests (or, while they want a sign-in, "Sign in to
-    GitLab", opening the dialog); at its right `views/tasks.rs`'s bar (drawn first,
-    into the row; its words capped at 300 points). The look is chosen from `BarRoom`: the left
-    part's width drawn compact last frame (room kept for the spinner, so its coming never
-    changes it) plus what the tools' words add (`widgets::tool_width`), against
-    the room the task bar leaves (its idle width), and held while a task runs: never flipping
-    back and forth; the left part is clipped to its room. Then the
+    read: the count grows meanwhile, moving nothing but it); at its right `views/tasks.rs`'s bar
+    (drawn first, into the row; its words capped at 300 points). Each button's words show
+    beside its icon where there is room: the views' (Search, Reflog, Agents) give theirs up
+    first, then the menus' (`Looks`: `bar_looks`, from `BarRoom`: the left part's width drawn
+    compact last frame, room kept for the spinner, plus what each group's words add,
+    `widgets::tool_width`, against the room the task bar leaves, its idle width; held while a
+    task runs: never flipping back and forth); too narrow even for icons alone (a panel open
+    beside), the parts that don't fit are left out whole (`LeftOut`, their room still counted)
+    and a last button, "Every command", opens the palette, which holds them all
+    (`more_button`). Then the
     commit table on egui-table-kit's layout `Table` (its `TableKit` keeps per-row state a
     graph doesn't need): `CommitRows` is the `TableDelegate`; under the column titles, pinned
     as a second header row while there are changes not yet committed, the work in progress
@@ -1665,7 +1669,10 @@ writes paths), never `OsStrExt`.
     360 points, `CENTRAL_LEAST`, where the window has room; left out for the pages that aren't
     about one commit: a pipeline, a job's log, the requests, patches, Git LFS, submodules,
     Stats; pages in the table's place start their content 12 points in, where their bar's
-    controls do): the subject as the panel's title, the description in a box
+    controls do; its width its own, 280 at first, dragged and kept, what it holds fitting it
+    rather than widening it (drawn in a `Ui` of its own: the table's columns never move as the
+    selection changes); with the agents beside and no room for it, a strip in its place, its
+    button hiding the agents, `details_strip`): the subject as the panel's title, the description in a box
     of its own (`widgets::text_box`), then facts: names,
     parents (buttons: egui announces links as plain text), each person (their avatar, the
     name, leading, the email beneath, muted) and their date as a fact of its own, the
@@ -1759,9 +1766,17 @@ writes paths), never `OsStrExt`.
     long, "Show the output", and Cancel (its token: SIGTERM to git's group, its hooks with it). It clears
     once the tab's `commits_made` grows. A history of 10,000+ commits
     without a commit-graph is offered one (`Action::WriteCommitGraph`).
-    `views/tasks.rs` — the task bar at the top bar's right: Push, Pull, Fetch, and the branch
-    beside its upstream with ↑ ahead ↓ behind (or "(not pushed yet)", "(gone)"); while a task
-    runs, its progress and Cancel. Under the commit table (a bottom panel between the sidebar
+    `views/tasks.rs` — the task bar at the top bar's right: Push and Pull saying how far the
+    branch is from its upstream ("Push ↑1", "Pull ↓2"; the one with work the primary; Push
+    saying why not when it can't), Fetch, and the branch beside its upstream ("(not pushed
+    yet)" where there is a remote, "(gone)"), a menu: the branch switcher (`views/switcher.rs`:
+    a filter typed into at once, smart case, the letters in order as the palette matches; the
+    local branches, the one checked out marked, then the remotes' (each through the local
+    branch of its name, made to track it unless one exists), gathered and sorted naturally once
+    a read of the refs, matched again only as the filter changes; ↑ ↓ and Enter, or a click;
+    "Create a branch here…"; nothing while a task runs or an operation is in progress; the
+    button named as it reads, its icon too); while a task runs, Cancel, a spinner beside it,
+    then its progress. Under the commit table (a bottom panel between the sidebar
     and the details, `history::notices_panel`, there only while it has something to say, so
     nothing above the table moves) the last task's outcome (a line, the remote's notes, or a
     problem box; one that went well goes by itself after `OUTCOME_LASTS`, 5 s of egui's clock,
@@ -1878,13 +1893,16 @@ writes paths), never `OsStrExt`.
     marked), the selected one's message below (a code field when reworded); keys while no
     text field has the focus: ↑ ↓, Alt+↑ Alt+↓ to move, P R S F D. `plan` hands git the rows
     oldest first, or says why not (nothing changes, nothing to meld into, an empty message,
-    everything dropped); "Start rebase" runs it as a task. A range holding merges (said
+    everything dropped); "Start rebase" (at the bar's right, where it stays; the plan's words and
+    keys on a line below) runs it as a task; each row's step a menu as wide whichever it says
+    (`STEP_WIDTH`: the names after it line up). A range holding merges (said
     under the bar) keeps them in git's order: rows don't move, nothing melds, a merge (marked)
     is picked or reworded, never dropped (`Kind::allowed`); its task keeps merges.
     `views/search.rs` — `HistorySearch`, the search bar over the commit table (⌘F, or the
     top bar's Search, which shows the table in place of a file or a tool): the kind, the
     query (searched once typing pauses 0.3 s, the history read whole, the previous search
-    dropped), "3 of 120" / "Searching… 45% · 120 found" / "No commits match" / the problem,
+    dropped), "3 of 120" / "Searching… 45% · 120 found" / "No commits match" / the problem (in a
+    place of its own width, a third of the bar at most: the field keeps its size),
     Previous and Next (Shift+Enter and Enter, wrapping), Close (or Escape). The search's first
     find, from the selection on, is selected as it comes; each step selects one, centred.
     Found rows take `Palette::found` behind them. A history read again is searched again
@@ -1999,7 +2017,8 @@ writes paths), never `OsStrExt`.
     clone's, at first; there typed, read there once it is reached: `home::folder_there`), the
     folder's name (`name_from_url`, as git names it, until edited), submodules, partial;
     `Action::Clone` runs `clone` as a job (one at a time; there, with git there reached first,
-    `app::reach`; `format::progress` and Cancel while it runs, `CancelClone`), then opens the
+    `app::reach`; Cancel, a progress bar of fixed width, and `format::progress` while it runs,
+    `CancelClone`), then opens the
     repository where it was made (a `Location`); cancelled, it says git removed what it had
     made.
     `views/job.rs` — `JobView`, a job's run's log in its pipeline's page's place (`Tool::Job`,
@@ -2125,11 +2144,15 @@ writes paths), never `OsStrExt`.
     Commands): a modal with a field ("Command, branch, or repository") and the `Offer`s
     gathered as it opens (`AppState`'s `offers`: the repository in front's commands, each
     allowed or saying why not (`RepoTab::allows`), the application's commands, the recent
-    repositories not open, and a switch to each local branch but the current one: `Offers`
-    keeps a branch's place among the shared refs, its words made only for the rows drawn),
+    repositories not open, a switch to each local branch but the current one, and going to
+    each remote's branch and tag (its commit shown, `RepoCommand::GoTo`): `Offers` keeps a
+    ref's place among the shared refs, its words made only for the rows drawn; every page a
+    command too: Stats, the Overview and Settings, Git LFS, the submodules, the folder, a
+    remote or tag added),
     narrowed by `score` as letters are typed (a letter typed after the others among what they
-    matched), best first, drawn with `show_rows`; ↑ ↓ choose (taken at the
-    frame's start, before the views below see them: `take_keys`), Enter or a click runs it,
+    matched), best first, drawn with `show_rows`, hung from near the top (its field stays put as
+    what matches narrows); ↑ ↓ choose (taken at the frame's start, before the views below see
+    them: `take_keys`; the pointer picks a row only as it moves), Enter or a click runs it,
     Escape closes. A repository's command is queued on its history view (`HistoryView::queue`),
     carried out next frame by the same code as its button.
     `views/preferences.rs` — the Preferences tab (⌘, or the status bar's): cards for how
@@ -2217,9 +2240,8 @@ writes paths), never `OsStrExt`.
     act on; signed in, as whom, a warning where no helper keeps it, and Done), `repo` (the history, or a page: the overview (with a Hooks card: where git looks for them
     (`core.hooksPath` said), those installed, where their output shows) or the settings table, under a bar
     going back to the history (or Escape) and switching between the two), `status_bar` (git's
-    version and path, the
-    theme, Commands and Preferences, a warning when
-    questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
+    version and path, the theme, Commands and Preferences (quiet buttons: framed only under the
+    pointer), a warning when questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
     `AskpassServer` and an `SshSharing` at launch and gives git their environment; questions queue and show one
     at a time in a modal (`PromptKind` decides the field and buttons); the abandoned are
     dropped (checked every 250 ms while shown); answers are handed over off the interface

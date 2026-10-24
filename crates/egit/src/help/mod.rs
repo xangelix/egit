@@ -221,45 +221,53 @@ pub(crate) fn window(ctx: &Context, help: &mut HelpWindow) {
         (screen.width() - 48.0).clamp(320.0, 900.0),
         (screen.height() - 96.0).clamp(240.0, 620.0),
     );
-    let modal = egui::Modal::new(Id::new("help-window")).show(ctx, |ui| {
-        ui.set_width(size.x);
-        ui.horizontal(|ui| {
-            ui.label(
-                RichText::new(format!("{}  Help", icon::QUESTION))
-                    .size(crate::theme::TITLE)
-                    .semibold(),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if crate::widgets::icon_tool(ui, true, icon::X, "Close").clicked() {
-                    help.open = false;
-                }
-                ui.label(crate::widgets::muted(
-                    ui,
-                    "Hold Alt over anything to see its topic",
-                ));
+    // Framed as every dialog is: the surface, an edge, a card's corners, room inside.
+    let frame = egui::Frame::new()
+        .fill(palette.surface)
+        .stroke(egui::Stroke::new(1.0, palette.border))
+        .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CARD))
+        .inner_margin(egui::Margin::same(20));
+    let modal = egui::Modal::new(Id::new("help-window"))
+        .frame(frame)
+        .show(ctx, |ui| {
+            ui.set_width(size.x);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("{}  Help", icon::QUESTION))
+                        .size(crate::widgets::PANEL_TITLE)
+                        .semibold(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if crate::widgets::icon_tool(ui, true, icon::X, "Close").clicked() {
+                        help.open = false;
+                    }
+                    ui.label(crate::widgets::muted(
+                        ui,
+                        "Hold Alt over anything to see its topic",
+                    ));
+                });
+            });
+            ui.add_space(8.0);
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(240.0, size.y),
+                    egui::Layout::top_down_justified(egui::Align::Min),
+                    |ui| topics_list(ui, help, palette),
+                );
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("help-topic")
+                    .max_height(size.y)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.vertical(|ui| {
+                            if let Some(topic) = topic(help.selected) {
+                                body(ui, topic, palette);
+                            }
+                        });
+                    });
             });
         });
-        ui.add_space(8.0);
-        ui.horizontal_top(|ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(240.0, size.y),
-                egui::Layout::top_down_justified(egui::Align::Min),
-                |ui| topics_list(ui, help, palette),
-            );
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .id_salt("help-topic")
-                .max_height(size.y)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.vertical(|ui| {
-                        if let Some(topic) = topic(help.selected) {
-                            body(ui, topic, palette);
-                        }
-                    });
-                });
-        });
-    });
     if modal.should_close() {
         help.open = false;
     }
@@ -531,9 +539,11 @@ pub(crate) fn body(ui: &mut Ui, topic: &Topic, palette: Palette) {
         ui.add_space(6.0);
         ui.add(
             egui::Label::new(
+                // In code's family at the small size (`small` alone would set the body's
+                // family back): `--recursive` reads as two dashes.
                 RichText::new(format!("egit runs: {}", topic.git))
-                    .monospace()
-                    .small()
+                    .family(egui::FontFamily::Monospace)
+                    .size(crate::theme::SMALL)
                     .color(palette.muted),
             )
             .wrap(),

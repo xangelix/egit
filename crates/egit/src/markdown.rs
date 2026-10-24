@@ -976,6 +976,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_description_s_html_comments_are_left_out() {
+        assert_eq!(
+            without_comments("Fixes it.\n<!-- Describe the change. -->\nDone.<!-- open"),
+            "Fixes it.\n\nDone."
+        );
+        assert!(matches!(
+            without_comments("No comment."),
+            std::borrow::Cow::Borrowed("No comment.")
+        ));
+    }
+
+    #[test]
     fn markdown_files_are_known_by_their_extension() {
         assert!(is_markdown(b"README.md"));
         assert!(is_markdown(b"docs/guide.MARKDOWN"));

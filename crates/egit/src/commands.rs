@@ -36,6 +36,20 @@ pub(crate) enum RepoCommand {
     CreateBranch,
     /// Switch to this local branch (its short name).
     Switch(BString),
+    /// Show this commit (a remote's branch's, a tag's) in the history.
+    GoTo(egit_git::ObjectId),
+    /// The history's statistics.
+    Stats,
+    /// The repository's overview, and its settings.
+    Overview,
+    Settings,
+    /// Git LFS's page, and the submodules'.
+    GitLfs,
+    Submodules,
+    /// The repository's folder, in the file manager.
+    OpenFolder,
+    AddRemote,
+    CreateTag,
     Refresh,
 }
 
@@ -78,6 +92,14 @@ impl Command {
             RepoCommand::ApplyPatches,
             RepoCommand::PastePatch,
             RepoCommand::CreateBranch,
+            RepoCommand::CreateTag,
+            RepoCommand::AddRemote,
+            RepoCommand::Stats,
+            RepoCommand::Overview,
+            RepoCommand::Settings,
+            RepoCommand::GitLfs,
+            RepoCommand::Submodules,
+            RepoCommand::OpenFolder,
             RepoCommand::ToggleSidebar,
             RepoCommand::FilterSidebar,
             RepoCommand::ToggleOutput,
@@ -140,6 +162,15 @@ impl Command {
                 RepoCommand::PastePatch => "Paste a patch…".to_owned(),
                 RepoCommand::CreateBranch => "Create a branch…".to_owned(),
                 RepoCommand::Switch(branch) => format!("{SWITCH_TO}{branch}"),
+                RepoCommand::GoTo(commit) => format!("Go to {}", commit.abbreviated(8)),
+                RepoCommand::Stats => "Show the history's statistics".to_owned(),
+                RepoCommand::Overview => "Show the repository's overview".to_owned(),
+                RepoCommand::Settings => "Show the repository's settings".to_owned(),
+                RepoCommand::GitLfs => "Show Git LFS".to_owned(),
+                RepoCommand::Submodules => "Show the submodules".to_owned(),
+                RepoCommand::OpenFolder => "Open the repository's folder".to_owned(),
+                RepoCommand::AddRemote => "Add a remote…".to_owned(),
+                RepoCommand::CreateTag => "Create a tag…".to_owned(),
                 RepoCommand::Refresh => "Read the repository again".to_owned(),
             },
         }

@@ -50,7 +50,11 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let help = ui.button(muted(ui, format!("{}  Help  F1", icon::QUESTION)).small());
+            // Quiet, as a toolbar's: the bar stays out of the way until wanted.
+            let help = quiet_button(
+                ui,
+                muted(ui, format!("{}  Help  F1", icon::QUESTION)).small(),
+            );
             crate::help::note(ui, help.rect, "Help");
             if help
                 .on_hover_text("What everything does, at git's level (or hold Alt over anything)")
@@ -58,7 +62,8 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
             {
                 state.actions.push(Action::ShowHelp);
             }
-            let commands = ui.button(
+            let commands = quiet_button(
+                ui,
                 muted(
                     ui,
                     format!("{}  Commands  {}", icon::COMMAND, keys_text("⌘K")),
@@ -69,8 +74,10 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
             if commands.on_hover_text("Every command, by name").clicked() {
                 state.actions.push(Action::ShowPalette);
             }
-            let preferences =
-                ui.button(muted(ui, format!("{}  Preferences", icon::GEAR_SIX)).small());
+            let preferences = quiet_button(
+                ui,
+                muted(ui, format!("{}  Preferences", icon::GEAR_SIX)).small(),
+            );
             crate::help::note(ui, preferences.rect, "Preferences");
             if preferences
                 .on_hover_text(format!("How egit looks and behaves ({})", keys_text("⌘,")))
@@ -84,21 +91,31 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
                 ThemeChoice::Dark => format!("{}  Dark", icon::MOON),
                 ThemeChoice::Light => format!("{}  Light", icon::SUN),
             };
-            ui.menu_button(muted(ui, label).small(), |ui| {
-                for (choice, text) in [
-                    (
-                        ThemeChoice::System,
-                        format!("{}  System theme", icon::MONITOR),
-                    ),
-                    (ThemeChoice::Light, format!("{}  Light", icon::SUN)),
-                    (ThemeChoice::Dark, format!("{}  Dark", icon::MOON)),
-                ] {
-                    if crate::widgets::radio(ui, current == choice, text).clicked() {
-                        state.actions.push(Action::SetTheme(choice));
-                        ui.close();
+            let button = egui::Button::new(muted(ui, label).small()).frame_when_inactive(false);
+            crate::widgets::quiet(ui, |ui| {
+                egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                    for (choice, text) in [
+                        (
+                            ThemeChoice::System,
+                            format!("{}  System theme", icon::MONITOR),
+                        ),
+                        (ThemeChoice::Light, format!("{}  Light", icon::SUN)),
+                        (ThemeChoice::Dark, format!("{}  Dark", icon::MOON)),
+                    ] {
+                        if crate::widgets::radio(ui, current == choice, text).clicked() {
+                            state.actions.push(Action::SetTheme(choice));
+                            ui.close();
+                        }
                     }
-                }
+                })
             });
         });
     });
+}
+
+/// A button without a frame until the pointer is on it.
+fn quiet_button(ui: &mut Ui, text: egui::RichText) -> egui::Response {
+    crate::widgets::quiet(ui, |ui| {
+        ui.add(egui::Button::new(text).frame_when_inactive(false))
+    })
 }

@@ -226,10 +226,12 @@ impl Find {
         );
         let status = self.status();
         let mut close = false;
+        // Against the grid's right edge, its parts in places of their own width: nothing in it
+        // moves as what it says changes.
         ui.scope_builder(
             UiBuilder::new()
                 .max_rect(rect)
-                .layout(Layout::left_to_right(Align::Center)),
+                .layout(Layout::right_to_left(Align::Min)),
             |ui| {
                 Frame::new()
                     .fill(palette.panel)
@@ -258,9 +260,21 @@ impl Find {
                                     self.focus = true;
                                 }
                             }
-                            ui.add(
-                                egui::Label::new(RichText::new(status).color(palette.muted))
-                                    .selectable(false),
+                            let room = crate::widgets::text_width(ui, "Searching…")
+                                .max(crate::widgets::text_width(ui, "99,999 of 99,999"));
+                            crate::widgets::column(
+                                ui,
+                                (room, crate::theme::CONTROL),
+                                Align::Max,
+                                |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(status).color(palette.muted),
+                                        )
+                                        .selectable(false)
+                                        .truncate(),
+                                    );
+                                },
                             );
                             let icon = crate::theme::icon::ARROW_UP;
                             if crate::widgets::icon_tool(ui, true, icon, "Previous")

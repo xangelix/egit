@@ -22,6 +22,9 @@ use crate::widgets::muted;
 /// A row's height.
 const ROW_HEIGHT: f32 = 28.0;
 
+/// The words before a ref's name in an offer going to its commit.
+const GO_TO: &str = "Go to ";
+
 /// The most rows shown at once.
 const ROWS_SHOWN: f32 = 12.0;
 
@@ -36,13 +39,16 @@ pub(crate) struct Offer {
     pub(crate) allowed: Result<(), &'static str>,
 }
 
-/// What the palette offers: commands, then a switch to each of some branches.
+/// What the palette offers: commands, then a switch to each of some branches, then going to
+/// each remote's branch and tag (its commit shown in the history).
 #[derive(Debug)]
 pub(crate) struct Offers {
     pub(crate) commands: Vec<Offer>,
     /// The refs read, and the places among them of the branches offered.
     pub(crate) refs: Arc<[Reference]>,
     pub(crate) branches: Vec<u32>,
+    /// The places among them of the remotes' branches and the tags offered to go to.
+    pub(crate) goes: Vec<u32>,
     /// Whether a switch can happen now, and why not.
     pub(crate) switching: Result<(), &'static str>,
 }
@@ -53,6 +59,7 @@ impl Default for Offers {
             commands: Vec::new(),
             refs: Arc::from(Vec::new()),
             branches: Vec::new(),
+            goes: Vec::new(),
             switching: Ok(()),
         }
     }
@@ -60,7 +67,10 @@ impl Default for Offers {
 
 impl Offers {
     const fn len(&self) -> usize {
-        self.commands.len().saturating_add(self.branches.len())
+        self.commands
+            .len()
+            .saturating_add(self.branches.len())
+            .saturating_add(self.goes.len())
     }
 
     /// The offer at `at`.
@@ -68,9 +78,14 @@ impl Offers {
         if let Some(offer) = self.commands.get(at) {
             return Some(Item::Command(offer));
         }
-        let place = self.branches.get(at.checked_sub(self.commands.len())?)?;
+        let at = at.checked_sub(self.commands.len())?;
+        if let Some(place) = self.branches.get(at) {
+            let reference = self.refs.get(usize::try_from(*place).ok()?)?;
+            return Some(Item::Switch(reference.short_name(), self.switching));
+        }
+        let place = self.goes.get(at.checked_sub(self.branches.len())?)?;
         let reference = self.refs.get(usize::try_from(*place).ok()?)?;
-        Some(Item::Switch(reference.short_name(), self.switching))
+        Some(Item::GoTo(reference))
     }
 }
 
@@ -80,6 +95,8 @@ enum Item<'a> {
     Command(&'a Offer),
     /// A switch to this branch (its short name), and whether it can happen now.
     Switch(&'a BStr, Result<(), &'static str>),
+    /// Going to this ref's commit (a remote's branch, a tag).
+    GoTo(&'a Reference),
 }
 
 impl<'a> Item<'a> {
@@ -87,6 +104,9 @@ impl<'a> Item<'a> {
         match self {
             Self::Command(offer) => score(query, &offer.label),
             Self::Switch(name, _) => score_letters(query, SWITCH_TO.chars().chain(name.chars())),
+            Self::GoTo(reference) => {
+                score_letters(query, GO_TO.chars().chain(reference.short_name().chars()))
+            }
         }
     }
 
@@ -95,13 +115,14 @@ impl<'a> Item<'a> {
         match self {
             Self::Command(offer) => Cow::Borrowed(&offer.label),
             Self::Switch(name, _) => Cow::Owned(format!("{SWITCH_TO}{name}")),
+            Self::GoTo(reference) => Cow::Owned(format!("{GO_TO}{}", reference.short_name())),
         }
     }
 
     fn keys(self) -> Option<&'a str> {
         match self {
             Self::Command(offer) => offer.keys.as_deref(),
-            Self::Switch(..) => None,
+            Self::Switch(..) | Self::GoTo(_) => None,
         }
     }
 
@@ -109,6 +130,7 @@ impl<'a> Item<'a> {
         match self {
             Self::Command(offer) => offer.allowed,
             Self::Switch(_, allowed) => allowed,
+            Self::GoTo(_) => Ok(()),
         }
     }
 
@@ -116,6 +138,7 @@ impl<'a> Item<'a> {
         match self {
             Self::Command(offer) => offer.command.clone(),
             Self::Switch(name, _) => Command::Repo(RepoCommand::Switch(name.to_owned())),
+            Self::GoTo(reference) => Command::Repo(RepoCommand::GoTo(reference.target)),
         }
     }
 }
@@ -223,12 +246,13 @@ pub(crate) fn show(ctx: &egui::Context, view: &mut PaletteView) -> Option<Comman
         .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CARD))
         .inner_margin(egui::Margin::same(14));
     let mut chosen = None;
-    let shown = Modal::new(Id::new("command-palette"))
-        .frame(frame)
-        .show(ctx, |ui| {
-            ui.set_width(560.0);
-            chosen = contents(ui, view);
-        });
+    // Hung from near the top: its field stays put as what matches narrows.
+    let id = Id::new("command-palette");
+    let area = Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 96.0));
+    let shown = Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
+        ui.set_width(560.0);
+        chosen = contents(ui, view);
+    });
     if shown.should_close() || chosen.is_some() {
         view.open = false;
     }
@@ -353,7 +377,8 @@ fn offer_row(ui: &mut Ui, view: &mut PaletteView, row: usize) -> Option<Command>
         );
     }
     let chosen = (response.clicked() && enabled).then(|| offer.command());
-    if response.hovered() {
+    // The pointer picks a row as it moves over it; resting, it leaves ↑ ↓ their choice.
+    if response.hovered() && ui.input(|input| input.pointer.delta() != egui::Vec2::ZERO) {
         view.selected = row;
     }
     chosen
@@ -391,6 +416,7 @@ mod tests {
         view.open(Offers {
             commands,
             branches: (0..u32::try_from(refs.len()).unwrap()).collect(),
+            goes: Vec::new(),
             refs: Arc::from(refs),
             switching: Ok(()),
         });
