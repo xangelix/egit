@@ -44,6 +44,8 @@ impl std::fmt::Debug for Slot {
 }
 
 struct Inner {
+    /// A request's answer's head, once it came.
+    head: Option<Head>,
     /// Output not yet read, in order; `offset` of the first already read.
     chunks: VecDeque<Vec<u8>>,
     offset: usize,
@@ -57,6 +59,7 @@ struct Inner {
 impl Slot {
     pub(crate) fn new(stderr: Stderr) -> Self {
         Self(Mutex::new(Inner {
+            head: None,
             chunks: VecDeque::new(),
             offset: 0,
             end: None,
@@ -77,6 +80,13 @@ impl Slot {
         }
         inner.wake();
         None
+    }
+
+    /// A request's answer's head.
+    pub(crate) fn head(&self, head: Head) {
+        let mut inner = self.0.lock();
+        inner.head = Some(head);
+        inner.wake();
     }
 
     /// More of its standard error, handed on at once.
@@ -289,5 +299,79 @@ impl Drop for Process {
         }
         self.terminate();
         self.abandon_output();
+    }
+}
+
+/// A request's answer's head: its status and headers (names in lower case).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Head {
+    /// Its status.
+    pub status: u16,
+    /// Its headers.
+    pub headers: Vec<(String, String)>,
+}
+
+/// A request a relay makes for egit ([`Relay::fetch`]): its answer's head, then its body as it
+/// comes. Dropped before its end, the relay stops it.
+#[derive(Debug)]
+pub struct Fetching {
+    process: Process,
+}
+
+impl Fetching {
+    pub(crate) const fn new(process: Process) -> Self {
+        Self { process }
+    }
+
+    /// Waits for its answer's head.
+    ///
+    /// # Errors
+    ///
+    /// Why there is none: the host couldn't be reached (in the relay's words), or the
+    /// connection to the relay was lost.
+    pub async fn head(&mut self) -> Result<Head, String> {
+        let slot = std::sync::Arc::clone(&self.process.slot);
+        poll_fn(|context| {
+            let mut inner = slot.0.lock();
+            if let Some(head) = inner.head.take() {
+                return Poll::Ready(Ok(head));
+            }
+            if let Some(end) = &inner.end {
+                return Poll::Ready(Err(match end {
+                    Ok(_) => "it ended without an answer".to_owned(),
+                    Err(NotRun::Missing(_, message) | NotRun::Lost(message)) => message.clone(),
+                }));
+            }
+            inner.waker = Some(context.waker().clone());
+            Poll::Pending
+        })
+        .await
+    }
+
+    /// More of its answer's body: how much, 0 at its end.
+    ///
+    /// # Errors
+    ///
+    /// Never: how it ended is [`Self::end`]'s to say.
+    pub async fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        self.process.read(buffer).await
+    }
+
+    /// How its answer ended: whole, or not.
+    ///
+    /// # Errors
+    ///
+    /// Why not, in the relay's words, or the connection's.
+    pub async fn end(&mut self) -> Result<(), String> {
+        match self.process.wait().await {
+            Ok(exit) if exit.success() => Ok(()),
+            Ok(exit) => Err(format!("the request ended: {exit}")),
+            Err(NotRun::Missing(_, message) | NotRun::Lost(message)) => Err(message),
+        }
+    }
+
+    /// Stops it there.
+    pub fn stop(&self) {
+        self.process.terminate();
     }
 }

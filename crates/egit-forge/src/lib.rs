@@ -17,6 +17,8 @@ mod artifacts;
 mod error;
 mod github;
 mod gitlab;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod here;
 mod host;
 mod http;
 mod job_log;

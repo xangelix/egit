@@ -148,7 +148,7 @@ pub async fn download_artifact(
     };
     let first = account.download(&url, &mut take, cancel).await?;
     let done = match (first.status, first.location.as_deref()) {
-        (301..=308, Some(location)) => account.download_public(location, &mut take, cancel)?,
+        (301..=308, Some(location)) => account.download_public(location, &mut take, cancel).await?,
         _ => first,
     };
     if done.stopped || cancel.is_cancelled() {

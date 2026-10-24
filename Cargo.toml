@@ -87,6 +87,8 @@ tracing-subscriber = { version = "0.3.23", default-features = false }
 rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs", "std"] }
 ureq = { version = "3.4.2", default-features = false, features = ["gzip", "platform-verifier", "rustls-no-provider"] }
 unicode-width = { version = "0.2.2", default-features = false }
+# A moment's clock where a browser has no `std::time::Instant` (the standard library's elsewhere).
+web-time = "1.1.0"
 # Windows' process calls the standard library doesn't make (stopping git gently).
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Diagnostics_ToolHelp", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 zeroize = "1.9.1"

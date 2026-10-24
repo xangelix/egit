@@ -26,8 +26,11 @@ use std::task::{Poll, Waker};
 use parking_lot::Mutex;
 use zeroize::Zeroizing;
 
+pub use process::Fetching;
 pub(crate) use process::{NotRun, Process, Stderr as StderrSink};
-pub use protocol::{FromRelay, Garbled, Missing, Program, ToRelay, VERSION, WINDOW};
+pub use protocol::{
+    Fetch, FetchMode, FromRelay, Garbled, Method, Missing, Program, ToRelay, VERSION, WINDOW,
+};
 
 use crate::askpass::{Prompt, PromptKind};
 use crate::git::Git;
@@ -207,6 +210,16 @@ impl Relay {
                 context,
                 text,
             } => self.prompt(id, kind, context, text),
+            FromRelay::Head {
+                id,
+                status,
+                headers,
+            } => {
+                let slot = self.0.state.lock().processes.get(&id).cloned();
+                if let Some(slot) = slot {
+                    slot.head(process::Head { status, headers });
+                }
+            }
             FromRelay::Withdrawn { id } => {
                 let withdrawn = self.0.state.lock().asked.remove(&id);
                 if let Some(withdrawn) = withdrawn {
@@ -274,6 +287,17 @@ impl Relay {
 
     /// Starts `program` there; what it prints to standard error goes to `stderr` as it comes.
     pub(crate) fn start(&self, program: Program, stderr: StderrSink) -> Process {
+        let reads = program.stdin;
+        self.begin(|id| ToRelay::Start { id, program }, stderr, reads)
+    }
+
+    /// Begins what `asking` asks (a program, a request) under an id of its own.
+    fn begin(
+        &self,
+        asking: impl FnOnce(u32) -> ToRelay,
+        stderr: StderrSink,
+        reads: bool,
+    ) -> Process {
         let slot = Arc::new(process::Slot::new(stderr));
         let mut state = self.0.state.lock();
         let id = if let Some(ended) = &state.ended {
@@ -287,11 +311,18 @@ impl Relay {
             id
         };
         drop(state);
-        let reads = program.stdin;
         if id != 0 {
-            self.send(&ToRelay::Start { id, program });
+            self.send(&asking(id));
         }
         Process::new(self.clone(), id, slot, reads)
+    }
+
+    /// Has the relay make `fetch` (a request to a forge, a download, a picture): its answer
+    /// read as it comes, as a program's output is.
+    #[must_use = "dropped, the request is stopped"]
+    pub fn fetch(&self, fetch: Fetch) -> Fetching {
+        let process = self.begin(|id| ToRelay::Fetch { id, fetch }, Box::new(|_| {}), false);
+        Fetching::new(process)
     }
 
     /// Asks the relay to stop process `id` and every process it started.

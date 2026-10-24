@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 bstr.workspace = true
+egit-forge.workspace = true
 egit-git.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
@@ -32,3 +33,4 @@ rustix = { workspace = true, features = ["system"] }
 [dev-dependencies]
 egit-git = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
+zeroize.workspace = true

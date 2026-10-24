@@ -199,6 +199,18 @@ impl Session {
                     running.credit(bytes);
                 }
             }
+            ToRelay::Fetch { id, fetch } => {
+                let finished = {
+                    let running = Arc::clone(&self.running);
+                    move |id| {
+                        running.lock().remove(&id);
+                    }
+                };
+                // Held while it starts, as a program's is.
+                let mut running = self.running.lock();
+                let started = Running::fetch(id, fetch, self.out.clone(), finished);
+                running.insert(id, started);
+            }
             ToRelay::Answer { id, answer } => {
                 let prompt = self.asked.lock().remove(&id);
                 if let Some(prompt) = prompt {

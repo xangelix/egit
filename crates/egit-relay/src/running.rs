@@ -1,7 +1,8 @@
 //! A program a browser runs through the relay: started as egit starts git (leading a process
 //! group of its own, with no terminal), fed its standard input as it comes, its output sent as
 //! it is printed (no more of its standard output than the browser made room for), and how it
-//! ended.
+//! ended. Or a request the relay makes for it, as egit makes one itself (`egit_forge::here`):
+//! its answer's head, then its body as a program's output, and its end.
 //!
 //! Each runs on threads of its own: one starts it and sends its standard output, then waits
 //! for it; one sends its standard error; one feeds it, while it reads anything.
@@ -15,7 +16,7 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 
 use bstr::ByteSlice as _;
-use egit_git::relay::protocol::{FromRelay, Missing, Program, WINDOW};
+use egit_git::relay::protocol::{Fetch, FromRelay, Missing, Program, WINDOW};
 use egit_git::{Detached, Exit, Stopper};
 use parking_lot::{Condvar, Mutex};
 
@@ -53,6 +54,17 @@ struct RoomLeft {
 }
 
 impl Room {
+    /// As much room as a browser starts with.
+    fn new() -> Self {
+        Self {
+            left: Mutex::new(RoomLeft {
+                bytes: u64::from(WINDOW),
+                unlimited: false,
+            }),
+            changed: Condvar::new(),
+        }
+    }
+
     /// Waits for room, and takes up to `wanted` of it: how much (unlimited, all).
     fn take(&self, wanted: usize) -> Option<usize> {
         let mut left = self.left.lock();
@@ -96,13 +108,7 @@ impl Running {
         out: Out,
         finished: impl FnOnce(u32) + Send + 'static,
     ) -> Self {
-        let room = Arc::new(Room {
-            left: Mutex::new(RoomLeft {
-                bytes: u64::from(WINDOW),
-                unlimited: false,
-            }),
-            changed: Condvar::new(),
-        });
+        let room = Arc::new(Room::new());
         let stopper: Arc<Mutex<Stopping>> = Arc::default();
         let (input, fed) = if program.stdin {
             let (sender, receiver) = mpsc::channel::<Vec<u8>>();
@@ -131,6 +137,35 @@ impl Running {
         }
         Self {
             input,
+            room,
+            stopper,
+        }
+    }
+
+    /// Makes `fetch` as request `id` (as egit makes a request itself: `egit_forge::here`); tells
+    /// `out` its answer's head, its body as the browser makes room for it, and its end, and
+    /// `finished` once it ended.
+    pub(crate) fn fetch(
+        id: u32,
+        fetch: Fetch,
+        out: Out,
+        finished: impl FnOnce(u32) + Send + 'static,
+    ) -> Self {
+        let room = Arc::new(Room::new());
+        let stopper: Arc<Mutex<Stopping>> = Arc::default();
+        let (shared_room, shared_stopper) = (Arc::clone(&room), Arc::clone(&stopper));
+        let started = thread::Builder::new()
+            .name(format!("relayed request {id}"))
+            .spawn(move || {
+                let ended = fetch_for(id, &fetch, &shared_room, &shared_stopper, &out);
+                let _sent = out.send(ended.encode());
+                finished(id);
+            });
+        if let Err(error) = started {
+            tracing::warn!(%error, "a request's thread couldn't be started");
+        }
+        Self {
+            input: None,
             room,
             stopper,
         }
@@ -273,6 +308,62 @@ fn run(
             missing: Missing::Nothing,
             message: format!("waiting for it failed: {error}"),
         },
+    }
+}
+
+/// Makes `fetch` as request `id`: what to say once it ended (its head and body said as they
+/// came).
+fn fetch_for(
+    id: u32,
+    fetch: &Fetch,
+    room: &Room,
+    stopping: &Mutex<Stopping>,
+    out: &Out,
+) -> FromRelay {
+    let failed = |message: String| FromRelay::Failed {
+        id,
+        missing: Missing::Nothing,
+        message,
+    };
+    let answered = match egit_forge::here::fetch_here(fetch) {
+        Ok(answered) => answered,
+        Err(unreached) => return failed(unreached.0),
+    };
+    let head = FromRelay::Head {
+        id,
+        status: answered.status,
+        headers: answered.headers.clone(),
+    };
+    if out.send(head.encode()).is_err() {
+        return failed("the browser went away".to_owned());
+    }
+    let mut body = answered.into_body(u64::MAX);
+    let mut buffer = vec![0; CHUNK];
+    loop {
+        if stopping.lock().asked {
+            return failed("the request was stopped".to_owned());
+        }
+        let Some(wanted) = room.take(CHUNK) else {
+            // Nobody takes it in any more.
+            return failed("the browser went away".to_owned());
+        };
+        let into = buffer.get_mut(..wanted).unwrap_or_default();
+        let read = match body.read(into) {
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return failed(egit_forge::here::unread(&error).0),
+        };
+        room.add(u32::try_from(wanted.saturating_sub(read)).unwrap_or(u32::MAX));
+        if read == 0 {
+            return FromRelay::Exited {
+                id,
+                exit: Exit::new(Some(0), None),
+            };
+        }
+        let data = buffer.get(..read).unwrap_or_default().to_vec();
+        if out.send(FromRelay::Stdout { id, data }.encode()).is_err() {
+            return failed("the browser went away".to_owned());
+        }
     }
 }
 

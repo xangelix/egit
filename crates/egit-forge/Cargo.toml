@@ -17,14 +17,18 @@ testing = []
 bstr.workspace = true
 egit-git.workspace = true
 parking_lot.workspace = true
-rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-ureq.workspace = true
+web-time.workspace = true
 zeroize.workspace = true
+
+# Requests made here; in a browser, its relay makes them.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rustls.workspace = true
+ureq.workspace = true
 
 [dev-dependencies]
 egit-forge = { workspace = true, features = ["testing"] }

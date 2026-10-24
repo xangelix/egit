@@ -1210,6 +1210,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "ureq",
+ "web-time",
  "zeroize",
 ]
 
@@ -1255,6 +1256,7 @@ name = "egit-relay"
 version = "0.1.0"
 dependencies = [
  "bstr",
+ "egit-forge",
  "egit-git",
  "futures-util",
  "getrandom 0.4.3",

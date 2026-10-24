@@ -148,7 +148,7 @@ pub(crate) fn install(ctx: &Context, sources: &PictureSources, cache: Option<&Pa
         landed,
         sender: sender.clone(),
     };
-    let pictures = Pictures::new(sources);
+    let pictures = Pictures::new(None);
     let cache = cache.map(Path::to_path_buf);
     if let Some(cache) = &cache {
         forget_older(cache);
@@ -387,7 +387,9 @@ impl Fetching<'_> {
                 };
             }
         }
-        match self.pictures.find(self.sources, &request.email, MASTER) {
+        // A worker thread of its own: it waits for the answer.
+        let found = egit_git::block_on(self.pictures.find(self.sources, &request.email, MASTER));
+        match found {
             Ok(Fetched::Found(bytes)) => {
                 let Some(master) = decode(&bytes) else {
                     return Landed::Missing(key);

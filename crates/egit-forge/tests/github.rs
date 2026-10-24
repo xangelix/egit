@@ -273,6 +273,10 @@ fn a_cancelled_read_stops() {
 
 #[test]
 fn signing_in_asks_the_user_and_has_the_helper_keep_what_worked() {
+    // An askpass program of this computer's: git elsewhere asks through its own.
+    if egit_git::testing::on_another_computer() {
+        return;
+    }
     let (fake, sandbox, _, _) = setup(0, TOKEN);
     std::fs::write(sandbox.path("credentials"), "").unwrap();
     // The user, as git's askpass program asks them: a username, then a token as the password.

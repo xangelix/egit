@@ -10,15 +10,14 @@
 //!   rather than being drawn a default).
 //!
 //! No credential goes with these requests, so redirects are followed, to HTTPS only; answers are
-//! a picture's size at most.
+//! a picture's size at most. They are made here, or by egit in a browser's relay.
 
 use std::fmt::Write as _;
-use std::sync::Arc;
-use std::time::Duration;
 
+use egit_git::Relay;
+use egit_git::relay::protocol::{Fetch, FetchMode, Method};
 use sha2::{Digest as _, Sha256};
-use ureq::Agent;
-use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
+use zeroize::Zeroizing;
 
 use crate::error::ForgeError;
 
@@ -90,18 +89,6 @@ impl PictureSources {
             )),
         ]
     }
-
-    /// Whether every source is on the loopback address (tests), where plain HTTP is allowed.
-    fn loopback(&self) -> bool {
-        [
-            &self.github_ids,
-            &self.github_logins,
-            &self.github_emails,
-            &self.gravatar,
-        ]
-        .iter()
-        .all(|source| is_loopback(source))
-    }
 }
 
 /// Where a picture may be.
@@ -162,13 +149,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex
 }
 
-/// Whether `url` is plain HTTP to the loopback address.
-fn is_loopback(url: &str) -> bool {
-    ["http://127.0.0.1:", "http://localhost:", "http://[::1]:"]
-        .iter()
-        .any(|start| url.starts_with(start))
-}
-
 /// What asking for a picture found.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Fetched {
@@ -178,39 +158,18 @@ pub enum Fetched {
     Missing,
 }
 
-/// Fetches pictures from [`PictureSources`].
-#[derive(Clone, Debug)]
+/// Fetches pictures from [`PictureSources`]: here, or through a relay.
+#[derive(Clone, Debug, Default)]
 pub struct Pictures {
-    agent: Agent,
+    relay: Option<Relay>,
 }
 
 impl Pictures {
-    /// A client for `sources`: HTTPS only, through the environment's proxy, unless every
-    /// source is on the loopback address.
+    /// A client asking for pictures here, or (egit in a browser) through `relay`: HTTPS only,
+    /// through the environment's proxy, but to the loopback address.
     #[must_use]
-    pub fn new(sources: &PictureSources) -> Self {
-        let tls = TlsConfig::builder()
-            .provider(TlsProvider::Rustls)
-            .root_certs(RootCerts::PlatformVerifier)
-            .unversioned_rustls_crypto_provider(Arc::new(
-                rustls::crypto::aws_lc_rs::default_provider(),
-            ))
-            .build();
-        let loopback = sources.loopback();
-        let mut config = Agent::config_builder()
-            .http_status_as_error(false)
-            .https_only(!loopback)
-            .max_redirects(3)
-            .timeout_connect(Some(Duration::from_secs(10)))
-            .timeout_global(Some(Duration::from_secs(30)))
-            .user_agent(concat!("egit/", env!("CARGO_PKG_VERSION")))
-            .tls_config(tls);
-        if loopback {
-            config = config.proxy(None);
-        }
-        Self {
-            agent: config.build().into(),
-        }
+    pub const fn new(relay: Option<Relay>) -> Self {
+        Self { relay }
     }
 
     /// `email`'s picture, `size` pixels square, from the first of `sources` that has one (see
@@ -219,7 +178,7 @@ impl Pictures {
     /// # Errors
     ///
     /// The first failure, when no source had a picture and one couldn't be asked.
-    pub fn find(
+    pub async fn find(
         &self,
         sources: &PictureSources,
         email: &str,
@@ -227,7 +186,7 @@ impl Pictures {
     ) -> Result<Fetched, ForgeError> {
         let mut failed = None;
         for source in sources.urls(email, size) {
-            match self.fetch(source.url()) {
+            match self.fetch(source.url()).await {
                 Ok(Fetched::Found(bytes)) => {
                     let placeholder = matches!(source, Source::GitHubByEmail(_))
                         && is_github_placeholder(&bytes, size);
@@ -250,7 +209,7 @@ impl Pictures {
     ///
     /// [`ForgeError::Network`] when the service can't be reached or answers otherwise than with a
     /// picture or "none" (404), [`ForgeError::Malformed`] when the picture is too large.
-    pub fn fetch(&self, url: &str) -> Result<Fetched, ForgeError> {
+    pub async fn fetch(&self, url: &str) -> Result<Fetched, ForgeError> {
         let host = url
             .split("://")
             .nth(1)
@@ -261,30 +220,34 @@ impl Pictures {
             host: host.clone(),
             message,
         };
-        let mut response = self
-            .agent
-            .get(url)
-            .header("Accept", "image/*")
-            .call()
-            .map_err(|error| network(error.to_string()))?;
-        match response.status().as_u16() {
+        let fetch = Fetch {
+            method: Method::Get,
+            url: url.to_owned(),
+            headers: vec![("Accept".to_owned(), Zeroizing::new(b"image/*".to_vec()))],
+            body: None,
+            mode: FetchMode::Picture,
+        };
+        let mut exchange = crate::http::exchange(self.relay.as_ref(), fetch, (&host, url)).await?;
+        match exchange.status() {
             200 => {}
             404 => return Ok(Fetched::Missing),
             status => return Err(network(format!("it answered {status}"))),
         }
-        response
-            .body_mut()
-            .with_config()
-            .limit(PICTURE_LIMIT)
-            .read_to_vec()
-            .map(Fetched::Found)
-            .map_err(|error| match error {
-                ureq::Error::BodyExceedsLimit(_) => ForgeError::Malformed {
-                    host: host.clone(),
+        let mut picture = Vec::new();
+        let mut buffer = vec![0_u8; 64 * 1024];
+        loop {
+            let read = exchange.read(&mut buffer).await?;
+            if read == 0 {
+                return Ok(Fetched::Found(picture));
+            }
+            picture.extend_from_slice(buffer.get(..read).unwrap_or_default());
+            if u64::try_from(picture.len()).unwrap_or(u64::MAX) > PICTURE_LIMIT {
+                return Err(ForgeError::Malformed {
+                    host,
                     detail: "the picture is too large".to_owned(),
-                },
-                other => network(other.to_string()),
-            })
+                });
+            }
+        }
     }
 }
 
@@ -320,14 +283,6 @@ mod tests {
         );
         // Not an account's number: an ordinary address of that domain.
         assert_eq!(urls("x+y@users.noreply.github.com", 128).len(), 2);
-        assert!(!PictureSources::public().loopback());
-        let local = PictureSources {
-            github_ids: "http://127.0.0.1:9/u/".to_owned(),
-            github_logins: "http://127.0.0.1:9/".to_owned(),
-            github_emails: "http://127.0.0.1:9/u/e?email=".to_owned(),
-            gravatar: "http://127.0.0.1:9/avatar/".to_owned(),
-        };
-        assert!(local.loopback());
     }
 
     #[test]

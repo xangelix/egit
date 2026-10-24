@@ -71,10 +71,10 @@ it.
   at once needs inotify-tools (`inotifywait`): its tests skip without it unless
   `EGIT_REQUIRE_INOTIFYWAIT` is set (CI sets it).
 - Git through a relay: `cargo build -p egit-relay && EGIT_TEST_RELAY=$PWD/target/debug/egit-relay
-  cargo test -p egit-git` runs every egit-git test with each command, and each file read or
-  written, going through one relay on the loopback address over one WebSocket, as egit in a
-  browser runs git. Do this after touching how commands are run, the relay, or its protocol (CI
-  does it).
+  cargo test -p egit-git -p egit-forge` runs every egit-git and egit-forge test with each
+  command, each file read or written, and each request to a forge going through one relay on
+  the loopback address over one WebSocket, as egit in a browser runs them. Do this after
+  touching how commands or requests are made, the relay, or its protocol (CI does it).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
 - Agents: the bridge's tests need Node.js (`EGIT_REQUIRE_NODE=1` makes their absence fail);
   `cargo test -p egit-agents --test install -- --ignored` installs the Claude Agent SDK for real
@@ -789,17 +789,24 @@ writes paths), never `OsStrExt`.
     option), or `resolve_ssh_alias_on` a git's computer (a repository there names its remotes
     by that computer's ssh configuration). `ssh_host_of`: the host name an ssh or scp-like URL
     reaches (none for others, or a drive's letter).
-  - `http.rs` — `Http`, a ureq agent per host: rustls on aws-lc-rs (`deny.toml` bans `ring`
-    and `webpki-roots`), certificates checked by the platform verifier (the system's trust
-    store), the environment's proxy (none for the loopback address), no redirects, 10 s to
-    connect and 60 s in all, answers of 32 MiB at most; the token a sensitive bearer header,
-    built in a zeroizing string, and refused without HTTPS (but to the loopback address);
+  - `here.rs` — requests made on this computer (by egit for itself, and by a relay for egit in
+    a browser: `fetch_here` of a `relay::protocol::Fetch`, its `Answered` head and body):
+    ureq agents shared, one for each `FetchMode` (an API's: no redirects, 60 s in all; a
+    download's: no redirects, 60 s for an answer to begin, `DOWNLOAD_LASTS`, 12 hours, for
+    the body; a picture's: redirects followed over HTTPS alone, 30 s) and through the proxy or
+    not (never for the loopback address); rustls on aws-lc-rs (`deny.toml` bans `ring` and
+    `webpki-roots`), certificates checked by the platform verifier (the system's trust store),
+    10 s to connect; `unread`, a failure as it reads, in words. Not in a browser.
+  - `http.rs` — `Http`, a host's API client: requests made here (`here.rs`) or, where its
+    account's git runs through a relay, by the relay (`Relay::fetch`), each `exchange` read
+    alike as it comes; answers of 32 MiB at most; the token a bearer header (one holding a
+    line break refused), built in a zeroizing buffer, and refused without HTTPS (but to the
+    loopback address);
     `stream`: a GET's body handed over a part at a time with its status and `Content-Range`
     (a `Range` asked of the bytes as stored: `Accept-Encoding: identity`), never held whole;
     an answer's `location` (a redirect's, never followed with the token); `download`: a GET's
-    body handed to a sink as it comes (256 KiB at a time; the sink may stop it), through an
-    agent of its own (`downloads`: 60 s for an answer to begin, `DOWNLOAD_LASTS`, 12 hours,
-    for the body, no limit in all: an artifact may be gigabytes), with the token, or without
+    body handed to a sink as it comes (256 KiB at a time; the sink may stop it), made as a
+    download (no limit in all: an artifact may be gigabytes), with the token, or without
     any credential for a place a redirect named (HTTPS, or the loopback address: GitHub's log
     files and artifacts, GitLab's archives, at signed addresses);
     GitHub's media type and API version only to GitHub; either forge's rate-limit headers.
@@ -858,9 +865,9 @@ writes paths), never `OsStrExt`.
     public or not), then Gravatar's by the trimmed lower-case address's SHA-256 (`sha2`),
     `d=404` so someone without one says so. GitHub answers an address of no account with a
     placeholder (`is_github_placeholder`: its known SHA-256, or a PNG wider than asked for),
-    which counts as none. `Pictures::find` asks them in order; `fetch`: no credential, so
-    redirects are followed, HTTPS only (but every source on the loopback address, for tests),
-    1 MiB at most; `Fetched::Found` or `Missing` (404).
+    which counts as none. `Pictures` (here, or through a relay) `find`s them in order;
+    `fetch`: no credential, so redirects are followed, HTTPS only (but to the loopback address,
+    for tests), 1 MiB at most; `Fetched::Found` or `Missing` (404).
   - `job_log.rs` — a CI/CD job's log: `job` (how it stands, REST: status, stage, started,
     finished, duration, why it failed, its page; a GitHub job's `JobStep`s too), `read_log`
     (a GitHub job's: its file, GitHub's redirect fetched without the token, whole as far as
@@ -1042,7 +1049,8 @@ writes paths), never `OsStrExt`.
     `tests/measure.rs` measures them against a large repository (`EGIT_SCALE_REPO`).
 - `crates/egit-relay` — `egit-relay`, egit in a browser's computer: serves egit's web build
   and runs git (and `sh`, for the files egit reads and writes) for it, over a WebSocket at
-  `/relay` (`egit_git::relay`'s protocol); no egui. `main.rs`: `--listen` (the loopback
+  `/relay` (`egit_git::relay`'s protocol), and makes its requests (to a forge, a download, a
+  picture) as egit makes them here (`egit_forge::here`); no egui. `main.rs`: `--listen` (the loopback
   address, `127.0.0.1:7171`: reached through `ssh -L` or a proxy of the user's), `--web` (a
   folder; `web` beside it), `--host` (a proxy's name); prints the address to open, its token
   after `#` (random, or `EGIT_RELAY_TOKEN`); started as `egit-askpass` it is the helper.
@@ -1065,7 +1073,9 @@ writes paths), never `OsStrExt`.
   the relay's environment, the session's, then the program's (unset first, as `env -u … K=V`);
   its standard output sent no faster than the browser makes room (`Room`, a condition
   variable), its standard error as it comes, its input fed by a thread; `Exited` after both;
-  abandoned (the session gone), read and dropped so it isn't held up. `tests/relay.rs` runs the
+  abandoned (the session gone), read and dropped so it isn't held up. A request (`fetch`): its
+  head sent, then its body as a program's output, `Exited` at its end, `Failed` with the
+  forge's words (stopped between parts when asked). `tests/relay.rs` runs the
   real binary: its build served to its own host alone (another host 421, a proxy's and a
   tunnel's names let in, compressed, nothing outside), another site's page and a wrong token
   refused, git run through it (a 9 MiB file read and fed back, a folder that isn't one,

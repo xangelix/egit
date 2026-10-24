@@ -66,7 +66,7 @@ impl Account {
     #[must_use]
     pub fn new(git: Git, repository: Option<Arc<Repository>>, host: ForgeHost) -> Self {
         Self {
-            http: Http::new(host),
+            http: Http::new(host, &git),
             git,
             repository,
             state: Mutex::default(),
@@ -132,7 +132,7 @@ impl Account {
         };
         let probe = Credential::given(self.place(None), token).ok_or_else(refused)?;
         let checking = Self {
-            http: Http::new(self.host().clone()),
+            http: Http::new(self.host().clone(), &self.git),
             git: self.git.clone(),
             repository: self.repository.clone(),
             state: Mutex::new(State {
@@ -221,7 +221,7 @@ impl Account {
         cancel: &CancelToken,
     ) -> Result<Answer, ForgeError> {
         let credential = self.credential(cancel).await?;
-        let answer = self.http.send(url, body, credential.password())?;
+        let answer = self.http.send(url, body, credential.password()).await?;
         self.answered(&credential, answer.status).await?;
         Ok(answer)
     }
@@ -239,7 +239,8 @@ impl Account {
         let credential = self.credential(cancel).await?;
         let streamed = self
             .http
-            .stream(url, credential.password(), (from, limit), sink)?;
+            .stream(url, credential.password(), (from, limit), sink)
+            .await?;
         self.answered(&credential, streamed.status).await?;
         Ok(streamed)
     }
@@ -253,14 +254,17 @@ impl Account {
         cancel: &CancelToken,
     ) -> Result<Streamed, ForgeError> {
         let credential = self.credential(cancel).await?;
-        let streamed = self.http.download(url, Some(credential.password()), sink)?;
+        let streamed = self
+            .http
+            .download(url, Some(credential.password()), sink)
+            .await?;
         self.answered(&credential, streamed.status).await?;
         Ok(streamed)
     }
 
     /// GETs `url`, a place the host pointed to (an artifact's or a log's file, its address
     /// signed), without the credential, handing its body to `sink` until it says to stop.
-    pub(crate) fn download_public(
+    pub(crate) async fn download_public(
         &self,
         url: &str,
         sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
@@ -269,7 +273,7 @@ impl Account {
         if cancel.is_cancelled() {
             return Err(ForgeError::Cancelled);
         }
-        self.http.download(url, None, sink)
+        self.http.download(url, None, sink).await
     }
 
     /// Whether it may push to the repository at `path`, as the host said lately.

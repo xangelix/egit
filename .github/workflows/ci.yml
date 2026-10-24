@@ -83,7 +83,7 @@ jobs:
       - name: Tests of git through a relay (as egit in a browser runs it)
         run: |
           cargo build --package egit-relay --locked
-          EGIT_TEST_RELAY="$PWD/target/debug/egit-relay" cargo test --package egit-git --locked
+          EGIT_TEST_RELAY="$PWD/target/debug/egit-relay" cargo test --package egit-git --package egit-forge --locked
 
       - name: Upload the rendered screens
         if: always()

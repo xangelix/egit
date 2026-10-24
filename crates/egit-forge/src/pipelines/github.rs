@@ -716,15 +716,17 @@ pub(crate) async fn github_log(
     let status = match (answer.status, answer.location.as_deref()) {
         (301 | 302 | 303 | 307 | 308, Some(location)) => {
             let mut kept = 0_u64;
-            let streamed = account.download_public(
-                location,
-                &mut |part| {
-                    kept = kept.saturating_add(u64::try_from(part.len()).unwrap_or(u64::MAX));
-                    take(part);
-                    kept < MOST_LOG
-                },
-                cancel,
-            )?;
+            let streamed = account
+                .download_public(
+                    location,
+                    &mut |part| {
+                        kept = kept.saturating_add(u64::try_from(part.len()).unwrap_or(u64::MAX));
+                        take(part);
+                        kept < MOST_LOG
+                    },
+                    cancel,
+                )
+                .await?;
             if !(200..300).contains(&streamed.status) && streamed.status != 404 {
                 return Err(ForgeError::Status {
                     host: account.host().name().to_owned(),

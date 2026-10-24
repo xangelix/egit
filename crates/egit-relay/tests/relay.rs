@@ -257,3 +257,87 @@ fn gone(pid_file: &Path) -> bool {
     }
     false
 }
+
+#[test]
+fn makes_requests_for_its_browser_their_answers_as_they_come() {
+    use egit_git::relay::{Fetch, FetchMode, Method};
+    use zeroize::Zeroizing;
+
+    // A host answering one request with a body larger than what the relay sends ahead.
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap();
+    let body = vec![b'y'; 5 << 20];
+    let answering = {
+        let body = body.clone();
+        std::thread::spawn(move || {
+            let (mut stream, _) = server.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nX-RateLimit-Remaining: 41\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            stream.write_all(&body).unwrap();
+            String::from_utf8(head).unwrap()
+        })
+    };
+    let relay = relay(&[]);
+    let connection = relay.connect(&relay.token).unwrap();
+    connection.welcome().wait().unwrap();
+    let mut fetching = connection.fetch(Fetch {
+        method: Method::Get,
+        url: format!("http://{address}/api/v4/projects"),
+        headers: vec![(
+            "Authorization".to_owned(),
+            Zeroizing::new(b"Bearer t0ken".to_vec()),
+        )],
+        body: None,
+        mode: FetchMode::Api,
+    });
+    let head = fetching.head().wait().unwrap();
+    assert_eq!(head.status, 200);
+    assert!(
+        head.headers
+            .contains(&("x-ratelimit-remaining".to_owned(), "41".to_owned())),
+        "{:?}",
+        head.headers
+    );
+    let mut read = Vec::new();
+    let mut buffer = vec![0; 100_000];
+    loop {
+        let got = fetching.read(&mut buffer).wait().unwrap();
+        if got == 0 {
+            break;
+        }
+        read.extend_from_slice(&buffer[..got]);
+    }
+    fetching.end().wait().unwrap();
+    assert_eq!(read, body);
+    let asked = answering.join().unwrap();
+    assert!(
+        asked.starts_with("GET /api/v4/projects HTTP/1.1"),
+        "{asked}"
+    );
+    assert!(
+        asked.contains("authorization: Bearer t0ken")
+            || asked.contains("Authorization: Bearer t0ken"),
+        "{asked}"
+    );
+
+    // A host that isn't there says so, in words.
+    let mut nowhere = connection.fetch(Fetch {
+        method: Method::Get,
+        url: "http://127.0.0.1:1/".to_owned(),
+        headers: Vec::new(),
+        body: None,
+        mode: FetchMode::Api,
+    });
+    let unreached = nowhere.head().wait().unwrap_err();
+    assert!(unreached.contains("refused"), "{unreached}");
+}
