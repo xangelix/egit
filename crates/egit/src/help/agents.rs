@@ -35,7 +35,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "A dot on Agents, or on the tab?",
-                "Claude wants you: orange, a question or a permission is waiting for your answer; green, a turn ended that you haven't seen. Showing the conversation clears the green one; answering, the orange.",
+                "Claude wants you: orange, a question or a permission is waiting for your answer; teal, a turn ended that you haven't seen. Showing the conversation clears the teal one; answering, the orange.",
             ),
             (
                 "What does it cost?",
