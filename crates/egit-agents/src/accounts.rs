@@ -9,12 +9,11 @@
 //! accounts run at once, each conversation as its own. [`auth_status`] asks Claude Code who is
 //! signed in to one.
 
-use std::ffi::OsString;
-use std::io::Read as _;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 
-use egit_git::{Git, GitStdout, Host};
+use egit_git::{Git, Running};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
@@ -80,54 +79,37 @@ pub struct AuthStatus {
 }
 
 /// Asks Claude Code (`claude`, the binary the SDK installed) who is signed in for `signer`
-/// (`there`: on the other computer that git runs on). Blocks: run it in a job.
+/// (`there`: on the other computer that git runs on).
 ///
 /// # Errors
 ///
 /// When it can't be run, or what it says can't be read; [`AgentError::SecretOnCommandLine`]
-/// for an API key there.
-pub fn auth_status(
+/// for an API key over ssh (a relay hands a program its variables apart).
+pub async fn auth_status(
     claude: &Path,
     signer: &Signer,
     there: Option<&Git>,
 ) -> Result<AuthStatus, AgentError> {
     let (set, unset) = signer.environment();
-    let args = ["auth", "status", "--json"];
-    if there.is_some() && matches!(signer, Signer::ApiKey(_)) {
+    let args = ["auth", "status", "--json"].map(OsStr::new);
+    if there.is_some_and(|git| git.host().ssh().is_some()) && matches!(signer, Signer::ApiKey(_)) {
         // A command line there would show it.
         return Err(AgentError::SecretOnCommandLine);
     }
-    let elsewhere = there.and_then(|git| {
-        // Through `env -u`, the credentials it doesn't get (whatever the login there exports).
-        let mut words = Vec::new();
-        for key in &unset {
-            words.extend([std::ffi::OsStr::new("-u"), key.as_os_str()]);
-        }
-        words.push(claude.as_os_str());
-        words.extend(args.iter().map(std::ffi::OsStr::new));
-        git.command_there(std::ffi::OsStr::new("env"), &words, None, &set)
-            .map(|command| (command, git.host().clone()))
-    });
-    let (mut command, host) = elsewhere.unwrap_or_else(|| {
+    let mut running = if let Some(git) = there {
+        git.run_there(claude.as_os_str(), &args, None, (&set, &unset), false)?
+    } else {
         let mut command = Command::new(claude);
         command.args(args);
         for key in &unset {
             command.env_remove(key);
         }
         command.envs(set.iter().map(|(key, value)| (key, value)));
-        (command, Host::Local)
-    });
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        Running::here(command, false)?
+    };
     // Not signed in, it says so and exits 1: what it prints is the answer either way.
-    let mut child = command.spawn()?;
-    let mut said = Vec::new();
-    if let Some(stdout) = child.stdout.take() {
-        GitStdout::of(stdout, &host).read_to_end(&mut said)?;
-    }
-    child.wait()?;
+    let said = running.read_to_end(1 << 20).await?;
+    running.wait().await?;
     Ok(serde_json::from_slice(&said)?)
 }
 

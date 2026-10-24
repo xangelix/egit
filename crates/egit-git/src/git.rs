@@ -196,11 +196,10 @@ impl Git {
     /// The ssh command running `program` with `args` on the other computer this git runs on
     /// (in `dir`, with git's environment there and `env`, but this computer's helpers, which
     /// the ssh gets); `None` when it runs here. Its standard output starts with what a login
-    /// script there printed: read it through [`GitStdout::of`](crate::GitStdout::of); its
-    /// standard error starts with the script's process id: through
-    /// [`PidReader`](crate::PidReader).
+    /// script there printed: read it through `GitStdout::of`; its standard error starts with
+    /// the script's process id: through `PidReader`.
     #[must_use]
-    pub fn command_there(
+    pub(crate) fn command_there(
         &self,
         program: &OsStr,
         args: &[&OsStr],

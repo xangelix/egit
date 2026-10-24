@@ -85,6 +85,8 @@ enum Running {
     Group(Group, Option<Elsewhere>),
     /// A process a relay runs, by its id there.
     Relayed(Relay, u32),
+    /// A program other than git (`Git::run_there`), wherever it runs.
+    Program(crate::running::Stopping),
 }
 
 impl Running {
@@ -97,6 +99,7 @@ impl Running {
             }
             Self::Group(group, None) => process::terminate_group(*group),
             Self::Relayed(relay, id) => relay.terminate(*id),
+            Self::Program(stopping) => stopping.stop(),
         }
     }
 }
@@ -159,6 +162,12 @@ impl CancelToken {
     /// Records a process a relay runs under this token until the returned guard is dropped.
     pub(crate) fn register_relayed(&self, process: &crate::relay::Process) -> Registration<'_> {
         self.record(Running::Relayed(process.relay().clone(), process.id()))
+    }
+
+    /// Records a program other than git running under this token until the returned guard is
+    /// dropped.
+    pub(crate) fn register_program(&self, stopping: crate::running::Stopping) -> Registration<'_> {
+        self.record(Running::Program(stopping))
     }
 
     fn record(&self, running: Running) -> Registration<'_> {

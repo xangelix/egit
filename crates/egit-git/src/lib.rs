@@ -54,6 +54,7 @@ pub mod relay;
 mod remote;
 mod remote_setup;
 mod repo;
+mod running;
 mod search;
 mod signatures;
 mod signing;
@@ -123,7 +124,7 @@ pub use history::{
     write_commit_graph,
 };
 pub use hooks::{Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
-pub use host::{GitStdout, Host, PidReader, RemotePid, SshHost};
+pub use host::{Host, SshHost};
 pub use ignore::{
     IgnoreError, IgnoreIn, Ignored, extension_pattern, ignore, ignore_again, path_pattern, unignore,
 };
@@ -164,6 +165,7 @@ pub use repo::{
     BranchHead, CommitSummary, DiscoverError, Head, HeadRef, Operation, Repository, Tracking,
     Upstream, init_repository, trust_directory,
 };
+pub use running::{Input, Running, Stopping};
 pub use search::{CommitFilter, find_commits, resolve_commit};
 pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use signing::{MAX_SIGNED, SignError, Signed, SigningPlan, plan_signing, sign_commits};

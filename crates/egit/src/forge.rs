@@ -423,8 +423,30 @@ impl RepoForge {
             let urls = remote_urls(&git, &repository)
                 .await
                 .map_err(|error| Problem::git("The remotes couldn't be read", &error))?;
-            // An ssh alias as the computer the repository is on resolves it.
-            let alias = |alias: &str| resolve_ssh_alias_on(&git, alias);
+            // An ssh alias as the computer the repository is on resolves it: each name no
+            // known host has, asked there before the remotes are read.
+            let mut resolved_aliases: Vec<(String, Option<String>)> = Vec::new();
+            let named = urls
+                .iter()
+                .map(|(_, url)| url)
+                .chain(written.iter().map(|(_, written)| written));
+            for url in named {
+                let Some(name) = url.to_str().ok().and_then(egit_forge::ssh_host_of) else {
+                    continue;
+                };
+                if hosts.for_ssh(&name).is_none()
+                    && !resolved_aliases.iter().any(|(known, _)| *known == name)
+                {
+                    let resolved = resolve_ssh_alias_on(&git, &name).await;
+                    resolved_aliases.push((name, resolved));
+                }
+            }
+            let alias = |alias: &str| {
+                resolved_aliases
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(alias))
+                    .and_then(|(_, resolved)| resolved.clone())
+            };
             let seen: Arc<[SeenRemote]> = urls
                 .into_iter()
                 .map(|(remote, url)| {

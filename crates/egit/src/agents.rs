@@ -291,8 +291,8 @@ impl AgentsSetup {
                 None => (find_node().map_err(missing)?, install),
                 // There: its Node, and the cache folder there.
                 Some(git) => {
-                    let node = find_node_there(&git).map_err(missing)?;
-                    let install = Install::there(&git).map_err(|error| {
+                    let node = find_node_there(&git).await.map_err(missing)?;
+                    let install = Install::there(&git).await.map_err(|error| {
                         Problem::new("The other computer couldn't be asked", error.to_string())
                     })?;
                     (node, Some(install))
@@ -363,12 +363,14 @@ impl AgentsSetup {
                         let claude = install.claude().await.ok_or_else(|| {
                             Problem::new("Claude Code isn't installed", String::new())
                         })?;
-                        auth_status(&claude, &signer, there.as_ref()).map_err(|error| {
-                            Problem::new(
-                                "Claude Code couldn't say who is signed in",
-                                error.to_string(),
-                            )
-                        })
+                        auth_status(&claude, &signer, there.as_ref())
+                            .await
+                            .map_err(|error| {
+                                Problem::new(
+                                    "Claude Code couldn't say who is signed in",
+                                    error.to_string(),
+                                )
+                            })
                     }));
                 }
                 // Nothing to ask (a stand-in in the tests).
@@ -541,6 +543,7 @@ impl RepoAgents {
         let dir = work_tree.to_owned();
         self.past.request(jobs::blocking(async move {
             list_sessions(&launch, &dir, PAST)
+                .await
                 .map(Arc::from)
                 .map_err(|error| {
                     Problem::new(
@@ -587,6 +590,7 @@ impl RepoAgents {
             let id = session.session_id.clone();
             conversation.history.request(jobs::blocking(async move {
                 session_history(&launch, &dir, &id)
+                    .await
                     .map(Arc::new)
                     .map_err(|error| {
                         Problem::new("The conversation couldn't be read", error.to_string())

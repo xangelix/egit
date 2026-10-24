@@ -7,7 +7,7 @@ use std::io::Read as _;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use egit_git::{Git, GitStdout, Host, ObjectId};
+use egit_git::{Git, ObjectId};
 
 use crate::host::{ForgeHost, ForgeHosts, ForgeKind, strip_prefix_ignore_case};
 
@@ -258,35 +258,47 @@ const SSH_TIMEOUT: Duration = Duration::from_secs(2);
 /// when ssh isn't there, fails, or the alias isn't one (ssh then names the alias itself).
 #[must_use]
 pub fn resolve_ssh_alias(alias: &str) -> Option<String> {
-    resolve_alias(alias, None)
+    resolve_alias(alias)
 }
 
 /// [`resolve_ssh_alias`] on the computer `git` runs on: a repository on another computer
 /// names its remotes by that computer's ssh configuration.
-#[must_use]
-pub fn resolve_ssh_alias_on(git: &Git, alias: &str) -> Option<String> {
-    resolve_alias(alias, Some(git))
-}
-
-/// `ssh -G -- <alias>`'s `hostname`, here or on `there`'s computer.
-fn resolve_alias(alias: &str, there: Option<&Git>) -> Option<String> {
+pub async fn resolve_ssh_alias_on(git: &Git, alias: &str) -> Option<String> {
+    if git.host().is_local() {
+        return resolve_alias(alias);
+    }
     // Never an option, whatever a URL says.
     if alias.starts_with('-') || !is_name(alias) {
         return None;
     }
-    let words = ["-G", "--", alias];
-    let (mut command, host) = if let Some(git) = there.filter(|git| !git.host().is_local()) {
-        let words = words.map(OsStr::new);
-        (
-            git.command_there(OsStr::new("ssh"), &words, None, &[])?,
-            git.host().clone(),
-        )
-    } else {
-        let mut command = Command::new("ssh");
-        command.args(words);
-        (command, Host::Local)
-    };
-    let mut child = command
+    let words = ["-G", "--", alias].map(OsStr::new);
+    let mut ssh = git
+        .run_there(OsStr::new("ssh"), &words, None, (&[], &[]), false)
+        .ok()?;
+    // Stopped if it takes too long (gone already, nothing is stopped).
+    let stopping = ssh.stopping();
+    let timer = egit_git::exec::spawn("ssh -G there", async move {
+        egit_git::exec::sleep(SSH_TIMEOUT).await;
+        stopping.stop();
+    });
+    if timer.is_err() {
+        return None;
+    }
+    let printed = ssh.read_to_end(64 * 1024).await.ok()?;
+    if !ssh.wait().await.ok()?.success() {
+        return None;
+    }
+    hostname_of(&String::from_utf8_lossy(&printed), alias)
+}
+
+/// `ssh -G -- <alias>`'s `hostname`, here.
+fn resolve_alias(alias: &str) -> Option<String> {
+    // Never an option, whatever a URL says.
+    if alias.starts_with('-') || !is_name(alias) {
+        return None;
+    }
+    let mut child = Command::new("ssh")
+        .args(["-G", "--", alias])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -296,10 +308,8 @@ fn resolve_alias(alias: &str, there: Option<&Git>) -> Option<String> {
     // Read as it comes: a pipe filled while waiting would hold ssh up.
     let reading = std::thread::spawn(move || {
         let mut printed = String::new();
-        GitStdout::of(stdout, &host)
-            .read_to_string(&mut printed)
-            .ok()
-            .map(|_| printed)
+        let mut stdout = stdout;
+        stdout.read_to_string(&mut printed).ok().map(|_| printed)
     });
     let started = Instant::now();
     let status = loop {
@@ -319,6 +329,11 @@ fn resolve_alias(alias: &str, there: Option<&Git>) -> Option<String> {
     if !status.success() {
         return None;
     }
+    hostname_of(&printed, alias)
+}
+
+/// The `hostname` `ssh -G` printed for `alias`, unless it is the alias itself.
+fn hostname_of(printed: &str, alias: &str) -> Option<String> {
     let hostname = printed
         .lines()
         .find_map(|line| strip_prefix_ignore_case(line, "hostname "))?

@@ -33,7 +33,7 @@ pub struct SessionInfo {
 /// # Errors
 ///
 /// When the bridge fails.
-pub fn list_sessions(
+pub async fn list_sessions(
     launch: &Launch,
     dir: &Path,
     limit: usize,
@@ -41,7 +41,8 @@ pub fn list_sessions(
     let answer = run_once(
         launch,
         &["sessions", &dir.to_string_lossy(), &limit.to_string()],
-    )?;
+    )
+    .await?;
     let mut sessions: Vec<SessionInfo> = serde_json::from_value(answer)?;
     sessions.sort_by_key(|session| std::cmp::Reverse(session.last_modified));
     Ok(sessions)
@@ -53,11 +54,11 @@ pub fn list_sessions(
 /// # Errors
 ///
 /// When the bridge fails.
-pub fn session_history(
+pub async fn session_history(
     launch: &Launch,
     dir: &Path,
     session: &str,
 ) -> Result<Vec<Value>, AgentError> {
-    let answer = run_once(launch, &["history", &dir.to_string_lossy(), session])?;
+    let answer = run_once(launch, &["history", &dir.to_string_lossy(), session]).await?;
     Ok(serde_json::from_value(answer)?)
 }

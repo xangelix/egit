@@ -241,7 +241,8 @@ impl ForgeHosts {
     }
 
     /// The host an ssh URL's host name names (its port is ssh's, not the web's).
-    pub(crate) fn for_ssh(&self, hostname: &str) -> Option<&ForgeHost> {
+    #[must_use]
+    pub fn for_ssh(&self, hostname: &str) -> Option<&ForgeHost> {
         let hostname = hostname.to_ascii_lowercase();
         // GitHub's and GitLab's ssh over the HTTPS port.
         let hostname = match hostname.as_str() {

@@ -175,6 +175,11 @@ impl TailBuffer {
         }
     }
 
+    /// What it holds so far (perhaps more than the limit: the oldest go now and then).
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
     /// The tail as kept.
     pub(crate) fn finish(mut self) -> Stderr {
         self.keep_limit();

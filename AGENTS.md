@@ -71,9 +71,10 @@ it.
   at once needs inotify-tools (`inotifywait`): its tests skip without it unless
   `EGIT_REQUIRE_INOTIFYWAIT` is set (CI sets it).
 - Git through a relay: `cargo build -p egit-relay && EGIT_TEST_RELAY=$PWD/target/debug/egit-relay
-  cargo test -p egit-git -p egit-forge` runs every egit-git and egit-forge test with each
-  command, each file read or written, and each request to a forge going through one relay on
-  the loopback address over one WebSocket, as egit in a browser runs them. Do this after
+  cargo test -p egit-git -p egit-forge -p egit-agents` runs every egit-git and egit-forge test
+  with each command, each file read or written, and each request to a forge going through one
+  relay on the loopback address over one WebSocket, as egit in a browser runs them, and the
+  agents' bridge through it too. Do this after
   touching how commands or requests are made, the relay, or its protocol (CI does it).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
 - Agents: the bridge's tests need Node.js (`EGIT_REQUIRE_NODE=1` makes their absence fail);
@@ -734,6 +735,14 @@ writes paths), never `OsStrExt`.
     blobs), a series applied (signed off, its author kept; stopped at a conflict with its
     progress and patch, skipped, aborted; stopped where a patch doesn't apply at all), a diff
     applied as changes (staged or not, conflicting), and a stopped cherry-pick skipped.
+  - `running.rs` — a program other than git run where a git runs (`Git::run_there`: here,
+    through ssh with `env -u` for what it doesn't get, or by its relay; `Running::here`, a
+    command of egit's own): leading a group of its own, its standard error's end kept
+    (`said`), its output `read` as it comes (`read_to_end` with a limit), its `Input` taken
+    to be written from elsewhere (closed when dropped), `Stopping` from any thread, `wait`,
+    `wait_unless` a `CancelToken` stops it (it registers there), `stop` with patience. The
+    agents' bridge, their installation, Claude Code's `auth status`, and `ssh -G` on another
+    computer run through it.
   - `relay/` — git through a relay (`egit-relay`): egit's side of a connection, the transport
     the platform's (`Transport`: a browser's WebSocket, a test's; it hands `Relay::receive`
     each message, and `closed` its end). `protocol.rs`: binary messages, each its kind (a
@@ -786,8 +795,9 @@ writes paths), never `OsStrExt`.
     `/-/merge_requests/12`), a commit, a branch, its name escaped). `forge_repository`: a
     remote URL of any form (https, ssh, scp-like, `git://`) to its repository; an ssh host
     alias through `resolve_ssh_alias` (`ssh -G -- <alias>`'s `hostname`, 2 s at most; never an
-    option), or `resolve_ssh_alias_on` a git's computer (a repository there names its remotes
-    by that computer's ssh configuration). `ssh_host_of`: the host name an ssh or scp-like URL
+    option), or `resolve_ssh_alias_on` a git's computer (`Git::run_there`, stopped after 2 s;
+    the application asks it of each name no known host has before reading its remotes: a
+    repository there names its remotes by that computer's ssh configuration). `ssh_host_of`: the host name an ssh or scp-like URL
     reaches (none for others, or a drive's letter).
   - `here.rs` — requests made on this computer (by egit for itself, and by a relay for egit in
     a browser: `fetch_here` of a `relay::protocol::Fetch`, its `Answered` head and body):
@@ -1000,33 +1010,33 @@ writes paths), never `OsStrExt`.
     command's first line), …
   - `install.rs` — `find_node` (Node 18+ and npm on `PATH`); `Install::at(cache)`: a folder per
     SDK version and hash of what egit carries; `install` writes the package beside it, runs
-    `npm ci --ignore-scripts --legacy-peer-deps` (`Detached`, cancellable), checks Claude
+    `npm ci --ignore-scripts --legacy-peer-deps` (a `Running`, `wait_unless` cancelled), checks Claude
     Code's binary for this platform is there (`claude()`), marks it ready, renames it into
     place, and removes older ones. On another computer (`Install::there(git)`: under
     `${XDG_CACHE_HOME:-$HOME/.cache}/egit` there; `find_node_there`, its `PATH`'s): the same done
-    there through its git (`Git::command_there`, `Git::files`; `sh_there` for the small steps;
+    there through its git (`Git::run_there`, `Git::files`; `sh_there` for the small steps;
     Claude Code's binary looked for among Linux's and macOS's packages; `is_ready` and `claude`
     then ask the other computer: in a job).
   - `bridge.rs` — `Launch` (node, the script, environment set and unset, and `there`: the
-    other computer's git it runs through, a session of the shared connection, its output read
-    from the script's marker (`GitStdout::of`), its process id's line kept out of its words
-    (`PidReader`); never a secret in its environment there, a command line there would show
-    it; what it doesn't get, there through `env -u`); `Bridge::start`: a
-    conversation's process, its lines read on a thread into `Event`s (a last `Ended` always,
-    with the stderr's end when it died), `send`; dropped, its input closes and it is waited
-    for on a thread (stopped after 3 s). `run_once`: one JSON answer.
+    other computer's git it runs through (`Git::run_there`: a session of the shared
+    connection, or its relay); never a secret in its environment there, a command line there
+    would show it); `Bridge::start`: a conversation's process (a `Running`), its lines read by
+    a task of its own (`exec::spawn`) into `Event`s (a last `Ended` always, with the stderr's
+    end when it died), `send` (its `Input`); dropped, its input closes and it is stopped after
+    3 s if it lingers. `run_once`: one JSON answer.
   - `accounts.rs` — `Signer` (Claude Code as the terminal runs it, a configuration folder of
     its own (`CLAUDE_CONFIG_DIR`, other credentials left out), an API key), its environment;
     `auth_status` (`claude auth status --json` with the bundled binary, there through its git,
-    other credentials left out by `env -u`; never an API key there:
-    `AgentError::SecretOnCommandLine`);
+    other credentials left out; never an API key over ssh, `AgentError::SecretOnCommandLine`:
+    a relay hands a program its variables apart);
     `login_command` (the command signing into a folder with Claude Code itself, there through
     `ssh -t <host>`: egit has no Claude login).
   - `sessions.rs` — `list_sessions` (newest first, with branch and title), `session_history`.
   - `tests/bridge.rs` drives the real bridge under Node against `tests/stand-in/sdk.mjs`
     (streaming, allowed once and always, refused, a question answered, interrupted, mode and
     model, info, said too once started; images sent with a prompt; the bridge run on another
-    computer through the tests' sshd, its key sent in the start request; sessions listed and read;
+    computer through the tests' sshd, its key sent in the start request, and through a relay
+    (`EGIT_TEST_RELAY`); sessions listed and read;
     skipped without Node unless `EGIT_REQUIRE_NODE`,
     which CI sets). `tests/install.rs` (ignored: `-- --ignored`) runs the real `npm ci` and
     loads the real SDK (an empty folder's sessions, its login status).

@@ -11,17 +11,15 @@
 //! carries, made beside its final place and renamed into it once `npm ci` succeeded (a marker
 //! file says so), so a half-made one is never used; others are removed then.
 //!
-//! On another computer the same is done there, through its git ([`Git::command_there`],
+//! On another computer the same is done there, through its git ([`Git::run_there`],
 //! [`Git::files`]): Node and npm found on its `PATH` (`find_node_there`), the installation under
 //! its cache folder (`${XDG_CACHE_HOME:-$HOME/.cache}/egit`, `Install::there`).
 
 use std::ffi::OsStr;
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
-use egit_git::{CancelToken, Detached, Git, GitStdout, PidReader, RemotePid};
+use egit_git::{CancelToken, Git, Running};
 
 use crate::AgentError;
 
@@ -98,13 +96,14 @@ pub fn find_node() -> Result<Node, AgentError> {
 ///
 /// [`AgentError::NodeMissing`] without them there, [`AgentError::NodeTooOld`] for an older
 /// Node, and when the other computer can't be reached.
-pub fn find_node_there(git: &Git) -> Result<Node, AgentError> {
+pub async fn find_node_there(git: &Git) -> Result<Node, AgentError> {
     let said = sh_there(
         git,
         "command -v node >/dev/null && command -v npm >/dev/null || { echo missing; exit 0; }; \
          node --version",
         &[],
-    )?;
+    )
+    .await?;
     let version = String::from_utf8_lossy(&said).trim().to_owned();
     if version == "missing" {
         return Err(AgentError::NodeMissing);
@@ -168,12 +167,13 @@ impl Install {
     /// # Errors
     ///
     /// When the other computer can't be reached.
-    pub fn there(git: &Git) -> Result<Self, AgentError> {
+    pub async fn there(git: &Git) -> Result<Self, AgentError> {
         let cache = sh_there(
             git,
             "printf %s \"${XDG_CACHE_HOME:-$HOME/.cache}/egit\"",
             &[],
-        )?;
+        )
+        .await?;
         let cache = PathBuf::from(String::from_utf8_lossy(&cache).into_owned());
         Ok(Self {
             there: Some(git.clone()),
@@ -311,7 +311,8 @@ impl Install {
             git,
             "rm -rf -- \"$1\" && mkdir -p -- \"$1\"",
             &[making.as_os_str()],
-        )?;
+        )
+        .await?;
         let files = git.files();
         for (name, text) in [
             ("bridge.mjs", BRIDGE),
@@ -321,14 +322,8 @@ impl Install {
             files.write(&making.join(name), text.as_bytes()).await?;
         }
         let args = NPM_CI.map(OsStr::new);
-        let mut command = git
-            .command_there(OsStr::new("npm"), &args, Some(&making), &[])
-            .ok_or_else(|| AgentError::Install("not on another computer".to_owned()))?;
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped());
-        let ran = run_npm(&mut command, cancel, true);
+        let npm = git.run_there(OsStr::new("npm"), &args, Some(&making), (&[], &[]), false)?;
+        let ran = run_npm(npm, cancel).await;
         let made = Self {
             dir: making.clone(),
             there: Some(git.clone()),
@@ -344,7 +339,7 @@ impl Install {
                 .map_err(AgentError::from),
         };
         if let Err(error) = checked {
-            let _removed = sh_there(git, "rm -rf -- \"$1\"", &[making.as_os_str()]);
+            let _removed = sh_there(git, "rm -rf -- \"$1\"", &[making.as_os_str()]).await;
             return Err(error);
         }
         sh_there(
@@ -352,7 +347,8 @@ impl Install {
             "rm -rf -- \"$2\" && mv -- \"$1\" \"$2\" && \
              for old in \"$3\"/*; do [ \"$old\" = \"$2\" ] || rm -rf -- \"$old\"; done",
             &[making.as_os_str(), self.dir.as_os_str(), parent.as_os_str()],
-        )?;
+        )
+        .await?;
         Ok(())
     }
 }
@@ -367,41 +363,27 @@ const NPM_CI: [&str; 6] = [
     "--no-update-notifier",
 ];
 
-/// Runs npm (`command`, its standard error piped) to its end, or stops it when `cancel` asks;
-/// fails with the end of what it said. `there`: its standard error starts with a script's
-/// process id.
-fn run_npm(command: &mut Command, cancel: &CancelToken, there: bool) -> Result<(), AgentError> {
-    let mut npm = Detached::spawn(command)?;
-    let stderr = npm.child_mut().stderr.take();
-    let reading = std::thread::spawn(move || {
-        if there {
-            return said_there(stderr);
-        }
-        let mut said = Vec::new();
-        if let Some(mut stderr) = stderr {
-            // Only its end is kept for a failure's words.
-            let _read = stderr.read_to_end(&mut said);
-        }
-        String::from_utf8_lossy(said.get(said.len().saturating_sub(4096)..).unwrap_or(&said))
-            .into_owned()
-    });
-    let status = loop {
-        if cancel.is_cancelled() {
-            npm.stop(Duration::ZERO);
-            return Err(AgentError::Cancelled);
-        }
-        if let Some(status) = npm.try_wait()? {
-            break status;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+/// Waits for npm (`npm`, running) to end, or stops it when `cancel` asks; fails with the end of
+/// what it said.
+async fn run_npm(mut npm: Running, cancel: &CancelToken) -> Result<(), AgentError> {
+    // What it prints goes nowhere: only its words on standard error tell how it failed.
+    let mut printed = vec![0; 64 * 1024];
+    while npm.read(&mut printed).await? > 0 {}
+    let Some(status) = npm.wait_unless(cancel).await? else {
+        return Err(AgentError::Cancelled);
     };
-    let said = reading.join().unwrap_or_default();
     if status.success() {
         Ok(())
     } else {
+        let said = npm.said();
+        let tail = said
+            .char_indices()
+            .rev()
+            .nth(4096)
+            .map_or(said.as_str(), |(at, _)| said.get(at..).unwrap_or_default());
         Err(AgentError::Install(format!(
             "npm ci failed ({status}): {}",
-            said.trim()
+            tail.trim()
         )))
     }
 }
@@ -420,11 +402,8 @@ async fn write_and_install(
         .args(NPM_CI)
         .current_dir(dir)
         // npm's own `node` the one found, whatever `npm`'s first line names.
-        .env("PATH", path_with(node))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped());
-    run_npm(&mut command, cancel, false)?;
+        .env("PATH", path_with(node));
+    run_npm(Running::here(command, false)?, cancel).await?;
     let install = Install {
         dir: dir.to_owned(),
         there: None,
@@ -499,35 +478,16 @@ const fn platforms() -> &'static [&'static str] {
 
 /// Runs the `sh` script `snippet` with `args` ($1 on) on the computer `git` runs on; returns what
 /// it printed, or why it failed (its words).
-fn sh_there(git: &Git, snippet: &str, args: &[&OsStr]) -> Result<Vec<u8>, AgentError> {
+async fn sh_there(git: &Git, snippet: &str, args: &[&OsStr]) -> Result<Vec<u8>, AgentError> {
     let mut words = vec![OsStr::new("-c"), OsStr::new(snippet), OsStr::new("sh")];
     words.extend_from_slice(args);
-    let mut command = git
-        .command_there(OsStr::new("sh"), &words, None, &[])
-        .ok_or_else(|| AgentError::Install("not on another computer".to_owned()))?;
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut process = Detached::spawn(&mut command)?;
-    let child = process.child_mut();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let complaint = std::thread::spawn(move || said_there(stderr));
-    let mut printed = Vec::new();
-    if let Some(stdout) = stdout {
-        GitStdout::of(stdout, git.host()).read_to_end(&mut printed)?;
-    }
-    let status = loop {
-        if let Some(status) = process.try_wait()? {
-            break status;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    };
-    let said = complaint.join().unwrap_or_default();
+    let mut sh = git.run_there(OsStr::new("sh"), &words, None, (&[], &[]), false)?;
+    let printed = sh.read_to_end(ANSWER_LIMIT).await?;
+    let status = sh.wait().await?;
     if status.success() {
         Ok(printed)
     } else {
+        let said = sh.said();
         Err(AgentError::Install(if said.trim().is_empty() {
             format!("a command there ended: {status}")
         } else {
@@ -536,24 +496,8 @@ fn sh_there(git: &Git, snippet: &str, args: &[&OsStr]) -> Result<Vec<u8>, AgentE
     }
 }
 
-/// What a program there said on standard error (its process id's line left out), its last
-/// 4 KiB.
-fn said_there(stderr: Option<std::process::ChildStderr>) -> String {
-    let Some(mut stderr) = stderr else {
-        return String::new();
-    };
-    let mut reader = PidReader::new(RemotePid::default());
-    let mut said = Vec::new();
-    let mut chunk = [0_u8; 4096];
-    while let Ok(read @ 1..) = stderr.read(&mut chunk) {
-        if let Some(part) = reader.feed(chunk.get(..read).unwrap_or_default()) {
-            said.extend_from_slice(&part);
-        }
-    }
-    said.extend(reader.finish());
-    let tail = said.get(said.len().saturating_sub(4096)..).unwrap_or(&said);
-    String::from_utf8_lossy(tail).into_owned()
-}
+/// The most a script there may print.
+const ANSWER_LIMIT: usize = 1 << 20;
 
 #[cfg(test)]
 mod tests {

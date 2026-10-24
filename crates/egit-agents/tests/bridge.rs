@@ -343,7 +343,36 @@ fn the_bridge_runs_on_another_computer_its_key_sent() {
     assert_eq!(conversation.last_text(), Some("Key sk-there, folder none"));
     // Asked once, there too.
     let dir = std::env::temp_dir();
-    let sessions = list_sessions(&launch, &dir, 10).unwrap();
+    let sessions = list_sessions(&launch, &dir, 10).wait().unwrap();
+    assert_eq!(sessions.len(), 2);
+}
+
+#[test]
+fn the_bridge_runs_through_a_relay_its_key_sent() {
+    let Some(mut launch) = launch() else {
+        return;
+    };
+    // This computer's relay, as egit in a browser reaches it (skipped without one).
+    if !egit_git::testing::through_a_relay() {
+        return;
+    }
+    let sandbox = egit_git::testing::Sandbox::new().unwrap();
+    let relay = egit_git::testing::relay().unwrap();
+    launch.there = Some(
+        sandbox
+            .git_through(&relay, Vec::<(&str, &str)>::new())
+            .unwrap(),
+    );
+    let key = Secrets(vec![(
+        "ANTHROPIC_API_KEY".to_owned(),
+        zeroize::Zeroizing::new("sk-relayed".to_owned()),
+    )]);
+    let mut conversation = Conversation::start_with(&launch, Mode::Default, key);
+    conversation.say("who");
+    conversation.until_turn_ends();
+    assert_eq!(conversation.last_text(), Some("Key sk-relayed, folder none"));
+    let dir = std::env::temp_dir();
+    let sessions = list_sessions(&launch, &dir, 10).wait().unwrap();
     assert_eq!(sessions.len(), 2);
 }
 
@@ -353,7 +382,7 @@ fn sessions_are_listed_and_read() {
         return;
     };
     let dir = std::env::temp_dir();
-    let sessions = list_sessions(&launch, &dir, 50).unwrap();
+    let sessions = list_sessions(&launch, &dir, 50).wait().unwrap();
     let ids: Vec<&str> = sessions
         .iter()
         .map(|session| session.session_id.as_str())
@@ -361,7 +390,7 @@ fn sessions_are_listed_and_read() {
     assert_eq!(ids, ["newer", "older"]);
     assert_eq!(sessions[0].git_branch.as_deref(), Some("main"));
 
-    let messages = session_history(&launch, &dir, "newer").unwrap();
+    let messages = session_history(&launch, &dir, "newer").wait().unwrap();
     let mut transcript = Transcript::default();
     transcript.history(&messages);
     let kinds: Vec<ItemKind> = transcript

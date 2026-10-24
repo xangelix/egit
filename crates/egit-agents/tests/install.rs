@@ -41,7 +41,7 @@ fn the_sdk_installs_and_loads() {
     // An empty folder of its own: nobody signed in, no sessions.
     let config = tempfile::tempdir().unwrap();
     let signer = Signer::Folder(config.path().to_owned());
-    let status = auth_status(&claude, &signer, None).unwrap();
+    let status = auth_status(&claude, &signer, None).wait().unwrap();
     assert_eq!(
         (status.logged_in, status.auth_method.as_str()),
         (false, "none"),
@@ -57,5 +57,5 @@ fn the_sdk_installs_and_loads() {
         there: None,
     };
     let work = tempfile::tempdir().unwrap();
-    assert_eq!(list_sessions(&launch, work.path(), 10).unwrap(), []);
+    assert_eq!(list_sessions(&launch, work.path(), 10).wait().unwrap(), []);
 }

@@ -325,6 +325,21 @@ impl Relay {
         Fetching::new(process)
     }
 
+    /// Hands `data` to process `id`'s standard input.
+    pub(crate) fn input(&self, id: u32, data: &[u8]) {
+        for chunk in data.chunks(64 * 1024) {
+            self.send(&ToRelay::Stdin {
+                id,
+                data: chunk.to_vec(),
+            });
+        }
+    }
+
+    /// Ends process `id`'s standard input.
+    pub(crate) fn close_input(&self, id: u32) {
+        self.send(&ToRelay::CloseStdin { id });
+    }
+
     /// Asks the relay to stop process `id` and every process it started.
     pub(crate) fn terminate(&self, id: u32) {
         self.send(&ToRelay::Terminate { id });
