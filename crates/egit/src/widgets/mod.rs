@@ -779,6 +779,24 @@ pub(crate) fn tool_width(ui: &Ui, (icon, text): (&str, &str), look: Look, menu: 
     (2.0f32.mul_add(ui.spacing().button_padding.x, words)).max(least)
 }
 
+/// A combo box's caret, as every menu's button draws its own (Phosphor's, not egui's filled
+/// triangle): for `ComboBox::icon`.
+pub(crate) fn combo_caret(
+    ui: &Ui,
+    rect: egui::Rect,
+    visuals: &egui::style::WidgetVisuals,
+    _open: bool,
+) {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        crate::theme::icon::CARET_DOWN,
+        font,
+        visuals.text_color(),
+    );
+}
+
 /// A toolbar's menu: a quiet button with a caret, opening `add_contents` below it; named
 /// `text` (the caret only shows it opens a menu).
 pub(crate) fn tool_menu<R>(

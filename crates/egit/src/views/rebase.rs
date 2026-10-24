@@ -537,6 +537,7 @@ fn row(
     // In a place of one width whichever step it says: the names after it line up.
     let step = crate::widgets::column(ui, (STEP_WIDTH, ui.available_height()), Align::Min, |ui| {
         egui::ComboBox::from_id_salt(("rebase-step", commit.id))
+            .icon(crate::widgets::combo_caret)
             .width(84.0)
             .selected_text(kind.name())
             .show_ui(ui, |ui| {

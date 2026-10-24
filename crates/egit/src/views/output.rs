@@ -167,6 +167,7 @@ fn actions(ui: &mut Ui, output: &mut Output, now: Instant) {
         .map(|run| run.title.clone())
         .unwrap_or_default();
     let combo = ComboBox::from_id_salt("output-runs")
+        .icon(crate::widgets::combo_caret)
         .width(220.0)
         .truncate()
         .selected_text(selected)

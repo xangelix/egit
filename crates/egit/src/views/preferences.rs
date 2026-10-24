@@ -335,6 +335,7 @@ fn repositories(ui: &mut Ui, preferences: &mut Preferences) {
         ui.add_space(8.0);
         widgets::form_row(ui, LABEL, "Fetch in the background", |ui| {
             let combo = ComboBox::from_id_salt("preferences-fetch")
+                .icon(crate::widgets::combo_caret)
                 .selected_text(preferences.fetch.label())
                 .show_ui(ui, |ui| {
                     for every in FetchEvery::ALL {
@@ -403,6 +404,7 @@ fn files(ui: &mut Ui, preferences: &mut Preferences) {
         });
         widgets::form_row(ui, LABEL, "Tab width", |ui| {
             ComboBox::from_id_salt("preferences-tab-width")
+                .icon(crate::widgets::combo_caret)
                 .selected_text(format!("{} cells", preferences.files.tab_width))
                 .show_ui(ui, |ui| {
                     for width in TAB_WIDTHS {

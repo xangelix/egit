@@ -202,6 +202,7 @@ pub(super) fn bar(
             );
             let before = search.kind;
             let kind = egui::ComboBox::from_id_salt(("history-search-kind", shared.id))
+                .icon(crate::widgets::combo_caret)
                 .width(96.0)
                 .selected_text(search.kind.label())
                 .show_ui(ui, |ui| {

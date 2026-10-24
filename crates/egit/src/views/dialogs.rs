@@ -510,6 +510,7 @@ fn first_push(ui: &mut Ui, pane: &TaskPane<'_>, options: &mut PushOptions) -> Op
     // dialog.
     let remote_label = ui.label(muted(ui, "Remote"));
     egui::ComboBox::from_id_salt("first-push-remote")
+        .icon(crate::widgets::combo_caret)
         .selected_text(&remote)
         .width(ui.available_width())
         .show_ui(ui, |ui| {
