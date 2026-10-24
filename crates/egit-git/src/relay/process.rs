@@ -46,6 +46,10 @@ impl std::fmt::Debug for Slot {
 struct Inner {
     /// A request's answer's head, once it came.
     head: Option<Head>,
+    /// Where a request's answer waits for the browser, once the relay said.
+    delivering: Option<String>,
+    /// How much of it went to the browser.
+    delivered: u64,
     /// Output not yet read, in order; `offset` of the first already read.
     chunks: VecDeque<Vec<u8>>,
     offset: usize,
@@ -60,6 +64,8 @@ impl Slot {
     pub(crate) fn new(stderr: Stderr) -> Self {
         Self(Mutex::new(Inner {
             head: None,
+            delivering: None,
+            delivered: 0,
             chunks: VecDeque::new(),
             offset: 0,
             end: None,
@@ -86,6 +92,20 @@ impl Slot {
     pub(crate) fn head(&self, head: Head) {
         let mut inner = self.0.lock();
         inner.head = Some(head);
+        inner.wake();
+    }
+
+    /// Where a request's answer waits for the browser.
+    pub(crate) fn delivering(&self, path: String) {
+        let mut inner = self.0.lock();
+        inner.delivering = Some(path);
+        inner.wake();
+    }
+
+    /// How much of a request's answer went to the browser, in all.
+    pub(crate) fn delivered(&self, bytes: u64) {
+        let mut inner = self.0.lock();
+        inner.delivered = bytes;
         inner.wake();
     }
 
@@ -341,6 +361,51 @@ impl Fetching {
                     Ok(_) => "it ended without an answer".to_owned(),
                     Err(NotRun::Missing(_, message) | NotRun::Lost(message)) => message.clone(),
                 }));
+            }
+            inner.waker = Some(context.waker().clone());
+            Poll::Pending
+        })
+        .await
+    }
+
+    /// Where its answer waits for the browser, a delivery asked for ([`Fetch::deliver`]) and
+    /// the answer successful: the relay's own path, for the browser to open.
+    ///
+    /// # Errors
+    ///
+    /// Why it won't come: it ended first, how (in the relay's words, or the connection's).
+    ///
+    /// [`Fetch::deliver`]: super::Fetch::deliver
+    pub async fn delivering(&mut self) -> Result<String, String> {
+        let slot = std::sync::Arc::clone(&self.process.slot);
+        poll_fn(|context| {
+            let mut inner = slot.0.lock();
+            if let Some(path) = inner.delivering.take() {
+                return Poll::Ready(Ok(path));
+            }
+            if let Some(end) = &inner.end {
+                return Poll::Ready(Err(match end {
+                    Ok(_) => "it ended without being delivered".to_owned(),
+                    Err(NotRun::Missing(_, message) | NotRun::Lost(message)) => message.clone(),
+                }));
+            }
+            inner.waker = Some(context.waker().clone());
+            Poll::Pending
+        })
+        .await
+    }
+
+    /// Waits for more of its answer to have gone to the browser than `seen`: how much in all,
+    /// or `None` once it ended ([`Self::end`] says how).
+    pub async fn delivered_past(&mut self, seen: u64) -> Option<u64> {
+        let slot = std::sync::Arc::clone(&self.process.slot);
+        poll_fn(|context| {
+            let mut inner = slot.0.lock();
+            if inner.delivered > seen {
+                return Poll::Ready(Some(inner.delivered));
+            }
+            if inner.end.is_some() {
+                return Poll::Ready(None);
             }
             inner.waker = Some(context.waker().clone());
             Poll::Pending

@@ -33,9 +33,10 @@ pub use account::{Account, SignedIn};
 pub use api::{
     create_pull_request, pull_request_details, pull_requests, repository_info, ssh_host,
 };
-pub use artifacts::{Artifact, ArtifactKind, ArtifactSource, download_artifact};
+pub use artifacts::{Artifact, ArtifactKind, ArtifactSource, deliver_artifact, download_artifact};
 pub use error::ForgeError;
 pub use host::{ForgeHost, ForgeHosts, ForgeKind};
+pub use http::Told;
 pub use job_log::{
     JobLog, JobRun, JobStep, LogMark, LogParts, LogRead, MOST_TEXT, MarkKind, Run, Section, job,
     read_log, with_steps,

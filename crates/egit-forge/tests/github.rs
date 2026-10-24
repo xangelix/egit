@@ -16,6 +16,7 @@
     clippy::arithmetic_side_effects
 )]
 
+use std::io::{Read as _, Write as _};
 use std::sync::Arc;
 
 use egit_forge::testing::{
@@ -23,9 +24,10 @@ use egit_forge::testing::{
 };
 use egit_forge::{
     Account, ArtifactKind, CheckState, CiAction, CiStatus, ForgeError, ForgeHost, ForgeKind,
-    ForgeRepository, JobLog, LogRead, NewPullRequest, ReviewDecision, ReviewState, Workflow,
-    ci_act, create_pull_request, download_artifact, job, pipeline_details, pipelines,
-    pull_request_details, pull_requests, read_log, repository_info, start_pipeline, workflows,
+    ForgeRepository, JobLog, LogRead, NewPullRequest, ReviewDecision, ReviewState, Told, Workflow,
+    ci_act, create_pull_request, deliver_artifact, download_artifact, job, pipeline_details,
+    pipelines, pull_request_details, pull_requests, read_log, repository_info, start_pipeline,
+    workflows,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId, Wait as _};
@@ -840,4 +842,84 @@ fn a_run_s_artifacts_are_listed_and_downloaded_their_digest_checked() {
     // Expired, GitHub says so; not what its digest says, refused.
     assert!(matches!(download(1), Err(ForgeError::Said { .. })));
     assert!(matches!(download(0), Err(ForgeError::Mismatched { .. })));
+}
+
+#[test]
+fn a_run_s_artifact_is_delivered_to_the_browser_by_its_relay() {
+    // Only a relay delivers to a browser.
+    if !egit_git::testing::through_a_relay() {
+        return;
+    }
+    let (fake, _sandbox, account, repository) = setup(0, TOKEN);
+    with_runs(&fake);
+    fake.state().repositories[0].pipelines[2].artifacts = vec![
+        FakeArtifact {
+            id: 91,
+            name: "dist-linux".to_owned(),
+            contents: "PK the linux build".to_owned(),
+            ..FakeArtifact::default()
+        },
+        FakeArtifact {
+            id: 93,
+            name: "changed".to_owned(),
+            contents: "PK not what was listed".to_owned(),
+            digest: format!("sha256:{}", "0".repeat(64)),
+            ..FakeArtifact::default()
+        },
+    ];
+    let details = pipeline_details(&account, &repository, 7001, &CancelToken::new())
+        .wait()
+        .unwrap();
+    let relay = egit_git::testing::relay_address().unwrap();
+    // The browser: told where to go, it takes the whole answer.
+    let deliver = |which: usize| {
+        let mut browser = None;
+        let mut went = Vec::new();
+        let delivered = deliver_artifact(
+            &account,
+            &repository,
+            &details.artifacts[which],
+            &CancelToken::new(),
+            &mut |told| {
+                match told {
+                    Told::Go(path) => {
+                        let relay = relay.clone();
+                        browser = Some(std::thread::spawn(move || {
+                            let mut stream = std::net::TcpStream::connect(&relay).unwrap();
+                            write!(stream, "GET {path} HTTP/1.1\r\nHost: {relay}\r\n\r\n").unwrap();
+                            let mut answer = Vec::new();
+                            let _ = stream.read_to_end(&mut answer);
+                            String::from_utf8_lossy(&answer).into_owned()
+                        }));
+                    }
+                    Told::Went(bytes) => went.push(bytes),
+                }
+                true
+            },
+        )
+        .wait();
+        let taken = browser.map(|browser| browser.join().unwrap());
+        (delivered, taken, went)
+    };
+    let (delivered, taken, went) = deliver(1);
+    let taken = taken.unwrap();
+    assert_eq!(delivered.unwrap(), 18);
+    assert_eq!(went.last(), Some(&18));
+    assert!(taken.contains("filename=\"dist-linux.zip\""), "{taken}");
+    assert!(taken.ends_with("\r\n\r\nPK the linux build"), "{taken}");
+    // Its storage asked without the token, as egit asks it.
+    let asked = fake
+        .state()
+        .requests
+        .iter()
+        .find(|request| request.path == "/blob/artifact/gh/91")
+        .map(|request| request.authorization.clone());
+    assert_eq!(asked, Some(None));
+    // Not what its digest says: the browser never sees its end.
+    let (delivered, taken, _) = deliver(0);
+    assert!(
+        matches!(&delivered, Err(ForgeError::Undelivered { why, .. }) if why.contains("SHA-256")),
+        "{delivered:?}"
+    );
+    assert!(!taken.unwrap().ends_with("PK not what was listed"));
 }

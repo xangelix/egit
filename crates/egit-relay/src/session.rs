@@ -208,7 +208,12 @@ impl Session {
                 };
                 // Held while it starts, as a program's is.
                 let mut running = self.running.lock();
-                let started = Running::fetch(id, fetch, self.out.clone(), finished);
+                let started = Running::fetch(
+                    id,
+                    fetch,
+                    (self.out.clone(), Arc::clone(&self.shared.deliveries)),
+                    finished,
+                );
                 running.insert(id, started);
             }
             ToRelay::Answer { id, answer } => {

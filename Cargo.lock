@@ -1275,6 +1275,7 @@ dependencies = [
  "httparse",
  "parking_lot",
  "rustix 1.1.5",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-tungstenite",

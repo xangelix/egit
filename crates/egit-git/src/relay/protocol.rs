@@ -14,7 +14,7 @@ use zeroize::Zeroizing;
 use crate::output::Exit;
 
 /// The protocol both sides speak; a relay refuses another.
-pub const VERSION: u16 = 1;
+pub const VERSION: u16 = 2;
 
 /// The longest message either side takes: a command's arguments and environment are the largest,
 /// and its output comes a chunk at a time.
@@ -55,6 +55,30 @@ pub struct Fetch {
     pub body: Option<Vec<u8>>,
     /// How it is made.
     pub mode: FetchMode,
+    /// Where a successful answer's body goes, when not to egit: the browser's downloads.
+    pub deliver: Option<Delivery>,
+}
+
+/// A download handed to the browser rather than to egit.
+///
+/// A successful answer's body goes to the browser's downloads as `name`, by the relay
+/// ([`FromRelay::Delivering`]), never through egit's connection; checked against `sha256`
+/// where given (one that doesn't match fails in the browser, its last part held back).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Delivery {
+    /// The file's name.
+    pub name: String,
+    /// Its bytes' SHA-256, where the forge said.
+    pub sha256: Option<[u8; 32]>,
+}
+
+impl fmt::Debug for Delivery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Delivery")
+            .field("name", &self.name)
+            .field("checked", &self.sha256.is_some())
+            .finish()
+    }
 }
 
 /// A request's method.
@@ -94,6 +118,7 @@ impl fmt::Debug for Fetch {
             )
             .field("body", &self.body.as_ref().map(Vec::len))
             .field("mode", &self.mode)
+            .field("deliver", &self.deliver)
             .finish()
     }
 }
@@ -230,6 +255,21 @@ pub enum FromRelay {
         /// Its headers, names in lower case.
         headers: Vec<(String, String)>,
     },
+    /// Request `id`'s successful answer, to be delivered ([`Fetch::deliver`]), waits for the
+    /// browser at `path` (the relay's own, once): opened there, it is downloaded.
+    Delivering {
+        /// The request.
+        id: u32,
+        /// Where the browser takes it.
+        path: String,
+    },
+    /// So much of request `id`'s answer went to the browser.
+    Delivered {
+        /// The request.
+        id: u32,
+        /// How much, in all.
+        bytes: u64,
+    },
 }
 
 /// What a process that couldn't start lacked.
@@ -307,6 +347,8 @@ mod kind {
     pub(super) const PROMPT: u8 = 0x87;
     pub(super) const WITHDRAWN: u8 = 0x88;
     pub(super) const HEAD: u8 = 0x89;
+    pub(super) const DELIVERING: u8 = 0x8a;
+    pub(super) const DELIVERED: u8 = 0x8b;
 }
 
 /// A message being written.
@@ -337,6 +379,11 @@ impl Writer {
     }
 
     fn i32(mut self, value: i32) -> Self {
+        self.0.extend_from_slice(&value.to_le_bytes());
+        self
+    }
+
+    fn u64(mut self, value: u64) -> Self {
         self.0.extend_from_slice(&value.to_le_bytes());
         self
     }
@@ -401,6 +448,10 @@ impl<'a> Reader<'a> {
         Ok(i32::from_le_bytes(self.array()?))
     }
 
+    fn u64(&mut self) -> Result<u64, Garbled> {
+        Ok(u64::from_le_bytes(self.array()?))
+    }
+
     fn bytes(&mut self) -> Result<&'a [u8], Garbled> {
         let length = usize::try_from(self.u32()?).map_err(|_| Garbled("too long"))?;
         self.take(length)
@@ -429,6 +480,60 @@ impl<'a> Reader<'a> {
             return Err(Garbled("a list longer than its message"));
         }
         (0..count).map(|_| self.owned()).collect()
+    }
+
+    /// A request's fields.
+    fn fetch(&mut self) -> Result<Fetch, Garbled> {
+        let method = match self.u8()? {
+            0 => Method::Get,
+            1 => Method::Post,
+            _ => return Err(Garbled("a method of no kind known")),
+        };
+        let mode = match self.u8()? {
+            0 => FetchMode::Api,
+            1 => FetchMode::Download,
+            2 => FetchMode::Picture,
+            _ => return Err(Garbled("a request of no kind known")),
+        };
+        let url =
+            String::from_utf8(self.owned()?).map_err(|_| Garbled("an address that isn't text"))?;
+        let names = self.list()?;
+        let values = self.list()?;
+        if names.len() != values.len() {
+            return Err(Garbled("headers without values"));
+        }
+        let headers = names
+            .into_iter()
+            .zip(values)
+            .map(|(name, value)| {
+                String::from_utf8(name)
+                    .map(|name| (name, Zeroizing::new(value)))
+                    .map_err(|_| Garbled("a header's name that isn't text"))
+            })
+            .collect::<Result<_, _>>()?;
+        let body = self.optional()?.map(<[u8]>::to_vec);
+        let deliver = match self.u8()? {
+            0 => None,
+            1 => Some(Delivery {
+                name: self.text()?,
+                sha256: self
+                    .optional()?
+                    .map(|digest| {
+                        <[u8; 32]>::try_from(digest)
+                            .map_err(|_| Garbled("a digest that isn't SHA-256's"))
+                    })
+                    .transpose()?,
+            }),
+            _ => return Err(Garbled("a delivery that is neither asked nor not")),
+        };
+        Ok(Fetch {
+            method,
+            url,
+            headers,
+            body,
+            mode,
+            deliver,
+        })
     }
 
     const fn end(&self) -> Result<(), Garbled> {
@@ -487,28 +592,37 @@ impl ToRelay {
             Self::Answer { id, answer } => Writer::new(kind::ANSWER, *id, 0)
                 .optional(answer.as_ref().map(|answer| answer.as_slice()))
                 .done(),
-            Self::Fetch { id, fetch } => Writer::new(
-                kind::FETCH,
-                *id,
-                fetch
-                    .url
-                    .len()
-                    .saturating_add(fetch.body.as_ref().map_or(0, Vec::len)),
-            )
-            .u8(match fetch.method {
-                Method::Get => 0,
-                Method::Post => 1,
-            })
-            .u8(match fetch.mode {
-                FetchMode::Api => 0,
-                FetchMode::Download => 1,
-                FetchMode::Picture => 2,
-            })
-            .bytes(fetch.url.as_bytes())
-            .list(fetch.headers.iter().map(|(name, _)| name.as_bytes()))
-            .list(fetch.headers.iter().map(|(_, value)| value.as_slice()))
-            .optional(fetch.body.as_deref())
-            .done(),
+            Self::Fetch { id, fetch } => {
+                let writer = Writer::new(
+                    kind::FETCH,
+                    *id,
+                    fetch
+                        .url
+                        .len()
+                        .saturating_add(fetch.body.as_ref().map_or(0, Vec::len)),
+                )
+                .u8(match fetch.method {
+                    Method::Get => 0,
+                    Method::Post => 1,
+                })
+                .u8(match fetch.mode {
+                    FetchMode::Api => 0,
+                    FetchMode::Download => 1,
+                    FetchMode::Picture => 2,
+                })
+                .bytes(fetch.url.as_bytes())
+                .list(fetch.headers.iter().map(|(name, _)| name.as_bytes()))
+                .list(fetch.headers.iter().map(|(_, value)| value.as_slice()))
+                .optional(fetch.body.as_deref());
+                match &fetch.deliver {
+                    Some(delivery) => writer
+                        .u8(1)
+                        .bytes(delivery.name.as_bytes())
+                        .optional(delivery.sha256.as_ref().map(<[u8; 32]>::as_slice)),
+                    None => writer.u8(0),
+                }
+                .done()
+            }
         }
     }
 
@@ -563,46 +677,10 @@ impl ToRelay {
                     .optional()?
                     .map(|answer| Zeroizing::new(answer.to_vec())),
             },
-            kind::FETCH => {
-                let method = match reader.u8()? {
-                    0 => Method::Get,
-                    1 => Method::Post,
-                    _ => return Err(Garbled("a method of no kind known")),
-                };
-                let mode = match reader.u8()? {
-                    0 => FetchMode::Api,
-                    1 => FetchMode::Download,
-                    2 => FetchMode::Picture,
-                    _ => return Err(Garbled("a request of no kind known")),
-                };
-                let url = String::from_utf8(reader.owned()?)
-                    .map_err(|_| Garbled("an address that isn't text"))?;
-                let names = reader.list()?;
-                let values = reader.list()?;
-                if names.len() != values.len() {
-                    return Err(Garbled("headers without values"));
-                }
-                let headers = names
-                    .into_iter()
-                    .zip(values)
-                    .map(|(name, value)| {
-                        String::from_utf8(name)
-                            .map(|name| (name, Zeroizing::new(value)))
-                            .map_err(|_| Garbled("a header's name that isn't text"))
-                    })
-                    .collect::<Result<_, _>>()?;
-                let body = reader.optional()?.map(<[u8]>::to_vec);
-                Self::Fetch {
-                    id,
-                    fetch: Fetch {
-                        method,
-                        url,
-                        headers,
-                        body,
-                        mode,
-                    },
-                }
-            }
+            kind::FETCH => Self::Fetch {
+                id,
+                fetch: reader.fetch()?,
+            },
             _ => return Err(Garbled("of no kind known")),
         };
         reader.end()?;
@@ -677,6 +755,12 @@ impl FromRelay {
                 .list(headers.iter().map(|(name, _)| name.as_bytes()))
                 .list(headers.iter().map(|(_, value)| value.as_bytes()))
                 .done(),
+            Self::Delivering { id, path } => Writer::new(kind::DELIVERING, *id, path.len())
+                .bytes(path.as_bytes())
+                .done(),
+            Self::Delivered { id, bytes } => {
+                Writer::new(kind::DELIVERED, *id, 8).u64(*bytes).done()
+            }
         }
     }
 
@@ -755,6 +839,14 @@ impl FromRelay {
                         .collect(),
                 }
             }
+            kind::DELIVERING => Self::Delivering {
+                id,
+                path: reader.text()?,
+            },
+            kind::DELIVERED => Self::Delivered {
+                id,
+                bytes: reader.u64()?,
+            },
             _ => return Err(Garbled("of no kind known")),
         };
         reader.end()?;
@@ -767,7 +859,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_message_reads_back_as_it_was_written() {
+    fn every_request_reads_back_as_it_was_written() {
         let to = [
             ToRelay::Hello {
                 version: VERSION,
@@ -813,12 +905,45 @@ mod tests {
                     )],
                     body: Some(b"{}".to_vec()),
                     mode: FetchMode::Api,
+                    deliver: None,
+                },
+            },
+            ToRelay::Fetch {
+                id: 6,
+                fetch: Fetch {
+                    method: Method::Get,
+                    url: "https://objects.example.com/artifacts.zip?signed".to_owned(),
+                    headers: Vec::new(),
+                    body: None,
+                    mode: FetchMode::Download,
+                    deliver: Some(Delivery {
+                        name: "artifacts – build.zip".to_owned(),
+                        sha256: Some([7; 32]),
+                    }),
+                },
+            },
+            ToRelay::Fetch {
+                id: 7,
+                fetch: Fetch {
+                    method: Method::Get,
+                    url: "https://gitlab.example.com/api/v4/x".to_owned(),
+                    headers: Vec::new(),
+                    body: None,
+                    mode: FetchMode::Download,
+                    deliver: Some(Delivery {
+                        name: "report.xml".to_owned(),
+                        sha256: None,
+                    }),
                 },
             },
         ];
         for message in to {
             assert_eq!(ToRelay::decode(&message.encode()).unwrap(), message);
         }
+    }
+
+    #[test]
+    fn every_answer_reads_back_as_it_was_written() {
         let from = [
             FromRelay::Welcome {
                 version: VERSION,
@@ -860,6 +985,14 @@ mod tests {
                 id: 5,
                 status: 200,
                 headers: vec![("content-type".to_owned(), "application/json".to_owned())],
+            },
+            FromRelay::Delivering {
+                id: 6,
+                path: "/delivery/0123abcd".to_owned(),
+            },
+            FromRelay::Delivered {
+                id: 6,
+                bytes: 5 << 32,
             },
         ];
         for message in from {
@@ -908,6 +1041,7 @@ mod tests {
             )],
             body: None,
             mode: FetchMode::Api,
+            deliver: None,
         };
         assert!(!format!("{:?}", ToRelay::Fetch { id: 1, fetch }).contains("hunter2"));
         // A token never shows in debug output.

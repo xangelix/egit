@@ -1,7 +1,8 @@
 //! The real `egit-relay`, as a browser and egit reach it: its web build served to its own host
 //! alone, other sites and wrong tokens refused, git run through it (its output as it comes,
 //! no more than the client made room for), cancelled, its questions relayed and answered, and
-//! a session's programs stopped with it.
+//! a session's programs stopped with it; downloads delivered to the browser (whole, its digest
+//! matched; cut short where it doesn't; taken once; an answer that isn't one left to egit).
 
 #![cfg(unix)]
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
@@ -299,6 +300,7 @@ fn makes_requests_for_its_browser_their_answers_as_they_come() {
         )],
         body: None,
         mode: FetchMode::Api,
+        deliver: None,
     });
     let head = fetching.head().wait().unwrap();
     assert_eq!(head.status, 200);
@@ -337,7 +339,175 @@ fn makes_requests_for_its_browser_their_answers_as_they_come() {
         headers: Vec::new(),
         body: None,
         mode: FetchMode::Api,
+        deliver: None,
     });
     let unreached = nowhere.head().wait().unwrap_err();
     assert!(unreached.contains("refused"), "{unreached}");
+}
+
+/// A host answering one request with `head` then `body`, on the loopback address; what was
+/// asked comes from the thread.
+fn answer_once(head: String, body: Vec<u8>) -> (String, std::thread::JoinHandle<String>) {
+    let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = server.local_addr().unwrap().to_string();
+    let answering = std::thread::spawn(move || {
+        let (mut stream, _) = server.accept().unwrap();
+        let mut asked = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !asked.ends_with(b"\r\n\r\n") {
+            stream.read_exact(&mut byte).unwrap();
+            asked.push(byte[0]);
+        }
+        stream.write_all(head.as_bytes()).unwrap();
+        // A browser may stop taking it: what it didn't take doesn't matter here.
+        let _ = stream.write_all(&body);
+        String::from_utf8(asked).unwrap()
+    });
+    (address, answering)
+}
+
+/// A download asked of `url` for the browser as `name`, `sha256` its digest.
+fn delivered(url: String, name: &str, sha256: Option<[u8; 32]>) -> egit_git::relay::Fetch {
+    egit_git::relay::Fetch {
+        method: egit_git::relay::Method::Get,
+        url,
+        headers: Vec::new(),
+        body: None,
+        mode: egit_git::relay::FetchMode::Download,
+        deliver: Some(egit_git::relay::Delivery {
+            name: name.to_owned(),
+            sha256,
+        }),
+    }
+}
+
+/// The browser opening `path` of the relay's: its whole answer, as bytes.
+fn browser_takes(relay: &TestRelay, path: &str) -> Vec<u8> {
+    let mut stream = TcpStream::connect(&relay.address).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: {}\r\n\r\n",
+        relay.address
+    )
+    .unwrap();
+    let mut answer = Vec::new();
+    // Cut short, the connection ends as it is reset.
+    let _ = stream.read_to_end(&mut answer);
+    answer
+}
+
+/// Where an answer's body starts.
+fn body_of(answer: &[u8]) -> &[u8] {
+    let at = answer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .unwrap();
+    &answer[at + 4..]
+}
+
+#[test]
+fn delivers_a_download_to_the_browser_whole_once() {
+    use sha2::{Digest as _, Sha256};
+
+    let body: Vec<u8> = (0..3_000_000_u32)
+        .map(|n| u8::try_from(n % 251).unwrap())
+        .collect();
+    let digest: [u8; 32] = Sha256::digest(&body).into();
+    let (address, answering) = answer_once(
+        format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()),
+        body.clone(),
+    );
+    let relay = relay(&[]);
+    let connection = relay.connect(&relay.token).unwrap();
+    connection.welcome().wait().unwrap();
+    let mut fetching = connection.fetch(delivered(
+        format!("http://{address}/artifacts.zip"),
+        "artifacts – build.zip",
+        Some(digest),
+    ));
+    assert_eq!(fetching.head().wait().unwrap().status, 200);
+    let path = fetching.delivering().wait().unwrap();
+    assert!(path.starts_with("/delivery/"), "{path}");
+    let answer = browser_takes(&relay, &path);
+    let head = String::from_utf8_lossy(&answer[..answer.len() - body.len()]).into_owned();
+    assert!(head.starts_with("HTTP/1.1 200 OK"), "{head}");
+    assert!(
+        head.contains(&format!("Content-Length: {}\r\n", body.len())),
+        "{head}"
+    );
+    assert!(
+        head.contains(
+            "Content-Disposition: attachment; filename=\"artifacts _ build.zip\"; \
+             filename*=UTF-8''artifacts%20%E2%80%93%20build.zip"
+        ),
+        "{head}"
+    );
+    assert_eq!(body_of(&answer), body);
+    // How much went, told as it went; its end, whole.
+    let mut went = 0;
+    while let Some(bytes) = fetching.delivered_past(went).wait() {
+        went = bytes;
+    }
+    assert_eq!(went, u64::try_from(body.len()).unwrap());
+    fetching.end().wait().unwrap();
+    answering.join().unwrap();
+    // Taken once.
+    let again = browser_takes(&relay, &path);
+    assert!(
+        again.starts_with(b"HTTP/1.1 404"),
+        "{}",
+        String::from_utf8_lossy(&again)
+    );
+}
+
+#[test]
+fn a_download_not_matching_its_digest_is_cut_short() {
+    // Its length unsaid: chunked to the browser, which never sees its end.
+    let body = vec![b'z'; 700_000];
+    let (address, answering) = answer_once(
+        "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n".to_owned(),
+        body.clone(),
+    );
+    let relay = relay(&[]);
+    let connection = relay.connect(&relay.token).unwrap();
+    connection.welcome().wait().unwrap();
+    let mut fetching = connection.fetch(delivered(
+        format!("http://{address}/report.xml"),
+        "report.xml",
+        Some([0; 32]),
+    ));
+    fetching.head().wait().unwrap();
+    let path = fetching.delivering().wait().unwrap();
+    let answer = browser_takes(&relay, &path);
+    let text = String::from_utf8_lossy(&answer);
+    assert!(text.contains("Transfer-Encoding: chunked\r\n"), "{text}");
+    assert!(!answer.ends_with(b"0\r\n\r\n"), "the browser saw it end");
+    assert!(body_of(&answer).len() < body.len());
+    let why = fetching.end().wait().unwrap_err();
+    assert!(why.contains("SHA-256"), "{why}");
+    drop(answering);
+}
+
+#[test]
+fn an_answer_that_isnt_a_download_comes_to_egit() {
+    // A redirect: its place for egit to follow, its words egit's.
+    let (address, answering) = answer_once(
+        "HTTP/1.1 302 Found\r\nLocation: https://objects.example/a.zip\r\n\
+         Content-Length: 5\r\n\r\n"
+            .to_owned(),
+        b"moved".to_vec(),
+    );
+    let relay = relay(&[]);
+    let connection = relay.connect(&relay.token).unwrap();
+    connection.welcome().wait().unwrap();
+    let mut fetching =
+        connection.fetch(delivered(format!("http://{address}/a.zip"), "a.zip", None));
+    let head = fetching.head().wait().unwrap();
+    assert_eq!(head.status, 302);
+    let mut buffer = vec![0; 64];
+    let read = fetching.read(&mut buffer).wait().unwrap();
+    assert_eq!(&buffer[..read], b"moved");
+    fetching.end().wait().unwrap();
+    assert!(fetching.delivering().wait().is_err());
+    answering.join().unwrap();
 }

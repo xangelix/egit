@@ -29,7 +29,8 @@ use zeroize::Zeroizing;
 pub use process::Fetching;
 pub(crate) use process::{NotRun, Process, Stderr as StderrSink};
 pub use protocol::{
-    Fetch, FetchMode, FromRelay, Garbled, Method, Missing, Program, ToRelay, VERSION, WINDOW,
+    Delivery, Fetch, FetchMode, FromRelay, Garbled, Method, Missing, Program, ToRelay, VERSION,
+    WINDOW,
 };
 
 use crate::askpass::{Prompt, PromptKind};
@@ -224,6 +225,18 @@ impl Relay {
                 let slot = self.0.state.lock().processes.get(&id).cloned();
                 if let Some(slot) = slot {
                     slot.head(process::Head { status, headers });
+                }
+            }
+            FromRelay::Delivering { id, path } => {
+                let slot = self.0.state.lock().processes.get(&id).cloned();
+                if let Some(slot) = slot {
+                    slot.delivering(path);
+                }
+            }
+            FromRelay::Delivered { id, bytes } => {
+                let slot = self.0.state.lock().processes.get(&id).cloned();
+                if let Some(slot) = slot {
+                    slot.delivered(bytes);
                 }
             }
             FromRelay::Withdrawn { id } => {

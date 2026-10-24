@@ -89,6 +89,15 @@ pub enum ForgeError {
         /// What was downloaded (its file).
         what: String,
     },
+    /// A download for the browser didn't reach it whole (the browser stopped it, never came
+    /// for it, or the relay found it doesn't match its digest): why, in the relay's words.
+    #[error("{what} didn't reach the browser: {why}")]
+    Undelivered {
+        /// What was downloaded (its file).
+        what: String,
+        /// Why.
+        why: String,
+    },
     /// A credential would have gone over a connection that isn't encrypted.
     #[error("not sending credentials to {host} without HTTPS")]
     Insecure {

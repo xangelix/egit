@@ -48,7 +48,7 @@ it.
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
 | 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
-| 37 | egit in a browser: WebAssembly, git through a relay | under way: the relay, its protocol, and egit in a browser (a repository's history, work tree, and diffs; patches saved and chosen through the browser); artifacts, fonts, and the page's tests to come |
+| 37 | egit in a browser: WebAssembly, git through a relay | under way: the relay, its protocol, and egit in a browser (a repository's history, work tree, and diffs; patches saved and chosen, artifacts delivered, through the browser); fonts and the page's tests to come |
 
 ## Toolchain & commands
 
@@ -778,9 +778,15 @@ compile.
     length then their bytes), read strictly (`Garbled`: cut short, more than its fields, a list
     longer than its message, past `MOST`, 16 MiB); `ToRelay` (`Hello` with the token, never
     shown in debug output; `Start` a `Program`: program, arguments, folder, variables set and
-    unset, whether it reads input; `Stdin`, `CloseStdin`, `Terminate`, `Credit`, `Answer`) and
-    `FromRelay` (`Welcome`: home folder, computer; `Refused`, `Failed` with what was `Missing`,
-    `Stdout`, `Stderr`, `Exited`, `Prompt`, `Withdrawn`). `Relay` (`new` says hello; `welcome`
+    unset, whether it reads input; `Stdin`, `CloseStdin`, `Terminate`, `Credit`, `Answer`;
+    `Fetch`, a request the relay makes as egit-forge would: method, address, headers (their
+    values wiped when dropped, never shown), body, `FetchMode`, and a `Delivery`: a successful
+    answer's body to the browser's downloads, named, its SHA-256 where known) and `FromRelay`
+    (`Welcome`: home folder, computer; `Refused`, `Failed` with what was `Missing`, `Stdout`,
+    `Stderr`, `Exited`, `Prompt`, `Withdrawn`; `Head`, a request's status and headers;
+    `Delivering`, where its delivery waits for the browser, and `Delivered`, how much went);
+    `VERSION` 2. `Fetching`: `head`, `read`, `end`, and for a delivery `delivering` (the path)
+    and `delivered_past` (how much went, awaited). `Relay` (`new` says hello; `welcome`
     awaited; `send_prompts_to` the window's queue, refused until then; `close`): each process a
     slot (`process.rs`: its output queued, read as it comes by `Process::read`, at most
     `WINDOW` (1 MiB) waiting, the relay told what was taken in every quarter of it; its
@@ -874,7 +880,12 @@ compile.
     `/repos/:owner/:name/actions/artifacts/:id/zip` with the token, a redirect's place fetched
     without it, each part handed to the caller's sink as it comes (never held whole), the
     digest checked as it streams (`Mismatched` when it doesn't match), 410 an artifact expired
-    (`Said`), cancellable (`CancelToken`, or the sink saying stop).
+    (`Said`), cancellable (`CancelToken`, or the sink saying stop). `deliver_artifact`: the
+    same asked through a relay for the browser egit runs in (`http.rs`'s `Taking::Browser`,
+    the request a `Delivery`, `Accept-Encoding: identity` so its length is said): `Told::Go`,
+    the relay's path the browser is sent to, then `Told::Went`, how much went (the caller says
+    whether to go on); the relay checks the digest; `Undelivered` when the browser didn't take
+    it whole.
   - `api.rs` — the calls, each sent to its repository's forge: `pull_requests` (open, most
     recently updated first, 100 a page, each handed over as it lands, up to a limit),
     `pull_request_details`, `repository_info` (default branch, the repository it was forked
@@ -1115,11 +1126,20 @@ compile.
   variable), its standard error as it comes, its input fed by a thread; `Exited` after both;
   abandoned (the session gone), read and dropped so it isn't held up. A request (`fetch`): its
   head sent, then its body as a program's output, `Exited` at its end, `Failed` with the
-  forge's words (stopped between parts when asked). `tests/relay.rs` runs the
+  forge's words (stopped between parts when asked). `delivery.rs`: a request's successful
+  answer egit asked delivered waits at `/delivery/<key>` (32 random bytes in hex, taken once,
+  for a minute: `Deliveries`, every connection's), `Delivering` said; the browser's GET there
+  hands its connection (blocking, to the request's thread) over, which sends the answer
+  (`Content-Disposition` plain and in UTF-8, RFC 6266; its length where the forge said it,
+  else chunked) as the forge sends it, its SHA-256 checked, the last part held back until it
+  matches (else the connection is cut short: the browser says the download failed),
+  `Delivered` every 250 ms; stopped as a program is. `tests/relay.rs` runs the
   real binary: its build served to its own host alone (another host 421, a proxy's and a
   tunnel's names let in, compressed, nothing outside), another site's page and a wrong token
   refused, git run through it (a 9 MiB file read and fed back, a folder that isn't one,
-  cancelled), git's questions relayed and answered, and a session's programs stopped with it.
+  cancelled), git's questions relayed and answered, and a session's programs stopped with it;
+  a download delivered whole once (its name, length, and bytes; taken twice, 404), one not
+  matching its digest cut short (chunked, its end never sent), and a redirect left to egit.
 - `crates/egit-web` — egit in a browser: the page (`web/index.html`, `start.js`: its
   WebAssembly loaded, a problem said in the page) and its entry (`lib.rs`, `wasm_bindgen(start)`:
   `egit_app::start` in the canvas `#egit`); a `cdylib`, empty anywhere but `wasm32`. Built by
@@ -1195,7 +1215,8 @@ compile.
     is): its messages handed to `Relay::receive` as they come, its close to `Relay::closed`.
     `files.rs`: `choose`, the browser's dialog (an `<input type=file>` clicked, its `change`
     or `cancel` answering): each file chosen read into the page (256 MiB at most) and given to
-    egit (`egit_git::local::give`), its path what is answered.
+    egit (`egit_git::local::give`), its path what is answered; `open_download`, the browser
+    sent to a download the relay delivers.
     `notify.rs`: `notify`'s names, a watch failing at once (sessions on the relay's computer
     follow what changes, as over SSH).
   - `app.rs` — `EgitApp { tabs, state }`. Views never change `AppState` directly: they push
@@ -1393,11 +1414,15 @@ compile.
     the save dialog named (a 1 MiB buffer; how much has come in an atomic, the window woken at
     most every 100 ms), synced and renamed into place once whole (and its digest matched), the
     part removed when cancelled or failed (those under way stopped as their tab closes);
-    `Stage`: running, saved, failed (a `Problem`).
+    `Stage`: running, saved, failed (a `Problem`). In a browser, delivered instead
+    (`deliver_artifact`): the browser sent to the relay's path as it is told
+    (`web::files::open_download`: a link, clicked), how much went noted as it is told; never
+    through the page.
     `views/downloads.rs` says each under the commit table (or what shows in its place: a
     pipeline, a job's log): "Downloading artifacts.zip of build", a bar of fixed width saying
     "1.2 MB of 40.0 MB", and Cancel at the row's end; "Saved … to …", Open, Show in folder,
-    Dismiss; failed, why (a problem box, Dismiss).
+    Dismiss (in a browser "… went to the browser's downloads", Dismiss); failed, why (a
+    problem box, Dismiss).
     `Action::Download` (`DownloadAsk`: cancel, dismiss).
   - `ci.rs` — a repository's pipelines (GitLab's, GitHub Actions' workflow runs), for the
     commit table's marks (`Pipelines`, its

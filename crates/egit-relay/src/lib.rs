@@ -12,6 +12,7 @@
 //! Requests naming a host other than the relay's (a page of another site, through DNS
 //! rebinding) and `WebSocket`s opened from another site's page are refused before that.
 
+mod delivery;
 mod http;
 mod running;
 mod session;
@@ -111,6 +112,8 @@ struct Shared {
     environment: Vec<(OsString, OsString)>,
     /// ssh's connections shared while the relay runs, so a key is asked for once.
     _ssh: Option<egit_git::SshSharing>,
+    /// Downloads waiting for their browser.
+    deliveries: Arc<delivery::Deliveries>,
 }
 
 /// A relay listening, not yet serving.
@@ -146,6 +149,7 @@ pub async fn bind(options: Options) -> io::Result<Bound> {
             host: host_name(),
             environment,
             _ssh: ssh,
+            deliveries: Arc::default(),
         }),
     })
 }

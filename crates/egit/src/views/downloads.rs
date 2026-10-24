@@ -80,8 +80,16 @@ fn notice(ui: &mut Ui, shared: &Shared<'_>, download: &Download) -> Option<Actio
         Stage::Saved => {
             let to = format::display_path(&download.to, shared.home);
             let mut asked = None;
-            let words = format!("Saved {file} to {to}");
+            // In a browser, its downloads have it: nothing of theirs to show from here.
+            let words = if crate::desktop::IN_BROWSER {
+                format!("{file} went to the browser's downloads")
+            } else {
+                format!("Saved {file} to {to}")
+            };
             let dismissed = widgets::notice(ui, widgets::Tone::Done, words, true, |ui| {
+                if crate::desktop::IN_BROWSER {
+                    return;
+                }
                 if widgets::secondary(ui, true, "Show in folder").clicked() {
                     asked = Some(Action::Reveal(download.to.clone(), Reveal::InFolder));
                 }

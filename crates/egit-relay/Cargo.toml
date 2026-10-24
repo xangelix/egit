@@ -21,6 +21,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 httparse.workspace = true
 parking_lot.workspace = true
+sha2.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite.workspace = true
 tracing.workspace = true

@@ -226,6 +226,7 @@ impl Pictures {
             headers: vec![("Accept".to_owned(), Zeroizing::new(b"image/*".to_vec()))],
             body: None,
             mode: FetchMode::Picture,
+            deliver: None,
         };
         let mut exchange = crate::http::exchange(self.relay.as_ref(), fetch, (&host, url)).await?;
         match exchange.status() {

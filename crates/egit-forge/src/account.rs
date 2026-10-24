@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 
 use crate::error::ForgeError;
 use crate::host::ForgeHost;
-use crate::http::{Answer, Http, Sink, Streamed};
+use crate::http::{Answer, Http, Sink, Streamed, Taking};
 
 /// One host's sign-in, under one repository's configuration (a repository may name credential
 /// helpers of its own).
@@ -245,35 +245,35 @@ impl Account {
         Ok(streamed)
     }
 
-    /// GETs `url`, one of the host's, for a download (an artifact), with the credential,
-    /// handing its body to `sink` until it says to stop; a redirect said, not followed.
+    /// GETs `url`, one of the host's, for a download (an artifact), with the credential, its
+    /// body taken as `taking` says; a redirect said, not followed.
     pub(crate) async fn download(
         &self,
         url: &str,
-        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
+        taking: &mut Taking<'_>,
         cancel: &CancelToken,
     ) -> Result<Streamed, ForgeError> {
         let credential = self.credential(cancel).await?;
         let streamed = self
             .http
-            .download(url, Some(credential.password()), sink)
+            .download(url, Some(credential.password()), taking)
             .await?;
         self.answered(&credential, streamed.status).await?;
         Ok(streamed)
     }
 
     /// GETs `url`, a place the host pointed to (an artifact's or a log's file, its address
-    /// signed), without the credential, handing its body to `sink` until it says to stop.
+    /// signed), without the credential, its body taken as `taking` says.
     pub(crate) async fn download_public(
         &self,
         url: &str,
-        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
+        taking: &mut Taking<'_>,
         cancel: &CancelToken,
     ) -> Result<Streamed, ForgeError> {
         if cancel.is_cancelled() {
             return Err(ForgeError::Cancelled);
         }
-        self.http.download(url, None, sink).await
+        self.http.download(url, None, taking).await
     }
 
     /// Whether it may push to the repository at `path`, as the host said lately.

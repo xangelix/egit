@@ -6,7 +6,8 @@
 //! A download streams to the caller's sink, never held whole (an archive may be gigabytes): the
 //! forge answers with a redirect to its storage (GitLab's CDN, GitHub's blobs), fetched without
 //! the token, or (a self-managed GitLab serving it itself) with the file; GitHub's SHA-256
-//! digest of the zip is checked as it comes.
+//! digest of the zip is checked as it comes. Or, for egit in a browser, it goes to the browser's
+//! downloads by the relay ([`deliver_artifact`]), which checks the digest.
 
 use std::fmt::Write as _;
 
@@ -17,6 +18,7 @@ use crate::account::Account;
 use crate::answer::reason;
 use crate::error::ForgeError;
 use crate::host::ForgeKind;
+use crate::http::{Taking, Told};
 use crate::repository::ForgeRepository;
 
 /// An artifact of a pipeline's job (GitLab's) or of a workflow's run (GitHub's).
@@ -114,6 +116,110 @@ pub async fn download_artifact(
     cancel: &CancelToken,
     sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
 ) -> Result<u64, ForgeError> {
+    let expected = artifact
+        .digest
+        .as_deref()
+        .and_then(|digest| digest.strip_prefix("sha256:"))
+        .map(str::to_ascii_lowercase);
+    let mut hasher = expected.as_ref().map(|_| Sha256::new());
+    let mut given = 0_u64;
+    {
+        let mut take = |part: &[u8]| -> bool {
+            if cancel.is_cancelled() {
+                return false;
+            }
+            if let Some(hasher) = &mut hasher {
+                hasher.update(part);
+            }
+            given = given.saturating_add(u64::try_from(part.len()).unwrap_or(u64::MAX));
+            sink(part)
+        };
+        fetch(
+            account,
+            repository,
+            artifact,
+            cancel,
+            &mut Taking::Here(&mut take),
+        )
+        .await?;
+    }
+    if let (Some(expected), Some(hasher)) = (expected, hasher) {
+        let found = hasher
+            .finalize()
+            .iter()
+            .fold(String::with_capacity(64), |mut text, byte| {
+                let _ = write!(text, "{byte:02x}");
+                text
+            });
+        if found != expected {
+            return Err(ForgeError::Mismatched {
+                host: account.host().name().to_owned(),
+                what: artifact.file_name.clone(),
+            });
+        }
+    }
+    Ok(given)
+}
+
+/// Downloads `artifact` of `repository` to the browser egit runs in, by its relay.
+///
+/// Never through egit: `told` hears where to send the browser (the download waits there),
+/// then how much went (it says `false` to stop); returns how much went. The relay checks
+/// GitHub's digest, holding the last part back until it matches.
+///
+/// # Errors
+///
+/// As [`download_artifact`]'s, and [`ForgeError::Undelivered`] when the browser didn't take
+/// it whole (it never came, stopped it, or it doesn't match its digest).
+pub async fn deliver_artifact(
+    account: &Account,
+    repository: &ForgeRepository,
+    artifact: &Artifact,
+    cancel: &CancelToken,
+    told: &mut (dyn FnMut(Told) -> bool + Send),
+) -> Result<u64, ForgeError> {
+    let sha256 = artifact
+        .digest
+        .as_deref()
+        .and_then(|digest| digest.strip_prefix("sha256:"))
+        .and_then(sha256_of);
+    let mut went = 0_u64;
+    let mut tell = |what: Told| -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        if let Told::Went(bytes) = what {
+            went = bytes;
+        }
+        told(what)
+    };
+    let delivery = egit_git::relay::Delivery {
+        name: artifact.file_name.clone(),
+        sha256,
+    };
+    fetch(
+        account,
+        repository,
+        artifact,
+        cancel,
+        &mut Taking::Browser {
+            delivery,
+            told: &mut tell,
+        },
+    )
+    .await?;
+    Ok(went)
+}
+
+/// Asks the forge for `artifact`, then its storage where it points (without the token), the
+/// successful answer taken as `taking` says; how it went otherwise, as an error.
+async fn fetch(
+    account: &Account,
+    repository: &ForgeRepository,
+    artifact: &Artifact,
+    cancel: &CancelToken,
+    taking: &mut Taking<'_>,
+) -> Result<(), ForgeError> {
     let host = account.host().name().to_owned();
     let what = format!("{}'s artifact {}", repository.full_name(), artifact.name);
     let url = match (&artifact.source, repository.host().kind()) {
@@ -129,78 +235,65 @@ pub async fn download_artifact(
         )),
         _ => return Err(crate::answer::not_found(account, what)),
     };
-    let expected = artifact
-        .digest
-        .as_deref()
-        .and_then(|digest| digest.strip_prefix("sha256:"))
-        .map(str::to_ascii_lowercase);
-    let mut hasher = expected.as_ref().map(|_| Sha256::new());
-    let mut given = 0_u64;
-    let mut take = |part: &[u8]| -> bool {
-        if cancel.is_cancelled() {
-            return false;
-        }
-        if let Some(hasher) = &mut hasher {
-            hasher.update(part);
-        }
-        given = given.saturating_add(u64::try_from(part.len()).unwrap_or(u64::MAX));
-        sink(part)
-    };
-    let first = account.download(&url, &mut take, cancel).await?;
+    let first = account.download(&url, taking, cancel).await?;
     let done = match (first.status, first.location.as_deref()) {
-        (301..=308, Some(location)) => account.download_public(location, &mut take, cancel).await?,
+        (301..=308, Some(location)) => account.download_public(location, taking, cancel).await?,
         _ => first,
     };
     if done.stopped || cancel.is_cancelled() {
         return Err(ForgeError::Cancelled);
     }
     match done.status {
-        200..=299 => {}
-        404 => return Err(crate::answer::not_found(account, what)),
-        410 => {
-            return Err(ForgeError::Said {
-                host,
-                message: format!(
-                    "{} has expired: the forge no longer keeps it",
-                    artifact.name
-                ),
-            });
-        }
-        403 => {
-            return Err(ForgeError::Forbidden {
-                host,
-                message: reason(&done.said),
-            });
-        }
-        status => {
-            return Err(ForgeError::Status {
-                host,
-                status,
-                message: reason(&done.said),
-            });
-        }
+        200..=299 => Ok(()),
+        404 => Err(crate::answer::not_found(account, what)),
+        410 => Err(ForgeError::Said {
+            host,
+            message: format!(
+                "{} has expired: the forge no longer keeps it",
+                artifact.name
+            ),
+        }),
+        403 => Err(ForgeError::Forbidden {
+            host,
+            message: reason(&done.said),
+        }),
+        status => Err(ForgeError::Status {
+            host,
+            status,
+            message: reason(&done.said),
+        }),
     }
-    if let (Some(expected), Some(hasher)) = (expected, hasher) {
-        let found = hasher
-            .finalize()
-            .iter()
-            .fold(String::with_capacity(64), |mut text, byte| {
-                let _ = write!(text, "{byte:02x}");
-                text
-            });
-        if found != expected {
-            return Err(ForgeError::Mismatched {
-                host,
-                what: artifact.file_name.clone(),
-            });
-        }
+}
+
+/// A SHA-256 digest written in hex, as its bytes.
+fn sha256_of(hex: &str) -> Option<[u8; 32]> {
+    let digits = hex.as_bytes();
+    if digits.len() != 64 {
+        return None;
     }
-    Ok(given)
+    let mut digest = [0_u8; 32];
+    let (pairs, _) = digits.as_chunks::<2>();
+    for (byte, pair) in digest.iter_mut().zip(pairs) {
+        let text = std::str::from_utf8(pair).ok()?;
+        *byte = u8::from_str_radix(text, 16).ok()?;
+    }
+    Some(digest)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_digest_in_hex_is_read_as_its_bytes() {
+        let hex = "00ff10".repeat(10) + "abcd";
+        let digest = sha256_of(&hex).unwrap();
+        assert_eq!(digest[..4], [0x00, 0xff, 0x10, 0x00]);
+        assert_eq!(digest[30..], [0xab, 0xcd]);
+        assert_eq!(sha256_of(&hex.to_ascii_uppercase()), Some(digest));
+        assert_eq!(sha256_of("abcd"), None);
+        assert_eq!(sha256_of(&"zz".repeat(32)), None);
+    }
 
     #[test]
     fn a_gitlab_job_s_archive_and_reports_are_artifacts_its_log_isn_t() {

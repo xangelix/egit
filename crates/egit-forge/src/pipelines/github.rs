@@ -28,6 +28,7 @@ use crate::answer::{cancelled, not_found, parse_time, read_answer};
 use crate::artifacts::{Artifact, ArtifactKind, ArtifactSource};
 use crate::error::ForgeError;
 use crate::http::Answer;
+use crate::http::Taking;
 use crate::job_log::{JobRun, JobStep, LogRead};
 use crate::repository::ForgeRepository;
 
@@ -719,11 +720,11 @@ pub(crate) async fn github_log(
             let streamed = account
                 .download_public(
                     location,
-                    &mut |part| {
+                    &mut Taking::Here(&mut |part| {
                         kept = kept.saturating_add(u64::try_from(part.len()).unwrap_or(u64::MAX));
                         take(part);
                         kept < MOST_LOG
-                    },
+                    }),
                     cancel,
                 )
                 .await?;

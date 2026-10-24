@@ -20,6 +20,7 @@ use egit_git::relay::protocol::{Fetch, FromRelay, Missing, Program, WINDOW};
 use egit_git::{Detached, Exit, Stopper};
 use parking_lot::{Condvar, Mutex};
 
+use crate::delivery::Deliveries;
 use crate::session::Out;
 
 /// How much output goes in one message.
@@ -148,7 +149,7 @@ impl Running {
     pub(crate) fn fetch(
         id: u32,
         fetch: Fetch,
-        out: Out,
+        (out, deliveries): (Out, Arc<Deliveries>),
         finished: impl FnOnce(u32) + Send + 'static,
     ) -> Self {
         let room = Arc::new(Room::new());
@@ -157,7 +158,13 @@ impl Running {
         let started = thread::Builder::new()
             .name(format!("relayed request {id}"))
             .spawn(move || {
-                let ended = fetch_for(id, &fetch, &shared_room, &shared_stopper, &out);
+                let ended = fetch_for(
+                    id,
+                    (&fetch, &deliveries),
+                    &shared_room,
+                    &shared_stopper,
+                    &out,
+                );
                 let _sent = out.send(ended.encode());
                 finished(id);
             });
@@ -315,7 +322,7 @@ fn run(
 /// came).
 fn fetch_for(
     id: u32,
-    fetch: &Fetch,
+    (fetch, deliveries): (&Fetch, &Arc<Deliveries>),
     room: &Room,
     stopping: &Mutex<Stopping>,
     out: &Out,
@@ -336,6 +343,28 @@ fn fetch_for(
     };
     if out.send(head.encode()).is_err() {
         return failed("the browser went away".to_owned());
+    }
+    // Delivered, a successful answer goes to the browser; another's words come to egit.
+    if let Some(delivery) = &fetch.deliver
+        && (200..300).contains(&answered.status)
+    {
+        // Its length as said, unless it comes otherwise than stored.
+        let length = answered
+            .header("content-length")
+            .filter(|_| {
+                answered
+                    .header("content-encoding")
+                    .is_none_or(|encoding| encoding.eq_ignore_ascii_case("identity"))
+            })
+            .and_then(|length| length.trim().parse().ok());
+        let mut body = answered.into_body(u64::MAX);
+        return crate::delivery::deliver(
+            id,
+            (delivery, deliveries),
+            (&mut body, length),
+            &|| stopping.lock().asked,
+            out,
+        );
     }
     let mut body = answered.into_body(u64::MAX);
     let mut buffer = vec![0; CHUNK];

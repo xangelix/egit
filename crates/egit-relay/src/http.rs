@@ -28,7 +28,7 @@ const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What every answer says, besides its own: no other site frames it or reads it, it loads
 /// nothing but its own files (its WebAssembly compiled), and it talks to the relay alone.
-const SECURITY: &str = "Content-Security-Policy: default-src 'self'; \
+pub(crate) const SECURITY: &str = "Content-Security-Policy: default-src 'self'; \
      script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
      img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; \
      base-uri 'none'; form-action 'none'\r\n\
@@ -87,6 +87,12 @@ pub(crate) async fn handle(mut stream: TcpStream, peer: SocketAddr, shared: Arc<
         upgrade(stream, peer, &request, shared).await;
         return;
     }
+    if let Some(key) = path.strip_prefix(crate::delivery::PREFIX)
+        && request.method == "GET"
+    {
+        deliver(stream, peer, key, &shared).await;
+        return;
+    }
     let sent = match request.method.as_str() {
         "GET" | "HEAD" => serve_file(&mut stream, &request, path, &shared).await,
         _ => {
@@ -101,6 +107,30 @@ pub(crate) async fn handle(mut stream: TcpStream, peer: SocketAddr, shared: Arc<
     };
     if let Err(error) = sent {
         tracing::debug!(%error, %peer, "an answer couldn't be sent");
+    }
+}
+
+/// Hands the connection to the download waiting at `key` (its request's thread answers it);
+/// none there, says so.
+async fn deliver(mut stream: TcpStream, peer: SocketAddr, key: &str, shared: &Shared) {
+    let Some(delivery) = shared.deliveries.take(key) else {
+        let _sent = answer(
+            &mut stream,
+            "404 Not Found",
+            "text/plain",
+            b"This download isn't here: it was taken, or its minute is over.\n",
+        )
+        .await;
+        return;
+    };
+    // The delivery writes on a thread of its own, as its request reads.
+    let taken = stream
+        .into_std()
+        .and_then(|stream| stream.set_nonblocking(false).map(|()| stream));
+    match taken {
+        // Gone, it was stopped meanwhile: the connection closes.
+        Ok(stream) => drop(delivery.send(stream)),
+        Err(error) => tracing::debug!(%error, %peer, "a download's connection couldn't be taken"),
     }
 }
 

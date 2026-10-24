@@ -9,7 +9,7 @@
 use std::io::Read as _;
 
 use egit_git::relay::Fetching;
-use egit_git::relay::protocol::{Fetch, FetchMode, Method};
+use egit_git::relay::protocol::{Delivery, Fetch, FetchMode, Method};
 use egit_git::{Git, Relay};
 use zeroize::Zeroizing;
 
@@ -52,6 +52,28 @@ pub(crate) struct Streamed {
     pub(crate) location: Option<String>,
     /// Whether the sink said to stop before the end.
     pub(crate) stopped: bool,
+}
+
+/// Where a download's successful answer goes.
+pub(crate) enum Taking<'a> {
+    /// To egit, a part at a time, until it says to stop (`false`).
+    Here(&'a mut (dyn FnMut(&[u8]) -> bool + Send)),
+    /// To the browser egit runs in, by its relay, as `delivery` says: `told` hears where to
+    /// send the browser, then how much went, and says whether to go on.
+    Browser {
+        delivery: Delivery,
+        told: &'a mut (dyn FnMut(Told) -> bool + Send),
+    },
+}
+
+/// What a download delivered to the browser tells as it goes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Told {
+    /// The browser is to open this path of its relay's (`/delivery/…`): the download waits
+    /// there, a minute at most.
+    Go(String),
+    /// So much went to the browser, in all.
+    Went(u64),
 }
 
 /// A host's API client: here, or through a relay.
@@ -132,6 +154,49 @@ impl Exchange {
                 .find(|(header, _)| header == name)
                 .map(|(_, value)| value.clone())
         })
+    }
+
+    /// Its successful answer delivered to the browser by the relay (asked for by the request's
+    /// [`Fetch::deliver`]), `told` where to send the browser and how much went: how much went
+    /// in all, and whether `told` said to stop.
+    async fn deliver(
+        &mut self,
+        what: &str,
+        told: &mut (dyn FnMut(Told) -> bool + Send),
+    ) -> Result<(u64, bool), ForgeError> {
+        let undelivered = |why: String| ForgeError::Undelivered {
+            what: what.to_owned(),
+            why,
+        };
+        #[cfg_attr(
+            target_arch = "wasm32",
+            expect(
+                clippy::infallible_destructuring_match,
+                reason = "a browser's requests are all relayed; a computer's may be its own"
+            )
+        )]
+        let fetching = match &mut self.body {
+            Body::Relayed(fetching) => fetching,
+            #[cfg(not(target_arch = "wasm32"))]
+            Body::Here(_) => {
+                return Err(undelivered("only a relay delivers to a browser".to_owned()));
+            }
+        };
+        let path = fetching.delivering().await.map_err(undelivered)?;
+        if !told(Told::Go(path)) {
+            fetching.stop();
+            return Ok((0, true));
+        }
+        let mut went = 0;
+        while let Some(bytes) = fetching.delivered_past(went).await {
+            went = bytes;
+            if !told(Told::Went(went)) {
+                fetching.stop();
+                return Ok((went, true));
+            }
+        }
+        fetching.end().await.map_err(undelivered)?;
+        Ok((went, false))
     }
 
     /// More of its body: how much, 0 at its end.
@@ -288,18 +353,19 @@ impl Http {
     }
 
     /// GETs `url` for a download (an artifact, a log's file), handing a successful answer's
-    /// body to `sink` a part at a time until it says to stop (`false`): with `token` (the
-    /// host's own address), or without any credential (a place a redirect named, its address
-    /// signed: only over HTTPS, but to the loopback address). Without an overall time limit; a
-    /// redirect is said (`location`), never followed.
+    /// body where `taking` says (a sink, a part at a time until it says to stop; or the
+    /// browser's downloads, by the relay): with `token` (the host's own address), or without
+    /// any credential (a place a redirect named, its address signed: only over HTTPS, but to
+    /// the loopback address). Without an overall time limit; a redirect is said (`location`),
+    /// never followed.
     pub(crate) async fn download(
         &self,
         url: &str,
         token: Option<&str>,
-        sink: &mut (dyn FnMut(&[u8]) -> bool + Send),
+        taking: &mut Taking<'_>,
     ) -> Result<Streamed, ForgeError> {
         let started = web_time::Instant::now();
-        let fetch = if let Some(token) = token {
+        let mut fetch = if let Some(token) = token {
             self.request(url, None, token, (None, true))?
         } else {
             let loopback = url.starts_with("http://127.0.0.1:") || url.starts_with("http://[::1]:");
@@ -314,11 +380,40 @@ impl Http {
                 headers: Vec::new(),
                 body: None,
                 mode: FetchMode::Download,
+                deliver: None,
             }
         };
+        if let Taking::Browser { delivery, .. } = taking {
+            // The bytes as stored, so the browser is told how many come.
+            fetch.headers.push((
+                "Accept-Encoding".to_owned(),
+                Zeroizing::new(b"identity".to_vec()),
+            ));
+            fetch.deliver = Some(delivery.clone());
+        }
         let mut exchange = self.exchange(fetch, url).await?;
         let status = exchange.status;
         let location = exchange.header(["location", "location"]);
+        if let Taking::Browser { delivery, told } = taking
+            && (200..300).contains(&status)
+        {
+            let (went, stopped) = exchange.deliver(&delivery.name, *told).await?;
+            tracing::debug!(
+                host = self.host.name(),
+                credential = token.is_some(),
+                status,
+                bytes = went,
+                stopped,
+                ms = started.elapsed().as_millis(),
+                "a download went to the browser"
+            );
+            return Ok(Streamed {
+                status,
+                said: Vec::new(),
+                location,
+                stopped,
+            });
+        }
         let (mut given, mut said, mut stopped) = (0_u64, Vec::new(), false);
         let mut buffer = vec![0_u8; 256 * 1024];
         loop {
@@ -326,7 +421,7 @@ impl Http {
             let Some(part) = buffer.get(..read).filter(|part| !part.is_empty()) else {
                 break;
             };
-            if (200..300).contains(&status) {
+            if let (200..300, Taking::Here(sink)) = (status, &mut *taking) {
                 given = given.saturating_add(u64::try_from(read).unwrap_or(u64::MAX));
                 if !sink(part) {
                     stopped = true;
@@ -425,6 +520,7 @@ impl Http {
             } else {
                 FetchMode::Api
             },
+            deliver: None,
         })
     }
 }

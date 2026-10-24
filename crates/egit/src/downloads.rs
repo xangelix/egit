@@ -5,16 +5,25 @@
 //! so a part never passes for the file; cancelled or failed, the part is removed (as are those
 //! still under way when their tab closes). A tab's downloads are said under its commit table:
 //! how far each has come, then where it went.
+//!
+//! In a browser the relay delivers it to the browser's downloads instead
+//! (`egit_forge::deliver_artifact`), never through the page: egit sends the browser where it
+//! waits, and says how much went.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
+#[cfg(not(target_arch = "wasm32"))]
+use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use web_time::Instant;
 
-use egit_forge::{Account, Artifact, ForgeError, ForgeRepository, download_artifact};
+#[cfg(not(target_arch = "wasm32"))]
+use egit_forge::download_artifact;
+use egit_forge::{Account, Artifact, ForgeError, ForgeRepository};
 use egit_git::CancelToken;
 use parking_lot::Mutex;
 
@@ -24,6 +33,7 @@ use crate::problem::Problem;
 const PROGRESS_EVERY: Duration = Duration::from_millis(100);
 
 /// What is written out at once.
+#[cfg(not(target_arch = "wasm32"))]
 const WRITTEN_AT_ONCE: usize = 1024 * 1024;
 
 /// An artifact asked for: which of the forge's repositories it is in, the artifact, and what
@@ -153,6 +163,7 @@ impl Drop for Downloads {
 }
 
 /// Where a download is written until it is whole: beside the file, `<file>.part`.
+#[cfg(not(target_arch = "wasm32"))]
 fn part_of(to: &Path) -> PathBuf {
     let mut part = to.as_os_str().to_owned();
     part.push(".part");
@@ -160,6 +171,7 @@ fn part_of(to: &Path) -> PathBuf {
 }
 
 /// Downloads `download` into its part, then renames it into place; the part removed otherwise.
+#[cfg(not(target_arch = "wasm32"))]
 async fn save(
     download: &Download,
     (account, repository): (&Account, &ForgeRepository),
@@ -182,7 +194,47 @@ async fn save(
     written
 }
 
+/// In a browser: `download` delivered to its downloads by the relay, the browser sent where it
+/// waits, how much went noted as it goes.
+#[cfg(target_arch = "wasm32")]
+async fn save(
+    download: &Download,
+    (account, repository): (&Account, &ForgeRepository),
+    waker: &egui::Context,
+) -> Result<(), Problem> {
+    let mut woken = Instant::now();
+    let delivered = egit_forge::deliver_artifact(
+        account,
+        repository,
+        &download.wanted.artifact,
+        &download.cancel,
+        &mut |told| match told {
+            egit_forge::Told::Go(path) => crate::web::files::open_download(&path),
+            egit_forge::Told::Went(bytes) => {
+                download.done.store(bytes, Ordering::Relaxed);
+                if woken.elapsed() >= PROGRESS_EVERY {
+                    woken = Instant::now();
+                    waker.request_repaint();
+                }
+                true
+            }
+        },
+    )
+    .await;
+    match delivered {
+        Ok(_) => Ok(()),
+        Err(ForgeError::Cancelled) => {
+            Err(Problem::new("The download was cancelled", String::new()))
+        }
+        Err(error) => Err(Problem::new(
+            "The artifact couldn't be downloaded",
+            error.to_string(),
+        )),
+    }
+}
+
 /// Streams `download` into the file `part`.
+#[cfg(not(target_arch = "wasm32"))]
 async fn write(
     download: &Download,
     (account, repository): (&Account, &ForgeRepository),
@@ -277,6 +329,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(target_arch = "wasm32"))]
     fn a_download_is_written_beside_its_file_until_whole() {
         assert_eq!(
             part_of(Path::new("/tmp/out/artifacts.zip")),

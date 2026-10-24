@@ -1,6 +1,6 @@
 //! Files chosen in the browser's dialog: each read into the page and given to egit
 //! (`egit_git::local::give`), which reads it by the path it is given under, as a desktop's
-//! dialog's answer is read.
+//! dialog's answer is read. And downloads the relay delivers, the browser sent to them.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -90,4 +90,21 @@ async fn read_all(files: Option<web_sys::FileList>) -> Vec<PathBuf> {
         }
     }
     given
+}
+
+/// Sends the browser to `path`, the relay's own, where a download waits (a link to it,
+/// clicked: the answer names the file); whether it could.
+pub(crate) fn open_download(path: &str) -> bool {
+    let link = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.create_element("a").ok())
+        .and_then(|link| link.dyn_into::<web_sys::HtmlAnchorElement>().ok());
+    let Some(link) = link else {
+        tracing::warn!("the browser couldn't be sent to a download");
+        return false;
+    };
+    link.set_href(path);
+    link.set_download("");
+    link.click();
+    true
 }

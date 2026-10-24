@@ -121,6 +121,16 @@ pub fn relay() -> Result<crate::Relay, SandboxError> {
     relay::connection()
 }
 
+/// Where the tests' own relay listens (`127.0.0.1:PORT`), as a browser reaches it: started the
+/// first time, as [`relay`] does.
+///
+/// # Errors
+///
+/// As [`relay`]'s.
+pub fn relay_address() -> Result<String, SandboxError> {
+    relay::address()
+}
+
 pub use relay::TestRelay;
 
 impl Sandbox {
@@ -368,6 +378,16 @@ mod relay {
             .as_ref()
             .map(|(relay, _)| relay.clone())
             .map_err(|error| SandboxError::from(error.clone()))
+    }
+
+    /// Where the relay [`connection`] reaches listens.
+    pub(super) fn address() -> Result<String, SandboxError> {
+        connection()?;
+        CONNECTED
+            .get()
+            .and_then(|connected| connected.as_ref().ok())
+            .map(|(_, relay)| relay.address.clone())
+            .ok_or_else(|| SandboxError::from("the tests' relay isn't there".to_owned()))
     }
 
     /// What a test's connection sends: into its WebSocket's writer (`None` closes it).
