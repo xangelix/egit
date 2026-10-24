@@ -1,7 +1,8 @@
 //! Several commits picked together and signed: a range by Shift-click, one more added by
 //! Ctrl-click and taken away again; the details list them; their menu signs them (each made
 //! again and signed, the commit after them too, the one before them left alone); Undo puts the
-//! branch back.
+//! branch back. Two picked on another branch cherry-picked onto the current one, oldest first,
+//! then reverted together.
 
 use std::path::Path;
 
@@ -189,4 +190,77 @@ fn one_commit_is_signed_from_its_bulk_actions() {
         log(&sandbox, &repo, "%G? %s"),
         ["G Four", "N Three", "N Two", "N One"]
     );
+}
+
+#[test]
+fn picked_commits_are_cherry_picked_and_reverted_together() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "base", "x\n", "Base").unwrap();
+    sandbox
+        .run(&repo, "switch", &["--quiet", "--create", "side"])
+        .unwrap();
+    for (file, subject) in [("a", "A"), ("b", "B"), ("c", "C")] {
+        sandbox.commit_file(&repo, file, "1\n", subject).unwrap();
+    }
+    sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+    // main moved on: the picks are new commits (from Base, each would be made again as it was).
+    sandbox.commit_file(&repo, "m", "1\n", "Main").unwrap();
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+
+    // A and C, B left out: picked onto main in the order they were made.
+    harness.get_by_role_and_label(Role::Button, "A").click();
+    harness.run_steps(2);
+    harness
+        .get_by_role_and_label(Role::Button, "C")
+        .click_modifiers(Modifiers::COMMAND);
+    wait_for_label(&mut harness, "2 commits selected");
+    render(&mut harness, "picked-panel");
+    // Their menu offers it as the panel does.
+    harness
+        .get_by_role_and_label(Role::Button, "C")
+        .click_secondary();
+    let offered = |harness: &egui_kittest::Harness<'_, crate::app::EgitApp>| {
+        harness.get_all_by_label("Cherry-pick onto main").count()
+    };
+    for _ in 0..200 {
+        if offered(&harness) == 2 {
+            break;
+        }
+        harness.step();
+    }
+    assert_eq!(offered(&harness), 2);
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
+    click_when_enabled(&mut harness, "Cherry-pick onto main");
+    wait_for_label(&mut harness, "Picked 2 commits.");
+    assert_eq!(log(&sandbox, &repo, "%s"), ["C", "A", "Main", "Base"]);
+
+    // Both reverted together, the newest first.
+    settle(&mut harness, "the picks shown", |app| {
+        app.state.repos[0].history.shown.rows() == 7
+    });
+    // The new ones: the newest rows, above side's.
+    harness
+        .query_all_by_role_and_label(Role::Button, "C")
+        .next()
+        .unwrap()
+        .click();
+    harness.run_steps(2);
+    harness
+        .query_all_by_role_and_label(Role::Button, "A")
+        .next()
+        .unwrap()
+        .click_modifiers(Modifiers::COMMAND);
+    wait_for_label(&mut harness, "2 commits selected");
+    click_when_enabled(&mut harness, "Revert in main");
+    wait_for_label(&mut harness, "Reverted 2 commits.");
+    assert_eq!(
+        log(&sandbox, &repo, "%s"),
+        ["Revert \"A\"", "Revert \"C\"", "C", "A", "Main", "Base"]
+    );
+    assert!(!repo.join("a").exists() && !repo.join("c").exists());
 }

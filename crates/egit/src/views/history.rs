@@ -2913,6 +2913,7 @@ fn picked_asked(
             view.compare = Some(Comparison::new(shared, objects, from, to));
         }
         Some(PickedEvent::Export(commits, how)) => export(commits, how, shared, actions),
+        Some(PickedEvent::Run(task)) => actions.push(Action::Task(shared.id, task)),
         Some(PickedEvent::Clear) => view.picked.clear(),
         None => {}
     }

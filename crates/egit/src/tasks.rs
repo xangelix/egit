@@ -24,14 +24,14 @@ use egit_git::{
     PushOptions, Pushed, RangeError, RebaseError, RebaseRange, RemoveWorktreeError, Repository,
     ResetMode, SignError, Stash, StashError, Step, SwitchError, SwitchTo, WorktreeFrom,
     abort_operation, add_remote, add_worktree, apply_patch, bisect_mark, changes_patch,
-    cherry_pick, continue_operation, count_between, create_branch, create_tag, delete_branch,
-    delete_remote_branch, delete_tag, fast_forward_branch, fast_forward_current, fetch,
-    fetch_refspecs, fetch_remote, foresee_pick, format_patch, format_patches, lock_worktree, merge,
-    plan_signing, prune_worktrees, pull, push, push_tag, rebase, rebase_interactive,
+    cherry_pick, cherry_pick_all, continue_operation, count_between, create_branch, create_tag,
+    delete_branch, delete_remote_branch, delete_tag, fast_forward_branch, fast_forward_current,
+    fetch, fetch_refspecs, fetch_remote, foresee_pick, format_patch, format_patches, lock_worktree,
+    merge, plan_signing, prune_worktrees, pull, push, push_tag, rebase, rebase_interactive,
     rebase_keeping_merges, rebase_range, remove_remote, remove_worktree, rename_branch,
-    rename_remote, reset, resolve_commit, revert, reword_head, set_config, set_remote_url,
-    set_upstream, sign_commits, skip_operation, stash_apply, stash_drop, stash_push, switch,
-    unlock_worktree, unset_config, update_submodules,
+    rename_remote, reset, resolve_commit, revert, revert_all, reword_head, set_config,
+    set_remote_url, set_upstream, sign_commits, skip_operation, stash_apply, stash_drop,
+    stash_push, switch, unlock_worktree, unset_config, update_submodules,
 };
 use egui_async::Bind;
 use parking_lot::Mutex;
@@ -112,6 +112,10 @@ pub(crate) enum Task {
         keep_merges: bool,
     },
     CherryPick(ObjectId),
+    /// Cherry-pick several commits onto the current branch in turn (the oldest first).
+    CherryPickAll(Vec<ObjectId>),
+    /// Undo several commits' changes with new commits (the newest first).
+    RevertAll(Vec<ObjectId>),
     /// Undo a commit's change with a new commit: refused, nothing changed, where it would
     /// conflict, unless `anyway` (stopping at the conflicts to resolve).
     Revert {
@@ -400,7 +404,10 @@ impl Task {
                 "post-rewrite",
                 "reference-transaction",
             ],
-            Self::CherryPick(_) | Self::Revert { .. } => &[
+            Self::CherryPick(_)
+            | Self::CherryPickAll(_)
+            | Self::Revert { .. }
+            | Self::RevertAll(_) => &[
                 "prepare-commit-msg",
                 "commit-msg",
                 "post-commit",
@@ -454,8 +461,8 @@ impl Task {
             Self::Discard(_) => "Discarding",
             Self::Ignore(_) => "Ignoring",
             Self::Export { how, .. } => how.doing(),
-            Self::CherryPick(_) => "Cherry-picking",
-            Self::Revert { .. } => "Reverting",
+            Self::CherryPick(_) | Self::CherryPickAll(_) => "Cherry-picking",
+            Self::Revert { .. } | Self::RevertAll(_) => "Reverting",
             Self::Reset(..) => "Resetting",
             Self::CreateTag { .. } => "Tagging",
             Self::ApplyStash { pop: false, .. } => "Applying the stash",
@@ -948,7 +955,9 @@ fn run(
         | Task::Merge { .. }
         | Task::Rebase { .. }
         | Task::CherryPick(_)
+        | Task::CherryPickAll(_)
         | Task::Revert { .. }
+        | Task::RevertAll(_)
         | Task::Reset(..)
         | Task::FastForward { .. }
         | Task::ApplyPatch { .. }
@@ -1268,6 +1277,12 @@ fn history(
         Task::CherryPick(commit) => cherry_pick(git, repository, *commit, cancel)
             .map(Outcome::Integrated)
             .or_else(failed("Cherry-picking failed")),
+        Task::CherryPickAll(commits) => cherry_pick_all(git, repository, commits, cancel)
+            .map(Outcome::Integrated)
+            .or_else(failed("Cherry-picking failed")),
+        Task::RevertAll(commits) => revert_all(git, repository, commits, cancel)
+            .map(Outcome::Integrated)
+            .or_else(failed("Reverting failed")),
         Task::Revert { commit, anyway } => {
             if !anyway && let Some(files) = revert_conflicts(git, repository, *commit, cancel) {
                 return Ok(Outcome::WouldConflict {

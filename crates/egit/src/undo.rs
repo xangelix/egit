@@ -608,7 +608,9 @@ const fn moves_head(task: &Task) -> bool {
         Task::Merge { .. }
             | Task::Rebase { .. }
             | Task::CherryPick(_)
+            | Task::CherryPickAll(_)
             | Task::Revert { .. }
+            | Task::RevertAll(_)
             | Task::Reset(..)
             | Task::InteractiveRebase { .. }
             | Task::DropCommit(_)
@@ -855,7 +857,9 @@ fn moved_words(task: &Task) -> String {
         Task::Merge { shown, .. } => format!("the merge of {shown}"),
         Task::Rebase { shown, .. } => format!("the rebase onto {shown}"),
         Task::CherryPick(commit) => format!("the cherry-pick of {}", short(commit)),
+        Task::CherryPickAll(commits) => format!("the cherry-pick of {} commits", commits.len()),
         Task::Revert { commit, .. } => format!("the revert of {}", short(commit)),
+        Task::RevertAll(commits) => format!("the revert of {} commits", commits.len()),
         Task::Reset(commit, ResetMode::Hard) => format!(
             "the reset to {} (the changes it discarded can't come back)",
             short(commit)

@@ -125,7 +125,8 @@ pub use ignore::{
     IgnoreError, IgnoreIn, Ignored, extension_pattern, ignore, ignore_again, path_pattern, unignore,
 };
 pub use integrate::{
-    FastForward, Integrated, ResetMode, cherry_pick, merge, rebase, reset, revert,
+    FastForward, Integrated, ResetMode, cherry_pick, cherry_pick_all, merge, rebase, reset, revert,
+    revert_all,
 };
 pub use lfs::{
     LfsFile, LfsLock, LfsPattern, LfsTransfer, LfsVersion, lfs_files, lfs_install, lfs_lock,

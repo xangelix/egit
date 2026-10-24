@@ -707,6 +707,9 @@ fn ended(task: Option<&Task>, outcome: &Outcome, home: Option<&Path>) -> String 
         (task, Outcome::Integrated(Integrated::Conflicts)) => {
             format!("{} stopped at conflicts: {CONFLICTS}", task.doing())
         }
+        (Task::CherryPickAll(_) | Task::RevertAll(_), Outcome::Integrated(Integrated::Empty)) => {
+            "They change nothing here (their changes are in already): skipped.".to_owned()
+        }
         (
             Task::CherryPick(commit) | Task::Revert { commit, .. },
             Outcome::Integrated(Integrated::Empty),
@@ -908,7 +911,9 @@ fn done_text(task: &Task) -> String {
         Task::Merge { shown, .. } => format!("Merged {shown}."),
         Task::Rebase { shown, .. } => format!("Rebased onto {shown}."),
         Task::CherryPick(commit) => format!("Picked {}.", commit.abbreviated(ID_DIGITS)),
+        Task::CherryPickAll(commits) => format!("Picked {} commits.", commits.len()),
         Task::Revert { commit, .. } => format!("Reverted {}.", commit.abbreviated(ID_DIGITS)),
+        Task::RevertAll(commits) => format!("Reverted {} commits.", commits.len()),
         Task::Reset(commit, _) => format!("Reset to {}.", commit.abbreviated(ID_DIGITS)),
         Task::CreateTag { name, at, .. } => {
             format!("Tagged {} as {}.", at.abbreviated(ID_DIGITS), short(name))

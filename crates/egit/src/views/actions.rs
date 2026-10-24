@@ -140,7 +140,7 @@ impl Menus<'_> {
     }
 
     /// The current branch, as menus name it.
-    fn current(&self) -> String {
+    pub(super) fn current(&self) -> String {
         self.branch.map_or_else(
             || "HEAD".to_owned(),
             |branch| branch.to_str_lossy().into_owned(),

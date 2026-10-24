@@ -18,9 +18,9 @@ use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, CloneOptions, DeleteBranchError, FastForward, Head, Integrated, ObjectId,
     Operation, Progress, PushFlag, Repository, ResetMode, StashError, SwitchError, SwitchTo,
-    cherry_pick, clone, create_branch, create_tag, delete_branch, delete_remote_branch, delete_tag,
-    merge, push_tag, rebase, rename_branch, reset, revert, stash_apply, stash_drop, stash_push,
-    stashes, switch,
+    cherry_pick, cherry_pick_all, clone, create_branch, create_tag, delete_branch,
+    delete_remote_branch, delete_tag, merge, push_tag, rebase, rename_branch, reset, revert,
+    revert_all, stash_apply, stash_drop, stash_push, stashes, switch,
 };
 
 fn open(sandbox: &Sandbox, path: &Path) -> Repository {
@@ -459,6 +459,52 @@ fn tags_are_made_annotated_or_light_and_deleted() {
     delete_tag(git, &repository, BStr::new("v1"), &cancel()).unwrap();
     let left = sandbox.run(&path, "tag", &["--list"]).unwrap();
     assert_eq!(left.stdout.trim_ascii(), b"light");
+}
+
+#[test]
+fn several_commits_are_picked_and_reverted_in_turn() {
+    let sandbox = Sandbox::new().unwrap();
+    let path = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&path, "base", "x\n", "Base").unwrap();
+    sandbox
+        .run(&path, "switch", &["--quiet", "--create", "side"])
+        .unwrap();
+    for (file, subject) in [("a", "A"), ("b", "B"), ("c", "C")] {
+        sandbox.commit_file(&path, file, "1\n", subject).unwrap();
+    }
+    sandbox.run(&path, "switch", &["--quiet", "main"]).unwrap();
+    // B's change is on main already: it is skipped, the others picked in order.
+    sandbox.commit_file(&path, "b", "1\n", "B here").unwrap();
+    let repository = open(&sandbox, &path);
+    let git = sandbox.git();
+    let commits: Vec<ObjectId> = ["side~2", "side~1", "side"]
+        .iter()
+        .map(|name| rev(&sandbox, &path, name))
+        .collect();
+    assert_eq!(
+        cherry_pick_all(git, &repository, &commits, &cancel()).unwrap(),
+        Integrated::Done
+    );
+    let log = sandbox
+        .run(&path, "log", &["--format=%s", "-3"])
+        .unwrap()
+        .stdout;
+    assert_eq!(log, b"C\nA\nB here\n");
+    assert_eq!(repository.operations(git).unwrap(), []);
+
+    // Reverted, the newest first: back to before.
+    let picked = [rev(&sandbox, &path, "HEAD"), rev(&sandbox, &path, "HEAD~1")];
+    assert_eq!(
+        revert_all(git, &repository, &picked, &cancel()).unwrap(),
+        Integrated::Done
+    );
+    assert!(!path.join("a").exists() && !path.join("c").exists());
+    // Every one of them already here: nothing picked, said so.
+    let here = [rev(&sandbox, &path, "HEAD~4")];
+    assert_eq!(
+        cherry_pick_all(git, &repository, &here, &cancel()).unwrap(),
+        Integrated::Empty
+    );
 }
 
 #[test]

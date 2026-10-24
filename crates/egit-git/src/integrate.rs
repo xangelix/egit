@@ -126,7 +126,26 @@ pub fn cherry_pick(
     commit: ObjectId,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
-    pick(git, repository, "cherry-pick", &[], commit, cancel)
+    pick(git, repository, "cherry-pick", &[], &[commit], cancel)
+}
+
+/// Applies `commits`' changes to the current branch as new commits, in the order given (the
+/// oldest first, as they were made).
+///
+/// One `git cherry-pick` goes through them all (merges' changes against their first parents);
+/// those that change nothing here are skipped. Stopped at a conflict, the rest wait for
+/// Continue.
+///
+/// # Errors
+///
+/// When git refuses (local changes in the way, say) or is cancelled.
+pub fn cherry_pick_all(
+    git: &Git,
+    repository: &Repository,
+    commits: &[ObjectId],
+    cancel: &CancelToken,
+) -> Result<Integrated, GitError> {
+    pick(git, repository, "cherry-pick", &[], commits, cancel)
 }
 
 /// Undoes `commit`'s changes in the current branch with a new commit (`git revert`, git's
@@ -141,16 +160,32 @@ pub fn revert(
     commit: ObjectId,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
-    pick(git, repository, "revert", &["--no-edit"], commit, cancel)
+    pick(git, repository, "revert", &["--no-edit"], &[commit], cancel)
 }
 
-/// Cherry-picks or reverts `commit` (`subcommand`), skipping it if it changes nothing.
+/// Undoes `commits`' changes in the current branch with new commits, in the order given (the
+/// newest first, so each undoes what is there), as [`revert`] does each.
+///
+/// # Errors
+///
+/// When git refuses (local changes in the way, say) or is cancelled.
+pub fn revert_all(
+    git: &Git,
+    repository: &Repository,
+    commits: &[ObjectId],
+    cancel: &CancelToken,
+) -> Result<Integrated, GitError> {
+    pick(git, repository, "revert", &["--no-edit"], commits, cancel)
+}
+
+/// Cherry-picks or reverts `commits` (`subcommand`) in turn, skipping those that change
+/// nothing ([`Integrated::Empty`] when every one did).
 fn pick(
     git: &Git,
     repository: &Repository,
     subcommand: &'static str,
     args: &[&str],
-    commit: ObjectId,
+    commits: &[ObjectId],
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
     let work_tree = repository.work_tree();
@@ -164,24 +199,43 @@ fn pick(
         })
         .current_dir(work_tree)
         .cancel_token(cancel);
-    if parents(git, repository, commit, cancel)? > 1 {
-        // A merge's changes are those against its first parent.
-        command = command.args(["--mainline", "1"]);
+    // A merge's changes are those against its first parent (git takes `--mainline` for the
+    // other commits too, since 2.21).
+    for commit in commits {
+        if parents(git, repository, *commit, cancel)? > 1 {
+            command = command.args(["--mainline", "1"]);
+            break;
+        }
     }
-    let done = command.arg(commit.to_string()).output();
-    if let Err(error) = &done
-        && error
-            .failure()
-            .is_some_and(|failure| failure.stderr.as_bytes().contains_str("is now empty"))
-    {
-        git.write(subcommand)
+    for commit in commits {
+        command = command.arg(commit.to_string());
+    }
+    let mut done = command.output().map(drop);
+    // A commit whose changes are here already stops git: skipped, the rest go on.
+    let mut skipped = 0;
+    while skipped < commits.len() && is_now_empty(&done) {
+        skipped = skipped.saturating_add(1);
+        done = git
+            .write(subcommand)
             .arg("--skip")
             .current_dir(work_tree)
             .cancel_token(cancel)
-            .output()?;
+            .output()
+            .map(drop);
+    }
+    if skipped == commits.len() && done.is_ok() {
         return Ok(Integrated::Empty);
     }
-    stopped(git, repository, done.map(drop), cancel)
+    stopped(git, repository, done, cancel)
+}
+
+/// Whether git stopped at a commit that would change nothing ("… is now empty").
+fn is_now_empty(done: &Result<(), GitError>) -> bool {
+    done.as_ref().is_err_and(|error| {
+        error
+            .failure()
+            .is_some_and(|failure| failure.stderr.as_bytes().contains_str("is now empty"))
+    })
 }
 
 /// How many parents `commit` has.

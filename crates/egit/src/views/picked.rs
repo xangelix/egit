@@ -190,6 +190,8 @@ pub(super) enum PickedEvent {
     Compare { from: ObjectId, to: ObjectId },
     /// Export them (the newest first).
     Export(Vec<ObjectId>, Exporting),
+    /// Something done to the current branch with them: cherry-picked onto it, or reverted.
+    Run(crate::tasks::Task),
     /// Let them go.
     Clear,
 }
@@ -214,6 +216,53 @@ pub(super) const fn two(ids: &[ObjectId]) -> Result<(ObjectId, ObjectId), &'stat
     match ids {
         [newer, older] => Ok((*older, *newer)),
         _ => Err("Pick exactly two commits to compare"),
+    }
+}
+
+/// At most this many are cherry-picked or reverted at once (each named on git's command line).
+const MOST_BROUGHT: usize = 500;
+
+/// Why the picked commits can't be cherry-picked onto the current branch, or reverted in it,
+/// now.
+const fn bringing_allowed(menus: &Menus<'_>, count: usize) -> Result<(), &'static str> {
+    if count > MOST_BROUGHT {
+        Err("Too many: pick fewer")
+    } else {
+        menus.can_change()
+    }
+}
+
+/// Cherry-picking them onto the current branch (the oldest first, as they were made), and
+/// reverting them in it (the newest first): its items, in a menu or as buttons; what is chosen.
+fn branch_items(
+    ui: &mut Ui,
+    menus: &Menus<'_>,
+    ids: &[ObjectId],
+    add: impl Fn(&mut Ui, (&str, &str), Result<(), &str>) -> bool,
+) -> Option<PickedEvent> {
+    use crate::tasks::Task;
+    let allowed = bringing_allowed(menus, ids.len());
+    let current = menus.current();
+    let picking = add(
+        ui,
+        (icon::GIT_COMMIT, &format!("Cherry-pick onto {current}")),
+        allowed,
+    );
+    let reverting = add(
+        ui,
+        (
+            icon::ARROW_COUNTER_CLOCKWISE,
+            &format!("Revert in {current}"),
+        ),
+        allowed,
+    );
+    if picking {
+        let oldest_first = ids.iter().rev().copied().collect();
+        Some(PickedEvent::Run(Task::CherryPickAll(oldest_first)))
+    } else if reverting {
+        Some(PickedEvent::Run(Task::RevertAll(ids.to_vec())))
+    } else {
+        None
     }
 }
 
@@ -251,19 +300,11 @@ pub(super) fn panel(
     );
     ui.add_space(8.0);
     let ids = picked.ids();
-    // Wrapped in the panel's width: a row of them all would widen the panel past the table.
+    // Looking at them first (two compared, the one thing most often wanted of two), then what
+    // they do to the current branch, then the rest; each row wrapped in the panel's width.
     ui.horizontal_wrapped(|ui| {
-        let allowed = signing_allowed(menus, ids.len());
-        let sign = widgets::primary(ui, allowed.is_ok(), "Sign these commits…");
-        let sign = match allowed {
-            Err(why) => sign.on_disabled_hover_text(why),
-            Ok(()) => sign,
-        };
-        if sign.clicked() {
-            event = Some(PickedEvent::Sign(ids.clone()));
-        }
         if let Ok((from, to)) = two(&ids)
-            && widgets::secondary(ui, true, "Compare these two").clicked()
+            && widgets::primary(ui, true, "Compare these two").clicked()
         {
             event = Some(PickedEvent::Compare { from, to });
         }
@@ -277,10 +318,27 @@ pub(super) fn panel(
         if widgets::secondary(ui, true, "Copy their names").clicked() {
             ui.ctx().copy_text(names(&ids));
         }
-        if widgets::secondary(ui, true, "Clear the selection").clicked() {
-            event = Some(PickedEvent::Clear);
+    });
+    ui.horizontal_wrapped(|ui| {
+        let button = |ui: &mut Ui, (_, words): (&str, &str), allowed: Result<(), &str>| {
+            let response = widgets::secondary(ui, allowed.is_ok(), words);
+            match allowed {
+                Err(why) => response.on_disabled_hover_text(why),
+                Ok(()) => response,
+            }
+            .clicked()
+        };
+        if let Some(chosen) = branch_items(ui, menus, &ids, button) {
+            event = Some(chosen);
+        }
+        let allowed = signing_allowed(menus, ids.len());
+        if button(ui, ("", "Sign these commits…"), allowed) {
+            event = Some(PickedEvent::Sign(ids.clone()));
         }
     });
+    if widgets::link(ui, "Clear the selection").clicked() {
+        event = Some(PickedEvent::Clear);
+    }
     ui.add_space(8.0);
     widgets::section_title(
         ui,
@@ -388,6 +446,9 @@ fn export_items(ui: &mut Ui, ids: &[ObjectId], allowed: Result<(), &str>) -> Opt
 pub(super) fn menu(ui: &mut Ui, menus: &Menus<'_>, ids: &[ObjectId]) -> Option<PickedEvent> {
     let mut event = None;
     super::actions::menu_header(ui, &format!("Bulk actions on {} commits", ids.len()));
+    if let Some(chosen) = branch_items(ui, menus, ids, super::actions::item) {
+        event = Some(chosen);
+    }
     if super::actions::item(
         ui,
         (icon::SEAL_CHECK, "Sign these commits…"),

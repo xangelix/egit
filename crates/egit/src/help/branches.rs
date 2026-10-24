@@ -893,6 +893,10 @@ pub(super) const TOPICS: &[Topic] = &[
                 "git usually sees the same change and merges cleanly, but the commit is in history twice, under two names.",
             ),
             ("Picked the wrong one?", "Undo takes it back."),
+            (
+                "Several at once?",
+                "Pick them in the history (Ctrl-click each), then Cherry-pick onto the branch from their menu: they go in the order they were made, those already here skipped; a conflict stops it with the rest waiting for Continue.",
+            ),
         ],
     },
     Topic {
@@ -922,6 +926,10 @@ pub(super) const TOPICS: &[Topic] = &[
             (
                 "Regretted before pushing?",
                 "Undo takes the revert commit back.",
+            ),
+            (
+                "Several at once?",
+                "Pick them in the history, then Revert from their menu: the newest is reverted first, each a commit of its own. These aren't worked out first: a conflict stops it there.",
             ),
         ],
     },

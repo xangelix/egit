@@ -628,7 +628,9 @@ writes paths), never `OsStrExt`.
     since git's message names what it is given: "Merge branch 'topic'", not
     "'refs/heads/topic'"),
     `rebase` (keeping merges, `--rebase-merges`, when asked), `cherry_pick`, `revert` (`--no-edit`; a merge's against its first parent, by
-    `rev-list --parents`), each `Integrated::Done`, `Conflicts` (failed with the operation in
+    `rev-list --parents`), `cherry_pick_all` and `revert_all` (several in turn, in the order
+    given, one command; `--mainline 1` for all where one is a merge, which git takes for the
+    others since 2.21; each that is "now empty" skipped and the rest gone on with), each `Integrated::Done`, `Conflicts` (failed with the operation in
     progress and `ls-files -u` not empty), `Empty` (a pick that is "now empty", skipped), or
     `Stopped` (an operation left with nothing to resolve); `reset` (`ResetMode`: soft, mixed,
     hard, keep: uncommitted changes kept, nothing moved when they're in the way).
@@ -1896,7 +1898,11 @@ writes paths), never `OsStrExt`.
     several are picked they alone show as selected, the details show them (`panel`: how many,
     Sign these commits…, Compare these two (exactly two), Export (a menu), Copy their names,
     Clear the selection, wrapped in the panel's width; the first 200 listed), and a right click
-    on one opens their menu ("Bulk actions on 3 commits": the same). Signing asks first
+    on one opens their menu ("Bulk actions on 3 commits": the same). Cherry-picked onto the current branch (the oldest first) or reverted in it (the newest
+    first) together, `Task::CherryPickAll`, `Task::RevertAll` (at most 500, each named on git's
+    command line). The panel's actions: Compare these two (primary, for two), Export, Copy
+    their names; Cherry-pick onto main, Revert in main, Sign these commits…; Clear the
+    selection, a link. Signing asks first
     (`Dialog::SignCommits`: what is made again, what a push takes, what stays). Export
     (`export_items`, the menu's too): "As a single patch" and "As separate patches", each
     "Save to a file…" (or "…a folder…", asked by `FileQuestion::SavePicked`) and "Copy to the
