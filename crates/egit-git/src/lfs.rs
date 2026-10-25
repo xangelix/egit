@@ -466,7 +466,7 @@ fn parse_locks(json: &[u8]) -> Result<Vec<LfsLock>, GitError> {
         .map(|entry| LfsLock {
             id: entry.id,
             path: entry.path.into(),
-            owner: entry.owner.map(|owner| owner.name).unwrap_or_default(),
+            owner: entry.owner.map_or_default(|owner| owner.name),
             locked_at: entry.locked_at,
         })
         .collect())

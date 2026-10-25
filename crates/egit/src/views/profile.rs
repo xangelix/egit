@@ -87,11 +87,8 @@ impl Default for Form {
 impl Form {
     fn from_snapshot(snapshot: &ConfigSnapshot) -> Self {
         let profile = snapshot.profile();
-        let text = |entry: Option<ConfigEntry<'_>>| {
-            entry
-                .map(|entry| entry.text().to_string())
-                .unwrap_or_default()
-        };
+        let text =
+            |entry: Option<ConfigEntry<'_>>| entry.map_or_default(|entry| entry.text().to_string());
         let signing = profile.signing();
         Self {
             name: text(profile.name()),

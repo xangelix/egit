@@ -1682,8 +1682,7 @@ fn conflicts_are_resolved_in_the_merge_editor() {
     let index = |file: &str| {
         sandbox
             .run(&repo, "cat-file", &["-p", &format!(":0:{file}")])
-            .map(|shown| shown.stdout)
-            .unwrap_or_default()
+            .map_or_default(|shown| shown.stdout)
     };
     // Staged, then written to the work tree.
     settle(&mut harness, "the resolution staged and written", |_| {

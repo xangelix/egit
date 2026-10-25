@@ -77,8 +77,7 @@ fn agents(ui: &mut Ui, state: &mut AppState) {
                 };
                 let shown = folder
                     .as_deref()
-                    .map(|folder| crate::format::display_path(folder, home.as_deref()))
-                    .unwrap_or_default();
+                    .map_or_default(|folder| crate::format::display_path(folder, home.as_deref()));
                 let signs_in = folder.as_deref().map_or(SignsIn::ApiKey, |folder| {
                     SignsIn::Folder(Some(folder), std::path::Path::new(&shown))
                 });

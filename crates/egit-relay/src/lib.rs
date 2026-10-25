@@ -135,8 +135,7 @@ pub async fn bind(options: Options) -> io::Result<Bound> {
     let ssh = egit_git::SshSharing::start();
     let environment = ssh
         .as_ref()
-        .map(egit_git::SshSharing::environment)
-        .unwrap_or_default();
+        .map_or_default(egit_git::SshSharing::environment);
     Ok(Bound {
         listener,
         shared: Arc::new(Shared {

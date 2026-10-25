@@ -169,7 +169,7 @@ impl Menus<'_> {
 
     /// The remotes configured, in order.
     fn remotes(&self) -> Vec<String> {
-        self.config.map(remote_names).unwrap_or_default()
+        self.config.map_or_default(remote_names)
     }
 
     /// The remote a remote-tracking branch's short name belongs to, and its name there.

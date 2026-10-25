@@ -2499,11 +2499,7 @@ fn lfs_menu(
                 task(crate::lfs::LfsTask::Transfer(transfer));
             }
         }
-        for remote in shared
-            .config
-            .map(crate::tasks::remote_names)
-            .unwrap_or_default()
-        {
+        for remote in shared.config.map_or_default(crate::tasks::remote_names) {
             if actions::item(
                 ui,
                 (icon::ARROW_UP, &format!("Push LFS files to {remote}")),
@@ -4397,9 +4393,7 @@ fn bisect_badge(
     palette: Palette,
 ) -> Option<(&'static str, Color32, String)> {
     let mark = reference.name.strip_prefix(b"refs/bisect/")?;
-    let terms = bisection
-        .map(|bisection| bisection.terms.clone())
-        .unwrap_or_default();
+    let terms = bisection.map_or_default(|bisection| bisection.terms.clone());
     if mark == terms.bad.as_bytes() {
         Some((icon::X_CIRCLE, palette.danger, terms.bad))
     } else if mark.starts_with(format!("{}-", terms.good).as_bytes()) {

@@ -229,7 +229,7 @@ impl FileView {
             Shown::Preview if !is_markdown(source.path()) => Shown::Diff,
             shown => shown,
         };
-        let reading = previous.map(|open| open.reading).unwrap_or_default();
+        let reading = previous.map_or_default(|open| open.reading);
         let split = previous.map_or(preferred.files.split_diffs, |open| open.split);
         let mut diff_grid = TextGrid::new(("diff", shared.id));
         let mut sides_grid = TextGrid::new(("sides", shared.id));

@@ -141,19 +141,18 @@ pub(crate) fn reason(body: &[u8]) -> String {
     let details: Vec<String> = said
         .get("errors")
         .and_then(serde_json::Value::as_array)
-        .map(|errors| {
+        .map_or_default(|errors| {
             errors
                 .iter()
                 .filter_map(|error| error.get("message").and_then(serde_json::Value::as_str))
                 .map(str::to_owned)
                 .collect()
-        })
-        .unwrap_or_default();
+        });
     if !details.is_empty() {
         return details.join(" ");
     }
     for key in ["message", "error_description", "error"] {
-        let messages = said.get(key).map(text).unwrap_or_default();
+        let messages = said.get(key).map_or_default(text);
         if !messages.is_empty() {
             return messages.join(" ");
         }

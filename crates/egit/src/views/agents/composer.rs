@@ -63,8 +63,7 @@ fn prompt(
     let commands = conversation
         .info
         .as_ref()
-        .map(|info| info.commands.as_slice())
-        .unwrap_or_default();
+        .map_or_default(|info| info.commands.as_slice());
     let offered = offered(
         &conversation.view.draft,
         commands,
@@ -514,8 +513,7 @@ fn model_menu(ui: &mut Ui, conversation: &mut Conversation, look: Look) {
     let models = conversation
         .info
         .as_ref()
-        .map(|info| info.models.clone())
-        .unwrap_or_default();
+        .map_or_default(|info| info.models.clone());
     let name = current
         .as_deref()
         .and_then(|current| {

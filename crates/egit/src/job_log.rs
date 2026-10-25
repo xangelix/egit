@@ -483,8 +483,7 @@ impl Follower {
             .lock()
             .job
             .as_ref()
-            .map(|run| run.steps.clone())
-            .unwrap_or_default();
+            .map_or_default(|run| run.steps.clone());
         let mut parts = log.parts();
         if !steps.is_empty() {
             parts = with_steps(parts, &steps);

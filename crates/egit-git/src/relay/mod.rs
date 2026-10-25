@@ -406,14 +406,12 @@ pub(crate) fn program_there(
     env: &[(&OsStr, &OsStr)],
 ) -> Program {
     let environment = git.remote_environment();
-    let mut set: Vec<(Vec<u8>, Vec<u8>)> = environment
-        .map(|environment| {
-            environment
-                .settings()
-                .map(|(key, value)| (bytes(key), bytes(value)))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut set: Vec<(Vec<u8>, Vec<u8>)> = environment.map_or_default(|environment| {
+        environment
+            .settings()
+            .map(|(key, value)| (bytes(key), bytes(value)))
+            .collect()
+    });
     set.extend(
         env.iter()
             .filter(|(key, _)| !crate::env::is_local_only(key) || crate::env::tells_the_helper(key))
@@ -425,8 +423,7 @@ pub(crate) fn program_there(
         dir: dir.map(|dir| bytes(dir.as_os_str())),
         set,
         unset: environment
-            .map(|environment| environment.removals().map(bytes).collect())
-            .unwrap_or_default(),
+            .map_or_default(|environment| environment.removals().map(bytes).collect()),
         stdin: false,
     }
 }

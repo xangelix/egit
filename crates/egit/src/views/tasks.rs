@@ -124,7 +124,7 @@ impl TaskPane<'_> {
 
     /// The remotes configured, in order.
     pub(super) fn remotes(&self) -> Vec<String> {
-        self.config.map(remote_names).unwrap_or_default()
+        self.config.map_or_default(remote_names)
     }
 
     /// The current branch's upstream, by its short name.
@@ -1036,8 +1036,7 @@ fn refused(
         .find(|pushed| pushed.flag == PushFlag::Rejected);
     let reason = refusal
         .and_then(|refused| refused.reason.as_ref())
-        .map(|reason| reason.to_str_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|reason| reason.to_str_lossy().into_owned());
     let behind = matches!(reason.as_str(), "fetch first" | "non-fast-forward");
     let explanation = match reason.as_str() {
         "fetch first" => {

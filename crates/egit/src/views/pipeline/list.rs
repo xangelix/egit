@@ -320,7 +320,7 @@ fn row_contents(
             ui.label(muted(ui, mark));
         });
         widgets::column(ui, (columns.took, ROW_HEIGHT), Align::Max, |ui| {
-            ui.label(muted(ui, job.duration.map(duration).unwrap_or_default()));
+            ui.label(muted(ui, job.duration.map_or_default(duration)));
         });
         widgets::column(ui, (columns.status, ROW_HEIGHT), Align::Min, |ui| {
             ui.label(RichText::new(job.status.word()).color(color));
@@ -434,15 +434,13 @@ pub(super) fn job_menu(ui: &mut Ui, job: &Job, said: CiWords) -> Option<JobAsk> 
                 let when = run
                     .started
                     .and_then(|started| u64::try_from(started).ok())
-                    .map(|started| format::ago(started, now))
-                    .unwrap_or_default();
+                    .map_or_default(|started| format::ago(started, now));
                 let words = format!(
                     "Run #{} · {}{} · {when}",
                     run.id,
                     run.status.word(),
                     run.duration
-                        .map(|took| format!(" in {}", duration(took)))
-                        .unwrap_or_default()
+                        .map_or_default(|took| format!(" in {}", duration(took)))
                 );
                 let (glyph, _) = ci_look(run.status, Palette::of(ui.ctx()));
                 if super::super::actions::item_of(ui, (glyph, &words), Ok(()), JOB_TOPIC) {

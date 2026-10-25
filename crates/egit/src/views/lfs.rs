@@ -236,7 +236,7 @@ fn state_card(ui: &mut Ui, shared: &Shared<'_>, lfs: &LfsState, ask: &mut impl F
 /// Moving LFS files: fetch, check out, pull, push to each remote, prune.
 fn transfers_card(ui: &mut Ui, shared: &Shared<'_>, lfs: &LfsState, ask: &mut impl FnMut(LfsTask)) {
     let allowed = ready(shared, lfs);
-    let remotes = shared.config.map(remote_names).unwrap_or_default();
+    let remotes = shared.config.map_or_default(remote_names);
     widgets::card(ui, |ui| {
         widgets::heading(ui, "Files");
         ui.add(

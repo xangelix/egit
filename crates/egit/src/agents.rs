@@ -986,8 +986,7 @@ impl Conversation {
         let events: Vec<Event> = self
             .events
             .as_ref()
-            .map(|events| events.try_iter().collect())
-            .unwrap_or_default();
+            .map_or_default(|events| events.try_iter().collect());
         let busy = self.transcript.busy();
         for event in events {
             self.event(event);

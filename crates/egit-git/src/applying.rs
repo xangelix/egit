@@ -239,8 +239,7 @@ fn mail_info(printed: &[u8]) -> PatchCommit {
         printed
             .lines()
             .find_map(|line| line.strip_prefix(name))
-            .map(|value| value.trim_ascii().to_str_lossy().into_owned())
-            .unwrap_or_default()
+            .map_or_default(|value| value.trim_ascii().to_str_lossy().into_owned())
     };
     let (name, email) = (field(b"Author:"), field(b"Email:"));
     PatchCommit {
@@ -478,8 +477,7 @@ impl Repository {
         let subject = info
             .lines()
             .find_map(|line| line.strip_prefix(b"Subject:"))
-            .map(|subject| subject.trim_ascii().to_str_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|subject| subject.trim_ascii().to_str_lossy().into_owned());
         Ok(Some(MailboxProgress {
             next: number(next),
             last: number(last),

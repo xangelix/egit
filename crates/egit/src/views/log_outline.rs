@@ -439,8 +439,7 @@ fn mark_row(
     let line = log
         .text()
         .line(mark.line)
-        .map(String::from_utf8_lossy)
-        .unwrap_or_default();
+        .map_or_default(String::from_utf8_lossy);
     let line = line.trim();
     let words = format!("Line {}: {line}", u64::from(mark.line).saturating_add(1));
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &words));

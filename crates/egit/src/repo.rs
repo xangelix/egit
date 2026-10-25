@@ -406,8 +406,7 @@ impl RepoTab {
     fn installed_hooks(&mut self, hooks: &'static [&'static str]) -> Vec<&'static str> {
         self.hooks
             .ok_ref()
-            .map(|installed| installed.of(hooks))
-            .unwrap_or_default()
+            .map_or_default(|installed| installed.of(hooks))
     }
 
     /// Reads which hooks the repository has (again).

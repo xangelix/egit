@@ -450,9 +450,9 @@ mod platform {
 
     use super::{Holding, SshSharing};
 
-    /// No agent of egit's own where connections can't be shared.
+    /// No agent of egit's own where connections can't be shared: none can be made.
     #[derive(Debug)]
-    pub(crate) enum Agent {}
+    pub(crate) struct Agent(std::convert::Infallible);
 
     pub(super) const fn start() -> Option<SshSharing> {
         None

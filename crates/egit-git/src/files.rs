@@ -465,12 +465,8 @@ impl<'g> Files<'g> {
             program: OsStr::new("sh"),
             args: words,
             dir: None,
-            unset: environment
-                .map(|environment| environment.removals().collect())
-                .unwrap_or_default(),
-            set: environment
-                .map(|environment| environment.settings().collect())
-                .unwrap_or_default(),
+            unset: environment.map_or_default(|environment| environment.removals().collect()),
+            set: environment.map_or_default(|environment| environment.settings().collect()),
         });
         let mut command = ssh.command(&script);
         self.git.environment().apply(&mut command);
@@ -521,8 +517,7 @@ impl<'g> Files<'g> {
         let mut reader = PidReader::new(RemotePid::default());
         let mut stderr = reader
             .feed(&said)
-            .map(std::borrow::Cow::into_owned)
-            .unwrap_or_default();
+            .map_or_default(std::borrow::Cow::into_owned);
         stderr.extend(reader.finish());
         Ok(Ran {
             status,

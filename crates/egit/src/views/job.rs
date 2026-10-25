@@ -508,12 +508,10 @@ fn runs_menu(ui: &mut Ui, view: &mut JobView) {
                 let when = run
                     .started
                     .and_then(|started| u64::try_from(started).ok())
-                    .map(|started| format!(" · {}", format::ago(started, now)))
-                    .unwrap_or_default();
+                    .map_or_default(|started| format!(" · {}", format::ago(started, now)));
                 let took = run
                     .duration
-                    .map(|took| format!(" in {}", duration(took)))
-                    .unwrap_or_default();
+                    .map_or_default(|took| format!(" in {}", duration(took)));
                 let which = if place == 0 && latest.is_some() {
                     "Latest"
                 } else {

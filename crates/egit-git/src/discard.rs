@@ -283,7 +283,7 @@ pub async fn put_back(
     };
     let paths: Vec<&BStr> = files.iter().map(|file| file.path.as_bstr()).collect();
     let stale = |file: Option<&DiscardedFile>| {
-        DiscardError::Stale(file.map(|file| file.path.clone()).unwrap_or_default())
+        DiscardError::Stale(file.map_or_default(|file| file.path.clone()))
     };
     let now = keep(git, repository, &paths, Keeping::Hash, cancel)
         .await?

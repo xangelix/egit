@@ -437,7 +437,7 @@ impl DetailsNode {
             .flatten()
             .next()
             .and_then(|node| node.commit.status_check_rollup)
-            .map(|rollup| {
+            .map_or_default(|rollup| {
                 rollup
                     .contexts
                     .nodes
@@ -445,8 +445,7 @@ impl DetailsNode {
                     .flatten()
                     .map(ContextNode::into_check)
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         let reviews = self
             .latest_opinionated_reviews
             .nodes

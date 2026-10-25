@@ -15,7 +15,10 @@ use super::{CONTEXT_VAR, INTERACTIVE_VAR, SOCKET_VAR, TOKEN_VAR};
 ///
 /// Returns the code the process should exit with: failure when the user refused, when the
 /// command may not ask (`non_interactive`), or when the window can't be reached.
-#[must_use]
+#[allow(
+    clippy::must_use_candidate,
+    reason = "`ExitCode` is `must_use` already, as newer standard libraries say"
+)]
 pub fn run_helper(prompt: &OsStr) -> ExitCode {
     let var = std::env::var_os;
     if var(INTERACTIVE_VAR).is_some_and(|value| value == "0") {

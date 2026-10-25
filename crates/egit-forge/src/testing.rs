@@ -1406,10 +1406,7 @@ fn start_pipeline(
         || ((String::new(), 0, String::new()), runs.first()),
         |workflow| {
             let newest = runs.iter().find(|run| run.workflow.1 == workflow);
-            (
-                newest.map(|run| run.workflow.clone()).unwrap_or_default(),
-                newest,
-            )
+            (newest.map_or_default(|run| run.workflow.clone()), newest)
         },
     );
     let ((name, id, file), newest) = of;
@@ -1426,8 +1423,7 @@ fn start_pipeline(
             .iter()
             .find(|run| run.git_ref == reference)
             .or_else(|| runs.first())
-            .map(|run| run.sha.clone())
-            .unwrap_or_default(),
+            .map_or_default(|run| run.sha.clone()),
         git_ref: reference.to_owned(),
         status: "CREATED".to_owned(),
         created: "2024-05-02T10:00:00Z".to_owned(),

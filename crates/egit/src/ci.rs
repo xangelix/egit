@@ -126,8 +126,8 @@ impl Marks {
     /// commit when it is the same pipeline read again, or a newer one (of any repository: a
     /// GitLab commit's newest pipeline of any of the projects).
     fn merged(previous: Option<&Self>, found: Vec<(usize, Pipeline)>) -> Self {
-        let mut by: HashMap<ObjectId, Vec<(usize, Pipeline)>> = previous
-            .map(|previous| {
+        let mut by: HashMap<ObjectId, Vec<(usize, Pipeline)>> =
+            previous.map_or_default(|previous| {
                 previous
                     .by_commit
                     .iter()
@@ -139,8 +139,7 @@ impl Marks {
                         (*id, runs)
                     })
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         for (repository, pipeline) in found {
             let runs = by.entry(pipeline.commit).or_default();
             match runs

@@ -281,8 +281,7 @@ fn best_face(bytes: &[u8], wanted: &BTreeSet<char>, language: &str) -> Option<(u
         let family = face
             .localized_strings(StringId::FAMILY_NAME)
             .english_or_first()
-            .map(|name| name.to_string())
-            .unwrap_or_default();
+            .map_or_default(|name| name.to_string());
         let rank = (
             covered.len(),
             family.contains("Mono"),
@@ -456,8 +455,7 @@ fn collect_fonts(dir: &Path, depth: usize, seen: &mut HashSet<PathBuf>, files: &
 fn rank(path: &Path) -> u8 {
     let name = path
         .file_name()
-        .map(|name| name.to_string_lossy().to_lowercase())
-        .unwrap_or_default();
+        .map_or_default(|name| name.to_string_lossy().to_lowercase());
     let styled = [
         "bold",
         "black",

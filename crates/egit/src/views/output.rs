@@ -162,10 +162,7 @@ fn actions(ui: &mut Ui, output: &mut Output, now: Instant) {
     let mut chosen = picked;
     // Which run shows (how it stands is said beside the bar's left): what it shows stays put as
     // time passes, how long ago only in the list.
-    let selected = output
-        .shown()
-        .map(|run| run.title.clone())
-        .unwrap_or_default();
+    let selected = output.shown().map_or_default(|run| run.title.clone());
     let combo = ComboBox::from_id_salt("output-runs")
         .icon(crate::widgets::combo_caret)
         .width(220.0)

@@ -128,8 +128,8 @@ fn parse_checks(output: &[u8]) -> Result<Vec<SignatureCheck>, GitError> {
             Ok(SignatureCheck {
                 id,
                 verdict,
-                signer: fields.next().map(BString::from).unwrap_or_default(),
-                key: fields.next().map(BString::from).unwrap_or_default(),
+                signer: fields.next().map_or_default(BString::from),
+                key: fields.next().map_or_default(BString::from),
             })
         })
         .collect()

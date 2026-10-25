@@ -420,8 +420,9 @@ pub(crate) fn highlight_snippet(
         buffer.push('\n');
         let spans = stream
             .feed(grammar, &buffer)
-            .map(|(ops, scopes)| colored(highlighter, theme, scopes, &ops, &buffer, default))
-            .unwrap_or_default();
+            .map_or_default(|(ops, scopes)| {
+                colored(highlighter, theme, scopes, &ops, &buffer, default)
+            });
         lines.push(spans);
     }
     Some(lines)

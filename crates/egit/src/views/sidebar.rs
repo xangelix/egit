@@ -1511,7 +1511,7 @@ fn remote_row(
     });
     let palette = drawing.palette;
     // Its address short, losing its start where it doesn't fit: its end names the repository.
-    let address = url.as_deref().map(short_url).unwrap_or_default();
+    let address = url.as_deref().map_or_default(short_url);
     let address = fit_tail(ui, drawing, (rect, 0), &[&shown, "  "], &address);
     paint_row(
         ui,
@@ -1576,8 +1576,7 @@ fn remote_menu(
             .lists
             .config
             .and_then(|config| config.get(&format!("remote.{shown}.pushurl")))
-            .map(|entry| entry.text().to_string())
-            .unwrap_or_default();
+            .map_or_default(|entry| entry.text().to_string());
         ask(Ask::Dialog(Dialog::EditRemote {
             remote: name.clone(),
             url: url.unwrap_or_default().to_owned(),
@@ -1804,9 +1803,7 @@ fn stash_row(
     // Its message leads (git's "On main:" taken off, said after it); its place at the row's
     // right, where every row's lines up.
     let (message, branch) = stash_words(&stash.message);
-    let on = branch
-        .map(|branch| format!("  on {branch}"))
-        .unwrap_or_default();
+    let on = branch.map_or_default(|branch| format!("  on {branch}"));
     let short = format!("@{{{}}}", stash.index);
     let place_width = ui
         .painter()

@@ -299,17 +299,15 @@ enum Asked {
 /// The patches a test's folder holds, by name.
 #[cfg(test)]
 fn patches_in(folder: &std::path::Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| {
-                    egit_git::looks_like_patch(bstr::BStr::new(path.as_os_str().as_encoded_bytes()))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut found: Vec<PathBuf> = std::fs::read_dir(folder).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                egit_git::looks_like_patch(bstr::BStr::new(path.as_os_str().as_encoded_bytes()))
+            })
+            .collect()
+    });
     found.sort();
     found
 }
@@ -323,15 +321,13 @@ const fn patches_in(_folder: &std::path::Path) -> Vec<PathBuf> {
 /// The images a test's folder holds, by name.
 #[cfg(test)]
 fn images_in(folder: &std::path::Path) -> Vec<PathBuf> {
-    let mut found: Vec<PathBuf> = std::fs::read_dir(folder)
-        .map(|entries| {
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| crate::attachments::is_image(path))
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut found: Vec<PathBuf> = std::fs::read_dir(folder).map_or_default(|entries| {
+        entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| crate::attachments::is_image(path))
+            .collect()
+    });
     found.sort();
     found
 }

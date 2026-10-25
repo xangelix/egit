@@ -788,18 +788,15 @@ impl GitCommand {
             .variables()
             .partition(|(key, _)| crate::env::is_local_only(key));
         let environment = self.git.remote_environment();
-        let mut set: Vec<(&OsStr, &OsStr)> = environment
-            .map(|environment| environment.settings().collect())
-            .unwrap_or_default();
+        let mut set: Vec<(&OsStr, &OsStr)> =
+            environment.map_or_default(|environment| environment.settings().collect());
         set.extend(there);
         let args = self.git_args();
         let script = host::script(&Remote {
             program: self.git.program().as_os_str(),
             args: args.iter().map(AsRef::as_ref).collect(),
             dir: self.dir.as_deref(),
-            unset: environment
-                .map(|environment| environment.removals().collect())
-                .unwrap_or_default(),
+            unset: environment.map_or_default(|environment| environment.removals().collect()),
             set,
         });
         let mut command = ssh.command(&script);

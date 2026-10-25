@@ -567,12 +567,8 @@ fn start(git: &Git, script: &str, args: &[&OsStr]) -> io::Result<Started> {
         program: OsStr::new("sh"),
         args: words,
         dir: None,
-        unset: environment
-            .map(|environment| environment.removals().collect())
-            .unwrap_or_default(),
-        set: environment
-            .map(|environment| environment.settings().collect())
-            .unwrap_or_default(),
+        unset: environment.map_or_default(|environment| environment.removals().collect()),
+        set: environment.map_or_default(|environment| environment.settings().collect()),
     });
     let mut command = ssh.command(&script);
     git.environment().apply(&mut command);

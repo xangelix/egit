@@ -79,7 +79,7 @@ it.
 - A browser: `scripts/build-web.sh` builds egit's WebAssembly, threaded, and its page into
   `target/web` on the nightly `scripts/web-env.sh` pins with the flags it gives (atomics, the
   standard library built again with them: `-Z build-std`; `rustup toolchain install
-  nightly-2026-07-15 --component rust-src,clippy --target wasm32-unknown-unknown`), and needs
+  nightly-2026-10-10 --component rust-src,clippy --target wasm32-unknown-unknown`), and needs
   `cargo install wasm-bindgen-cli --version <the lock file's wasm-bindgen> --locked`
   (wasm-opt, binaryen's, makes it smaller where installed); `egit-relay --web target/web`
   serves it and runs its git: open the address it prints (its token after `#`). Its crates
