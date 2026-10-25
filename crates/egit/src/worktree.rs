@@ -28,9 +28,9 @@ use web_time::Instant;
 use bstr::ByteSlice as _;
 
 use bstr::{BStr, BString};
+use egit_git::sync::Mutex;
 use egit_git::{CancelToken, Git, ObjectId, Repository, Status, ignored_paths, tree_folders};
 use egui_async::Bind;
-use parking_lot::Mutex;
 
 use crate::jobs;
 use crate::problem::Problem;
@@ -71,7 +71,7 @@ pub(crate) struct WorkTree {
     /// Whether it is on this computer (on another, its folders are followed by a session there,
     /// made with the first read's git).
     here: bool,
-    waker: egui::Context,
+    waker: crate::repaint::Repaint,
 }
 
 impl WorkTree {
@@ -87,7 +87,7 @@ impl WorkTree {
             head_folders: Arc::new(Mutex::new(None)),
             repository,
             here,
-            waker: ctx.clone(),
+            waker: crate::repaint::Repaint::of(ctx),
         };
         if here {
             work_tree.start_watching(None);

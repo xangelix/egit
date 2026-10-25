@@ -10,10 +10,10 @@ use std::time::Duration;
 
 use web_time::Instant;
 
+use egit_git::sync::Mutex;
 use egui::text::{LayoutJob, TextFormat};
 use egui::{Color32, CornerRadius, FontId, Frame, Margin, RichText, Stroke, Ui, vec2};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use parking_lot::Mutex;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 use crate::grid::Span;
@@ -63,7 +63,8 @@ impl Highlights {
         if self.asked.insert(key) {
             let done = Arc::clone(&self.done);
             let (language, code) = (language.to_owned(), code.to_owned());
-            let (dark, default, ctx) = (palette.dark, palette.text, ctx.clone());
+            let (dark, default, ctx) =
+                (palette.dark, palette.text, crate::repaint::Repaint::of(ctx));
             crate::jobs::detached(async move {
                 let colored = crate::syntax::highlight_snippet(&language, &code, dark, default);
                 done.lock().insert(key, Arc::new(colored));

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 
 use crate::git::Git;
 use crate::host::{self, GitStdout, Host, PidReader, Remote, RemotePid, SshHost};
@@ -19,9 +19,10 @@ use crate::relay::Relay;
 /// How a script there says the path asked about isn't there.
 const MISSING: i32 = 3;
 
-/// Whether `path` is absolute where git runs. In a browser, whose standard library knows no
-/// computer's paths (it calls none absolute), one from the root is: its relay's computer writes
-/// them so (`/home/…`).
+/// Whether `path` is absolute where git runs.
+///
+/// In a browser, whose standard library knows no computer's paths (it calls none absolute), one
+/// from the root is: its relay's computer writes them so (`/home/…`).
 #[must_use]
 pub fn is_absolute(path: &Path) -> bool {
     if cfg!(target_arch = "wasm32") {

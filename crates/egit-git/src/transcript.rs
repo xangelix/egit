@@ -11,8 +11,8 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+use crate::sync::Mutex;
 use bstr::ByteSlice as _;
-use parking_lot::Mutex;
 
 /// The most lines kept.
 pub const MAX_LINES: usize = 20_000;
@@ -293,9 +293,10 @@ fn parse(kind: LineKind, bytes: &[u8], mut style: Style) -> (Line, Style) {
     (Line { kind, text, spans }, style)
 }
 
-/// An escape sequence at the start of `bytes` (which starts with `ESC`): how many bytes it
-/// takes, and an SGR's parameters (`ESC [ … m`). Other CSI and OSC sequences are skipped whole;
-/// a lone `ESC`, one byte.
+/// An escape sequence at the start of `bytes` (which starts with `ESC`).
+///
+/// How many bytes it takes, and an SGR's parameters (`ESC [ … m`). Other CSI and OSC sequences
+/// are skipped whole; a lone `ESC`, one byte.
 #[must_use]
 pub fn escape_sequence(bytes: &[u8]) -> (usize, Option<&[u8]>) {
     match bytes.get(1) {

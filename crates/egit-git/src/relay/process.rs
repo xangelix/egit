@@ -6,7 +6,7 @@ use std::future::poll_fn;
 use std::io;
 use std::task::{Poll, Waker};
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 
 use super::{Missing, Relay, ToRelay, WINDOW};
 use crate::output::Exit;

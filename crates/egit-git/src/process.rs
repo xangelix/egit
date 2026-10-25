@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use web_time::Instant;
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 
 #[cfg(unix)]
 mod unix;

@@ -73,9 +73,10 @@ pub async fn recent_authors(
     Ok(authors.into_iter().map(|(_, author)| author).collect())
 }
 
-/// Each of `contacts` (`Name <email>`) as the repository's mailmap names its person, in order
-/// (`check-mailmap --stdin`): one the mailmap doesn't know, or that isn't a contact git can
-/// read, comes back as it is.
+/// Each of `contacts` (`Name <email>`) as the repository's mailmap names its person, in order.
+///
+/// Through `check-mailmap --stdin`: one the mailmap doesn't know, or that isn't a contact git
+/// can read, comes back as it is.
 ///
 /// # Errors
 ///

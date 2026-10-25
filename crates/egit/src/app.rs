@@ -319,7 +319,7 @@ impl EgitApp {
     ) -> Self {
         let settings = Settings::load(creation.storage);
         let (sender, incoming) = std::sync::mpsc::channel();
-        let waker = creation.egui_ctx.clone();
+        let waker = crate::repaint::Repaint::of(&creation.egui_ctx);
         relay.send_prompts_to(sender, move || waker.request_repaint());
         // People's pictures, asked of their services by the relay; kept while the page lives.
         crate::avatars::install(
@@ -819,7 +819,12 @@ impl AppState {
             if !wanted.is_empty() {
                 let run = self.forge_run();
                 for host in wanted {
-                    crate::forge::learn_ssh_host(git.clone(), host, &run, ctx.clone());
+                    crate::forge::learn_ssh_host(
+                        git.clone(),
+                        host,
+                        &run,
+                        crate::repaint::Repaint::of(ctx),
+                    );
                 }
             }
             // Back from a terminal, a hook may have been added.
@@ -1400,7 +1405,7 @@ fn pointing_hand(ctx: &egui::Context) {
 
 /// Watches the user's configuration `files`, where `git` runs, waking `ctx` when one changes.
 fn watch_files(git: &Git, files: &[PathBuf], ctx: &egui::Context) -> notify::Result<Watcher> {
-    let waker = ctx.clone();
+    let waker = crate::repaint::Repaint::of(ctx);
     let wake = move |delay| waker.request_repaint_after(delay);
     if git.host().is_local() {
         Watcher::files(files.to_vec(), wake)

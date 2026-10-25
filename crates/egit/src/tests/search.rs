@@ -271,7 +271,7 @@ fn messages_and_authors_read_here_are_those_git_finds() {
         &repository,
         &Objects::default(),
         &Scope::default(),
-        &ctx,
+        &crate::repaint::Repaint::of(&ctx),
     );
     let started = Instant::now();
     while history.is_loading() {

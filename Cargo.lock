@@ -1169,7 +1169,6 @@ dependencies = [
  "log",
  "memchr",
  "notify",
- "parking_lot",
  "pulldown-cmark",
  "rfd",
  "ron",
@@ -1193,7 +1192,6 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "egit-git",
- "parking_lot",
  "serde",
  "serde_json",
  "tempfile",
@@ -1209,7 +1207,6 @@ dependencies = [
  "bstr",
  "egit-forge",
  "egit-git",
- "parking_lot",
  "rustls",
  "serde",
  "serde_json",
@@ -1232,6 +1229,7 @@ dependencies = [
  "getrandom 0.4.3",
  "js-sys",
  "libc",
+ "lock_api",
  "parking_lot",
  "rustix 1.1.5",
  "serde",
@@ -1299,6 +1297,7 @@ name = "egit-web"
 version = "0.1.0"
 dependencies = [
  "egit",
+ "egit-git",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

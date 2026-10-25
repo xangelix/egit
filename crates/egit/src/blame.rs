@@ -13,12 +13,12 @@ use std::time::Duration;
 use web_time::Instant;
 
 use bstr::{BStr, BString};
+use egit_git::sync::Mutex;
 use egit_git::{
     BlameCommit, BlameRun, CancelToken, Git, Moves, ObjectId, Repository, blame, tree_entry,
 };
 use egit_text::{Measure, Text};
 use egui::Color32;
-use parking_lot::Mutex;
 
 use crate::format;
 use crate::grid::{GridSource, Plain, Span};

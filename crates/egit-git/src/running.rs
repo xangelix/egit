@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 
 use crate::git::Git;
 use crate::host::{GitStdout, Host, PidReader, RemotePid};

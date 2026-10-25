@@ -16,8 +16,8 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
+use egit_git::sync::Mutex;
 use egit_git::{Git, Input, Running, Stopping};
-use parking_lot::Mutex;
 use serde_json::Value;
 
 use crate::AgentError;

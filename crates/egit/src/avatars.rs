@@ -22,10 +22,10 @@ use std::time::{Duration, SystemTime};
 use web_time::Instant;
 
 use egit_forge::{Fetched, PictureSources, Pictures};
+use egit_git::sync::Mutex;
 use egui::{Color32, ColorImage, Context, Id, Rect, TextureHandle, TextureId, TextureOptions};
 use image::imageops::FilterType;
 use image::{DynamicImage, RgbaImage};
-use parking_lot::Mutex;
 
 /// The size a picture is kept at, once fetched.
 pub(crate) const MASTER: u32 = 128;
@@ -174,7 +174,11 @@ pub(crate) fn install(
         forget_older(cache);
     }
     for worker in 0..2 {
-        let (queue, sender, ctx) = (Arc::clone(&queue), sender.clone(), ctx.clone());
+        let (queue, sender, ctx) = (
+            Arc::clone(&queue),
+            sender.clone(),
+            crate::repaint::Repaint::of(ctx),
+        );
         let (sources, pictures, cache) = (sources.clone(), pictures.clone(), cache.clone());
         let spawned = egit_git::exec::spawn(&format!("avatars {worker}"), async move {
             let fetching = Fetching {

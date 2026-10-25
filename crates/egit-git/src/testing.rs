@@ -352,8 +352,8 @@ mod relay {
     use std::process::{ChildStdin, Command, Stdio};
     use std::sync::OnceLock;
 
+    use crate::sync::Mutex;
     use futures_util::{SinkExt as _, StreamExt as _};
-    use parking_lot::Mutex;
     use tokio::sync::mpsc::{self, UnboundedSender};
     use tokio_tungstenite::tungstenite::Message;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
@@ -552,7 +552,7 @@ mod ssh {
     use std::sync::OnceLock;
     use std::time::{Duration, Instant};
 
-    use parking_lot::Mutex;
+    use crate::sync::Mutex;
 
     use super::SandboxError;
     use crate::SshHost;

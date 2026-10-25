@@ -148,7 +148,7 @@ pub(crate) struct RepoTab {
     /// Notices what changes the repository outside egit.
     watching: Watching,
     /// Wakes the window when a job has news.
-    waker: egui::Context,
+    waker: crate::repaint::Repaint,
     /// Its agents: conversations with Claude working in its work tree.
     pub(crate) agents: crate::agents::RepoAgents,
 }
@@ -173,12 +173,13 @@ impl RepoTab {
             Some(ssh) => format!("{name} · {}", ssh.destination),
             None => name,
         };
-        let watching = Watching::new(Instant::now(), || watch(git, &repository, ctx));
+        let repaint = crate::repaint::Repaint::of(ctx);
+        let watching = Watching::new(Instant::now(), || watch(git, &repository, &repaint));
         let repository = Arc::new(repository);
         let mut tab = Self {
             id,
             git: git.clone(),
-            history: HistoryState::new(git, &repository, ctx),
+            history: HistoryState::new(git, &repository, &repaint),
             history_view: HistoryView::new(id),
             work_tree: WorkTree::new(Arc::clone(&repository), git.host().is_local(), ctx),
             repository,
@@ -206,14 +207,14 @@ impl RepoTab {
             commit_cancel: CancelToken::new(),
             hooks: Bind::new(true),
             journal: Journal::default(),
-            forge: RepoForge::new(ctx, here.cloned(), run),
+            forge: RepoForge::new(&repaint, here.cloned(), run),
             forge_config: None,
             forge_fetches: 0,
             panel: RepoPanel::History,
             writes: WriteLock::default(),
             watching,
-            waker: ctx.clone(),
-            agents: crate::agents::RepoAgents::new(ctx),
+            agents: crate::agents::RepoAgents::new(&repaint),
+            waker: repaint,
         };
         tab.refresh_status(git);
         tab.refresh_config(git);
@@ -731,7 +732,11 @@ impl RepoTab {
 }
 
 /// Watches `repository`, waking `ctx` when it changes.
-fn watch(git: &Git, repository: &Repository, ctx: &egui::Context) -> notify::Result<Watcher> {
+fn watch(
+    git: &Git,
+    repository: &Repository,
+    ctx: &crate::repaint::Repaint,
+) -> notify::Result<Watcher> {
     let waker = ctx.clone();
     let wake = move |delay| waker.request_repaint_after(delay);
     match git.host() {

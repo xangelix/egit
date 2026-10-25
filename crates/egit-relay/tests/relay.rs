@@ -61,6 +61,12 @@ fn serves_its_web_build_to_its_own_host_alone() {
         index.contains("Content-Security-Policy: default-src 'self'"),
         "{index}"
     );
+    // Isolated, so the page shares its memory with its workers.
+    assert!(
+        index.contains("Cross-Origin-Opener-Policy: same-origin\r\n")
+            && index.contains("Cross-Origin-Embedder-Policy: require-corp\r\n"),
+        "{index}"
+    );
     assert!(index.ends_with("<!doctype html>egit"), "{index}");
     // Compressed where the browser takes it, as its own type.
     let wasm = request(

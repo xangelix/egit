@@ -11,6 +11,7 @@
 use std::sync::Arc;
 
 use bstr::{BStr, BString, ByteSlice as _};
+use egit_git::sync::Mutex;
 use egit_git::{
     CancelToken, DiscardError, DiscardSide, DiscardedFile, Forwarded, Git, GitError, IgnoreError,
     Ignored, Integrated, ObjectId, Pulled, Repository, ResetMode, Stash, SwitchError, SwitchTo,
@@ -18,7 +19,6 @@ use egit_git::{
     ref_target, rename_branch, reset, stash_apply, stash_drop, stash_push, stash_store, stashes,
     switch, unignore,
 };
-use parking_lot::Mutex;
 
 use crate::problem::Problem;
 use crate::tasks::{Outcome, Task};

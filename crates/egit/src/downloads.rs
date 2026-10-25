@@ -25,7 +25,7 @@ use web_time::Instant;
 use egit_forge::download_artifact;
 use egit_forge::{Account, Artifact, ForgeError, ForgeRepository};
 use egit_git::CancelToken;
-use parking_lot::Mutex;
+use egit_git::sync::Mutex;
 
 use crate::problem::Problem;
 
@@ -101,7 +101,7 @@ impl Downloads {
         reach: Option<(Arc<Account>, ForgeRepository)>,
         wanted: ArtifactWanted,
         to: PathBuf,
-        waker: &egui::Context,
+        waker: &crate::repaint::Repaint,
     ) {
         self.next = self.next.wrapping_add(1);
         let download = Arc::new(Download {
@@ -175,7 +175,7 @@ fn part_of(to: &Path) -> PathBuf {
 async fn save(
     download: &Download,
     (account, repository): (&Account, &ForgeRepository),
-    waker: &egui::Context,
+    waker: &crate::repaint::Repaint,
 ) -> Result<(), Problem> {
     let part = part_of(&download.to);
     let written = write(download, (account, repository), (&part, waker))
@@ -200,7 +200,7 @@ async fn save(
 async fn save(
     download: &Download,
     (account, repository): (&Account, &ForgeRepository),
-    waker: &egui::Context,
+    waker: &crate::repaint::Repaint,
 ) -> Result<(), Problem> {
     let mut woken = Instant::now();
     let delivered = egit_forge::deliver_artifact(
@@ -238,7 +238,7 @@ async fn save(
 async fn write(
     download: &Download,
     (account, repository): (&Account, &ForgeRepository),
-    (part, waker): (&Path, &egui::Context),
+    (part, waker): (&Path, &crate::repaint::Repaint),
 ) -> Result<(), Problem> {
     let not_saved = |error: &std::io::Error| {
         Problem::new(

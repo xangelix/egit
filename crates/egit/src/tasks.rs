@@ -20,6 +20,7 @@ use egit_forge::{
     Account, ForgeKind, ForgeRepository, NewPullRequest, Opened, create_pull_request,
     start_pipeline,
 };
+use egit_git::sync::Mutex;
 use egit_git::{
     ApplyAs, BisectMark, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget,
     DeleteBranchError, FastForward, FetchOptions, Foreseen, ForwardFrom, Forwarded, Git, GitError,
@@ -37,7 +38,6 @@ use egit_git::{
     stash_push, switch, unlock_worktree, unset_config, update_submodules,
 };
 use egui_async::Bind;
-use parking_lot::Mutex;
 
 use crate::forge::{request_noun, request_number};
 use crate::jobs::{self, WriteLock};

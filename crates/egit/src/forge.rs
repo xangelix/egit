@@ -16,9 +16,9 @@ use egit_forge::{
     Account, CheckState, ForgeError, ForgeHost, ForgeHosts, ForgeKind, ForgeRepository,
     PullRequest, WorkflowFile, forge_repository, pull_requests, resolve_ssh_alias_on,
 };
+use egit_git::sync::{Mutex, MutexGuard};
 use egit_git::{CancelToken, ConfigSnapshot, Git, ObjectId, Repository, remote_urls};
 use egui_async::Bind;
-use parking_lot::{Mutex, MutexGuard};
 
 use crate::ci::{CiMark, Pipelines};
 use crate::downloads::{ArtifactWanted, Downloads};
@@ -184,7 +184,12 @@ impl SshLearning {
 
 /// Asks `host`, through `git`'s credential helpers or the sign-in made this run, the name its
 /// ssh is on, and notes it in `learning` (where it isn't the host's own); wakes `waker`.
-pub(crate) fn learn_ssh_host(git: Git, host: ForgeHost, run: &ForgeRun, waker: egui::Context) {
+pub(crate) fn learn_ssh_host(
+    git: Git,
+    host: ForgeHost,
+    run: &ForgeRun,
+    waker: crate::repaint::Repaint,
+) {
     let learning = run.learning.clone();
     let signed = run
         .session
@@ -341,7 +346,7 @@ pub(crate) struct RepoForge {
     /// Bumped whenever another read takes over.
     generation: u64,
     /// Wakes the window as pages land.
-    waker: egui::Context,
+    waker: crate::repaint::Repaint,
     /// The pipelines (GitLab's, GitHub's workflow runs): each commit's.
     ci: Pipelines,
     /// Their artifacts downloaded, or being downloaded.
@@ -365,7 +370,7 @@ pub(crate) struct RepoForge {
 impl RepoForge {
     /// A repository's forge, nothing known yet; `here` is this computer's git for a repository
     /// on another computer; `run`, what the run shares (sign-ins, ssh hosts learned).
-    pub(crate) fn new(waker: &egui::Context, here: Option<Git>, run: ForgeRun) -> Self {
+    pub(crate) fn new(waker: &crate::repaint::Repaint, here: Option<Git>, run: ForgeRun) -> Self {
         Self {
             resolving: Bind::new(true),
             resolved: None,

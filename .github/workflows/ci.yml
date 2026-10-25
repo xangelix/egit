@@ -174,10 +174,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Install the pinned toolchain and the WebAssembly target
+      # The pinned toolchain for the relay and its tests, and for the page the nightly its
+      # threads need (scripts/web-env.sh pins it): its standard library is built with atomics.
+      - name: Install the pinned toolchains
         run: |
           rustup toolchain install
-          rustup target add wasm32-unknown-unknown
+          . scripts/web-env.sh
+          rustup toolchain install "$web_toolchain" --profile minimal \
+            --component rust-src,clippy --target wasm32-unknown-unknown
 
       - uses: Swatinem/rust-cache@v2
 
@@ -189,9 +193,11 @@ jobs:
           cargo install wasm-bindgen-cli --version "$version" --locked
 
       - name: Clippy
-        run: cargo clippy --locked --target wasm32-unknown-unknown -p egit-web -p egit -p egit-git -p egit-forge -p egit-agents -p egit-gix -p egit-graph -p egit-text -- -D warnings
-        env:
-          RUSTFLAGS: --cfg getrandom_backend="wasm_js"
+        run: |
+          . scripts/web-env.sh
+          RUSTFLAGS="$web_rustflags" cargo +"$web_toolchain" clippy -Z build-std=panic_abort,std \
+            --locked --target wasm32-unknown-unknown -p egit-web -p egit -p egit-git -p egit-forge \
+            -p egit-agents -p egit-gix -p egit-graph -p egit-text -- -D warnings
 
       - name: Build the page
         run: scripts/build-web.sh

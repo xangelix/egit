@@ -37,9 +37,13 @@ tokio-tungstenite = { workspace = true, optional = true }
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
 js-sys.workspace = true
+lock_api.workspace = true
+# Its parker for threads sharing memory (`memory.atomic.wait32`): without it, a lock contended on
+# a worker panics rather than waits.
+parking_lot = { workspace = true, features = ["nightly"] }
 wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
-web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag", "Document", "Element", "HtmlAnchorElement", "HtmlElement", "Url", "Window"] }
+web-sys = { workspace = true, features = ["Blob", "BlobPropertyBag", "Document", "Element", "ErrorEvent", "HtmlAnchorElement", "HtmlElement", "Url", "Window", "Worker", "WorkerOptions", "WorkerType"] }
 
 [target.'cfg(unix)'.dependencies]
 rustix.workspace = true

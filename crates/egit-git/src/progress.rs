@@ -5,8 +5,8 @@
 
 use std::sync::Arc;
 
+use crate::sync::Mutex;
 use bstr::ByteSlice as _;
-use parking_lot::Mutex;
 
 /// The most notes kept (the latest).
 const MAX_NOTES: usize = 50;

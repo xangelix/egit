@@ -459,8 +459,9 @@ pub async fn trust_directory(git: &Git, path: &Path) -> Result<(), GitError> {
         .map(drop)
 }
 
-/// Makes `folder` (one that exists, on the computer `git` runs on) a new repository with no
-/// commits (`git init`), its branch the one `init.defaultBranch` names. Pass the path
+/// Makes `folder` (one that exists, on the computer `git` runs on) a new repository.
+///
+/// No commits (`git init`), its branch the one `init.defaultBranch` names. Pass the path
 /// [`DiscoverError::NotARepository`] names.
 ///
 /// # Errors

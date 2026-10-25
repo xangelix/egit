@@ -84,8 +84,9 @@ pub async fn format_patch(
         .map(|done| done.stdout)
 }
 
-/// Writes the commits from `from` (included) up to `HEAD`, one patch each, into `folder`
-/// (`git format-patch -o`, git naming them `0001-…`); merges are left out, as git leaves them.
+/// Writes the commits from `from` (included) up to `HEAD`, one patch each, into `folder`.
+///
+/// `git format-patch -o`, git naming them `0001-…`; merges are left out, as git leaves them.
 /// Returns the files written.
 ///
 /// # Errors

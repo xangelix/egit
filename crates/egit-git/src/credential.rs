@@ -221,8 +221,10 @@ pub async fn approve_credential(
 }
 
 /// Which of the credential helpers `names` (`libsecret`, `manager`, …) are installed where
-/// `git` runs: those whose program (`git-credential-<name>`) is in git's exec path, or, here,
-/// on `PATH`; in `names`' order.
+/// `git` runs.
+///
+/// Those whose program (`git-credential-<name>`) is in git's exec path, or, here, on `PATH`; in
+/// `names`' order.
 ///
 /// # Errors
 ///

@@ -292,7 +292,7 @@ pub(super) struct PipelineView {
 }
 
 /// A GitHub run's workflow, once read: its file, and what it says.
-type KeptWorkflow = Arc<parking_lot::Mutex<Option<(String, Arc<Workflow>)>>>;
+type KeptWorkflow = Arc<egit_git::sync::Mutex<Option<(String, Arc<Workflow>)>>>;
 
 impl Drop for PipelineView {
     fn drop(&mut self) {

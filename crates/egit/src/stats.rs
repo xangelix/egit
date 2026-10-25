@@ -16,12 +16,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use bstr::{BStr, ByteSlice as _};
+use egit_git::sync::Mutex;
 use egit_git::{
     CancelToken, Git, GitError, ObjectId, ObjectKind, ObjectReader, Repository, commit_lines,
     map_contacts, tree_files,
 };
 use egit_gix::{GixError, GixRepository};
-use parking_lot::Mutex;
 
 use crate::history::{Names, gix_allowed_for};
 use crate::jobs;

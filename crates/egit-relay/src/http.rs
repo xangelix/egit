@@ -27,7 +27,9 @@ const HEAD_LIMIT: usize = 16 * 1024;
 const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What every answer says, besides its own: no other site frames it or reads it, it loads
-/// nothing but its own files (its WebAssembly compiled), and it talks to the relay alone.
+/// nothing but its own files (its WebAssembly compiled), and it talks to the relay alone; and it
+/// is isolated from other sites' pages (opener and embedder policies), which lets it share its
+/// memory with its workers (`SharedArrayBuffer`): egit's page runs threaded.
 pub(crate) const SECURITY: &str = "Content-Security-Policy: default-src 'self'; \
      script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
      img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; \
@@ -35,6 +37,7 @@ pub(crate) const SECURITY: &str = "Content-Security-Policy: default-src 'self'; 
      X-Content-Type-Options: nosniff\r\n\
      Referrer-Policy: no-referrer\r\n\
      Cross-Origin-Opener-Policy: same-origin\r\n\
+     Cross-Origin-Embedder-Policy: require-corp\r\n\
      Cross-Origin-Resource-Policy: same-origin\r\n";
 
 /// A request as read: what the relay needs of it.

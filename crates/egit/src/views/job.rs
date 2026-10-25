@@ -134,7 +134,11 @@ impl JobView {
         match self.reach.clone() {
             Some(reach) => {
                 self.problem = None;
-                self.follower = Some(JobFollower::start(reach, run, waker.clone()));
+                self.follower = Some(JobFollower::start(
+                    reach,
+                    run,
+                    crate::repaint::Repaint::of(waker),
+                ));
             }
             None => {
                 self.problem = Some(Problem::new(

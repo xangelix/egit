@@ -6,7 +6,7 @@ use std::process::{Child, ChildStdin, ExitStatus};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 
 use crate::error::GitError;
 use crate::host::GitStdout;

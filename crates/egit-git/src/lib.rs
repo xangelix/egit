@@ -72,6 +72,7 @@ mod stage;
 mod stash;
 mod status;
 mod submodule;
+pub mod sync;
 #[cfg(feature = "testing")]
 pub mod testing;
 mod transcript;

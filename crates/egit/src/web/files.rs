@@ -92,21 +92,27 @@ async fn read_all(files: Option<web_sys::FileList>) -> Vec<PathBuf> {
     given
 }
 
-/// Sends the browser to `path`, the relay's own, where a download waits (a link to it,
-/// clicked: the answer names the file); whether it could.
+/// Sends the browser to `path`, the relay's own, where a download waits (a link to it, clicked:
+/// the answer names the file), by the main thread, whose page it is.
 pub(crate) fn open_download(path: &str) -> bool {
+    let path = path.to_owned();
+    egit_git::exec::on_main(move || click_through(&path));
+    true
+}
+
+/// Clicks a link to `path`, a download; on the main thread.
+fn click_through(path: &str) {
     let link = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.create_element("a").ok())
         .and_then(|link| link.dyn_into::<web_sys::HtmlAnchorElement>().ok());
     let Some(link) = link else {
         tracing::warn!("the browser couldn't be sent to a download");
-        return false;
+        return;
     };
     link.set_href(path);
     link.set_download("");
     link.click();
-    true
 }
 
 thread_local! {

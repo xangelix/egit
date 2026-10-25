@@ -12,18 +12,24 @@
 //! coloured as the new file's), and a hunk's header starts both over, since the lines between
 //! hunks are unknown. With the whole file as context there is one hunk, and the colours are
 //! exact.
+//!
+//! In a browser the interface's thread colours only lines the background parse has been
+//! through: syntect compiles each of a grammar's regexes the first time one is used, and a
+//! thread meeting one another thread is compiling waits for it, which the page's main thread
+//! may never do. Parsing from a kept state is the same work whichever thread does it, so every
+//! regex those lines take is compiled by then.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use web_time::Instant;
 
+use egit_git::sync::Mutex;
 use egit_text::Text;
 use egui::Color32;
-use parking_lot::Mutex;
 use syntect::highlighting::{HighlightIterator, HighlightState, Highlighter, Theme, ThemeSet};
 use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
 
@@ -46,6 +52,16 @@ static HIGHLIGHTERS: LazyLock<[Highlighter<'static>; 2]> = LazyLock::new(|| {
 
 /// Lines between kept states.
 const CHECKPOINT: u32 = 128;
+
+/// Loads the grammars, themes, and highlighters now. In a browser: on the page's main thread
+/// before its workers start, as both read them, and the main thread may never wait for a
+/// worker making them.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn prepare() {
+    LazyLock::force(&SYNTAXES);
+    LazyLock::force(&HIGHLIGHTERS);
+    let _ = default_theme();
+}
 
 /// The most time colouring takes a frame.
 const FRAME_BUDGET: Duration = Duration::from_millis(3);
@@ -184,6 +200,8 @@ struct Walk {
     checkpoints: Mutex<Vec<Arc<States>>>,
     /// Asks the parse to stop.
     stop: AtomicBool,
+    /// How many lines the parse has been through.
+    parsed: AtomicU32,
     /// Whether the parse reached the text's end.
     done: AtomicBool,
 }
@@ -276,7 +294,7 @@ impl Syntax {
             out.extend_from_slice(spans);
             return;
         }
-        if kept.spent >= FRAME_BUDGET {
+        if kept.spent >= FRAME_BUDGET || !self.may_colour(line) {
             kept.missed = true;
             return;
         }
@@ -343,6 +361,23 @@ impl Syntax {
         if let Some(spans) = kept.lines.get(&line) {
             out.extend_from_slice(spans);
         }
+    }
+}
+
+impl Syntax {
+    /// Whether `line` (and the lines before it) may be coloured now: in a browser, once the
+    /// background parse has been through it, every regex it takes compiled.
+    #[cfg(target_arch = "wasm32")]
+    fn may_colour(&self, line: u32) -> bool {
+        line < self.walk.parsed.load(Ordering::Acquire)
+    }
+
+    /// Whether `line` may be coloured now: always, here (a thread may wait for another
+    /// compiling a regex).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[expect(clippy::unused_self, reason = "a browser's asks its parse")]
+    const fn may_colour(&self, _line: u32) -> bool {
+        true
     }
 }
 
@@ -475,6 +510,7 @@ async fn parse(syntax: &SyntaxReference, bytes: &[u8], lines: u32, feeds: &Feeds
             buffer.push('\n');
             let _ = states.feed(syntax, feed, &buffer);
         }
+        walk.parsed.store(line.saturating_add(1), Ordering::Release);
     }
     walk.done.store(true, Ordering::Relaxed);
 }

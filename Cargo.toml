@@ -50,6 +50,7 @@ pulldown-cmark = { version = "0.13.0", default-features = false }
 gix = { version = "0.89.0", default-features = false, features = ["pack-cache-lru-dynamic", "parallel", "sha1", "sha256"] }
 memchr = "2.8.3"
 notify = { version = "8.2.0", default-features = false }
+lock_api = "0.4.14"
 parking_lot = "0.12.5"
 rfd = { version = "0.17.2", default-features = false }
 # The settings as eframe stores them, in tests.

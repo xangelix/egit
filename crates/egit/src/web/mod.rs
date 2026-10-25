@@ -1,6 +1,9 @@
 //! egit in a browser: what the page gives in place of a computer's own (watches, threads,
 //! dialogs: `files`), and its connection to its relay.
 //!
+//! The page runs threaded: its main thread draws and alone touches the page's own objects, and a
+//! pool of web workers sharing its WebAssembly and memory runs egit's work (`egit_git::exec`).
+//!
 //! The page egit is served from is its relay's (`egit-relay`): its address carries the relay's
 //! token after `#`, which a browser never sends in a request. The token is kept for the tab
 //! (`sessionStorage`, so reloading needs no address again) and taken out of the address bar
@@ -27,6 +30,15 @@ const TOKEN_KEY: &str = "egit-relay-token";
 /// Whether a field of egit's has the keys, as the last frame left it.
 static TYPING: AtomicBool = AtomicBool::new(false);
 
+/// The browser's language, as the page started: workers read it, and have no window to ask.
+static LANGUAGE: OnceLock<String> = OnceLock::new();
+
+/// The script a worker of the page's runs (`egit-web`'s `worker.js`, beside the page).
+const WORKER: &str = "./worker.js";
+
+/// The most workers the page starts.
+const MOST_WORKERS: u32 = 8;
+
 /// Starts egit in `canvas`, its git through the relay that served the page.
 ///
 /// # Errors
@@ -40,6 +52,12 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
     // Its warnings in the page's console (a logger set already is the one kept).
     let _logging = eframe::WebLogger::init(log::LevelFilter::Info);
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    // This is the page's main thread, which draws; egit's work is its workers'.
+    egit_git::exec::serve_main();
+    prepare(&window);
+    egit_git::exec::start_workers(WORKER, workers(&window)).map_err(|error| {
+        JsValue::from_str(&format!("the page's workers couldn't start: {error}"))
+    })?;
     let token = token(&window)?;
     let location = window.location();
     let secure = location.protocol()? == "https:";
@@ -64,6 +82,31 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
             Box::new(move |creation| Ok(Box::new(EgitApp::in_browser(creation, relay, paths)))),
         )
         .await
+}
+
+/// Makes now, on the main thread, what both it and the workers read (they mustn't race to make
+/// it: the main thread may never wait), and notes what only the main thread can ask the page.
+fn prepare(window: &web_sys::Window) {
+    crate::syntax::prepare();
+    for weight in crate::theme::Weight::ALL {
+        let _ = weight.family();
+    }
+    let _ = crate::history::gix_allowed();
+    let _ = crate::format::local_zone();
+    let _ = is_mac();
+    let language = window.navigator().language().unwrap_or_default();
+    let _ = LANGUAGE.set(language);
+}
+
+/// How many workers the page starts: one for each core but the main thread's, two at least
+/// (one computing leaves another waiting on the relay), [`MOST_WORKERS`] at most.
+fn workers(window: &web_sys::Window) -> usize {
+    let cores = window.navigator().hardware_concurrency();
+    let counted = (1..=MOST_WORKERS)
+        .take_while(|count| f64::from(*count) < cores)
+        .last()
+        .unwrap_or(1);
+    usize::try_from(counted.max(2)).unwrap_or(2)
 }
 
 /// The repositories the address asks to open (`?open=<path>`, each the relay's computer's;
@@ -102,11 +145,9 @@ pub(crate) fn note_typing(typing: bool) {
     TYPING.store(typing, Ordering::Relaxed);
 }
 
-/// The browser's language (`ja-JP`), or none.
+/// The browser's language (`ja-JP`), or none; on any thread.
 pub(crate) fn language() -> String {
-    web_sys::window()
-        .and_then(|window| window.navigator().language())
-        .unwrap_or_default()
+    LANGUAGE.get().cloned().unwrap_or_default()
 }
 
 /// Whether the browser runs on a Mac (its ⌘ is egit's command key, and named so).

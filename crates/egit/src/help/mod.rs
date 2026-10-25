@@ -11,8 +11,8 @@
 
 use std::sync::Arc;
 
+use egit_git::sync::Mutex;
 use egui::{Align2, Color32, Context, Frame, Id, LayerId, Margin, Order, Pos2, Rect, RichText, Ui};
-use parking_lot::Mutex;
 
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};

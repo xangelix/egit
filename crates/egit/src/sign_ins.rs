@@ -16,12 +16,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use egit_forge::{Account, ForgeError, ForgeHost, SignedIn};
+use egit_git::sync::Mutex;
 use egit_git::{
     Asking, CancelToken, ConfigTarget, CredentialPlace, Git, add_config_value, approve_credential,
     fill_credential, installed_helpers,
 };
 use egui_async::Bind;
-use parking_lot::Mutex;
 use zeroize::Zeroizing;
 
 use crate::jobs::{self, WriteLock};

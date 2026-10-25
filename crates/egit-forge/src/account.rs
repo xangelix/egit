@@ -24,7 +24,7 @@ pub struct SignedIn {
     /// The credential, for the host's other accounts (other repositories' sign-ins) to take.
     pub credential: Arc<Credential>,
 }
-use parking_lot::Mutex;
+use egit_git::sync::Mutex;
 
 use crate::error::ForgeError;
 use crate::host::ForgeHost;

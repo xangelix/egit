@@ -52,7 +52,10 @@ pub fn size(path: &Path) -> io::Result<u64> {
 /// When it can't be written; in a browser, when the page can't offer it.
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     #[cfg(target_arch = "wasm32")]
-    return browser::download(path, bytes);
+    {
+        browser::download(path, bytes);
+        Ok(())
+    }
     #[cfg(not(target_arch = "wasm32"))]
     std::fs::write(path, bytes)
 }
@@ -88,7 +91,6 @@ pub fn give(name: &str, bytes: Vec<u8>) -> PathBuf {
 /// The page's own: the files given, and downloads.
 #[cfg(target_arch = "wasm32")]
 mod browser {
-    use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::io;
     use std::path::{Path, PathBuf};
@@ -98,40 +100,43 @@ mod browser {
     use wasm_bindgen::{JsCast as _, JsValue};
 
     use super::KEPT;
+    use crate::sync::Mutex;
 
     /// How long a download's address lives: the browser has read it long before.
     const ADDRESS_LIVES: Duration = Duration::from_secs(60);
 
-    /// The files given (each its path and bytes), the latest last, and how many were.
-    type Given = (VecDeque<(PathBuf, Arc<[u8]>)>, u64);
-
-    thread_local! {
-        static GIVEN: RefCell<Given> = const { RefCell::new((VecDeque::new(), 0)) };
+    /// The files given (each its path and bytes), the latest last, and how many were: in the
+    /// page's memory, which its workers share.
+    struct Given {
+        files: VecDeque<(PathBuf, Arc<[u8]>)>,
+        count: u64,
     }
 
+    static GIVEN: Mutex<Given> = Mutex::new(Given {
+        files: VecDeque::new(),
+        count: 0,
+    });
+
     pub(super) fn give(name: &str, bytes: Vec<u8>) -> PathBuf {
-        GIVEN.with_borrow_mut(|(given, count)| {
-            *count = count.wrapping_add(1);
-            // Its own folder: two files of one name stay apart, and the name is kept whole.
-            let path = PathBuf::from(format!("/given/{count}")).join(name);
-            if given.len() >= KEPT {
-                given.pop_front();
-            }
-            given.push_back((path.clone(), Arc::from(bytes)));
-            path
-        })
+        let mut given = GIVEN.lock();
+        given.count = given.count.wrapping_add(1);
+        // Its own folder: two files of one name stay apart, and the name is kept whole.
+        let path = PathBuf::from(format!("/given/{}", given.count)).join(name);
+        if given.files.len() >= KEPT {
+            given.files.pop_front();
+        }
+        given.files.push_back((path.clone(), Arc::from(bytes)));
+        path
     }
 
     fn given(path: &Path) -> io::Result<Arc<[u8]>> {
-        GIVEN.with_borrow(|(given, _)| {
-            given
-                .iter()
-                .find(|(kept, _)| kept == path)
-                .map(|(_, bytes)| Arc::clone(bytes))
-                .ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "the browser gave no such file")
-                })
-        })
+        GIVEN
+            .lock()
+            .files
+            .iter()
+            .find(|(kept, _)| kept == path)
+            .map(|(_, bytes)| Arc::clone(bytes))
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "the browser gave no such file"))
     }
 
     pub(super) fn read(path: &Path) -> io::Result<Vec<u8>> {
@@ -142,38 +147,42 @@ mod browser {
         given(path).map(|bytes| u64::try_from(bytes.len()).unwrap_or(u64::MAX))
     }
 
-    /// Offers `bytes` as a download named as `path`'s file: a link to them, clicked.
-    pub(super) fn download(path: &Path, bytes: &[u8]) -> io::Result<()> {
-        let name = path
-            .file_name()
-            .map_or_else(|| "download".into(), |name| name.to_string_lossy());
-        let failed = |error: JsValue| io::Error::other(format!("the browser refused: {error:?}"));
-        let window = web_sys::window().ok_or_else(|| io::Error::other("no window"))?;
-        let document = window
-            .document()
-            .ok_or_else(|| io::Error::other("no document"))?;
+    /// Offers `bytes` as a download named as `path`'s file, by the page's main thread (the page's
+    /// own objects are its alone): a link to them, clicked.
+    pub(super) fn download(path: &Path, bytes: &[u8]) {
+        let name = path.file_name().map_or_else(
+            || "download".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        let bytes = bytes.to_vec();
+        crate::exec::on_main(move || {
+            if let Err(error) = offer(&name, &bytes) {
+                tracing::warn!(name, ?error, "a download couldn't be offered");
+            }
+        });
+    }
+
+    /// Offers `bytes` as a download named `name`; on the main thread.
+    fn offer(name: &str, bytes: &[u8]) -> Result<(), JsValue> {
+        let document = web_sys::window()
+            .and_then(|window| window.document())
+            .ok_or_else(|| JsValue::from_str("no document"))?;
         let parts = js_sys::Array::of1(&js_sys::Uint8Array::from(bytes));
         let options = web_sys::BlobPropertyBag::new();
         options.set_type("application/octet-stream");
-        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)
-            .map_err(failed)?;
-        let address = web_sys::Url::create_object_url_with_blob(&blob).map_err(failed)?;
+        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)?;
+        let address = web_sys::Url::create_object_url_with_blob(&blob)?;
         let link = document
-            .create_element("a")
-            .map_err(failed)?
-            .dyn_into::<web_sys::HtmlAnchorElement>()
-            .map_err(|_| io::Error::other("not a link"))?;
+            .create_element("a")?
+            .dyn_into::<web_sys::HtmlAnchorElement>()?;
         link.set_href(&address);
-        link.set_download(&name);
+        link.set_download(name);
         link.click();
         // Its bytes let go once the browser has them.
-        let forgotten = crate::exec::spawn("forgetting a download", async move {
+        wasm_bindgen_futures::spawn_local(async move {
             crate::exec::sleep(ADDRESS_LIVES).await;
             let _revoked = web_sys::Url::revoke_object_url(&address);
         });
-        if let Err(error) = forgotten {
-            tracing::debug!(%error, "a download's address is kept");
-        }
         Ok(())
     }
 }

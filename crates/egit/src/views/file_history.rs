@@ -6,10 +6,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use bstr::{BString, ByteSlice as _};
+use egit_git::sync::Mutex;
 use egit_git::{CancelToken, DiffOptions, FileCommit, file_log};
 use egui::{Frame, Id, Key, Margin, Modifiers, RichText, Sense, Ui};
 use egui_async::Bind;
-use parking_lot::Mutex;
 
 use super::blame::BlameEvent;
 use super::file::placeholder;

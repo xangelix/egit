@@ -475,11 +475,11 @@ pub(crate) struct RepoAgents {
     /// Code's own).
     pub(crate) account: Option<AgentAccount>,
     /// Wakes the window when a bridge says something.
-    waker: egui::Context,
+    waker: crate::repaint::Repaint,
 }
 
 impl RepoAgents {
-    pub(crate) fn new(waker: &egui::Context) -> Self {
+    pub(crate) fn new(waker: &crate::repaint::Repaint) -> Self {
         Self {
             shown: false,
             conversations: vec![Conversation::new(None)],
@@ -798,7 +798,7 @@ impl Conversation {
         starter: Option<Starter>,
         work_tree: &Path,
         (prompt, images): (Prompt, Vec<Image>),
-        waker: egui::Context,
+        waker: crate::repaint::Repaint,
     ) {
         if self.title.is_empty() {
             prompt
@@ -832,7 +832,7 @@ impl Conversation {
 
     /// Starts its bridge (in a job) as its account, going on with its session if it has one;
     /// requests wait until it is ready.
-    fn start(&mut self, starter: Starter, work_tree: &Path, waker: egui::Context) {
+    fn start(&mut self, starter: Starter, work_tree: &Path, waker: crate::repaint::Repaint) {
         let Starter {
             mut launch,
             git,

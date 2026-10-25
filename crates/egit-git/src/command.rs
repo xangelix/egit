@@ -9,7 +9,7 @@ use std::process::{Child, ChildStderr, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 use std::time::Duration;
 
 use zeroize::Zeroizing;

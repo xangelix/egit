@@ -23,7 +23,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::task::{Poll, Waker};
 
-use parking_lot::Mutex;
+use crate::sync::Mutex;
 use zeroize::Zeroizing;
 
 pub use process::Fetching;

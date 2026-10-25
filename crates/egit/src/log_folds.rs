@@ -12,9 +12,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use egit_forge::Section;
+use egit_git::sync::Mutex;
 use egit_text::{Measure, Text};
 use egui::Color32;
-use parking_lot::Mutex;
 
 use crate::grid::{GridSource, Span};
 use crate::job_log::LogSource;
@@ -347,7 +347,7 @@ impl Folding {
                     Arc::clone(&landed),
                     Arc::clone(whole),
                     self.folds.clone(),
-                    waker.clone(),
+                    crate::repaint::Repaint::of(waker),
                 );
                 crate::jobs::detached(async move {
                     *into.lock() = Some(FoldedLog::build(whole, &folds));

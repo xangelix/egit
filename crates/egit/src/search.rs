@@ -23,12 +23,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use bstr::{BStr, ByteSlice as _};
+use egit_git::sync::Mutex;
 use egit_git::{
     CancelToken, CommitFilter, Git, GitError, ObjectKind, Repository, find_commits, resolve_commit,
 };
 use egit_gix::{GixError, GixRepository};
 use egit_text::{Needle, matches_case};
-use parking_lot::Mutex;
 
 use crate::history::{Names, gix_allowed_for};
 use crate::jobs;
@@ -422,7 +422,7 @@ pub(crate) fn start(asked: Asked<'_>, ctx: &egui::Context) -> Search {
         found: Arc::clone(&found),
         cancel: cancel.clone(),
     };
-    let ctx = ctx.clone();
+    let ctx = crate::repaint::Repaint::of(ctx);
     jobs::detached(async move {
         let ended = job.run().await;
         if !job.cancel.is_cancelled() {

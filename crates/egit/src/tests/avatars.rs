@@ -9,9 +9,9 @@ use std::net::TcpListener;
 use std::sync::Arc;
 
 use egit_forge::{PictureSource, PictureSources};
+use egit_git::sync::Mutex;
 use egit_git::testing::Sandbox;
 use egui_kittest::Harness;
-use parking_lot::Mutex;
 
 use super::screens::{harness, history_shown, open_path, profile_loaded, render, settle};
 use crate::app::EgitApp;

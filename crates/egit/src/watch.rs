@@ -29,9 +29,9 @@ use std::time::Duration;
 
 use web_time::Instant;
 
+use egit_git::sync::Mutex;
 use egit_git::{Follow, Git, INOTIFYWAIT, Liveness, Looked, Looking, Repository, Seen};
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
-use parking_lot::Mutex;
 
 /// How long things must stay quiet before what changed is handed over.
 pub(crate) const SETTLE: Duration = Duration::from_millis(120);

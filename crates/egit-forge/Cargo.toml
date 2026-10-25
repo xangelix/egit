@@ -16,7 +16,6 @@ testing = []
 [dependencies]
 bstr.workspace = true
 egit-git.workspace = true
-parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

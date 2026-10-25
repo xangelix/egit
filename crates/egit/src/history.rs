@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 
 use bstr::{BStr, BString, ByteSlice as _};
+use egit_git::sync::Mutex;
 use egit_git::{
     CancelToken, Commit, CountedFile, FileChange, Git, GitError, LineCounts, Object, ObjectFormat,
     ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, SignatureCheck, TreeEntry,
@@ -24,7 +25,6 @@ use egit_gix::GixRepository;
 use egit_graph::{CHUNK_ROWS, Chunk, GraphBuilder};
 use egit_text::Text;
 use egui_async::Bind;
-use parking_lot::Mutex;
 
 use crate::format::local_date_time;
 use crate::grid::Plain;
@@ -106,7 +106,7 @@ impl History {
         repository: &Arc<Repository>,
         objects: &Objects,
         scope: &Scope,
-        ctx: &egui::Context,
+        ctx: &crate::repaint::Repaint,
     ) -> Self {
         let (sender, pieces) = mpsc::channel();
         let cancel = CancelToken::new();
@@ -460,7 +460,7 @@ async fn walk(
     walking: &Walking<'_>,
     scope: &Scope,
     pieces: &Sender<Piece>,
-    ctx: &egui::Context,
+    ctx: &crate::repaint::Repaint,
 ) -> Result<(), Problem> {
     let (git, repository) = (walking.git, walking.repository);
     let (refs, gix) = read_refs(walking).await?;
@@ -1332,7 +1332,11 @@ pub(crate) struct HistoryState {
 
 impl HistoryState {
     /// Starts reading `repository`'s history.
-    pub(crate) fn new(git: &Git, repository: &Arc<Repository>, ctx: &egui::Context) -> Self {
+    pub(crate) fn new(
+        git: &Git,
+        repository: &Arc<Repository>,
+        ctx: &crate::repaint::Repaint,
+    ) -> Self {
         let objects = Objects::of(git);
         let scope = Scope::default();
         Self {
@@ -1358,7 +1362,7 @@ impl HistoryState {
         git: &Git,
         repository: &Arc<Repository>,
         scope: Scope,
-        ctx: &egui::Context,
+        ctx: &crate::repaint::Repaint,
     ) {
         if scope != self.scope {
             self.scope = scope;
@@ -1368,7 +1372,12 @@ impl HistoryState {
 
     /// Reads the history again. The table keeps showing the current one until the new one is
     /// complete, unless the current one isn't complete either.
-    pub(crate) fn reload(&mut self, git: &Git, repository: &Arc<Repository>, ctx: &egui::Context) {
+    pub(crate) fn reload(
+        &mut self,
+        git: &Git,
+        repository: &Arc<Repository>,
+        ctx: &crate::repaint::Repaint,
+    ) {
         let next = History::load(git, repository, &self.objects, &self.scope, ctx);
         if self.shown.is_loading() || self.shown.rows() == 0 {
             self.shown = next;

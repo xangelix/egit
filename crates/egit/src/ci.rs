@@ -215,7 +215,7 @@ pub(crate) struct Pipelines {
     next: Option<Instant>,
     cancel: CancelToken,
     /// Wakes the window when the newest are due again.
-    waker: egui::Context,
+    waker: crate::repaint::Repaint,
 }
 
 impl std::fmt::Debug for Pipelines {
@@ -230,7 +230,7 @@ impl std::fmt::Debug for Pipelines {
 
 impl Pipelines {
     /// None known yet; `waker` is woken when a read is due.
-    pub(crate) fn new(waker: &egui::Context) -> Self {
+    pub(crate) fn new(waker: &crate::repaint::Repaint) -> Self {
         Self {
             shown: Arc::default(),
             reading: Bind::new(true),

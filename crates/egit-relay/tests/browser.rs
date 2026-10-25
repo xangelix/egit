@@ -2,8 +2,8 @@
 //! protocol (`EGIT_TEST_BROWSER` names it, `EGIT_TEST_WEB` the web build `scripts/build-web.sh`
 //! made; skipped without them). The page starts, opens the repository its address names
 //! (`?open=`), titled by it, and shows the history's statistics from the palette (each git
-//! through the relay); nothing in it panics or says an error. Its screens are kept in
-//! `target/web-screens`.
+//! through the relay); it is threaded (cross-origin isolated, its workers started), and nothing
+//! in it or its workers panics or says an error. Its screens are kept in `target/web-screens`.
 
 #![cfg(unix)]
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
@@ -104,8 +104,12 @@ struct Page {
     socket: WebSocketStream<TcpStream>,
     session: String,
     next: u64,
-    /// What went wrong in it: console errors, exceptions, a panic's words.
+    /// What went wrong in it or its workers: console errors, exceptions, a panic's words.
     wrong: Vec<String>,
+    /// Its workers' sessions, attached to as they start.
+    workers: Vec<String>,
+    /// Those whose console isn't followed yet.
+    unfollowed: Vec<String>,
 }
 
 impl Page {
@@ -122,6 +126,8 @@ impl Page {
             session: String::new(),
             next: 0,
             wrong: Vec::new(),
+            workers: Vec::new(),
+            unfollowed: Vec::new(),
         };
         let targets = page.call("Target.getTargets", json!({})).await;
         let target = targets["targetInfos"]
@@ -141,7 +147,26 @@ impl Page {
         for domain in ["Runtime.enable", "Page.enable", "Log.enable"] {
             page.call(domain, json!({})).await;
         }
+        // Its workers attached to as they start, so what they say is heard too.
+        page.call(
+            "Target.setAutoAttach",
+            json!({ "autoAttach": true, "waitForDebuggerOnStart": false, "flatten": true }),
+        )
+        .await;
         page
+    }
+
+    /// Follows the console of the workers attached to since (their answers aren't waited for).
+    async fn follow_workers(&mut self) {
+        for session in std::mem::take(&mut self.unfollowed) {
+            self.next += 1;
+            let message =
+                json!({ "id": self.next, "method": "Runtime.enable", "sessionId": session });
+            self.socket
+                .send(Message::Text(message.to_string().into()))
+                .await
+                .unwrap();
+        }
     }
 
     /// Calls `method`: its result.
@@ -161,11 +186,12 @@ impl Page {
                 panic!("the browser went away");
             };
             let said: Value = serde_json::from_str(&text).unwrap();
-            if said["id"] == id {
+            if said["id"] == id && said.get("sessionId") == message.get("sessionId") {
                 assert!(said.get("error").is_none(), "{method}: {said}");
                 return said["result"].clone();
             }
             self.note(&said);
+            self.follow_workers().await;
         }
     }
 
@@ -189,6 +215,11 @@ impl Page {
                 self.wrong.push(words);
             }
             Some("Runtime.exceptionThrown") => self.wrong.push(params.to_string()),
+            Some("Target.attachedToTarget") if params["targetInfo"]["type"] == "worker" => {
+                let session = params["sessionId"].as_str().unwrap_or_default().to_owned();
+                self.workers.push(session.clone());
+                self.unfollowed.push(session);
+            }
             Some("Log.entryAdded") if params["entry"]["level"] == "error" => self.wrong.push(
                 params["entry"]["text"]
                     .as_str()
@@ -208,6 +239,7 @@ impl Page {
                 Ok(Some(Ok(Message::Text(text)))) => {
                     let said: Value = serde_json::from_str(&text).unwrap();
                     self.note(&said);
+                    self.follow_workers().await;
                 }
                 Ok(Some(Ok(_))) => {}
                 _ => return,
@@ -341,6 +373,23 @@ fn egit_starts_in_a_browser_and_opens_a_repository_through_its_relay() {
         assert_eq!(
             shown["result"]["value"],
             format!("http://{}/", relay.address)
+        );
+        // Threaded: the relay's headers isolate it (memory shared with its workers), and its
+        // workers started, each running egit's WebAssembly.
+        let isolated = page
+            .call(
+                "Runtime.evaluate",
+                json!({ "expression": "self.crossOriginIsolated", "returnByValue": true }),
+            )
+            .await;
+        assert_eq!(
+            isolated["result"]["value"], true,
+            "not cross-origin isolated"
+        );
+        assert!(
+            page.workers.len() >= 2,
+            "{} workers started",
+            page.workers.len()
         );
 
         // The palette, from the keys (taken from the browser), runs the Stats page.

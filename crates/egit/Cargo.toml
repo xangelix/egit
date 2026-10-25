@@ -36,7 +36,6 @@ egui_tiles.workspace = true
 image.workspace = true
 jiff.workspace = true
 memchr.workspace = true
-parking_lot.workspace = true
 pulldown-cmark.workspace = true
 serde.workspace = true
 # The agents' messages, as the SDK gives them.

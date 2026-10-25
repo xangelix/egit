@@ -47,6 +47,7 @@ mod output;
 mod pictures;
 mod preferences;
 mod problem;
+mod repaint;
 mod repo;
 mod search;
 mod settings;

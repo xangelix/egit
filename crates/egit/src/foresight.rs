@@ -7,10 +7,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 
+use egit_git::sync::Mutex;
 use egit_git::{
     CancelToken, Foreseen, Git, ObjectId, Repository, foresee_merge, foresee_pick, foresee_rebase,
 };
-use parking_lot::Mutex;
 
 use crate::jobs;
 
@@ -80,7 +80,11 @@ impl Foresight {
         state.working.insert(key);
         drop(state);
         let shared = Arc::clone(&self.state);
-        let (git, repository, ctx) = (git.clone(), Arc::clone(repository), ctx.clone());
+        let (git, repository, ctx) = (
+            git.clone(),
+            Arc::clone(repository),
+            crate::repaint::Repaint::of(ctx),
+        );
         jobs::detached(async move {
             let seen = foresee(&git, &repository, head, bringing).await;
             let mut state = shared.lock();

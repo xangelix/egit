@@ -1,8 +1,9 @@
 //! The page's WebSocket to its relay, as a `egit_git::relay::Transport`.
 //!
-//! The socket itself is the page's (a JavaScript object, kept on the page's one thread, in a
+//! The socket itself is the page's (a JavaScript object, kept on the page's main thread, in a
 //! thread-local table); what egit holds is its number, so a `Relay` stays `Send` as egit's
-//! futures are. Messages sent before it opened wait, and go once it has.
+//! futures are, and what a worker sends is handed to the main thread to send, in the order
+//! sent (`egit_git::exec::on_main`). Messages sent before it opened wait, and go once it has.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -34,28 +35,46 @@ struct Numbered(u64);
 
 impl Transport for Numbered {
     fn send(&self, message: Vec<u8>) {
-        SOCKETS.with(|sockets| {
-            if let Some(socket) = sockets.borrow_mut().get_mut(&self.0) {
-                if socket.open {
-                    if let Err(error) = socket.websocket.send_with_u8_array(&message) {
-                        tracing::warn!(?error, "a message to the relay wasn't sent");
-                    }
-                } else {
-                    socket.waiting.push_back(message);
-                }
-            }
-        });
+        let number = self.0;
+        egit_git::exec::on_main(move || send(number, message));
     }
 
     fn close(&self) {
-        SOCKETS.with(|sockets| {
-            if let Some(mut socket) = sockets.borrow_mut().remove(&self.0) {
-                let _closed = socket.websocket.close();
-                // Its handlers go with it: nothing more is heard from it.
-                socket.handlers.clear();
-            }
+        let number = self.0;
+        egit_git::exec::on_main(move || {
+            SOCKETS.with(|sockets| {
+                if let Some(mut socket) = sockets.borrow_mut().remove(&number) {
+                    let _closed = socket.websocket.close();
+                    // Its handlers go with it: nothing more is heard from it.
+                    socket.handlers.clear();
+                }
+            });
         });
     }
+}
+
+/// Sends `message` on `websocket`: copied out of the page's memory first, which is shared with
+/// its workers and which a WebSocket won't send from.
+fn send_now(websocket: &WebSocket, message: &[u8]) -> Result<(), JsValue> {
+    let copied =
+        js_sys::Uint8Array::new_with_length(u32::try_from(message.len()).unwrap_or(u32::MAX));
+    copied.copy_from(message);
+    websocket.send_with_array_buffer_view(&copied)
+}
+
+/// Sends `message` on socket `number`, or keeps it until the socket opens; on the main thread.
+fn send(number: u64, message: Vec<u8>) {
+    SOCKETS.with(|sockets| {
+        if let Some(socket) = sockets.borrow_mut().get_mut(&number) {
+            if socket.open {
+                if let Err(error) = send_now(&socket.websocket, &message) {
+                    tracing::warn!(?error, "a message to the relay wasn't sent");
+                }
+            } else {
+                socket.waiting.push_back(message);
+            }
+        }
+    });
 }
 
 /// Opens the relay's WebSocket at `address`, saying `token` first.
@@ -81,7 +100,7 @@ pub(super) fn connect(address: &str, token: &str) -> Result<Relay, JsValue> {
             if let Some(socket) = sockets.borrow_mut().get_mut(&number) {
                 socket.open = true;
                 while let Some(message) = socket.waiting.pop_front() {
-                    if let Err(error) = socket.websocket.send_with_u8_array(&message) {
+                    if let Err(error) = send_now(&socket.websocket, &message) {
                         tracing::warn!(?error, "a message to the relay wasn't sent");
                     }
                 }

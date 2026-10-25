@@ -25,10 +25,10 @@ use std::sync::Arc;
 use bstr::ByteSlice as _;
 use egit_git::Git;
 
+use egit_git::sync::Mutex;
 use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
 use egui::{Context, FontData, FontFamily, FontId, Id, Ui};
 use egui_async::Bind;
-use parking_lot::Mutex;
 use skrifa::MetadataProvider as _;
 use skrifa::raw::FileRef;
 use skrifa::string::StringId;

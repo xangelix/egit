@@ -48,7 +48,7 @@ it.
 | 34 | GitHub Actions as GitLab's pipelines are: marks, a run's page and graph, job logs and steps, re-runs and cancelling | done; awaiting the owner's review |
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
 | 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
-| 37 | egit in a browser: WebAssembly, git through a relay (patches, artifacts, and dropped files through the browser; fonts from the relay's computer; driven headless in CI) | done; awaiting the owner's review |
+| 37 | egit in a browser: WebAssembly, threaded (a pool of web workers runs its jobs), git through a relay (patches, artifacts, and dropped files through the browser; fonts from the relay's computer; driven headless in CI) | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -76,17 +76,21 @@ it.
   relay on the loopback address over one WebSocket, as egit in a browser runs them, and the
   agents' bridge through it too. Do this after
   touching how commands or requests are made, the relay, or its protocol (CI does it).
-- A browser: `scripts/build-web.sh` builds egit's WebAssembly and its page into `target/web`
-  (needs `rustup target add wasm32-unknown-unknown`, and `cargo install wasm-bindgen-cli
-  --version <the lock file's wasm-bindgen> --locked`; wasm-opt, binaryen's, makes it smaller
-  where installed); `egit-relay --web target/web` serves it and runs its git: open the address
-  it prints (its token after `#`). Its crates are linted by `scripts/check-platforms.sh` (with
-  `RUSTFLAGS='--cfg getrandom_backend="wasm_js"'`, which the build gives too). The page in a
+- A browser: `scripts/build-web.sh` builds egit's WebAssembly, threaded, and its page into
+  `target/web` on the nightly `scripts/web-env.sh` pins with the flags it gives (atomics, the
+  standard library built again with them: `-Z build-std`; `rustup toolchain install
+  nightly-2026-07-15 --component rust-src,clippy --target wasm32-unknown-unknown`), and needs
+  `cargo install wasm-bindgen-cli --version <the lock file's wasm-bindgen> --locked`
+  (wasm-opt, binaryen's, makes it smaller where installed); `egit-relay --web target/web`
+  serves it and runs its git: open the address it prints (its token after `#`). Its crates
+  are linted by `scripts/check-platforms.sh` on that nightly with those flags (a stable
+  toolchain doesn't set `cfg(target_feature = "atomics")`, so its lint is of another build). The page in a
   browser: `EGIT_TEST_BROWSER=<chromium or chrome> EGIT_TEST_WEB=$PWD/target/web cargo test -p
   egit-relay --test browser` (after the build) drives it headless over the browser's developer
   tools protocol, and keeps its screens in `target/web-screens` (look at them); CI does it with
-  the runner's Chrome. Do this after touching anything a browser runs: a call that panics there
-  (`Instant::now`, `env::vars_os`, a thread) passes every other test. Chromium with
+  the runner's Chrome; it checks the page is threaded (cross-origin isolated, its workers
+  started) and hears its workers too. Do this after touching anything a browser runs: a call
+  that panics there (`Instant::now`, `env::vars_os`, a thread) passes every other test. Chromium with
   `--disable-features=WebGPU` draws through WebGL2, which a screenshot reads (WebGPU's canvas
   shows blank, headless).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
@@ -160,14 +164,22 @@ tree, font folders, the browser opener); bytes git prints become paths through b
 `to_path_lossy`/`to_os_str_lossy` (byte for byte on Unix, UTF-8 on Windows, as Git for Windows
 writes paths), never `OsStrExt`.
 
-And a browser, since phase 37: egit's WebAssembly (`wasm32-unknown-unknown`, WebGPU where the
-browser has it, else WebGL2), its git run by `egit-relay` on a Linux or macOS computer. There
-`std` has no processes, threads, files, environment, or clock (`env::vars_os` and
-`Instant::now` panic): every command goes through the relay (`Host::Relay`), every job is the
-page's future (a long computation yields: `jobs::Pace`), time is `web_time`'s, and a path is
-absolute when it starts at the root (`egit_git::is_absolute`: `std` there calls none so).
-What differs is behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both
-compile.
+And a browser, since phase 37: egit's WebAssembly (`wasm32-unknown-unknown`, threaded: atomics
+and memory shared with a pool of web workers; WebGPU where the browser has it, else WebGL2), its
+git run by `egit-relay` on a Linux or macOS computer, whose headers isolate the page (COOP and
+COEP: a `SharedArrayBuffer` takes them). There `std` has no processes, files, environment, or
+clock (`env::vars_os` and `Instant::now` panic), and spawns no thread: every command goes
+through the relay (`Host::Relay`), every job runs on the page's workers
+(`egit_git::exec::spawn`; a long computation still yields, sharing its worker: `jobs::Pace`),
+time is `web_time`'s, and a path is absolute when it starts at the root
+(`egit_git::is_absolute`: `std` there calls none so). The page's main thread draws and alone
+touches the page's own objects (its document, WebSocket, egui's context: work elsewhere hands
+it what it must do, `exec::on_main`, and asks for a frame through a `Repaint`), and may never
+wait: a browser traps `memory.atomic.wait` there. So egit's locks spin there
+(`egit_git::sync`), what it shares with the workers lazily is made before they start
+(`web::prepare`), and it never meets what a worker may be making (a grammar's regexes: it
+colours only lines the walk has parsed; the time zone: only it asks jiff). What differs is
+behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compile.
 
 ## Rules for running git
 
@@ -319,7 +331,17 @@ compile.
     source for a browser, where a command is a relay's messages awaited, and a computer of its
     own, where it blocks on git's pipes while polled, so it is polled on a thread made for
     blocking); `block_on` (parks the thread while the future waits), `Wait` (`.wait()`, for
-    tests and threads of their own), `sleep`, `yield_now` (nothing here).
+    tests and threads of their own), `sleep`, `yield_now` (nothing here). In a browser
+    (`exec/page.rs`): the page's main thread (`serve_main`, `is_main`; what other threads hand
+    it, `on_main`, done there as soon as it is free) and its workers (`start_workers`: module
+    workers of `worker.js`, each handed the page's module and memory; `work`, a worker's loop
+    taking the pool's jobs, each a task of its own, so one computing leaves the rest to the
+    others); `spawn` hands a future to the pool, `sleep` and `yield_now` are the thread's
+    timers (`setTimeout`, a worker's own too).
+  - `sync.rs` — egit's locks: `parking_lot`'s, but in a browser a `Mutex` of its own
+    (`lock_api` over `parking_lot`'s raw lock) that spins on the page's main thread, which may
+    never wait, and parks on a worker (parking_lot's `nightly` parker there: `memory.atomic.wait32`;
+    no `Condvar`). Every lock egit's crates take is one of these.
   - `object_id.rs` — `ObjectId` (SHA-1 or SHA-256, by length; never assume 40 digits) and
     `ObjectFormat` (`zero`, the name of no object).
   - `repo.rs` — `Repository::discover` (two `rev-parse`s; `DiscoverError` names not a
@@ -1119,7 +1141,8 @@ compile.
   else a file of the build (`/` is `index.html`; plain names only, nothing hidden or outside;
   `.br` or `.gz` beside it where the browser takes it; `application/wasm`), each answer with
   a strict content security policy (its own files alone, its WebAssembly compiled), no
-  sniffing, no referrer, and no other site's framing or reading. `session.rs`: the first
+  sniffing, no referrer, no other site's framing or reading, and isolated (COOP
+  `same-origin`, COEP `require-corp`: the page's memory, shared with its workers, takes them). `session.rs`: the first
   message the token (`Refused` otherwise, or for another version), then `Welcome`; each
   program started as it is asked, its input fed, its room for output added to, stopped; an
   askpass server of the session's own, its questions relayed by number (`Withdrawn` once their
@@ -1151,9 +1174,13 @@ compile.
   then plain), the palette (⌘K, typed into, Enter) shows its Stats, nothing in the page
   saying an error or panicking; screens kept in `target/web-screens`.
 - `crates/egit-web` — egit in a browser: the page (`web/index.html`, `start.js`: its
-  WebAssembly loaded, a problem said in the page) and its entry (`lib.rs`, `wasm_bindgen(start)`:
-  `egit_app::start` in the canvas `#egit`); a `cdylib`, empty anywhere but `wasm32`. Built by
-  `scripts/build-web.sh` (wasm-bindgen, wasm-opt, `.gz` and `.br` beside each file).
+  WebAssembly loaded, a problem said in the page), its workers' script (`web/worker.js`: the
+  module and memory it is sent handed to wasm-bindgen's `init`, then `egit_worker`), and its
+  entries (`lib.rs`: `wasm_bindgen(start)`, `egit_app::start` in the canvas `#egit` on the main
+  thread, nothing on a worker; `egit_worker`, `egit_git::exec::work`); a `cdylib`, empty
+  anywhere but `wasm32`, and refused there without atomics (`compile_error!`). Built by
+  `scripts/build-web.sh` (the nightly and flags of `scripts/web-env.sh`, wasm-bindgen,
+  wasm-opt with threads, `.gz` and `.br` beside each file).
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
   - `layout.rs` — `GraphBuilder::push` lays out each commit as `walk_history` yields it, in
@@ -1212,7 +1239,11 @@ compile.
     in any case, `.exe` or not); otherwise `lib.rs`'s `run`: `-h`/`-V`, paths to open,
     `EGIT_LOG` logging, the runtime, the window (no console window behind it on Windows,
     but in a debug build). In a browser, nothing: the page starts egit (`web::start`).
-  - `web/` — egit in a browser (`wasm32`): `start` (from `egit-web`): the relay's token from
+  - `web/` — egit in a browser (`wasm32`): `start` (from `egit-web`): the main thread made the
+    one serving what the workers hand it (`exec::serve_main`), what both read made first
+    (`prepare`: the grammars and highlighters, the fonts' families, the time zone, whether
+    gix may read, the keys' names, the browser's language), the workers started (`worker.js`:
+    one for each core but the main thread's, two to `MOST_WORKERS` (8)), the relay's token from
     the address after `#` (kept for the tab in `sessionStorage`, taken out of the address bar
     and its history), the repositories the address names (`?open=<path>`, as the command line
     names them; taken out of it too), the relay's WebSocket (`ws(s)://<the page's host>/relay`), the keys
@@ -1223,13 +1254,15 @@ compile.
     by the relay); `open_page` (a new tab, `noopener`), `is_mac` (the keys' names), `language`
     (the browser's, for fonts), `title` (the page titled by the repository in front, "repo —
     egit", touched only when it changes).
-    `socket.rs`: the page's WebSockets, kept by number on the page's thread
-    (`thread_local`), a `Numbered` one the relay's `Transport` (`Send`, as every egit future
-    is): its messages handed to `Relay::receive` as they come, its close to `Relay::closed`.
+    `socket.rs`: the page's WebSockets, kept by number on the main thread (`thread_local`), a
+    `Numbered` one the relay's `Transport` (`Send`, as every egit future is; what a worker
+    sends handed to the main thread, each message copied out of the shared memory, which a
+    WebSocket won't send from): its messages handed to `Relay::receive` as they come, its
+    close to `Relay::closed`.
     `files.rs`: `choose`, the browser's dialog (an `<input type=file>` clicked, its `change`
     or `cancel` answering): each file chosen read into the page (256 MiB at most) and given to
     egit (`egit_git::local::give`), its path what is answered; `open_download`, the browser
-    sent to a download the relay delivers; `begin_frame` (each frame's start) reads the files
+    sent to a download the relay delivers (by the main thread); `begin_frame` (each frame's start) reads the files
     dropped on the window (a browser gives their bytes, not a path), each given as it is read,
     and `dropped`, those this frame shows the views (`desktop::dropped_files`, a computer's
     paths elsewhere: patches shown to apply, images attached).
@@ -1262,9 +1295,14 @@ compile.
     beyond), `blocking` (a future polled to its end on the blocking pool by
     `egit_git::block_on`, as a future for a `Bind`), `detached` (the same, not waited for),
     and `WriteLock` (an async lock, `hold().await`, taken inside jobs, never on the interface
-    thread). In a browser `blocking` is the future itself and `detached` the page's
-    (`spawn_local`); `Pace`, a long computation's (the syntax walk's) `step().await`, yields
-    to the page every 10 ms there, and never here.
+    thread). In a browser both hand the future to the page's workers (`egit_git::exec::spawn`;
+    `blocking`'s result back by a oneshot channel), never its main thread; `Pace`, a long
+    computation's (the syntax walk's) `step().await`, yields every 10 ms there, so the jobs
+    sharing its worker go on, and never here.
+  - `repaint.rs` — `Repaint`, what work done elsewhere (a job, a thread of its own, a worker)
+    holds to ask the window to draw again: egui's context here; in a browser, where the context
+    is the main thread's alone, the asking handed to that thread (`on_main`), once however
+    often meanwhile.
   - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Preferences,
     Repo(id)}` (a repository's on another computer titled with it, "repo · devbox", under a
     globe); `show` focuses or adds a tab; `front` (the tab in front), `close_front`,
@@ -2882,7 +2920,8 @@ compile.
 
 - **Errors:** typed (`thiserror`) in `egit-git`; the application turns them into sentences a
   person can act on. Never `unwrap`/`expect`; never swallow an error silently.
-- **Sync:** `parking_lot` only (`clippy.toml` disallows `std::sync::{Mutex, RwLock, Condvar}`),
+- **Sync:** `egit_git::sync`'s locks (`parking_lot`'s, but in a browser one that never waits on
+  the page's main thread; `clippy.toml` disallows `std::sync::{Mutex, RwLock, Condvar}`),
   but where a lock is held while git runs (an `.await`): then `tokio::sync::Mutex`.
 - **Async:** whatever runs git is `async`, and so is whatever calls it; a job is
   `jobs::blocking(async move { … })`, a thread of its own `egit_git::block_on(…)`, a test

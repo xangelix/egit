@@ -11,13 +11,13 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use bstr::BString;
+use egit_git::sync::Mutex;
 use egit_git::{
     CancelToken, DiffLine, DiffLineKind, DiffOptions, FileDiff, Git, ObjectId, Repository,
     Uncommitted, file_diff, uncommitted_diff,
 };
 use egit_text::{ChangedWords, Measure, Text, changed_words};
 use egui::Color32;
-use parking_lot::Mutex;
 
 use crate::grid::{GridSource, Span};
 use crate::history::LfsPointer;

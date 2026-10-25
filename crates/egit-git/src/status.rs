@@ -251,6 +251,10 @@ impl Status {
     }
 
     /// Every entry, in git's order (by path).
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "an iterator is `must_use` already, as newer clippy knows"
+    )]
     pub fn entries(&self) -> impl ExactSizeIterator<Item = StatusEntry<'_>> {
         self.entries.iter().map(|raw| self.entry_at(raw))
     }

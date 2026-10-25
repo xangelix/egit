@@ -213,6 +213,10 @@ impl ConfigSnapshot {
     }
 
     /// Every entry, in the order git reads them.
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "an iterator is `must_use` already, as newer clippy knows"
+    )]
     pub fn entries(&self) -> impl DoubleEndedIterator<Item = ConfigEntry<'_>> + ExactSizeIterator {
         self.entries.iter().map(|raw| self.entry_at(raw))
     }
@@ -225,6 +229,10 @@ impl ConfigSnapshot {
     }
 
     /// Every entry for `key`, in order (for keys with several values).
+    #[allow(
+        clippy::must_use_candidate,
+        reason = "an iterator is `must_use` already, as newer clippy knows"
+    )]
     pub fn get_all<'s>(
         &'s self,
         key: &str,

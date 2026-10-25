@@ -20,10 +20,10 @@ use egit_forge::{
     Account, ForgeError, ForgeKind, ForgeRepository, JobLog, JobRun, LogMark, LogParts, LogRead,
     Run, Section, job, read_log, with_steps,
 };
+use egit_git::sync::Mutex;
 use egit_git::{CancelToken, Style};
 use egit_text::{Measure, Text};
 use egui::Color32;
-use parking_lot::Mutex;
 
 use crate::grid::{GridSource, Span};
 use crate::problem::Problem;
@@ -321,7 +321,7 @@ impl JobFollower {
     pub(crate) fn start(
         (account, repository): (Arc<Account>, ForgeRepository),
         id: u64,
-        waker: egui::Context,
+        waker: crate::repaint::Repaint,
     ) -> Self {
         let shared = Arc::new(Mutex::new(Following::default()));
         let cancel = CancelToken::new();
@@ -345,7 +345,7 @@ impl JobFollower {
     }
 
     /// Where it stands.
-    pub(crate) fn following(&self) -> parking_lot::MutexGuard<'_, Following> {
+    pub(crate) fn following(&self) -> egit_git::sync::MutexGuard<'_, Following> {
         self.shared.lock()
     }
 }
@@ -357,7 +357,7 @@ struct Follower {
     id: u64,
     shared: Arc<Mutex<Following>>,
     cancel: CancelToken,
-    waker: egui::Context,
+    waker: crate::repaint::Repaint,
     options: egit_text::Options,
 }
 

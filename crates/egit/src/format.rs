@@ -71,8 +71,34 @@ pub(crate) fn local_date(unix: u64) -> String {
 
 /// The viewer's time zone: the system's (`TZ`, else its own setting), UTC where none can be
 /// read. jiff keeps it, looking at the system again every few minutes.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn local_zone() -> TimeZone {
     TimeZone::try_system().unwrap_or(TimeZone::UTC)
+}
+
+/// The viewer's time zone: the browser's, UTC where it names none jiff knows.
+///
+/// jiff keeps it behind a lock of the standard library's, which the page's main thread may never
+/// wait for, so only that thread asks jiff (first before the workers start, then every few
+/// minutes, as jiff looks at the system again); the workers take what it read last.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn local_zone() -> TimeZone {
+    use egit_git::sync::Mutex;
+    use web_time::{Duration, Instant};
+
+    /// How long the zone read is kept.
+    const KEPT: Duration = Duration::from_mins(5);
+    static READ: Mutex<Option<(TimeZone, Instant)>> = Mutex::new(None);
+
+    let mut read = READ.lock();
+    if egit_git::exec::is_main() && read.as_ref().is_none_or(|(_, at)| at.elapsed() >= KEPT) {
+        *read = Some((
+            TimeZone::try_system().unwrap_or(TimeZone::UTC),
+            Instant::now(),
+        ));
+    }
+    read.as_ref()
+        .map_or(TimeZone::UTC, |(zone, _)| zone.clone())
 }
 
 /// A Unix time as the viewer reads it: [`date_time`] in `zone`, at the offset it had then

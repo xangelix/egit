@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 
-use parking_lot::Mutex;
+use egit_git::sync::Mutex;
 use serde_json::{Value, json};
 
 use crate::host::ForgeKind;
@@ -279,7 +279,7 @@ impl FakeForge {
     }
 
     /// What it knows and has seen, to change or check.
-    pub fn state(&self) -> parking_lot::MutexGuard<'_, FakeState> {
+    pub fn state(&self) -> egit_git::sync::MutexGuard<'_, FakeState> {
         self.state.lock()
     }
 }

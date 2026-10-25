@@ -9,9 +9,10 @@
 //! Commands that write to a repository take its [`WriteLock`] inside their job, so they run one
 //! at a time, in order; reads never wait for it.
 //!
-//! In a browser a job's future is the page's (`egui-async` spawns it there): git is a relay's
-//! messages awaited, nothing blocks, so it runs where it is awaited; detached work is spawned on
-//! the page too. A long computation there shares the page's thread through a [`Pace`].
+//! In a browser a job runs on one of the page's workers (`egit_git::exec`'s pool, web workers
+//! sharing the page's memory), never its main thread, which only draws and polls the `Bind`
+//! awaiting it; git there is a relay's messages awaited. A long computation shares its worker
+//! with the worker's other jobs through a [`Pace`].
 
 use std::future::Future;
 use std::sync::Arc;
@@ -93,7 +94,8 @@ pub(crate) const fn install_runtime() -> std::io::Result<()> {
     Ok(())
 }
 
-/// In a browser, `work` itself: it never blocks.
+/// In a browser, `work` run by one of the page's workers, never its main thread; the future
+/// resolves to its result.
 #[cfg(target_arch = "wasm32")]
 pub(crate) async fn blocking<T, E>(
     work: impl Future<Output = Result<T, E>> + Send + 'static,
@@ -102,24 +104,38 @@ where
     T: Send + 'static,
     E: From<Problem> + Send + 'static,
 {
-    work.await
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let spawned = egit_git::exec::spawn("job", async move {
+        // Nobody waits for it any more: nothing to tell.
+        let _told = sender.send(work.await);
+    });
+    if let Err(error) = spawned {
+        tracing::error!(%error, "a job couldn't be started");
+        return Err(Problem::interrupted().into());
+    }
+    receiver.await.unwrap_or_else(|_| {
+        tracing::error!("a job ended without its result");
+        Err(Problem::interrupted().into())
+    })
 }
 
-/// In a browser, `work` spawned on the page.
+/// In a browser, `work` handed to one of the page's workers, not waited for.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn detached(work: impl Future<Output = ()> + Send + 'static) {
-    wasm_bindgen_futures::spawn_local(work);
+    if let Err(error) = egit_git::exec::spawn("job", work) {
+        tracing::error!(%error, "a job couldn't be started");
+    }
 }
 
-/// How long a computation runs in a browser before the page has its thread back.
+/// How long a computation runs in a browser before its worker's other work has the thread.
 const SLICE: Duration = Duration::from_millis(10);
 
 /// How many steps go by between looks at the clock (each a call into the page).
 const STEPS_A_LOOK: u32 = 256;
 
-/// Lets a long computation share the thread it runs on: in a browser, the page's one, it
-/// yields every [`SLICE`], so the page draws and answers meanwhile; on a computer, where a
-/// job has a thread of its own, it never waits.
+/// Lets a long computation share the thread it runs on: in a browser, a worker of the page's,
+/// whose other work (waiting on the relay, mostly) it would hold up, it yields every [`SLICE`];
+/// on a computer, where a job has a thread of its own, it never waits.
 pub(crate) struct Pace {
     since: Instant,
     steps: u32,

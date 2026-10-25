@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use web_time::Instant;
 
-use parking_lot::{Condvar, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::sync::Condvar;
+use crate::sync::Mutex;
 
 use crate::host::{RemotePid, SshHost};
 use crate::process::{self, Group};
@@ -75,7 +77,8 @@ struct Shared {
     running: Mutex<Vec<(u64, Running)>>,
     /// The number of the next registration.
     next: AtomicU64,
-    /// Wakes [`CancelToken::sleep`] when the token is cancelled.
+    /// Wakes [`CancelToken::sleep`] when the token is cancelled (in a browser it looks).
+    #[cfg(not(target_arch = "wasm32"))]
     woken: Condvar,
 }
 
@@ -121,6 +124,7 @@ impl CancelToken {
             running.stop(&self.0);
         }
         drop(running);
+        #[cfg(not(target_arch = "wasm32"))]
         self.0.woken.notify_all();
     }
 
