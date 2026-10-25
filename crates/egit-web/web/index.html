@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>egit</title>
+  <!-- Served under a proxy's path without its last slash (code-server's /proxy/7171), the
+       page's files would be looked for a folder too high: the slash is added first. Its hash is
+       in the relay's content security policy. -->
+  <script>if(!/\/(index\.html)?$/.test(location.pathname))location.replace(location.pathname+"/"+location.search+location.hash)</script>
   <!-- A branch leaving a line of commits and coming back: the commit graph's own mark. -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M10 6v20M10 10c0 6 12 4 12 10' fill='none' stroke='%230A8477' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='6' r='4' fill='%230A8477'/%3E%3Ccircle cx='10' cy='26' r='4' fill='%230A8477'/%3E%3Ccircle cx='22' cy='20' r='4' fill='%233FB6A8'/%3E%3C/svg%3E">
   <link rel="modulepreload" href="egit_web.js">

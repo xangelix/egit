@@ -8,7 +8,11 @@
 //! token after `#`, which a browser never sends in a request. The token is kept for the tab
 //! (`sessionStorage`, so reloading needs no address again) and taken out of the address bar
 //! (history, bookmarks, and a screen shared show no token). Then egit opens the relay's
-//! WebSocket (`/relay`, the page's own host) and runs every git through it.
+//! WebSocket (`relay`, beside the page) and runs every git through it.
+//!
+//! Whatever the page asks of its relay is relative to the page's own address, never the
+//! host's root: a proxy may serve the relay under a path of its own (code-server's
+//! `/proxy/<port>/`), and `index.html` adds the last slash to that path where it was left off.
 
 pub(crate) mod files;
 pub(crate) mod notify;
@@ -60,12 +64,11 @@ pub async fn start(canvas: web_sys::HtmlCanvasElement) -> Result<(), JsValue> {
     })?;
     let token = token(&window)?;
     let location = window.location();
-    let secure = location.protocol()? == "https:";
-    let address = format!(
-        "{}//{}/relay",
-        if secure { "wss:" } else { "ws:" },
-        location.host()?
-    );
+    // Beside the page, wherever it was served: the host's root, or a proxy's path.
+    let address = web_sys::Url::new_with_base("relay", &location.href()?)?;
+    let secure = address.protocol() == "https:";
+    address.set_protocol(if secure { "wss:" } else { "ws:" });
+    let address = address.href();
     let paths = wanted(&window)?;
     // Out of the address bar, its history, and a screen shared: the token; and what was opened
     // (a reload opens it again with the tabs left open).

@@ -93,14 +93,15 @@ async fn read_all(files: Option<web_sys::FileList>) -> Vec<PathBuf> {
 }
 
 /// Sends the browser to `path`, the relay's own, where a download waits (a link to it, clicked:
-/// the answer names the file), by the main thread, whose page it is.
+/// the answer names the file), by the main thread, whose page it is. The path is below the
+/// page's own address, wherever that is (a proxy may serve the relay under a path of its own).
 pub(crate) fn open_download(path: &str) -> bool {
-    let path = path.to_owned();
-    egit_git::exec::on_main(move || click_through(&path));
+    let beside = path.trim_start_matches('/').to_owned();
+    egit_git::exec::on_main(move || click_through(&beside));
     true
 }
 
-/// Clicks a link to `path`, a download; on the main thread.
+/// Clicks a link to `path` (relative to the page), a download; on the main thread.
 fn click_through(path: &str) {
     let link = web_sys::window()
         .and_then(|window| window.document())

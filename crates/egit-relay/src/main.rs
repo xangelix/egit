@@ -8,13 +8,17 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use egit_relay::{HELPER_NAME, Options, Token, run_helper};
+use egit_relay::{HELPER_NAME, Options, Token, is_proxy_address, run_helper};
 
 /// Where a relay listens unless told.
 const LISTEN: &str = "127.0.0.1:7171";
 
+/// What code-server sets in its terminals: the address its proxy gives a port of this computer
+/// (`https://…/proxy/{{port}}/`).
+const CODE_SERVER_PROXY: &str = "VSCODE_PROXY_URI";
+
 const USAGE: &str = "\
-Usage: egit-relay [--listen ADDRESS] [--web FOLDER] [--host NAME]...
+Usage: egit-relay [--listen ADDRESS] [--web FOLDER] [--host NAME]... [--url ADDRESS]...
 
 Serves egit to a browser, and runs git for it on this computer.
 
@@ -22,9 +26,15 @@ Serves egit to a browser, and runs git for it on this computer.
   --web FOLDER      egit's web build (default: `web` beside this program)
   --host NAME       a host name a browser may use besides this computer's own addresses
                     (a proxy's), with its port or without; may be given more than once
+  --url ADDRESS     the address a proxy gives browsers for the relay, perhaps under a path
+                    of its own (https://code.example/proxy/{{port}}/: {{port}} is the port
+                    listened on); its host is let in. May be given more than once. In
+                    code-server's terminals its proxy's (VSCODE_PROXY_URI) is taken unless
+                    one is given.
 
-The address to open is printed when it listens; its token (after `#`) is what lets a browser
-in. EGIT_RELAY_TOKEN gives one of your own, so the address stays the same between runs.
+The addresses to open are printed when it listens, one a line: its own first, then the
+proxies'. Their token (after `#`) is what lets a browser in. EGIT_RELAY_TOKEN gives one of
+your own, so the addresses stay the same between runs.
 ";
 
 fn main() -> ExitCode {
@@ -72,9 +82,13 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         };
-        // The one line on standard output: what to open.
+        // Standard output: what to open, the relay's own address first.
         let mut stdout = std::io::stdout();
-        let _said = writeln!(stdout, "{}", bound.url()).and_then(|()| stdout.flush());
+        let mut said = writeln!(stdout, "{}", bound.url());
+        for url in bound.proxied_urls() {
+            said = said.and_then(|()| writeln!(stdout, "{url}"));
+        }
+        let _said = said.and_then(|()| stdout.flush());
         bound.serve().await;
         ExitCode::SUCCESS
     })
@@ -85,6 +99,7 @@ fn parse(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Option<Op
     let mut listen: SocketAddr = LISTEN.parse().map_err(|_| "a bad default".to_owned())?;
     let mut web = None;
     let mut hosts = Vec::new();
+    let mut urls = Vec::new();
     while let Some(arg) = args.next() {
         let mut value = || {
             args.next()
@@ -103,8 +118,25 @@ fn parse(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Option<Op
             }
             Some("--web") => web = Some(PathBuf::from(value()?)),
             Some("--host") => hosts.push(value()?.to_string_lossy().into_owned()),
+            Some("--url") => {
+                let given = value()?.to_string_lossy().into_owned();
+                if !is_proxy_address(&given) {
+                    return Err(format!(
+                        "{given} isn't an address a browser opens (http:// or https://, a \
+                         host, perhaps a path)"
+                    ));
+                }
+                urls.push(given);
+            }
             _ => return Err(format!("{} isn't an option", arg.to_string_lossy())),
         }
+    }
+    if urls.is_empty()
+        && let Some(proxy) = std::env::var(CODE_SERVER_PROXY)
+            .ok()
+            .filter(|proxy| is_proxy_address(proxy))
+    {
+        urls.push(proxy);
     }
     let web = web.or_else(|| {
         let beside = std::env::current_exe().ok()?.parent()?.join("web");
@@ -119,5 +151,6 @@ fn parse(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Option<Op
         web,
         token,
         hosts,
+        urls,
     }))
 }

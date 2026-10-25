@@ -11,6 +11,10 @@
 //! after `#`, which a browser never sends in a request, and egit sends it as its first message.
 //! Requests naming a host other than the relay's (a page of another site, through DNS
 //! rebinding) and `WebSocket`s opened from another site's page are refused before that.
+//!
+//! A proxy may serve the relay at an address of its own, under a path of its own (code-server's
+//! `/proxy/<port>/`, a reverse proxy's folder): given ([`Options::urls`]), its host is let in
+//! and its address is printed too. The page asks for everything relative to its own address.
 
 mod delivery;
 mod http;
@@ -43,6 +47,43 @@ pub struct Options {
     /// Host names a browser may name besides the relay's own addresses (a proxy's), each
     /// with its port or without.
     pub hosts: Vec<String>,
+    /// Addresses a proxy gives browsers for the relay (code-server's
+    /// `https://…/proxy/{{port}}/`), `{{port}}` standing for the port listened on: each one's
+    /// host let in, as [`hosts`](Self::hosts) are, and each printed (see [`is_proxy_address`]).
+    pub urls: Vec<String>,
+}
+
+/// Whether `template` is an address a proxy may give browsers for the relay.
+///
+/// That is `http://` or `https://`, a host (and port), and perhaps a path, with no user, query,
+/// or fragment; `{{port}}` anywhere in it stands for the port listened on.
+#[must_use]
+pub fn is_proxy_address(template: &str) -> bool {
+    proxied(template, 1).is_some()
+}
+
+/// `template` with `{{port}}` as `port`: the address, ending with `/` (the page is that folder's
+/// `index.html`), and its host as a `Host` header names it.
+fn proxied(template: &str, port: u16) -> Option<(String, String)> {
+    let mut address = template.replace("{{port}}", &port.to_string());
+    let rest = address
+        .strip_prefix("https://")
+        .or_else(|| address.strip_prefix("http://"))?;
+    let (host, _path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.to_owned();
+    if host.is_empty()
+        || host.contains('@')
+        || rest.contains(['?', '#'])
+        || rest
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return None;
+    }
+    if !address.ends_with('/') {
+        address.push('/');
+    }
+    Some((address, host))
 }
 
 /// The secret a browser proves it was given the relay's address with.
@@ -120,16 +161,31 @@ struct Shared {
 pub struct Bound {
     listener: TcpListener,
     shared: Arc<Shared>,
+    /// The addresses proxies give browsers, each ending with `/`.
+    proxied: Vec<String>,
 }
 
 /// Listens as `options` say.
 ///
 /// # Errors
 ///
-/// When the address can't be listened on, or the relay can't find itself.
+/// When the address can't be listened on, the relay can't find itself, or a proxy's address
+/// isn't one ([`is_proxy_address`]).
 pub async fn bind(options: Options) -> io::Result<Bound> {
     let listener = TcpListener::bind(options.listen).await?;
     let address = listener.local_addr()?;
+    let mut hosts = options.hosts;
+    let mut urls = Vec::with_capacity(options.urls.len());
+    for template in &options.urls {
+        let (url, host) = proxied(template, address.port()).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{template} isn't an address a browser opens (http:// or https://)"),
+            )
+        })?;
+        hosts.push(host);
+        urls.push(url);
+    }
     let executable = std::env::current_exe()?;
     let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
     let ssh = egit_git::SshSharing::start();
@@ -141,7 +197,7 @@ pub async fn bind(options: Options) -> io::Result<Bound> {
         shared: Arc::new(Shared {
             token: options.token,
             web: options.web,
-            hosts: options.hosts,
+            hosts,
             address,
             executable,
             home,
@@ -150,6 +206,7 @@ pub async fn bind(options: Options) -> io::Result<Bound> {
             _ssh: ssh,
             deliveries: Arc::default(),
         }),
+        proxied: urls,
     })
 }
 
@@ -179,6 +236,16 @@ impl Bound {
             address.port(),
             self.shared.token.as_str()
         )
+    }
+
+    /// The addresses proxies give browsers for it (as [`Options::urls`] named them), each with
+    /// the token after `#`.
+    #[must_use]
+    pub fn proxied_urls(&self) -> Vec<String> {
+        self.proxied
+            .iter()
+            .map(|url| format!("{url}#{}", self.shared.token.as_str()))
+            .collect()
     }
 
     /// Serves browsers until the process ends.
@@ -232,5 +299,44 @@ mod tests {
         assert!(!token.matches(&other));
         assert_ne!(Token::random().unwrap().as_str(), token.as_str());
         assert!(!format!("{token:?}").contains(token.as_str()));
+    }
+
+    #[test]
+    fn a_proxy_s_address_is_the_page_s_folder_and_names_its_host() {
+        let code_server = "https://code.example/@me/ws.main/apps/code-server/proxy/{{port}}/";
+        assert_eq!(
+            proxied(code_server, 7171),
+            Some((
+                "https://code.example/@me/ws.main/apps/code-server/proxy/7171/".to_owned(),
+                "code.example".to_owned()
+            ))
+        );
+        // A port in the host's name (a subdomain's proxy), and a folder without its last slash.
+        assert_eq!(
+            proxied("http://{{port}}--ws.example:8080/at", 9000),
+            Some((
+                "http://9000--ws.example:8080/at/".to_owned(),
+                "9000--ws.example:8080".to_owned()
+            ))
+        );
+        assert_eq!(
+            proxied("https://code.example", 1),
+            Some((
+                "https://code.example/".to_owned(),
+                "code.example".to_owned()
+            ))
+        );
+        for refused in [
+            "code.example/proxy/1/",
+            "ftp://code.example/",
+            "https:///proxy/",
+            "https://user@code.example/",
+            "https://code.example/?a=b",
+            "https://code.example/#token",
+            "https://code example/",
+            "https://code.example/a\nb",
+        ] {
+            assert!(!is_proxy_address(refused), "{refused}");
+        }
     }
 }

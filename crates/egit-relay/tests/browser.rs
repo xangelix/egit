@@ -3,7 +3,9 @@
 //! made; skipped without them). The page starts, opens the repository its address names
 //! (`?open=`), titled by it, and shows the history's statistics from the palette (each git
 //! through the relay); it is threaded (cross-origin isolated, its workers started), and nothing
-//! in it or its workers panics or says an error. Its screens are kept in `target/web-screens`.
+//! in it or its workers panics or says an error. And served by a proxy under a path of its own
+//! (as code-server's `/proxy/<port>`), opened without its last slash, it does the same. Its
+//! screens are kept in `target/web-screens`.
 
 #![cfg(unix)]
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
@@ -24,7 +26,8 @@ use base64::Engine as _;
 use egit_git::testing::{Sandbox, TestRelay};
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::{Value, json};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
@@ -171,6 +174,14 @@ impl Page {
 
     /// Calls `method`: its result.
     async fn call(&mut self, method: &str, params: Value) -> Value {
+        match self.answer(method, params).await {
+            Ok(result) => result,
+            Err(said) => panic!("{method}: {said}"),
+        }
+    }
+
+    /// Calls `method`: its result, or what the browser said went wrong.
+    async fn answer(&mut self, method: &str, params: Value) -> Result<Value, Value> {
         self.next += 1;
         let id = self.next;
         let mut message = json!({ "id": id, "method": method, "params": params });
@@ -187,8 +198,10 @@ impl Page {
             };
             let said: Value = serde_json::from_str(&text).unwrap();
             if said["id"] == id && said.get("sessionId") == message.get("sessionId") {
-                assert!(said.get("error").is_none(), "{method}: {said}");
-                return said["result"].clone();
+                if let Some(error) = said.get("error") {
+                    return Err(error.clone());
+                }
+                return Ok(said["result"].clone());
             }
             self.note(&said);
             self.follow_workers().await;
@@ -251,18 +264,49 @@ impl Page {
     async fn titled(&mut self, wanted: &str, limit: Duration) -> bool {
         let since = Instant::now();
         while since.elapsed() < limit {
-            let title = self
-                .call(
-                    "Runtime.evaluate",
-                    json!({ "expression": "document.title", "returnByValue": true }),
-                )
-                .await;
-            if title["result"]["value"] == wanted {
+            if self.evaluate("document.title").await == wanted {
                 return true;
             }
             self.idle(Duration::from_millis(250)).await;
         }
         false
+    }
+
+    /// What `expression` comes to in the page; nothing while it was navigating elsewhere (the
+    /// page adding its address's last slash, say).
+    async fn evaluate(&mut self, expression: &str) -> Value {
+        self.answer(
+            "Runtime.evaluate",
+            json!({ "expression": expression, "returnByValue": true }),
+        )
+        .await
+        .map_or(Value::Null, |said| said["result"]["value"].clone())
+    }
+
+    /// Opens `address` (a sandbox's repository named `repo` in it to open): started, threaded,
+    /// the repository opened through the relay (the page titled by it), and the address bar
+    /// showing `shown`. Its screen kept as `screen`.
+    async fn opens(&mut self, address: &str, shown: &str, screen: &str) {
+        self.call("Page.navigate", json!({ "url": address })).await;
+        // Started, the repository opened through the relay: the page says which is in front.
+        let opened = self.titled("repo — egit", STARTING).await;
+        self.idle(Duration::from_secs(3)).await;
+        self.keep(screen).await;
+        assert!(opened, "never opened the repository: {:?}", self.wrong);
+        // Out of the address bar: the token, and what was asked to be opened.
+        assert_eq!(self.evaluate("location.href").await, shown);
+        // Threaded: the relay's headers isolate it (memory shared with its workers), and its
+        // workers started, each running egit's WebAssembly.
+        assert_eq!(
+            self.evaluate("self.crossOriginIsolated").await,
+            true,
+            "not cross-origin isolated"
+        );
+        assert!(
+            self.workers.len() >= 2,
+            "{} workers started",
+            self.workers.len()
+        );
     }
 
     /// Clicks at `x`, `y`.
@@ -327,29 +371,96 @@ fn encoded(path: &Path) -> String {
         .collect()
 }
 
-#[test]
-fn egit_starts_in_a_browser_and_opens_a_repository_through_its_relay() {
-    let Some((program, web)) = wanted() else {
-        return;
-    };
-    let sandbox = Sandbox::new().unwrap();
+/// A sandbox's repository of three commits, named `repo`.
+fn repository(sandbox: &Sandbox) -> PathBuf {
     let repo = sandbox.init("repo").unwrap();
     for (n, file) in ["one", "two", "three"].iter().enumerate() {
         sandbox
             .commit_file(&repo, file, &format!("{n}\n"), &format!("Add {file}"))
             .unwrap();
     }
-    let relay = TestRelay::start_with(
+    repo
+}
+
+/// The relay serving `web`, the build.
+fn relay_of(web: &Path) -> TestRelay {
+    TestRelay::start_with(
         Path::new(env!("CARGO_BIN_EXE_egit-relay")),
         &["--web", web.to_str().unwrap()],
     )
-    .unwrap();
-    let browser = Browser::start(&program);
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    .unwrap()
+}
+
+/// A proxy serving `relay` under `prefix`, as code-server's `/proxy/<port>` does: each request's
+/// path has the prefix taken off (`/` where nothing is left), everything else passes through
+/// both ways, a WebSocket's frames too. Where it listens.
+async fn proxy_under(prefix: &'static str, relay: String) -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut browser, _)) = listener.accept().await {
+            let relay = relay.clone();
+            tokio::spawn(async move {
+                // The request line, a byte at a time: what follows passes through as it is.
+                let mut line = Vec::new();
+                while !line.ends_with(b"\r\n") {
+                    let Ok(byte) = browser.read_u8().await else {
+                        return;
+                    };
+                    line.push(byte);
+                }
+                let line = String::from_utf8_lossy(&line).into_owned();
+                let mut parts = line.splitn(3, ' ');
+                let (method, path, version) = (
+                    parts.next().unwrap_or_default(),
+                    parts.next().unwrap_or_default(),
+                    parts.next().unwrap_or_default(),
+                );
+                let Some(rest) = path.strip_prefix(prefix) else {
+                    let _ = browser
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                        .await;
+                    return;
+                };
+                let rest = if rest.starts_with('/') {
+                    rest.to_owned()
+                } else {
+                    format!("/{rest}")
+                };
+                let Ok(mut upstream) = TcpStream::connect(&relay).await else {
+                    return;
+                };
+                if upstream
+                    .write_all(format!("{method} {rest} {version}").as_bytes())
+                    .await
+                    .is_ok()
+                {
+                    let _ = tokio::io::copy_bidirectional(&mut browser, &mut upstream).await;
+                }
+            });
+        }
+    });
+    address
+}
+
+/// The browser's runtime: one thread, the tests' proxies on it too.
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap();
-    runtime.block_on(async {
+        .unwrap()
+}
+
+#[test]
+fn egit_starts_in_a_browser_and_opens_a_repository_through_its_relay() {
+    let Some((program, web)) = wanted() else {
+        return;
+    };
+    let sandbox = Sandbox::new().unwrap();
+    let repo = repository(&sandbox);
+    let relay = relay_of(&web);
+    let browser = Browser::start(&program);
+    runtime().block_on(async {
         let mut page = Page::of(&browser).await;
         let address = format!(
             "http://{}/?open={}#{}",
@@ -357,40 +468,12 @@ fn egit_starts_in_a_browser_and_opens_a_repository_through_its_relay() {
             encoded(&repo),
             relay.token
         );
-        page.call("Page.navigate", json!({ "url": address })).await;
-        // Started, the repository opened through the relay: the page says which is in front.
-        let opened = page.titled("repo — egit", STARTING).await;
-        page.idle(Duration::from_secs(3)).await;
-        page.keep("browser-opened").await;
-        assert!(opened, "never opened the repository: {:?}", page.wrong);
-        // Out of the address bar: the token, and what was asked to be opened.
-        let shown = page
-            .call(
-                "Runtime.evaluate",
-                json!({ "expression": "location.href", "returnByValue": true }),
-            )
-            .await;
-        assert_eq!(
-            shown["result"]["value"],
-            format!("http://{}/", relay.address)
-        );
-        // Threaded: the relay's headers isolate it (memory shared with its workers), and its
-        // workers started, each running egit's WebAssembly.
-        let isolated = page
-            .call(
-                "Runtime.evaluate",
-                json!({ "expression": "self.crossOriginIsolated", "returnByValue": true }),
-            )
-            .await;
-        assert_eq!(
-            isolated["result"]["value"], true,
-            "not cross-origin isolated"
-        );
-        assert!(
-            page.workers.len() >= 2,
-            "{} workers started",
-            page.workers.len()
-        );
+        page.opens(
+            &address,
+            &format!("http://{}/", relay.address),
+            "browser-opened",
+        )
+        .await;
 
         // The palette, from the keys (taken from the browser), runs the Stats page.
         page.click(700, 600).await;
@@ -401,6 +484,39 @@ fn egit_starts_in_a_browser_and_opens_a_repository_through_its_relay() {
         page.press(("Enter", "Enter", 13), 0).await;
         page.idle(Duration::from_secs(5)).await;
         page.keep("browser-stats").await;
+        assert!(
+            page.wrong.is_empty(),
+            "the page went wrong: {:?}",
+            page.wrong
+        );
+    });
+}
+
+#[test]
+fn egit_opens_under_a_proxy_s_path_given_without_its_last_slash() {
+    let Some((program, web)) = wanted() else {
+        return;
+    };
+    let sandbox = Sandbox::new().unwrap();
+    let repo = repository(&sandbox);
+    let relay = relay_of(&web);
+    let browser = Browser::start(&program);
+    runtime().block_on(async {
+        let proxy = proxy_under("/proxy/7171", relay.address.clone()).await;
+        let mut page = Page::of(&browser).await;
+        // As code-server's address is often given: its last slash left off. The page adds it,
+        // then finds its files, its WebSocket, and its repository below that path.
+        let address = format!(
+            "http://{proxy}/proxy/7171?open={}#{}",
+            encoded(&repo),
+            relay.token
+        );
+        page.opens(
+            &address,
+            &format!("http://{proxy}/proxy/7171/"),
+            "browser-proxied",
+        )
+        .await;
         assert!(
             page.wrong.is_empty(),
             "the page went wrong: {:?}",

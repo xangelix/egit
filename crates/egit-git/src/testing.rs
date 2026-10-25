@@ -444,6 +444,9 @@ mod relay {
                     "EGIT_LOG",
                     std::env::var_os("EGIT_LOG").unwrap_or_else(|| "error".into()),
                 )
+                // Never a proxy's address of the terminal's (code-server's): what the relay lets
+                // in is the test's alone.
+                .env_remove("VSCODE_PROXY_URI")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .spawn()?;

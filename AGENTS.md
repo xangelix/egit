@@ -82,7 +82,9 @@ it.
   nightly-2026-10-10 --component rust-src,clippy --target wasm32-unknown-unknown`), and needs
   `cargo install wasm-bindgen-cli --version <the lock file's wasm-bindgen> --locked`
   (wasm-opt, binaryen's, makes it smaller where installed); `egit-relay --web target/web`
-  serves it and runs its git: open the address it prints (its token after `#`). Its crates
+  serves it and runs its git: open the address it prints (its token after `#`; behind a proxy
+  under a path of its own, `--url <the proxy's address>`, which a code-server terminal gives
+  unasked). Its crates
   are linted by `scripts/check-platforms.sh` on that nightly with those flags (a stable
   toolchain doesn't set `cfg(target_feature = "atomics")`, so its lint is of another build). The page in a
   browser: `EGIT_TEST_BROWSER=<chromium or chrome> EGIT_TEST_WEB=$PWD/target/web cargo test -p
@@ -1130,17 +1132,24 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   `/relay` (`egit_git::relay`'s protocol), and makes its requests (to a forge, a download, a
   picture) as egit makes them here (`egit_forge::here`); no egui. `main.rs`: `--listen` (the loopback
   address, `127.0.0.1:7171`: reached through `ssh -L` or a proxy of the user's), `--web` (a
-  folder; `web` beside it), `--host` (a proxy's name); prints the address to open, its token
-  after `#` (random, or `EGIT_RELAY_TOKEN`); started as `egit-askpass` it is the helper.
-  `lib.rs`: `Options`, `Token` (32 random bytes in hex, compared in constant time), `bind`,
-  `Bound::url` and `serve` (tokio), what connections share (its ssh connections shared, an
-  `SshSharing`). `http.rs`: one request a connection, its head read within 10 s and 16 KiB;
+  folder; `web` beside it), `--host` (a proxy's name), `--url` (an address a proxy gives
+  browsers for it, perhaps under a path of its own, `{{port}}` the port listened on:
+  code-server's `https://…/proxy/{{port}}/`, taken from `VSCODE_PROXY_URI`, which
+  code-server's terminals have, unless one is given); prints the addresses to open, one a line
+  (its own first, then the proxies'), their token after `#` (random, or `EGIT_RELAY_TOKEN`);
+  started as `egit-askpass` it is the helper. `lib.rs`: `Options`, `Token` (32 random bytes in
+  hex, compared in constant time), `is_proxy_address` (http or https, a host, perhaps a path;
+  no user, query, or fragment), `bind` (each proxy's address made the page's folder, ending
+  with `/`, its host let in), `Bound::url`, `proxied_urls`, and `serve` (tokio), what
+  connections share (its ssh connections shared, an `SshSharing`). `http.rs`: one request a connection, its head read within 10 s and 16 KiB;
   the host it names must be the relay's (loopback names on any port, a tunnel's; the address
   listened on; those given), else 421 (DNS rebinding); `/relay` upgraded (version 13, its
-  `Origin` the host's own, else 403; `derive_accept_key`; messages and frames at most `MOST`),
+  `Origin` the host's own or one given (a proxy may name the relay's own address to it), else
+  403; `derive_accept_key`; messages and frames at most `MOST`),
   else a file of the build (`/` is `index.html`; plain names only, nothing hidden or outside;
   `.br` or `.gz` beside it where the browser takes it; `application/wasm`), each answer with
-  a strict content security policy (its own files alone, its WebAssembly compiled), no
+  a strict content security policy (its own files alone, its WebAssembly compiled,
+  `index.html`'s own script by its hash, `page_script!`, held to it by a test), no
   sniffing, no referrer, no other site's framing or reading, and isolated (COOP
   `same-origin`, COEP `require-corp`: the page's memory, shared with its workers, takes them). `session.rs`: the first
   message the token (`Refused` otherwise, or for another version), then `Welcome`; each
@@ -1162,8 +1171,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   else chunked) as the forge sends it, its SHA-256 checked, the last part held back until it
   matches (else the connection is cut short: the browser says the download failed),
   `Delivered` every 250 ms; stopped as a program is. `tests/relay.rs` runs the
-  real binary: its build served to its own host alone (another host 421, a proxy's and a
-  tunnel's names let in, compressed, nothing outside), another site's page and a wrong token
+  real binary: its build served to its own host alone (another host 421, a proxy's name, a
+  proxy's address's host, and a tunnel's names let in, compressed, nothing outside), another site's page and a wrong token
   refused, git run through it (a 9 MiB file read and fed back, a folder that isn't one,
   cancelled), git's questions relayed and answered, and a session's programs stopped with it;
   a download delivered whole once (its name, length, and bytes; taken twice, 404), one not
@@ -1171,10 +1180,15 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   `tests/browser.rs` (`EGIT_TEST_BROWSER` and `EGIT_TEST_WEB`, else skipped): the web build
   served, headless Chromium driven over its developer tools protocol (no npm: a WebSocket of
   JSON): the page opens a sandbox's repository its address names (titled by it; the address
-  then plain), the palette (⌘K, typed into, Enter) shows its Stats, nothing in the page
-  saying an error or panicking; screens kept in `target/web-screens`.
-- `crates/egit-web` — egit in a browser: the page (`web/index.html`, `start.js`: its
-  WebAssembly loaded, a problem said in the page), its workers' script (`web/worker.js`: the
+  then plain), threaded (cross-origin isolated, its workers started), the palette (⌘K, typed
+  into, Enter) shows its Stats, nothing in the page or its workers saying an error or
+  panicking; and served by a proxy of the test's under `/proxy/7171` (the prefix taken off
+  each request's path, as code-server does), opened without its last slash, the same (the
+  slash added, the address then `…/proxy/7171/`); screens kept in `target/web-screens`.
+- `crates/egit-web` — egit in a browser: the page (`web/index.html`: its one script of its own
+  adds its address's last slash where a proxy served it without one, else its files would be
+  looked for a folder too high; `start.js`: its WebAssembly loaded, a problem said in the
+  page), its workers' script (`web/worker.js`: the
   module and memory it is sent handed to wasm-bindgen's `init`, then `egit_worker`), and its
   entries (`lib.rs`: `wasm_bindgen(start)`, `egit_app::start` in the canvas `#egit` on the main
   thread, nothing on a worker; `egit_worker`, `egit_git::exec::work`); a `cdylib`, empty
@@ -1246,7 +1260,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     one for each core but the main thread's, two to `MOST_WORKERS` (8)), the relay's token from
     the address after `#` (kept for the tab in `sessionStorage`, taken out of the address bar
     and its history), the repositories the address names (`?open=<path>`, as the command line
-    names them; taken out of it too), the relay's WebSocket (`ws(s)://<the page's host>/relay`), the keys
+    names them; taken out of it too), the relay's WebSocket (`relay` beside the page, `ws:` or
+    `wss:`: wherever the page was served, a proxy's path too), the keys
     egit takes from the browser (`keep_shortcuts`: a listener on the window, capturing,
     preventing the default of ⌘K, ⌘F, ⌘R, F1, … and, while no field has the keys, ⌥W and ⌥1 …
     ⌥9), then eframe's `WebRunner` with `EgitApp::in_browser` (settings in the page's storage,
@@ -1262,7 +1277,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `files.rs`: `choose`, the browser's dialog (an `<input type=file>` clicked, its `change`
     or `cancel` answering): each file chosen read into the page (256 MiB at most) and given to
     egit (`egit_git::local::give`), its path what is answered; `open_download`, the browser
-    sent to a download the relay delivers (by the main thread); `begin_frame` (each frame's start) reads the files
+    sent to a download the relay delivers (by the main thread; its path below the page's own
+    address); `begin_frame` (each frame's start) reads the files
     dropped on the window (a browser gives their bytes, not a path), each given as it is read,
     and `dropped`, those this frame shows the views (`desktop::dropped_files`, a computer's
     paths elsewhere: patches shown to apply, images attached).

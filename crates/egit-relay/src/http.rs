@@ -4,7 +4,8 @@
 //! line and headers of at most [`HEAD_LIMIT`], within [`HEAD_TIMEOUT`]. Before anything else,
 //! the host it names must be the relay's: loopback names on any port (a tunnel's `ssh -L`
 //! listens on its own), the address listened on, and the names given (a proxy's); a WebSocket
-//! must also be opened from the relay's own page (`Origin`).
+//! must also be opened from the relay's own page (`Origin`): the host it names, or one given (a
+//! proxy may name the relay's own address to it).
 
 use std::io;
 use std::net::{IpAddr, SocketAddr};
@@ -26,19 +27,33 @@ const HEAD_LIMIT: usize = 16 * 1024;
 /// How long a browser has to send its request.
 const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The SHA-256 of the script in `index.html` itself (base64), which [`SECURITY`] lets in by it:
+/// it adds the last slash to the page's address where a proxy served it without one, before
+/// anything is looked for beside the page. A test holds the two together.
+macro_rules! page_script {
+    () => {
+        "Kg+nHl3+XchWsOtNCtIpcVGxKkue2yOv8CYaSTRj0Oc="
+    };
+}
+
 /// What every answer says, besides its own: no other site frames it or reads it, it loads
-/// nothing but its own files (its WebAssembly compiled), and it talks to the relay alone; and it
-/// is isolated from other sites' pages (opener and embedder policies), which lets it share its
-/// memory with its workers (`SharedArrayBuffer`): egit's page runs threaded.
-pub(crate) const SECURITY: &str = "Content-Security-Policy: default-src 'self'; \
-     script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; \
+/// nothing but its own files (its WebAssembly compiled, and `index.html`'s own script by its
+/// hash: `page_script!`), and it talks to the relay alone; and it is isolated from other sites'
+/// pages (opener and embedder policies), which lets it share its memory with its workers
+/// (`SharedArrayBuffer`): egit's page runs threaded.
+pub(crate) const SECURITY: &str = concat!(
+    "Content-Security-Policy: default-src 'self'; \
+     script-src 'self' 'wasm-unsafe-eval' 'sha256-",
+    page_script!(),
+    "'; style-src 'self' 'unsafe-inline'; \
      img-src 'self' data: blob:; connect-src 'self'; frame-ancestors 'none'; \
      base-uri 'none'; form-action 'none'\r\n\
      X-Content-Type-Options: nosniff\r\n\
      Referrer-Policy: no-referrer\r\n\
      Cross-Origin-Opener-Policy: same-origin\r\n\
      Cross-Origin-Embedder-Policy: require-corp\r\n\
-     Cross-Origin-Resource-Policy: same-origin\r\n";
+     Cross-Origin-Resource-Policy: same-origin\r\n"
+);
 
 /// A request as read: what the relay needs of it.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -270,7 +285,7 @@ async fn upgrade(mut stream: TcpStream, peer: SocketAddr, request: &Request, sha
             "400 Bad Request",
             "A WebSocket, version 13, is opened here.\n",
         ))
-    } else if !same_origin(request) {
+    } else if !same_origin(request, &shared.hosts) {
         tracing::warn!(%peer, origin = ?request.origin, "a WebSocket from another site");
         Some((
             "403 Forbidden",
@@ -303,15 +318,22 @@ async fn upgrade(mut stream: TcpStream, peer: SocketAddr, request: &Request, sha
 }
 
 /// Whether the WebSocket was opened from a page the relay served: its origin names the host
-/// the request does.
-fn same_origin(request: &Request) -> bool {
+/// the request does, or one of `hosts`, those given (a proxy that names the relay's own address
+/// to it in the request).
+fn same_origin(request: &Request, hosts: &[String]) -> bool {
     let (Some(origin), Some(host)) = (&request.origin, &request.host) else {
         return false;
     };
-    origin
+    let Some(named) = origin
         .strip_prefix("http://")
         .or_else(|| origin.strip_prefix("https://"))
-        .is_some_and(|named| named.eq_ignore_ascii_case(host))
+    else {
+        return false;
+    };
+    named.eq_ignore_ascii_case(host)
+        || hosts.iter().any(|given| {
+            given.eq_ignore_ascii_case(named) || given.eq_ignore_ascii_case(host_name_of(named))
+        })
 }
 
 /// Serves a file of the web build: `/` is `index.html`; anything outside the folder isn't.
@@ -449,14 +471,50 @@ mod tests {
         let request = parse(head).unwrap();
         assert_eq!(request.path, "/relay");
         assert_eq!(request.host.as_deref(), Some("localhost:9000"));
-        assert!(same_origin(&request));
+        assert!(same_origin(&request, &[]));
         assert!(parse(b"GET / HTTP/1.1\r\nHost: x").is_none());
         // Another site's page.
         let other = Request {
             origin: Some("https://evil.example".to_owned()),
             ..request
         };
-        assert!(!same_origin(&other));
+        assert!(!same_origin(&other, &[]));
+        // A proxy's page, the proxy naming the relay's own address: let in where it was given
+        // (with its port or without), and only there.
+        let proxied = Request {
+            origin: Some("https://code.example".to_owned()),
+            host: Some("127.0.0.1:7171".to_owned()),
+            ..other
+        };
+        assert!(!same_origin(&proxied, &["proxy.example".to_owned()]));
+        assert!(same_origin(&proxied, &["code.example".to_owned()]));
+        let with_port = Request {
+            origin: Some("http://code.example:8080".to_owned()),
+            ..proxied
+        };
+        assert!(same_origin(&with_port, &["code.example".to_owned()]));
+        assert!(same_origin(&with_port, &["code.example:8080".to_owned()]));
+        assert!(!same_origin(&with_port, &["code.example:9090".to_owned()]));
+    }
+
+    #[test]
+    fn the_page_s_own_script_is_the_one_its_policy_lets_in() {
+        use base64::Engine as _;
+        use sha2::Digest as _;
+
+        let page = include_str!("../../egit-web/web/index.html");
+        let script = page
+            .split_once("<script>")
+            .and_then(|(_, rest)| rest.split_once("</script>"))
+            .map(|(script, _)| script)
+            .expect("index.html has its script");
+        let hash = base64::engine::general_purpose::STANDARD.encode(sha2::Sha256::digest(script));
+        assert_eq!(
+            hash,
+            page_script!(),
+            "index.html's script changed: its hash is {hash}"
+        );
+        assert!(SECURITY.contains(&format!("'sha256-{hash}'")));
     }
 
     #[test]

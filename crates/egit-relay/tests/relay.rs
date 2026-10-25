@@ -49,6 +49,8 @@ fn serves_its_web_build_to_its_own_host_alone() {
         web.path().to_str().unwrap(),
         "--host",
         "proxy.example",
+        "--url",
+        "https://code.example/@me/apps/code-server/proxy/{{port}}/",
     ]);
     let address = &relay.address;
 
@@ -78,8 +80,8 @@ fn serves_its_web_build_to_its_own_host_alone() {
     assert!(wasm.contains("Content-Type: application/wasm"), "{wasm}");
     assert!(wasm.contains("Content-Encoding: gzip"), "{wasm}");
     assert!(wasm.ends_with("compressed"), "{wasm}");
-    // Nothing outside it, and nothing for another host; a proxy's name, and loopback names on
-    // any port (a tunnel's), go through.
+    // Nothing outside it, and nothing for another host; a proxy's name, a proxy's address's
+    // host, and loopback names on any port (a tunnel's), go through.
     let outside = request(
         &relay,
         &format!("GET /../secret HTTP/1.1\r\nHost: {address}\r\n\r\n"),
@@ -87,7 +89,12 @@ fn serves_its_web_build_to_its_own_host_alone() {
     assert!(outside.starts_with("HTTP/1.1 404"), "{outside}");
     let rebound = request(&relay, "GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n");
     assert!(rebound.starts_with("HTTP/1.1 421"), "{rebound}");
-    for host in ["proxy.example", "localhost:9999", "127.0.0.1:1234"] {
+    for host in [
+        "proxy.example",
+        "code.example",
+        "localhost:9999",
+        "127.0.0.1:1234",
+    ] {
         let through = request(&relay, &format!("GET / HTTP/1.1\r\nHost: {host}\r\n\r\n"));
         assert!(through.starts_with("HTTP/1.1 200"), "{host}: {through}");
     }
