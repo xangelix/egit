@@ -8,9 +8,9 @@
 //! forge folds them: `log_folds`), its outline at its left (`log_outline`). A click on a
 //! section's header folds or unfolds it; Alt+↑ and Alt+↓ go to the section before or after.
 //! It is read again every few seconds while the job runs, the view following its end while it
-//! rests there (scrolled up, it stays, "Follow the end" a click away). GitHub gives a job's
-//! log once it has ended: meanwhile its steps show as they go. A retry shows the new run as it
-//! starts. Escape, or the back button, goes back to the pipeline (read again).
+//! rests there (scrolled up, it stays, "Follow the end" a click away). While a GitHub job runs,
+//! its log is its finished steps' (and the running one's as far as GitHub gives it); before
+//! any step has finished, its steps show as they go. A retry shows the new run as it starts. Escape, or the back button, goes back to the pipeline (read again).
 
 use std::sync::Arc;
 
@@ -246,6 +246,7 @@ struct Seen {
     missing: bool,
     problem: Option<Problem>,
     done: bool,
+    withheld: bool,
 }
 
 impl Seen {
@@ -257,6 +258,7 @@ impl Seen {
             missing: following.missing,
             problem: following.problem.clone(),
             done: following.done,
+            withheld: following.withheld,
         }
     }
 }
@@ -974,7 +976,7 @@ fn follow_button(ui: &Ui, view: &mut JobView, log: egui::Rect, running: bool) {
 }
 
 /// What shows before the job has a log: why it has none yet, by how it stands; a GitHub job's
-/// steps as they go (GitHub gives its log once it has ended).
+/// steps as they go (GitHub gives a step's log once the step has finished).
 fn waiting(ui: &mut Ui, seen: &Seen, known: CiStatus) {
     let status = seen.run.as_ref().map_or(known, |run| run.status);
     if !seen.missing && seen.run.is_none() {
@@ -984,10 +986,13 @@ fn waiting(ui: &mut Ui, seen: &Seen, known: CiStatus) {
     if let Some(run) = seen.run.as_ref().filter(|run| !run.steps.is_empty()) {
         if status.is_moving() {
             // The bar's spinner says it is followed: one is enough.
-            ui.label(muted(
-                ui,
-                "Running: GitHub gives its log once it has ended.",
-            ));
+            let words = if seen.withheld {
+                "Running: GitHub hasn't given its finished steps' logs yet (asked again every \
+                 10 seconds); its whole log comes once it has ended."
+            } else {
+                "Running: each step's log shows here once the step has finished."
+            };
+            ui.label(muted(ui, words));
         } else if !seen.done {
             widgets::working(ui, "Its log is on its way…");
         } else {

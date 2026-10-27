@@ -19,7 +19,7 @@ mod github;
 mod gitlab;
 mod workflow;
 
-pub(crate) use github::{github_job, github_log};
+pub(crate) use github::{github_job, github_log, github_step_log};
 pub use workflow::Workflow;
 
 /// Pipelines (or a run's jobs) a page: either forge's largest.

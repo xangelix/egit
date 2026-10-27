@@ -688,7 +688,8 @@ pub(crate) async fn github_job(
 
 /// Reads GitHub job `id`'s log after its first `from` bytes, handing the new ones to `sink`:
 /// GitHub answers with a redirect to a file of it (its whole, as far as it is written), fetched
-/// without the token; nothing yet is [`LogRead::Missing`].
+/// without the token; nothing yet is [`LogRead::Missing`] (GitHub writes it once the job has
+/// ended).
 pub(crate) async fn github_log(
     account: &Account,
     repository: &ForgeRepository,
@@ -697,12 +698,42 @@ pub(crate) async fn github_log(
     sink: &mut (dyn FnMut(&[u8]) + Send),
 ) -> Result<LogRead, ForgeError> {
     let what = format!("{} job {id}'s log", repository.full_name());
+    let path = format!("/actions/jobs/{id}/logs");
+    github_file(account, repository, (&path, &what, from), cancel, sink).await
+}
+
+/// Reads the log of GitHub job `id`'s step at `position` (its place among the job's steps,
+/// from 0) after its first `from` bytes, handing the new ones to `sink`, as [`github_log`] reads
+/// the whole job's: a file of the step's own, there once the step has finished (so a running
+/// job's finished steps can be read before its whole log is); nothing yet is
+/// [`LogRead::Missing`].
+pub(crate) async fn github_step_log(
+    account: &Account,
+    repository: &ForgeRepository,
+    (id, position, from): (u64, usize, u64),
+    cancel: &CancelToken,
+    sink: &mut (dyn FnMut(&[u8]) + Send),
+) -> Result<LogRead, ForgeError> {
+    let what = format!(
+        "{} job {id}'s step {position}'s log",
+        repository.full_name()
+    );
+    let path = format!("/actions/jobs/{id}/steps/{position}/logs");
+    github_file(account, repository, (&path, &what, from), cancel, sink).await
+}
+
+/// Reads a log GitHub keeps as a file (`path`, the API's place pointing to it; `what` it is)
+/// after its first `from` bytes: the API answers with a redirect to the file, fetched without
+/// the token, whole as far as it is written.
+async fn github_file(
+    account: &Account,
+    repository: &ForgeRepository,
+    (path, what, from): (&str, &str, u64),
+    cancel: &CancelToken,
+    sink: &mut (dyn FnMut(&[u8]) + Send),
+) -> Result<LogRead, ForgeError> {
     let answer = account
-        .send(
-            &rest(account, repository, &format!("/actions/jobs/{id}/logs")),
-            None,
-            cancel,
-        )
+        .send(&rest(account, repository, path), None, cancel)
         .await?;
     let (mut seen, mut given) = (0_u64, 0_u64);
     let mut take = |part: &[u8]| {
@@ -743,7 +774,7 @@ pub(crate) async fn github_log(
         }
         (404 | 410, _) => 404,
         _ => {
-            succeeded(account, &answer, &what)?;
+            succeeded(account, &answer, what)?;
             404
         }
     };

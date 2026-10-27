@@ -4,7 +4,8 @@
 //! repositories that aren't there. And Actions' workflow runs as pipelines: listed, each
 //! workflow its series; one whole (its jobs grouped by matrix, each job's earlier attempts,
 //! laid over by its workflow's needs); a job's state with its steps and its log through
-//! GitHub's redirect (fetched without the token); re-runs, cancelling, and refusals; a run's
+//! GitHub's redirect (fetched without the token), and while it runs, its steps' own logs
+//! (a finished one's whole, the running one's as far as written); re-runs, cancelling, and refusals; a run's
 //! artifacts listed and downloaded (their digest checked; one expired).
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
@@ -26,8 +27,8 @@ use egit_forge::{
     Account, ArtifactKind, CheckState, CiAction, CiStatus, ForgeError, ForgeHost, ForgeKind,
     ForgeRepository, JobLog, LogRead, NewPullRequest, ReviewDecision, ReviewState, Told, Workflow,
     ci_act, create_pull_request, deliver_artifact, download_artifact, job, pipeline_details,
-    pipelines, pull_request_details, pull_requests, read_log, repository_info, start_pipeline,
-    workflows,
+    pipelines, pull_request_details, pull_requests, read_log, read_step_log, repository_info,
+    start_pipeline, workflows,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId, Wait as _};
@@ -629,6 +630,91 @@ fn a_job_s_steps_and_log_are_read_the_log_through_github_s_redirect() {
     .wait()
     .unwrap();
     assert_eq!(first, b"the first attempt\n");
+}
+
+#[test]
+fn a_running_job_s_steps_logs_are_read_before_its_whole_log() {
+    let (fake, _sandbox, account, repository) = setup(0, TOKEN);
+    with_runs(&fake);
+    // Job 621 runs: its first step finished, its second under way, as far as it wrote.
+    if let Some(running) = fake.state().repositories[0].pipelines[0].stages[0]
+        .2
+        .get_mut(0)
+    {
+        running
+            .steps
+            .push(("Upload".to_owned(), "PENDING".to_owned()));
+        running.step_logs = vec![
+            "2024-05-14T11:19:20.1234567Z ##[group]Runner Image\n\
+             2024-05-14T11:19:20.2234567Z Ubuntu 24.04\n\
+             2024-05-14T11:19:20.3234567Z ##[endgroup]\n"
+                .to_owned(),
+            "2024-05-14T11:19:21.0000000Z Run make\n2024-05-14T11:19:22.0000000Z cc -c a.c\n"
+                .to_owned(),
+        ];
+    }
+    let cancel = CancelToken::new();
+    let read = |position, from| {
+        let mut bytes = Vec::new();
+        let read = read_step_log(
+            &account,
+            &repository,
+            (621, position, from),
+            &cancel,
+            &mut |part| {
+                bytes.extend_from_slice(part);
+            },
+        )
+        .wait()
+        .unwrap();
+        (read, String::from_utf8(bytes).unwrap())
+    };
+    // The whole job's isn't there while it runs; the first step's is.
+    let whole = read_log(&account, &repository, (621, 0, true), &cancel, &mut |_| {})
+        .wait()
+        .unwrap();
+    assert_eq!(whole, LogRead::Missing);
+    let (first, text) = read(0, 0);
+    let length = u64::try_from(text.len()).unwrap();
+    assert_eq!(
+        first,
+        LogRead::Read {
+            new: length,
+            ranged: false
+        }
+    );
+    let mut log = JobLog::github();
+    log.feed(text.as_bytes());
+    log.end_part();
+    // The group's name a line, then what it holds.
+    assert_eq!(log.lines(), 2);
+    assert_eq!(log.parts().sections[0].name, "Runner Image");
+    // The file, at the address GitHub pointed to, was fetched without the token.
+    let state = fake.state();
+    let file = state
+        .requests
+        .iter()
+        .find(|request| request.path.starts_with("/blob/job/621/step/0"))
+        .unwrap();
+    assert_eq!(file.authorization, None);
+    drop(state);
+    // The running step's as far as it was written, then on from there as it writes more.
+    let (running, text) = read(1, 0);
+    assert!(matches!(running, LogRead::Read { .. }));
+    assert!(text.ends_with("cc -c a.c\n"), "{text}");
+    let written = u64::try_from(text.len()).unwrap();
+    if let Some(job) = fake.state().repositories[0].pipelines[0].stages[0]
+        .2
+        .get_mut(0)
+    {
+        job.step_logs[1].push_str("2024-05-14T11:19:23.0000000Z cc -c b.c\n");
+    }
+    let (more, text) = read(1, written);
+    assert!(matches!(more, LogRead::Read { new: 39, .. }), "{more:?}");
+    assert_eq!(text, "2024-05-14T11:19:23.0000000Z cc -c b.c\n");
+    // A step that hasn't written, and one past the last, have none.
+    assert_eq!(read(2, 0).0, LogRead::Missing);
+    assert_eq!(read(9, 0).0, LogRead::Missing);
 }
 
 #[test]

@@ -1531,13 +1531,16 @@ pub(super) const TOPICS: &[Topic] = &[
                once, Run 2 of 3 switches between its runs' logs. While the job runs, \
                egit asks how it stands and reads what its log gained every two seconds, the \
                view following its end while it rests there: scrolled up, it stays put; back at \
-               the end, it follows again. GitHub gives a job's log once the job has ended: \
-               meanwhile its steps show as they go, each with how long it took. ⌘F (Ctrl+F) \
+               the end, it follows again. GitHub gives a job's whole log once the job has \
+               ended, but each step's once the step has finished: while a GitHub job runs, its \
+               log is its finished steps' logs, each under its step (the running step's too, \
+               as far as GitHub gives it), and before any has finished, its steps show as they \
+               go, each with how long it took. ⌘F (Ctrl+F) \
                finds in it, a drag selects and ⌘C (Ctrl+C) copies; a right click offers the same \
                (Copy: what is selected, or the line under the pointer), Select all, and Copy the \
                whole log (every section unfolded, whatever is folded on screen). Escape, or \
                the pipeline's button, goes back.",
-        git: "GitLab's REST API: GET /projects/:id/jobs/:job_id, and …/trace (a Range from what was read). GitHub's: GET /repos/:owner/:name/actions/jobs/:id (its steps), and …/logs (a redirect to a file of it, fetched without your token)",
+        git: "GitLab's REST API: GET /projects/:id/jobs/:job_id, and …/trace (a Range from what was read). GitHub's: GET /repos/:owner/:name/actions/jobs/:id (its steps), …/logs (a redirect to a file of it, fetched without your token), and while it runs …/steps/:place/logs (a step's own, the same way)",
         cases: &[
             (
                 "Only part of a long log?",
@@ -1557,7 +1560,7 @@ pub(super) const TOPICS: &[Topic] = &[
             ),
             (
                 "A running GitHub job's log?",
-                "GitHub's API gives a job's log once the job has ended; its own page streams it live. egit shows the steps as they go, looks for the log now and then, and shows it as soon as GitHub has it.",
+                "GitHub's API gives a job's whole log once the job has ended, and a step's once the step has finished (its own page streams the running step live, which its API doesn't). So egit shows each step's log as soon as the step has finished, asks for the running step's every ten seconds in case GitHub has some of it, and once the job has ended shows the whole log in their place.",
             ),
         ],
     },

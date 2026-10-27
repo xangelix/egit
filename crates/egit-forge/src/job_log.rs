@@ -28,7 +28,7 @@ use crate::answer::{parse_time, read_answer};
 use crate::error::ForgeError;
 use crate::gitlab::encoded;
 use crate::host::ForgeKind;
-use crate::pipelines::{CiStatus, github_job, github_log};
+use crate::pipelines::{CiStatus, github_job, github_log, github_step_log};
 use crate::repository::ForgeRepository;
 
 /// The most of a log's text kept (GitLab's own limit is 100 MiB by default).
@@ -152,7 +152,8 @@ pub enum LogRead {
 ///
 /// GitLab's is asked as a range where `ranges` (the host may answer them), else the whole
 /// skipped as far as `from`. A GitHub job's is a file GitHub points to, whole as far as it is
-/// written (none, perhaps, before the job ends: [`LogRead::Missing`]).
+/// written: none before the job ends ([`LogRead::Missing`]), when its steps' are read instead
+/// ([`read_step_log`]).
 ///
 /// # Errors
 ///
@@ -228,6 +229,29 @@ pub async fn read_log(
             message: crate::answer::reason(&streamed.said),
         }),
     }
+}
+
+/// Reads a GitHub job's step's own log as [`read_log`] reads the whole job's.
+///
+/// Job `id`'s step at `position` (its place among the job's steps, from 0), after its first
+/// `from` bytes, the new ones handed to `sink` as they come: a file of the step's own, there
+/// once the step has finished, while the whole job's isn't until the job has ended. None for a
+/// GitLab job, which has no steps ([`LogRead::Missing`]).
+///
+/// # Errors
+///
+/// Any of [`ForgeError`]'s.
+pub async fn read_step_log(
+    account: &Account,
+    repository: &ForgeRepository,
+    (id, position, from): (u64, usize, u64),
+    cancel: &CancelToken,
+    sink: &mut (dyn FnMut(&[u8]) + Send),
+) -> Result<LogRead, ForgeError> {
+    if repository.host().kind() != ForgeKind::GitHub {
+        return Ok(LogRead::Missing);
+    }
+    github_step_log(account, repository, (id, position, from), cancel, sink).await
 }
 
 /// A style taking over from a byte of the text on.
@@ -383,6 +407,26 @@ impl JobLog {
         if let Some((content, time)) = self.pending.take() {
             self.commit(&content, time);
         }
+    }
+
+    /// Ends a part of the log read on its own (a GitHub step's: [`read_step_log`]) so the next
+    /// starts apart: its line under way taken as ended, and the groups it left open (a step
+    /// read as it ran) ended at its last line.
+    pub fn end_part(&mut self) {
+        self.finish();
+        let last = self.lines.saturating_sub(1);
+        let time = self.times.last().copied().unwrap_or(0);
+        for open in self.open.drain(..) {
+            if let Some(section) = self.sections.get_mut(open) {
+                section.ended = Some((time.max(section.started), last.max(section.line)));
+            }
+        }
+    }
+
+    /// How many lines it holds, the line under way left out.
+    #[must_use]
+    pub const fn lines(&self) -> u32 {
+        self.lines
     }
 
     /// Its parts as they stand, the line under way taken as ended.
@@ -646,13 +690,20 @@ impl JobLog {
 /// step that wrote nothing, or a log without times, adds nothing.
 #[must_use]
 pub fn with_steps(parts: LogParts, steps: &[JobStep]) -> LogParts {
+    let headed = step_lines(&parts.times, steps);
+    with_steps_at(parts, &headed)
+}
+
+/// [`with_steps`], each step's first line known (`headed`: in order, each line once), as where
+/// the log is its steps' own logs one after another, rather than found by the lines' times.
+#[must_use]
+pub fn with_steps_at(parts: LogParts, headed: &[(u32, &JobStep)]) -> LogParts {
     let starts = line_starts(&parts.text);
     let lines = u32::try_from(starts.len()).unwrap_or(u32::MAX);
-    let headed = step_lines(&parts.times, steps);
     if headed.is_empty() {
         return parts;
     }
-    let (text, inserted) = with_names(&parts.text, &starts, &headed);
+    let (text, inserted) = with_names(&parts.text, &starts, headed);
     let mut times = Vec::with_capacity(parts.times.len().saturating_add(headed.len()));
     let mut names = headed.iter().peekable();
     for (line, time) in parts.times.iter().enumerate() {
@@ -1190,6 +1241,61 @@ mod tests {
                 .unwrap()
                 .get(..6),
             Some(&b"Error:"[..])
+        );
+    }
+
+    #[test]
+    fn steps_read_one_by_one_head_their_own_lines() {
+        let step = |number, name: &str, status| JobStep {
+            number,
+            name: name.to_owned(),
+            status,
+            started: Some(1_715_685_560),
+            finished: None,
+        };
+        let steps = [
+            step(1, "Set up job", CiStatus::Success),
+            step(2, "Run make", CiStatus::Running),
+        ];
+        // Each step's own log one after another, as read while the job runs: the first left
+        // without its last line ended, the second (under way) inside a group not yet ended.
+        let mut log = JobLog::github();
+        let mut headed = Vec::new();
+        for (place, part) in [
+            "2024-05-14T11:19:20.0000000Z Runner 2.316.1",
+            "2024-05-14T11:19:21.0000000Z ##[group]Run make\n\
+             2024-05-14T11:19:21.0000000Z make all\n",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            headed.push((log.lines(), &steps[place]));
+            log.feed(part.as_bytes());
+            log.end_part();
+        }
+        assert_eq!(log.lines(), 3);
+        let parts = with_steps_at(log.parts(), &headed);
+        assert_eq!(
+            text(&parts),
+            "Set up job\nRunner 2.316.1\nRun make\nRun make\nmake all\n"
+        );
+        assert_eq!(
+            parts
+                .sections
+                .iter()
+                .map(|section| (
+                    section.name.as_str(),
+                    section.line,
+                    section.ended.map(|(_, last)| last),
+                    section.depth
+                ))
+                .collect::<Vec<_>>(),
+            [
+                ("Set up job", 0, None, 0),
+                ("Run make", 2, None, 0),
+                // The group the running step left open, ended where its part ends.
+                ("Run make", 3, Some(4), 1),
+            ]
         );
     }
 

@@ -6,10 +6,14 @@
 //! each to the view as it lands. Once the job has ended and its log is read whole, it stops;
 //! dropped, it stops at once.
 //!
-//! GitHub gives a job's log once the job has ended (as a file it points to): while a GitHub job
-//! runs, it is asked about (its steps) every [`EVERY`] and its log looked for only every
-//! [`GITHUB_LOG_EVERY`]th time; once it has ended, its log is looked for a few times more
-//! ([`LOOKS_AFTER_END`]), as GitHub writes it out a little after.
+//! GitHub gives a job's whole log once the job has ended (as a file it points to), but each
+//! step's own as soon as the step has finished: while a GitHub job runs, it is asked about (its
+//! steps) every [`EVERY`], each step's log read once the step has finished ([`StepLogs`]: one
+//! not there yet, and the running step's as far as written, tried again only every
+//! [`GITHUB_LOG_EVERY`]th time), and the log shown is theirs, each under its step; its whole log
+//! is looked for every [`GITHUB_LOG_EVERY`]th time, and once the job has ended a few times more
+//! ([`LOOKS_AFTER_END`]), as GitHub writes it out a little after; once read, it is shown in
+//! theirs' place.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,8 +21,8 @@ use std::time::Duration;
 use web_time::Instant;
 
 use egit_forge::{
-    Account, ForgeError, ForgeKind, ForgeRepository, JobLog, JobRun, LogMark, LogParts, LogRead,
-    Run, Section, job, read_log, with_steps,
+    Account, ForgeError, ForgeKind, ForgeRepository, JobLog, JobRun, JobStep, LogMark, LogParts,
+    LogRead, MOST_TEXT, Run, Section, job, read_log, read_step_log, with_steps, with_steps_at,
 };
 use egit_git::sync::Mutex;
 use egit_git::{CancelToken, Style};
@@ -39,7 +43,8 @@ const LONGEST: Duration = Duration::from_secs(15);
 /// How long before trying again after a failure.
 const AFTER_FAILING: Duration = Duration::from_secs(10);
 
-/// While a GitHub job runs, its log is looked for every this many times it is asked about.
+/// While a GitHub job runs, its whole log is looked for every this many times it is asked
+/// about, and a step's log not there yet, and the running step's, read again.
 const GITHUB_LOG_EVERY: u32 = 5;
 
 /// How many times more a GitHub job's log is looked for once the job has ended without one.
@@ -301,6 +306,9 @@ pub(crate) struct Following {
     pub(crate) problem: Option<Problem>,
     /// Whether the job has ended and its log was read whole.
     pub(crate) done: bool,
+    /// Whether GitHub gave no log of a step that had finished, the last time it was asked
+    /// (while the job runs, a step's log is there once the step has finished).
+    pub(crate) withheld: bool,
 }
 
 /// A job's log followed by a thread of its own; dropped, it stops.
@@ -361,6 +369,48 @@ struct Follower {
     options: egit_text::Options,
 }
 
+/// Why a turn of following halts before its end.
+enum Halt {
+    /// What it asked failed (said, and waited for): the next turn begins.
+    Again,
+    /// The follower was dropped.
+    Stop,
+}
+
+/// A GitHub job's steps' own logs, read while the job runs, by each step's place among its
+/// steps.
+#[derive(Debug, Default)]
+struct StepLogs {
+    parts: Vec<StepLog>,
+    /// How many bytes they hold together (at most about [`MOST_TEXT`]).
+    total: usize,
+}
+
+impl StepLogs {
+    /// Whether none holds anything.
+    const fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// Whether the last read of a step that had finished (as `listed` says) found none.
+    fn withheld(&self, listed: &[JobStep]) -> bool {
+        self.parts
+            .iter()
+            .zip(listed)
+            .any(|(part, step)| part.missed && step.started.is_some() && !step.status.is_moving())
+    }
+}
+
+/// A step's own log, as far as read.
+#[derive(Debug, Default)]
+struct StepLog {
+    bytes: Vec<u8>,
+    /// Whether it is whole: read once the step had finished.
+    whole: bool,
+    /// Whether the last read found none (not there yet): tried again only now and then.
+    missed: bool,
+}
+
 /// How long to wait before reading a log again: a large one is read less often, a second more
 /// for each MiB sent whole each time (`read` so far), or for each 4 MiB laid out again (sent
 /// as `ranges`).
@@ -383,30 +433,36 @@ impl Follower {
         let github = self.repository.host().kind() == ForgeKind::GitHub;
         let mut log = JobLog::of(self.repository.host().kind());
         let (mut read, mut ranges) = (0_u64, true);
-        // GitHub's: how many times it was asked about, and its log looked for once it ended.
+        // GitHub's: how many times it was asked about, and its log looked for once it ended;
+        // its steps' own logs, read until its whole log is.
         let (mut asked, mut looked_after) = (0_u32, 0_u32);
+        let mut steps = StepLogs::default();
         loop {
             if self.cancel.is_cancelled() {
                 return;
             }
-            let ended = match job(&self.account, &self.repository, self.id, &self.cancel).await {
-                Ok(run) => {
-                    let ended = !run.status.is_moving();
-                    self.shared.lock().job = Some(run);
-                    ended
-                }
-                Err(ForgeError::Cancelled) => return,
-                Err(error) => {
-                    self.failed(&error);
-                    if !self.wait(AFTER_FAILING).await {
-                        return;
-                    }
-                    continue;
-                }
+            let (ended, listed) = match self.ask().await {
+                Ok(stands) => stands,
+                Err(Halt::Again) => continue,
+                Err(Halt::Stop) => return,
             };
             asked = asked.wrapping_add(1);
-            if github && !ended && asked.checked_rem(GITHUB_LOG_EVERY) != Some(1) {
-                // Its steps moved on; its log is looked for now and then.
+            let look = asked.checked_rem(GITHUB_LOG_EVERY) == Some(1);
+            // Until its whole log is read, its steps' own.
+            if github && read == 0 {
+                let read = self.read_steps(&mut steps, &listed, look || ended).await;
+                self.shared.lock().withheld = steps.withheld(&listed);
+                match read {
+                    Ok(true) => self.lay_out_steps(&steps, &listed),
+                    Ok(false) => {}
+                    Err(error) => match self.halt(&error).await {
+                        Halt::Again => continue,
+                        Halt::Stop => return,
+                    },
+                }
+            }
+            if github && !ended && !look {
+                // Its steps moved on; its whole log is looked for now and then.
                 self.waker.request_repaint();
                 if !self.wait(EVERY).await {
                     return;
@@ -448,7 +504,7 @@ impl Follower {
                     looked_after = looked_after.saturating_add(u32::from(ended));
                     {
                         let mut shared = self.shared.lock();
-                        shared.missing = read == 0;
+                        shared.missing = read == 0 && steps.is_empty();
                         shared.problem = None;
                         shared.done = ended && !again;
                     }
@@ -473,6 +529,116 @@ impl Follower {
                 return;
             }
         }
+    }
+
+    /// Asks how the job stands, and keeps it: whether it has ended, and its steps (GitHub's).
+    async fn ask(&self) -> Result<(bool, Vec<JobStep>), Halt> {
+        match job(&self.account, &self.repository, self.id, &self.cancel).await {
+            Ok(run) => {
+                let ended = !run.status.is_moving();
+                let listed = run.steps.clone();
+                self.shared.lock().job = Some(run);
+                Ok((ended, listed))
+            }
+            Err(error) => Err(self.halt(&error).await),
+        }
+    }
+
+    /// Why a turn halts on `error`: dropped (cancelled), or said and waited for, to try again.
+    async fn halt(&self, error: &ForgeError) -> Halt {
+        if matches!(error, ForgeError::Cancelled) {
+            return Halt::Stop;
+        }
+        self.failed(error);
+        if self.wait(AFTER_FAILING).await {
+            Halt::Again
+        } else {
+            Halt::Stop
+        }
+    }
+
+    /// Reads what a GitHub job's steps (`listed`, as it stands) wrote that `logs` doesn't hold
+    /// yet: each finished step's log once, and where `again` (the whole log is looked for), the
+    /// running step's as far as written and a finished one's that wasn't there yet. Whether any
+    /// changed.
+    async fn read_steps(
+        &self,
+        logs: &mut StepLogs,
+        listed: &[JobStep],
+        again: bool,
+    ) -> Result<bool, ForgeError> {
+        logs.parts.resize_with(listed.len(), StepLog::default);
+        let mut changed = false;
+        for (place, (step, part)) in listed.iter().zip(&mut logs.parts).enumerate() {
+            let running = step.status.is_moving();
+            let wanted = match (step.started, running) {
+                // Not started, or skipped: nothing written.
+                (None, _) => false,
+                (Some(_), true) => again,
+                (Some(_), false) => !part.whole && (again || !part.missed),
+            };
+            if !wanted || logs.total >= MOST_TEXT {
+                continue;
+            }
+            let from = u64::try_from(part.bytes.len()).unwrap_or(u64::MAX);
+            let mut taken = 0_usize;
+            let bytes = &mut part.bytes;
+            let mut sink = |new: &[u8]| {
+                taken = taken.saturating_add(new.len());
+                bytes.extend_from_slice(new);
+            };
+            let got = read_step_log(
+                &self.account,
+                &self.repository,
+                (self.id, place, from),
+                &self.cancel,
+                &mut sink,
+            )
+            .await?;
+            logs.total = logs.total.saturating_add(taken);
+            match got {
+                LogRead::Read { .. } => {
+                    part.whole = !running;
+                    part.missed = false;
+                    changed |= taken > 0;
+                }
+                LogRead::Shorter => {
+                    logs.total = logs.total.saturating_sub(part.bytes.len());
+                    *part = StepLog::default();
+                    changed = true;
+                }
+                LogRead::Missing => part.missed = true,
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Lays a GitHub job's steps' own logs out for the grid, one after another, each under its
+    /// step (`listed`, as it stands), and hands it over while the whole log isn't there.
+    fn lay_out_steps(&self, logs: &StepLogs, listed: &[JobStep]) {
+        let mut log = JobLog::github();
+        let mut headed: Vec<(u32, &JobStep)> = Vec::new();
+        for (part, step) in logs.parts.iter().zip(listed) {
+            if part.bytes.is_empty() {
+                continue;
+            }
+            let first = log.lines();
+            log.feed(&part.bytes);
+            log.end_part();
+            if log.lines() > first {
+                headed.push((first, step));
+            }
+        }
+        let Some(source) = LogSource::of(with_steps_at(log.parts(), &headed), self.options) else {
+            return;
+        };
+        let mut shared = self.shared.lock();
+        shared.log = Some(Arc::new(source));
+        shared.version = shared.version.wrapping_add(1);
+        shared.missing = false;
+        shared.problem = None;
+        drop(shared);
+        self.waker.request_repaint();
     }
 
     /// Lays `log` out for the grid (`whole`: the job ended) and hands it over, a GitHub job's

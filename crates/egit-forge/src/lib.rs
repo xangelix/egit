@@ -39,7 +39,7 @@ pub use host::{ForgeHost, ForgeHosts, ForgeKind};
 pub use http::Told;
 pub use job_log::{
     JobLog, JobRun, JobStep, LogMark, LogParts, LogRead, MOST_TEXT, MarkKind, Run, Section, job,
-    read_log, with_steps,
+    read_log, read_step_log, with_steps, with_steps_at,
 };
 pub use model::{
     Check, CheckState, Mergeable, NewPullRequest, Opened, PullRequest, PullRequestDetails,

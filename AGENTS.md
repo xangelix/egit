@@ -949,10 +949,12 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   - `job_log.rs` — a CI/CD job's log: `job` (how it stands, REST: status, stage, started,
     finished, duration, why it failed, its page; a GitHub job's `JobStep`s too), `read_log`
     (a GitHub job's: its file, GitHub's redirect fetched without the token, whole as far as
-    written, none before the job ends but perhaps; a GitLab job's trace after the bytes read:
+    written, none before the job ends; a GitLab job's trace after the bytes read:
     asked as a range where wanted, a 206 from elsewhere refused; a whole answer skipped as far
     as read, as it streams; `LogRead`: read (how many new, ranged or not), shorter (erased or
-    begun again: from the start), missing). `JobLog`, the parser fed as it comes: a runner's
+    begun again: from the start), missing); `read_step_log` (a GitHub job's step's own log, by
+    its place among the job's steps from 0, read the same way: there once the step has
+    finished, while the job runs; none for GitLab). `JobLog`, the parser fed as it comes: a runner's
     timestamp prefix (`2024-05-14T11:19:20.000000Z 00O `, `+` continuing the line before:
     joined) taken off and kept a line, SGR colours as `Run`s (a style from a byte on), other
     escapes dropped, a `\r` rewriting the line under way (the rest's colours still taking
@@ -969,7 +971,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     each step's name a line of its own heading what it wrote (from the first line timed once it
     started, `step_lines`, to the next step's; times, styles, sections, and marks moved past the
     names inserted), its time and status its own (`Section::status`), the groups a step in; a
-    step that didn't fail folded (`collapsed`), as GitHub folds them.
+    step that didn't fail folded (`collapsed`), as GitHub folds them; `with_steps_at`, each
+    step's first line given (its own log fed in turn, `JobLog::lines` before each,
+    `JobLog::end_part` after: its line under way ended, the groups it left open ended there).
   - `pipelines/` — CI/CD pipelines, GitLab's and GitHub Actions' workflow runs alike
     (`has_pipelines`: both), each call sent to its forge's (`mod.rs`). `gitlab.rs`: through
     GitLab's GraphQL API: `pipelines` (a project's newest, 100 a
@@ -990,7 +994,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `permissions`: push, maintain, or admin; remembered by the account ten minutes,
     `remembered_push`), and asking: a run's failed jobs re-run, all of them, cancelled; a job
     re-run, its new run looked for in the run's latest attempt (a second apart, five times);
-    `github_job` (with its steps) and `github_log` for `job_log.rs`; a run's artifacts
+    `github_job` (with its steps), `github_log` and `github_step_log` (`…/steps/<place>/logs`,
+    the same redirect) for `job_log.rs`; a run's artifacts
     (`runs/:id/artifacts`, 100 at most, by name: a GitHub run's artifacts are its own, not a
     job's). `workflow.rs`:
     `Workflow::parse`, a reader of a workflow file's `jobs:` (not a YAML parser: by
@@ -1034,7 +1039,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     refused (`read_only`: 403, and no permission said); GitHub Actions too (a `FakePipeline`
     a workflow's run: its `workflow` name, id, and file, `attempt`; its jobs' `steps`): runs a
     page, a run, its jobs of every attempt, a job, its log a redirect to its file at
-    `/blob/job/<id>` served without the token (there once the job has ended), the
+    `/blob/job/<id>` served without the token (there once the job has ended), a step's
+    (`FakeJob::step_logs`, by place) at `/blob/job/<id>/step/<place>` as it stands, the
     repository's `permissions`, re-runs, cancelling (409 with nothing under way); pipelines started (GitLab's REST, GitHub's
     workflows listed from its runs', a dispatch making a run, 422 for a workflow it hasn't,
     `start_pipeline`: listed first); artifacts:
@@ -1047,7 +1053,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     time and one whole (stages in order, jobs, pages, needs, earlier runs), retried, cancelled,
     and started; GitHub's workflow runs listed (each workflow its series), one whole (its
     matrix together, a job's earlier attempt, laid over by its workflow), a job's steps and
-    log (through the redirect, without the token), re-runs, cancelling, and refusals; a GitLab
+    log (through the redirect, without the token), a running job's steps' own logs (a finished
+    one's whole, its groups sections; the running one's as far as written, then on from there;
+    none for one that hasn't written; the whole job's none), re-runs, cancelling, and refusals; a GitLab
     job's artifacts listed (its log left out) and downloaded (the archive through its redirect,
     without the token; a report at once; stopped by the sink; one removed not found), and a
     GitHub run's (one downloaded, an expired one said, one not matching its digest refused).
@@ -1458,8 +1466,12 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   - `job_log.rs` — a CI/CD job's log followed: `JobFollower` (a thread of its own, stopped
     when dropped) asks how the job stands and reads what the log gained (a range while the
     host answers them, else whole, compressed, skipped as far as read; parsed in its forge's
-    dialect; a GitHub job's looked for every `GITHUB_LOG_EVERY`th time while it runs, and
-    `LOOKS_AFTER_END` times more once it ended, as GitHub writes it out after) every `EVERY` (2 s; a
+    dialect; a GitHub job's whole log looked for every `GITHUB_LOG_EVERY`th time while it runs, and
+    `LOOKS_AFTER_END` times more once it ended, as GitHub writes it out after; until it is read,
+    its steps' own (`StepLogs`: each finished step's read once, as soon as it has finished; one
+    not there yet, and the running step's as far as written, again every `GITHUB_LOG_EVERY`th
+    time; at most `MOST_TEXT` together), laid out one after another each under its step,
+    `lay_out_steps`; asking and reading halt a turn alike, `Halt`) every `EVERY` (2 s; a
     second more for each MiB sent whole or 4 MiB laid out, at most `LONGEST`, 15 s), a log
     begun again read from the start, a failure tried again after 10 s; each read laid out
     (`LogSource`: a GitHub job's steps made its sections first, `with_steps`; its text
@@ -2359,8 +2371,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     brought into view; then the lines marked as errors and warnings, a click going to one,
     unfolding what hides it; Fold every section, Unfold every section). Before there is a log,
     why (waiting for a runner, manual, scheduled, skipped, cancelled); a GitHub job's steps as
-    they go, each's status, number, name, and how long in columns (`steps`: GitHub gives its
-    log once the job has ended); Escape goes back.
+    they go, each's status, number, name, and how long in columns (`steps`, until a step has
+    finished: GitHub gives each step's log once it has, the whole job's once the job has
+    ended); Escape goes back.
     `views/pipeline/` — `PipelineView` (`mod.rs`), a pipeline in the commit table's place (a
     GitLab pipeline, a GitHub workflow's run; from its mark; the details panel left out; Escape
     or History goes back), its forge's words its buttons' (`CiWords`: GitLab's or GitHub's): a
@@ -2904,7 +2917,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     (committed here) says the jobs need (no Stages to choose; rendered), a failed job's log
     through GitHub's redirect (its steps heading their lines, the failed one open, the others
     folded, its error listed beside it; rendered), its failed jobs re-run (a second attempt said), the other
-    workflow's run from the menu, a running job's steps (rendered), the run cancelled (asked
+    workflow's run from the menu, a running job's steps (rendered), then its log as its steps
+    wrote it (the finished one folded under its step, the running one open; rendered), the run cancelled (asked
     first), a job re-run from its row, and the mark following; and the run's artifacts (an
     expired one listed, disabled; rendered): one downloaded, one whose digest doesn't match
     refused, said (rendered), nothing left on disk, no part either.

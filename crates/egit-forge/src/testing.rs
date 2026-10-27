@@ -127,6 +127,9 @@ pub struct FakeJob {
     pub earlier: Vec<Self>,
     /// A GitHub job's steps: each one's name and status (as GitLab's enum names it).
     pub steps: Vec<(String, String)>,
+    /// A GitHub job's steps' own logs, by their places: each served as it is (a running step's
+    /// too, as far as it was written), none where empty.
+    pub step_logs: Vec<String>,
     /// A GitLab job's artifacts: each one's file type (`ARCHIVE`, `JUNIT`, …), name, and
     /// contents. An archive is sent through a redirect (as gitlab.com's CDN), a report as it is.
     pub artifacts: Vec<(String, String, String)>,
@@ -380,9 +383,9 @@ type Answer = (u16, Vec<(&'static str, String)>, String);
 
 /// The fake's answer to `request`.
 fn answer(kind: ForgeKind, request: &Recorded, state: &mut FakeState) -> Answer {
-    // A GitHub log's file, at the address a redirect signed: no token.
-    if let Some(id) = request.path.strip_prefix("/blob/job/") {
-        return github_log_file(id, state);
+    // A GitHub log's file (a job's, or a step's), at the address a redirect signed: no token.
+    if let Some(place) = request.path.strip_prefix("/blob/job/") {
+        return github_log_file(place, state);
     }
     if let Some(place) = request.path.strip_prefix("/blob/artifact/") {
         return artifact_file(place, state);
@@ -1517,6 +1520,9 @@ fn github_actions(request: &Recorded, state: &mut FakeState) -> Option<Answer> {
             }
             None => return Some(not_found),
         },
+        ["actions", "jobs", id, "steps", position, "logs"] => {
+            return Some(github_step_log(runs, (id, position), state));
+        }
         ["actions", "jobs", id] | ["actions", "jobs", id, "logs"] => {
             let found = github_find_job(runs, id);
             let Some((run, job, attempt)) = found else {
@@ -1580,10 +1586,43 @@ fn github_artifacts(resource: &str, runs: &[FakePipeline], state: &FakeState) ->
     Some((200, Vec::new(), answer.to_string()))
 }
 
-/// A GitHub log's file: its job's log, whoever asks.
-fn github_log_file(id: &str, state: &FakeState) -> Answer {
+/// A GitHub job's step's log (at `position` among its steps): a redirect to its file, once the
+/// step has written one.
+fn github_step_log(
+    runs: &[FakePipeline],
+    (id, position): (&str, &str),
+    state: &FakeState,
+) -> Answer {
+    let written = github_find_job(runs, id).is_some_and(|(_, job, _)| {
+        position
+            .parse::<usize>()
+            .ok()
+            .and_then(|position| job.step_logs.get(position))
+            .is_some_and(|log| !log.is_empty())
+    });
+    if !written {
+        return (
+            404,
+            Vec::new(),
+            json!({ "message": "Not Found" }).to_string(),
+        );
+    }
+    let location = format!("http://{}/blob/job/{id}/step/{position}", state.address);
+    (302, vec![("location", location)], String::new())
+}
+
+/// A GitHub log's file, whoever asks: a job's (`<id>`), or a step's (`<id>/step/<place>`).
+fn github_log_file(place: &str, state: &FakeState) -> Answer {
+    let (id, step) = place
+        .split_once("/step/")
+        .map_or((place, None), |(id, step)| (id, step.parse::<usize>().ok()));
     let log = state.repositories.iter().find_map(|repository| {
-        github_find_job(&repository.pipelines, id).map(|(_, job, _)| job.log.clone())
+        github_find_job(&repository.pipelines, id).and_then(|(_, job, _)| {
+            step.map_or_else(
+                || Some(job.log.clone()),
+                |step| job.step_logs.get(step).cloned(),
+            )
+        })
     });
     log.map_or_else(
         || {
@@ -1608,6 +1647,7 @@ fn rerun(job: &mut FakeJob, number: u64, next: &mut u64) {
     job.id = *next;
     "PENDING".clone_into(&mut job.status);
     job.log.clear();
+    job.step_logs.clear();
     job.duration = None;
     for (_, step) in &mut job.steps {
         "PENDING".clone_into(step);

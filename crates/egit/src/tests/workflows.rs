@@ -2,7 +2,8 @@
 //! commit's runs of two workflows marked as one (the failure shown, the other run a menu away
 //! on its page), the run's jobs laid out by what its workflow's file says they need (read at
 //! its commit here), a failed job's log through GitHub's redirect, its failed jobs re-run (a
-//! second attempt), a running job's steps as they go, the run cancelled (asked first), a job
+//! second attempt), a running job's steps as they go, then its log as its steps write it
+//! (each step's own, under its step), the run cancelled (asked first), a job
 //! re-run from its row, and the mark following. The run's artifacts downloaded where the save
 //! dialog says (each checked against its digest: one that doesn't match isn't saved), an
 //! expired one listed but not offered.
@@ -221,33 +222,8 @@ fn a_commit_s_workflow_runs_are_marked_shown_and_run_again() {
     harness.key_press(egui::Key::Escape);
     harness.run_steps(2);
 
-    // Running: its steps show as they go; cancelled, asked first.
-    if let Some(macos) = fake.state().repositories[0].pipelines[1].stages[0]
-        .2
-        .get_mut(2)
-    {
-        "RUNNING".clone_into(&mut macos.status);
-        macos.steps = vec![
-            ("Set up job".to_owned(), "SUCCESS".to_owned()),
-            ("Run make".to_owned(), "RUNNING".to_owned()),
-        ];
-    }
-    harness.state_mut().state.repos[0]
-        .forge
-        .read_pipelines_now();
-    wait_for_label(&mut harness, "CI #57: running");
-    harness
-        .get_by_role_and_label(Role::Button, "CI #57: running")
-        .click();
-    wait_for_label(&mut harness, "test (macos): running");
-    harness
-        .get_by_role_and_label(Role::Button, "test (macos): running")
-        .click();
-    wait_for_label(&mut harness, "Run make");
-    harness.get_by_label_contains("GitHub gives its log once it has ended");
-    render(&mut harness, "workflow-job-steps");
-    harness.key_press(egui::Key::Escape);
-    wait_for_label(&mut harness, "test (macos): running");
+    // Running: its steps, then their logs, as they go; cancelled, asked first.
+    follow_a_running_job(&mut harness, &fake);
     click_when_enabled(
         &mut harness,
         &format!("{}  Cancel workflow", icon::PROHIBIT),
@@ -261,6 +237,78 @@ fn a_commit_s_workflow_runs_are_marked_shown_and_run_again() {
     wait_for_label(&mut harness, "test (macos): pending");
     harness.key_press(egui::Key::Escape);
     wait_for_label(&mut harness, "CI #57: running");
+}
+
+/// The run's macOS job running, its first step finished: its steps as they go while GitHub
+/// hasn't its finished step's log (said so); then, its steps' logs written, its log theirs, each
+/// under its step (the one finished folded), before GitHub has the whole job's. Back on the
+/// run's page.
+fn follow_a_running_job(harness: &mut egui_kittest::Harness<'_, EgitApp>, fake: &FakeForge) {
+    if let Some(macos) = fake.state().repositories[0].pipelines[1].stages[0]
+        .2
+        .get_mut(2)
+    {
+        "RUNNING".clone_into(&mut macos.status);
+        macos.steps = vec![
+            ("Set up job".to_owned(), "SUCCESS".to_owned()),
+            ("Run make".to_owned(), "RUNNING".to_owned()),
+        ];
+    }
+    harness.state_mut().state.repos[0]
+        .forge
+        .read_pipelines_now();
+    wait_for_label(harness, "CI #57: running");
+    harness
+        .get_by_role_and_label(Role::Button, "CI #57: running")
+        .click();
+    wait_for_label(harness, "test (macos): running");
+    harness
+        .get_by_role_and_label(Role::Button, "test (macos): running")
+        .click();
+    wait_for_label(harness, "Run make");
+    // Its first step finished, but GitHub hasn't its log (yet): said so.
+    settle(harness, "the step's log looked for", |app| {
+        app.state.repos[0].history_view.job_log().is_none()
+    });
+    wait_for_label(
+        harness,
+        "Running: GitHub hasn't given its finished steps' logs yet (asked again every 10 \
+         seconds); its whole log comes once it has ended.",
+    );
+    render(harness, "workflow-job-steps");
+    harness.key_press(egui::Key::Escape);
+    wait_for_label(harness, "test (macos): running");
+
+    // Its first step finished, the second writing: its log is theirs, each under its step (the
+    // one finished folded), before GitHub has the whole job's.
+    if let Some(macos) = fake.state().repositories[0].pipelines[1].stages[0]
+        .2
+        .get_mut(2)
+    {
+        macos.step_logs = vec![
+            "2024-05-14T11:19:20.0000000Z Current runner version: '2.316.1'\n".to_owned(),
+            "2024-05-14T11:19:22.0000000Z ##[group]Run make test\n\
+             2024-05-14T11:19:22.0000000Z make test\n\
+             2024-05-14T11:19:22.0000000Z ##[endgroup]\n\
+             2024-05-14T11:19:25.0000000Z cc -c parse.c\n"
+                .to_owned(),
+        ];
+    }
+    harness
+        .get_by_role_and_label(Role::Button, "test (macos): running")
+        .click();
+    settle(harness, "the running job's log", |app| {
+        app.state.repos[0]
+            .history_view
+            .job_log_shown()
+            .is_some_and(|shown| {
+                shown.starts_with("Set up job  ⋯ 1 line\nRun make\nRun make test  ⋯ 1 line\n")
+                    && shown.ends_with("cc -c parse.c\n")
+            })
+    });
+    render(harness, "workflow-job-running-log");
+    harness.key_press(egui::Key::Escape);
+    wait_for_label(harness, "test (macos): running");
 }
 
 /// Steps until the tab's one download has ended as `stage` says.
