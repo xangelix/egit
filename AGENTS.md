@@ -1187,8 +1187,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   slash added, the address then `…/proxy/7171/`); screens kept in `target/web-screens`.
 - `crates/egit-web` — egit in a browser: the page (`web/index.html`: its one script of its own
   adds its address's last slash where a proxy served it without one, else its files would be
-  looked for a folder too high; `start.js`: its WebAssembly loaded, a problem said in the
-  page), its workers' script (`web/worker.js`: the
+  looked for a folder too high, and only then names them (`start.js` and its preload, added
+  from the head: nothing in the markup a browser would fetch ahead from the wrong place);
+  `start.js`: its WebAssembly loaded once the page is read, a problem said in the page), its workers' script (`web/worker.js`: the
   module and memory it is sent handed to wasm-bindgen's `init`, then `egit_worker`), and its
   entries (`lib.rs`: `wasm_bindgen(start)`, `egit_app::start` in the canvas `#egit` on the main
   thread, nothing on a worker; `egit_worker`, `egit_git::exec::work`); a `cdylib`, empty

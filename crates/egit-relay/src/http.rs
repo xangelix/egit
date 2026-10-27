@@ -32,7 +32,7 @@ const HEAD_TIMEOUT: Duration = Duration::from_secs(10);
 /// anything is looked for beside the page. A test holds the two together.
 macro_rules! page_script {
     () => {
-        "Kg+nHl3+XchWsOtNCtIpcVGxKkue2yOv8CYaSTRj0Oc="
+        "gAqvg1+ExPJvnwBT0jN0mJPG3t6C6WipY6M+VZWpHd8="
     };
 }
 
