@@ -443,10 +443,6 @@ fn elements(harness: &Harness<'_, EgitApp>) -> Vec<Element> {
             .then(|| access.value())
             .flatten()
             .filter(|text| !text.is_empty());
-        let mut visible = visible_part(harness, rect, text.as_deref());
-        if control {
-            visible = reachable_part(&reachable, rect, visible);
-        }
         let mut layer = LayerId::background();
         let mut parent = node.parent();
         while let Some(ancestor) = parent {
@@ -456,6 +452,11 @@ fn elements(harness: &Harness<'_, EgitApp>) -> Vec<Element> {
                 break;
             }
             parent = ancestor.parent();
+        }
+        let covering = areas_above(ctx, layer);
+        let mut visible = visible_part(harness, rect, text.as_deref(), &covering);
+        if control {
+            visible = reachable_part(&reachable, rect, visible);
         }
         found.push(Element {
             role,
@@ -501,7 +502,16 @@ fn id_clashes(harness: &Harness<'_, EgitApp>, screen: &str) -> Vec<String> {
 /// The part of `rect` that shows: its shapes are clipped by the panel or scroll view around it.
 /// A widget that painted nothing is outside its clip (egui skips it). With `text`, only text that
 /// includes it counts as the element's own.
-fn visible_part(harness: &Harness<'_, EgitApp>, rect: Rect, text: Option<&str>) -> Rect {
+///
+/// A shape wholly inside one of `covering`, the areas drawn above the element's layer, is
+/// theirs: a menu open over a row, ending part way down it, draws its own shapes within the
+/// row's rect, clipped by the menu.
+fn visible_part(
+    harness: &Harness<'_, EgitApp>,
+    rect: Rect,
+    text: Option<&str>,
+    covering: &[Rect],
+) -> Rect {
     harness
         .output()
         .shapes
@@ -517,8 +527,27 @@ fn visible_part(harness: &Harness<'_, EgitApp>, rect: Rect, text: Option<&str>) 
             own && !matches!(clipped.shape, egui::Shape::Mesh(_))
                 && bounds.is_positive()
                 && rect.expand(2.0).contains_rect(bounds)
+                && !covering.iter().any(|area| area.contains_rect(bounds))
         })
         .map_or(Rect::NOTHING, |clipped| rect.intersect(clipped.clip_rect))
+}
+
+/// The rects of the visible areas egui paints above `layer`.
+fn areas_above(ctx: &egui::Context, layer: LayerId) -> Vec<Rect> {
+    ctx.memory(|memory| {
+        let order: Vec<LayerId> = memory.layer_ids().collect();
+        let at = order.iter().position(|listed| *listed == layer);
+        order
+            .iter()
+            .enumerate()
+            .filter(|&(index, listed)| {
+                listed.order > layer.order
+                    || (listed.order == layer.order && at.is_some_and(|at| index > at))
+            })
+            .filter(|(_, listed)| memory.areas().is_visible(listed))
+            .filter_map(|(_, listed)| memory.area_rect(listed.id))
+            .collect()
+    })
 }
 
 /// The part of a control's visible area egui would also hit-test.
