@@ -980,6 +980,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         lfs: lists.lfs.and_then(Result::ok),
         submodules: lists.submodules.and_then(Result::ok),
         submodule_states: lists.submodule_states.and_then(Result::ok),
+        stashes,
     };
     // Before the first commit, the work tree is all there is to look at.
     if history.shown.rows() == 0 && !history.shown.is_loading() {
@@ -1828,6 +1829,8 @@ pub(super) struct Shared<'a> {
     /// Its submodules, and where they stand (nested ones too), once read.
     pub(super) submodules: Option<&'a Arc<[egit_git::Submodule]>>,
     pub(super) submodule_states: Option<&'a Arc<crate::submodules::Standing>>,
+    /// The stashes, once read, the latest first (the graph's stash rows act on them).
+    pub(super) stashes: &'a [Stash],
 }
 
 impl Shared<'_> {
@@ -2253,7 +2256,8 @@ fn left_bar(
     }
     // What comes and goes follows the buttons: ids are counted in order, and a click
     // pressed on one id and released on another is lost.
-    let rows = history.shown.rows();
+    // Stashes are rows too, but not commits.
+    let rows = history.shown.commits();
     let commits = if rows == 1 {
         "1 commit".to_owned()
     } else {
@@ -3763,17 +3767,32 @@ impl TableDelegate for CommitRows<'_> {
         let Some(id) = id else {
             return;
         };
+        let stash = self.history.stashes().index_of(&id);
         // Looked up only when asked for: these run rarely, rows every frame.
         let summaries = &*self.summaries;
         response.widget_info(|| {
             let name = summaries.peek(&id).map_or_else(
                 || id.abbreviated(ID_DIGITS).to_string(),
-                |summary| summary.subject.to_string(),
+                |summary| {
+                    stash.map_or_else(
+                        || summary.subject.to_string(),
+                        |index| {
+                            let words = sidebar::stash_words(&summary.subject).0;
+                            format!("stash@{{{index}}}: {words}")
+                        },
+                    )
+                },
             );
             WidgetInfo::selected(WidgetType::SelectableLabel, true, selected, name)
         });
         let menus = self.shared.menus(self.history.refs());
         let asked = &mut self.asked;
+        // A stash: what can be done to it, not to a commit.
+        if stash.is_some() {
+            let listed = self.shared.stashes.iter().find(|listed| listed.id == id);
+            response.context_menu(|ui| stash_menu(ui, listed, menus.idle(), asked));
+            return;
+        }
         // One of several picked: what can be done to them all.
         if picked && self.view.picked.is_several() {
             let ids = &self.view.picked;
@@ -3804,6 +3823,12 @@ impl TableDelegate for CommitRows<'_> {
             return;
         }
         ui.add_space(GRAPH_MARGIN);
+        if cell.col_nr == 1
+            && let Some(index) = self.history.stashes().index_of(&id)
+        {
+            self.stash_cell(ui, cell.row_nr, id, index);
+            return;
+        }
         if cell.col_nr == 1 {
             let menus = self.shared.menus(self.history.refs());
             let refs = self.history.refs().at(&id);
@@ -4026,6 +4051,50 @@ impl CommitRows<'_> {
         );
     }
 
+    /// A stash's message: its badge ("stash@{2}": a click selects its row, its menu the
+    /// stash's), then its words as people read them, the branch it was made on muted after.
+    fn stash_cell(&mut self, ui: &mut Ui, row: u64, id: ObjectId, index: u32) {
+        let palette = self.shared.palette;
+        let label = format!("{} stash@{{{index}}}", icon::ARCHIVE);
+        let look = BadgeLook {
+            fill: palette.muted.gamma_multiply(0.16),
+            edge: palette.muted.gamma_multiply(0.7),
+            text: palette.text,
+            strong: false,
+        };
+        let galley = badge_galley(ui, &label, &look);
+        let badge = paint_badge(ui, galley, &look, &label)
+            .on_hover_text("A stash: changes put aside, on no branch");
+        crate::help::note_topic(ui, badge.rect, "stash");
+        if badge.clicked() {
+            self.clicked = Some((row, Click::Plain));
+        }
+        let listed = self.shared.stashes.iter().find(|listed| listed.id == id);
+        let idle = self.shared.menus(self.history.refs()).idle();
+        let asked = &mut self.asked;
+        badge.context_menu(|ui| stash_menu(ui, listed, idle, asked));
+        let Some(summary) = self.summaries.get(&id) else {
+            return;
+        };
+        let (words, branch) = sidebar::stash_words(&summary.subject);
+        let style = egui::TextStyle::Body.resolve(ui.style());
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            words,
+            0.0,
+            egui::TextFormat::simple(style.clone(), palette.text),
+        );
+        if let Some(branch) = branch {
+            job.append(
+                &format!("on {branch}"),
+                8.0,
+                egui::TextFormat::simple(style.clone(), palette.muted),
+            );
+        }
+        fonts::note_text(ui, &style, &job.text);
+        ui.add(Label::new(job).selectable(false).truncate());
+    }
+
     /// Paints a row's lanes and node.
     fn graph_cell(&mut self, ui: &Ui, row: u64, id: ObjectId) {
         let rect = ui.max_rect();
@@ -4063,7 +4132,24 @@ impl CommitRows<'_> {
         let center = pos2(x(graph.lane), rect.center().y);
         let color = color_of(graph.color);
         let background = self.shared.palette.background;
-        if graph.merge {
+        if self.history.stashes().index_of(&id).is_some() {
+            // A stash: a dashed square, on no branch.
+            let square = Rect::from_center_size(center, egui::Vec2::splat(NODE_RADIUS * 2.0));
+            painter.rect_filled(square, 1.0, background);
+            let corners = [
+                square.left_top(),
+                square.right_top(),
+                square.right_bottom(),
+                square.left_bottom(),
+                square.left_top(),
+            ];
+            painter.add(egui::Shape::dashed_line(
+                &corners,
+                Stroke::new(1.5, color),
+                2.5,
+                1.5,
+            ));
+        } else if graph.merge {
             painter.circle(
                 center,
                 NODE_RADIUS - 1.0,
@@ -4076,6 +4162,22 @@ impl CommitRows<'_> {
         if self.shared.head.commit == Some(id) {
             painter.circle_stroke(center, NODE_RADIUS + 3.0, Stroke::new(1.5, color));
         }
+    }
+}
+
+/// A stash's row's (or badge's) menu: what can be done to it, once the stash list is read.
+fn stash_menu(
+    ui: &mut Ui,
+    listed: Option<&Stash>,
+    idle: Result<(), &str>,
+    asked: &mut Option<Ask>,
+) {
+    let Some(stash) = listed else {
+        ui.label(muted(ui, "Reading the stashes…"));
+        return;
+    };
+    if let Some(ask) = actions::stash_items(ui, stash, idle) {
+        *asked = Some(ask);
     }
 }
 
@@ -4169,8 +4271,10 @@ fn badges(
     asked: &mut Option<Ask>,
 ) -> bool {
     let mut clicked = false;
+    // A stash's row has a badge of its own (`stash_cell`): the stash ref's would only repeat it.
     let shown = || {
         refs.iter()
+            .filter(|reference| reference.name != "refs/stash")
             .filter(|reference| scope.is_none_or(|scope| !scope.hides(reference.name.as_bstr())))
     };
     let total = shown().count();
@@ -4688,9 +4792,10 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
         view.message_edit = None;
     }
     let rewordable = rewordable(shared, &shown);
+    let stash = shared.stashes.iter().find(|stash| stash.id == shown.id);
     if view.message_edit.is_some() {
         message_editor(ui, shared, view, &shown, rewordable);
-    } else if message_head(ui, &shown, pending, rewordable) {
+    } else if message_head(ui, &details_title(&shown, stash), pending, rewordable) {
         view.message_edit = Some(MessageEdit::of(&shown));
     }
     let editing = view.message_edit.is_some();
@@ -4711,7 +4816,7 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
         let check = history.signatures.get(&shown.id);
         let (parent, description) = commit_info(
             ui,
-            (&shown, !editing),
+            (&shown, !editing, stash),
             history.shown.refs(),
             check,
             shared,
@@ -4965,12 +5070,21 @@ fn double_clicked(ui: &Ui, rect: Rect) -> bool {
         })
 }
 
-/// The panel's title, the commit's subject (a double click edits it, when it can be), with a
-/// button editing the message at its right, or a spinner while another commit is read.
-/// Returns whether editing was asked for.
+/// The details' title: the commit's subject, or for a stash in the graph its own words (it
+/// reads as a stash: what it is, and what can be done to it, follow).
+fn details_title(shown: &CommitDetails, stash: Option<&Stash>) -> String {
+    stash.map_or_else(
+        || shown.commit.subject().to_str_lossy().into_owned(),
+        |stash| sidebar::stash_words(&stash.message).0.to_owned(),
+    )
+}
+
+/// The panel's title, `title` (the commit's subject, or a stash's words: a double click edits
+/// it, when it can be), with a button editing the message at its right, or a spinner while
+/// another commit is read. Returns whether editing was asked for.
 fn message_head(
     ui: &mut Ui,
-    details: &CommitDetails,
+    title: &str,
     pending: bool,
     rewordable: Option<Result<(), &'static str>>,
 ) -> bool {
@@ -4993,7 +5107,7 @@ fn message_head(
                 edit |= button.clicked();
             }
             ui.with_layout(Layout::left_to_right(Align::Min), |ui| {
-                widgets::panel_title(ui, details.commit.subject().to_str_lossy())
+                widgets::panel_title(ui, title)
                     .rect
                     .expand2(egui::vec2(6.0, 4.0))
             })
@@ -5092,7 +5206,7 @@ fn message_editor(
 /// chose to go to, and where the description is.
 fn commit_info(
     ui: &mut Ui,
-    (details, described): (&CommitDetails, bool),
+    (details, described, stash): (&CommitDetails, bool, Option<&Stash>),
     all: &Refs,
     check: Option<&SignatureCheck>,
     shared: &Shared<'_>,
@@ -5112,6 +5226,17 @@ fn commit_info(
         ui.add_space(8.0);
     }
     ui.spacing_mut().item_spacing.y = 4.0;
+    if let Some(stash) = stash {
+        go_to = stash_info(
+            ui,
+            stash,
+            commit.parents.first().copied(),
+            shared.menus(all).idle(),
+            asked,
+        );
+        person(ui, ("Author", "Date"), &commit.author);
+        return (go_to, description);
+    }
     widgets::fact_of(ui, DETAIL_LABEL, ("Commit", "commit-name"), |ui| {
         // Within the room the copy button leaves: the details never push the panel wider.
         let room =
@@ -5171,6 +5296,61 @@ fn commit_info(
         });
     }
     (go_to, description)
+}
+
+/// A stash's details: Apply, Pop, and Drop… (disabled, saying why, unless `idle`), then what it
+/// is ("stash@{2}", the branch it was made on) and the commit it was made on (`base`, a click
+/// going to it; git's own commits of what was staged and of untracked files left out, as the
+/// graph leaves them). Returns the commit asked to go to.
+fn stash_info(
+    ui: &mut Ui,
+    stash: &Stash,
+    base: Option<ObjectId>,
+    idle: Result<(), &str>,
+    asked: &mut Option<Ask>,
+) -> Option<ObjectId> {
+    let mut go_to = None;
+    let why = |response: egui::Response| match idle {
+        Ok(()) => response,
+        Err(why) => response.on_disabled_hover_text(why),
+    };
+    ui.horizontal_wrapped(|ui| {
+        for (label, pop) in [("Apply", false), ("Pop", true)] {
+            if why(widgets::secondary(ui, idle.is_ok(), label)).clicked() {
+                *asked = Some(Ask::Task(Task::ApplyStash {
+                    stash: stash.clone(),
+                    pop,
+                }));
+            }
+        }
+        if why(widgets::risky(ui, idle.is_ok(), "Drop…")).clicked() {
+            *asked = Some(Ask::Dialog(super::dialogs::Dialog::DropStash(
+                stash.clone(),
+            )));
+        }
+    });
+    ui.add_space(6.0);
+    widgets::fact(ui, DETAIL_LABEL, "Stash", |ui| {
+        crate::help::note_topic(ui, ui.max_rect(), "stash");
+        ui.label(RichText::new(format!("stash@{{{}}}", stash.index)).monospace());
+        if let Some(branch) = sidebar::stash_words(&stash.message).1 {
+            ui.label(muted(ui, format!("on {branch}")));
+        }
+    });
+    if let Some(base) = base {
+        widgets::fact(ui, DETAIL_LABEL, "Made on", |ui| {
+            let link = RichText::new(base.abbreviated(ID_DIGITS).to_string())
+                .monospace()
+                .color(ui.visuals().hyperlink_color);
+            if widgets::link(ui, link)
+                .on_hover_text("Go to the commit it was made on")
+                .clicked()
+            {
+                go_to = Some(base);
+            }
+        });
+    }
+    go_to
 }
 
 /// What checking a commit's signature found: the verdict, who signed it, and with which key.

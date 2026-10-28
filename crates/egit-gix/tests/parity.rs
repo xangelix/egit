@@ -137,12 +137,13 @@ fn same_references(sandbox: &Sandbox, repo: &Path, gix: &GixRepository) {
                 sandbox.git(),
                 &repository,
                 gix.tips().unwrap(),
+                &[],
                 &CancelToken::new(),
                 each,
             )
             .wait()
         } else {
-            walk_history(sandbox.git(), &repository, &CancelToken::new(), each).wait()
+            walk_history(sandbox.git(), &repository, &[], &CancelToken::new(), each).wait()
         }
         .unwrap();
         walked

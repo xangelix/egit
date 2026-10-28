@@ -101,7 +101,7 @@ fn git_walk(git: &Git, repository: &Repository) -> Vec<(ObjectId, Vec<ObjectId>)
     let started = Instant::now();
     let mut first = None;
     let mut walked: Vec<(ObjectId, Vec<ObjectId>)> = Vec::new();
-    walk_history(git, repository, &CancelToken::new(), |id, parents| {
+    walk_history(git, repository, &[], &CancelToken::new(), |id, parents| {
         first.get_or_insert_with(|| started.elapsed());
         walked.push((id, parents.to_vec()));
         ControlFlow::Continue(())

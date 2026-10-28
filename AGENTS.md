@@ -49,6 +49,7 @@ it.
 | 35 | CI/CD artifacts downloaded to disk, GitLab's and GitHub's, where the save dialog says | done; awaiting the owner's review |
 | 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
 | 37 | egit in a browser: WebAssembly, threaded (a pool of web workers runs its jobs), git through a relay (patches, artifacts, and dropped files through the browser; fonts from the relay's computer; driven headless in CI) | done; awaiting the owner's review |
+| 38 | Stashes in the graph, as GitKraken shows them: each a row beside its branch, joined to the commit it was made on | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -427,7 +428,13 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     --independent` of `--all`'s tips, since git's topological walk first reads down to the
     oldest tip: Linux's first commit in 60 ms instead of 700; `walk_history_from` starts from
     those tips listed already; `history_tips` lists them with some refs hidden: `--exclude=`
-    each and `--all` on standard input, however many), `list_references` (`for-each-ref`, symbolic refs skipped, tags
+    each and `--all` on standard input, however many; each walk takes the stashes to show
+    (`StashNode`s: each one's commit with the commit it was made on as its one parent, git's
+    commits of what was staged and of untracked files left out), those commits walked from
+    too (reduced with the rest: a stash on a branch deleted since shows with what it was made
+    on), each handed over before the first commit older than it, or before its own whatever
+    the clocks say; each commit's time asked of git (`--timestamp`) only then),
+    `list_references` (`for-each-ref`, symbolic refs skipped, tags
     peeled through every tag: git 2.43 peels a tag of a tag one level, so those are peeled by
     one `rev-parse <name>^{}`), `commit_changes` (`diff-tree -r -z
     --raw --no-abbrev -M` against the first parent, or `--root`: each side's mode and object),
@@ -706,7 +713,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `Stopped` (an operation left with nothing to resolve); `reset` (`ResetMode`: soft, mixed,
     hard, keep: uncommitted changes kept, nothing moved when they're in the way).
   - `stash.rs` — `stashes` (`stash list -z`, `%gd %H %ct %gs`: index, commit, time, git's
-    message), `stash_push` (a message, untracked files with `--include-untracked`; only some
+    message), `stash_nodes` (the same list with each one's first parent, `%H %P %ct`: a
+    `StashNode` for the walk), `stash_push` (a message, untracked files with `--include-untracked`; only some
     paths' changes when named, literal, on standard input, untracked ones among them too;
     whether anything was stashed, from `refs/stash` before and after, as `--quiet` says nothing),
     `stash_apply` (and pop; `Integrated::Conflicts` keeps a popped stash) and `stash_drop`,
@@ -1214,7 +1222,10 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `GraphBuilder::pinned`: the first lane kept for a branch's tip's first-parent line
     (pinned to the left), empty until the tip comes, which starts its lane there (its
     children's lanes join it); a node taking the leftmost lane leading to it, the line keeps
-    the lane, and nothing else takes it.
+    the lane, and nothing else takes it. `GraphBuilder::push_aside`: a commit on no branch (a
+    stash), its node in a slot right of the first, its lane to the commit it was made on set
+    aside (`Lane::aside`, in the padding a lane had): that commit never takes it as its own,
+    but its own lane or a new one, the stash's joining it there, so branches keep their lanes.
   - `draw.rs` — `for_each_row` draws any range by replaying at most one chunk;
     `RowView::segments_in` gives a row's lines crossing a window of lanes, so a graph wider
     than its column costs only what shows.
@@ -1399,8 +1410,15 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     watcher, so a history is walked once). `poll` (each frame, every tab) takes in its jobs'
     results.
   - `history.rs` — `History`: a walk (`jobs::detached`) streams `Piece`s through a channel:
-    the refs and whether a commit-graph exists, then each completed `egit-graph` chunk with
-    its commits' names packed (20 bytes each), then the end. `id(row)`, `row_of(id, near)` (a
+    the refs, whether a commit-graph exists, and the stashes shown (`Stashes`: each one's
+    commit and place in the list, sorted, `index_of` a binary search; read by `stash_nodes`
+    where `refs/stash` is, none while only some refs are shown or where they can't be listed:
+    `stashes_shown`), then each completed `egit-graph` chunk with its commits' names packed
+    (20 bytes each) and how many rows so far are stashes' (each laid out aside,
+    `push_aside`), then the end. `rows` counts them, `commits` leaves them out (the top bar's
+    and the Stats page's counts). `HistoryState::misses_stashes`: the stash list read anew
+    lists other stashes than the history shows (one dropped from the middle moves no ref the
+    watcher sees): `RepoTab::poll` reads the history again, once for each list read. `id(row)`, `row_of(id, near)` (a
     scan from `near`; no id→row index is kept), `Refs::at(id)` (sorted, binary search).
     `Refs::has_branch` (a local branch by name, for switching to a remote's).
     `Objects`: gitoxide's reader where `egit-gix` opens the repository (opened again at each
@@ -1530,7 +1548,7 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     a pipeline a history shows (its names scanned once against the marks' sorted commits),
     again only for another history or other marks.
   - `stats.rs` — a history's statistics, for its Stats page: `read_stats` reads every row's
-    commit once, through gitoxide on up to 8 threads a block of rows at a time (else one
+    commit once (stashes' rows passed by, and by `read_lines` too), through gitoxide on up to 8 threads a block of rows at a time (else one
     `cat-file`), each thread parsing headers into compact `Read`s (an author line's FNV-1a
     hash, time, offset, merge) and the contacts it hadn't met, handed to one `Tally` over a
     bounded channel: commits each day and month and each weekday's hour by their authors'
@@ -1922,7 +1940,14 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
     screen, then a screen below and above). Graph cells paint lines (cubic curves between
     lanes) and nodes (hollow for merges, ringed for `HEAD`); rows are buttons named by their
-    subject; a detached `HEAD`'s commit a filled "HEAD" badge first (`detached_badge`: its
+    subject; a stash's row (`stash_cell`: named "stash@{2}: words") its node a dashed square,
+    a "stash@{2}" badge (muted, the archive's icon; a click selects its row) and its words as
+    the sidebar says them (`sidebar::stash_words`), the branch it was made on muted after, its
+    and its badge's menu the stash's (`stash_menu`: `actions::stash_items`, Apply, Pop,
+    Drop…, the stash menu's and the sidebar's too), `refs/stash`'s own badge left out;
+    selected, its details read as a stash (`details_title`, its words; `stash_info`: Apply,
+    Pop, Drop…, "Stash" stash@{2} on its branch, "Made on" its base, a click going to it; git's
+    commits of what was staged and of untracked files left out, as the graph leaves them); a detached `HEAD`'s commit a filled "HEAD" badge first (`detached_badge`: its
     menu the commit's); a bisection's refs as badges in its terms (bad, good, skipped;
     `bisect_badge`);
     ref badges (each its menu, a branch's double-click switching to it; dragged onto another
@@ -2167,7 +2192,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     submenu: what picking several offers (`views/picked.rs`), for this one ("Sign this
     commit…"), and how to pick more.
     `views/picked.rs` — commits picked together in the commit table (`Picked`: their rows and
-    names, the newest first, and where a range runs from): ⇧-click a range from the last row
+    names, the newest first, and where a range runs from; a stash's row never picked: what is
+    done to commits picked isn't done to a stash): ⇧-click a range from the last row
     clicked alone (at most 10,000), ⌘-click (Ctrl) adds or takes away one (the keys read from
     the click's own event, as a test's are let go in the same frame), ⇧↑ ⇧↓ stretch, Escape or
     a plain click lets them go; kept by name across a history read again (`follow`). While
@@ -2922,6 +2948,11 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     first), a job re-run from its row, and the mark following; and the run's artifacts (an
     expired one listed, disabled; rendered): one downloaded, one whose digest doesn't match
     refused, said (rendered), nothing left on disk, no part either.
+    `src/tests/stashes.rs` shows three stashes in the graph (at set times: each where its time
+    puts it, above the commit it was made on, the branch keeping the first lane; "Stats: 2
+    commits"; rendered, and one selected: its details), applies one from its details, drops
+    one from the middle of the list from its menu (gone from the graph, the others numbered
+    anew), and pops the latest.
     `src/tests/suggested.rs` opens two repositories of a folder (and one of another): the
     folder's others suggested by their reflogs' dates (commits at set times), one without a
     commit last, a plain folder and a file left out, nothing from the other folder (rendered);

@@ -93,6 +93,9 @@ pub(crate) struct RepoTab {
     pub(crate) config: Bind<Arc<ConfigSnapshot>, Problem>,
     /// The stashes, the latest first.
     pub(crate) stashes: Bind<Arc<[Stash]>, Problem>,
+    /// The stash list the history was last read again for, so one read of the list reads the
+    /// history again at most once.
+    stashes_followed: Option<Arc<[Stash]>>,
     /// The worktrees, the main one first.
     pub(crate) worktrees: Bind<Arc<[Worktree]>, Problem>,
     /// The submodules, by path.
@@ -187,6 +190,7 @@ impl RepoTab {
             status: Bind::new(true),
             config: Bind::new(true),
             stashes: Bind::new(true),
+            stashes_followed: None,
             worktrees: Bind::new(true),
             submodules: Bind::new(true),
             lfs: Bind::new(true),
@@ -225,6 +229,19 @@ impl RepoTab {
     /// Takes in what its jobs finished.
     pub(crate) fn poll(&mut self) {
         self.history.poll();
+        // The stash list read anew lists other stashes than the history shows: read it again
+        // (once for each list read, should the history still not show them).
+        if let Some(Ok(listed)) = self.stashes.read_as_ref()
+            && !self
+                .stashes_followed
+                .as_ref()
+                .is_some_and(|followed| Arc::ptr_eq(followed, listed))
+            && self.history.misses_stashes(listed)
+        {
+            self.stashes_followed = Some(Arc::clone(listed));
+            self.history
+                .reload(&self.git, &self.repository, &self.waker);
+        }
         self.agents.poll();
         self.journal.poll();
         if matches!(self.writing_commit_graph.read_as_ref(), Some(Ok(()))) {

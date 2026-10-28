@@ -1957,6 +1957,28 @@ pub(super) fn stash_label(stashes: usize) -> String {
 /// The stash menu's width: a stash's message is cut to fit.
 const STASH_MENU_WIDTH: f32 = 380.0;
 
+/// What can be done to a stash: Apply, Pop, and Drop… (asked first), as its menus offer them
+/// (the stash menu's, the sidebar's, a stash's row in the graph); disabled, saying why, while
+/// `busy`.
+pub(super) fn stash_items(ui: &mut Ui, stash: &Stash, busy: Result<(), &str>) -> Option<Ask> {
+    let mut asked = None;
+    for (glyph, label, pop) in [
+        (icon::TRAY_ARROW_UP, "Apply", false),
+        (icon::ARROW_LINE_UP, "Pop", true),
+    ] {
+        if item(ui, (glyph, label), busy) {
+            asked = Some(Ask::Task(Task::ApplyStash {
+                stash: stash.clone(),
+                pop,
+            }));
+        }
+    }
+    if danger_item(ui, (icon::TRASH, "Drop…"), busy) {
+        asked = Some(Ask::Dialog(Dialog::DropStash(stash.clone())));
+    }
+    asked
+}
+
 /// A stash's submenu's width: its whole message wraps inside.
 const STASH_ACTIONS_WIDTH: f32 = 260.0;
 
@@ -1988,19 +2010,8 @@ fn stash_row(
         ui.label(muted(ui, format!("stash@{{{}}}", stash.index)).small());
         ui.label(&stash.message);
         ui.separator();
-        for (glyph, label, pop) in [
-            (icon::TRAY_ARROW_UP, "Apply", false),
-            (icon::ARROW_LINE_UP, "Pop", true),
-        ] {
-            if item(ui, (glyph, label), busy) {
-                *asked = Some(Ask::Task(Task::ApplyStash {
-                    stash: stash.clone(),
-                    pop,
-                }));
-            }
-        }
-        if danger_item(ui, (icon::TRASH, "Drop…"), busy) {
-            *asked = Some(Ask::Dialog(Dialog::DropStash(stash.clone())));
+        if let Some(ask) = stash_items(ui, stash, busy) {
+            *asked = Some(ask);
         }
     });
     // Named as it reads: a screen reader hears what the row shows.

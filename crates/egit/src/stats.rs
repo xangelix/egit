@@ -23,7 +23,7 @@ use egit_git::{
 };
 use egit_gix::{GixError, GixRepository};
 
-use crate::history::{Names, gix_allowed_for};
+use crate::history::{Names, Stashes, gix_allowed_for};
 use crate::jobs;
 use crate::problem::Problem;
 
@@ -140,12 +140,12 @@ pub(crate) struct LineStats {
     pub(crate) sizes: [u64; 6],
 }
 
-/// Reads `names`' commits and the files at `HEAD` (their sizes when `sizes`), counting the
-/// commits read in `read`.
+/// Reads `names`' commits (the `stashes` among them left out) and the files at `HEAD` (their
+/// sizes when `sizes`), counting the rows read in `read`.
 pub(crate) async fn read_stats(
     git: Git,
     repository: Arc<Repository>,
-    names: Names,
+    (names, stashes): (Names, Stashes),
     sizes: bool,
     read: Arc<AtomicU64>,
     cancel: CancelToken,
@@ -155,7 +155,7 @@ pub(crate) async fn read_stats(
         let through_gix = gix_allowed_for(&git)
             .then(|| GixRepository::open(repository.work_tree()))
             .flatten()
-            .and_then(|gix| match tally_gix(&gix, &names, &read, &cancel) {
+            .and_then(|gix| match tally_gix(&gix, (&names, &stashes), &read, &cancel) {
                 Ok(tally) => Some(tally),
                 Err(error) => {
                     tracing::warn!(%error, "gitoxide couldn't read the commits; git reads them");
@@ -165,7 +165,7 @@ pub(crate) async fn read_stats(
             });
         let tally = match through_gix {
             Some(tally) => tally,
-            None => tally_git(&git, &repository, &names, &read, &cancel)
+            None => tally_git(&git, &repository, (&names, &stashes), &read, &cancel)
                 .await
                 .map_err(|error| Problem::git(TITLE, &error))?,
         };
@@ -179,18 +179,19 @@ pub(crate) async fn read_stats(
     .await
 }
 
-/// Counts the lines the newest of `names`' commits (at most [`LINES_COUNTED`]) changed,
-/// counting those counted in `counted`.
+/// Counts the lines the newest of `names`' commits (at most [`LINES_COUNTED`]; the `stashes`
+/// among them left out) changed, counting those counted in `counted`.
 pub(crate) async fn read_lines(
     git: Git,
     repository: Arc<Repository>,
-    names: Names,
+    (names, stashes): (Names, Stashes),
     counted: Arc<AtomicU64>,
     cancel: CancelToken,
 ) -> Result<Arc<LineStats>, Problem> {
     jobs::blocking(async move {
         let newest: Vec<ObjectId> = (0..names.rows().min(LINES_COUNTED))
             .filter_map(|row| names.id(row))
+            .filter(|id| stashes.index_of(id).is_none())
             .collect();
         let mut stats = LineStats::default();
         let mut months: HashMap<i32, (u64, u64)> = HashMap::new();
@@ -487,7 +488,7 @@ pub(crate) fn date_of(day: i32) -> Option<jiff::civil::Date> {
 /// threads keep no more than the contacts they met, as hashes).
 fn tally_gix(
     gix: &GixRepository,
-    names: &Names,
+    (names, stashes): (&Names, &Stashes),
     read: &AtomicU64,
     cancel: &CancelToken,
 ) -> Result<Tally, GixError> {
@@ -521,7 +522,8 @@ fn tally_gix(
                     let end = start.saturating_add(BLOCK_ROWS).min(rows);
                     let mut batch = Batch::default();
                     for row in start..end {
-                        let Some(id) = names.id(row) else {
+                        let Some(id) = names.id(row).filter(|id| stashes.index_of(id).is_none())
+                        else {
                             continue;
                         };
                         match reader.read(&id) {
@@ -560,7 +562,7 @@ fn tally_gix(
 async fn tally_git(
     git: &Git,
     repository: &Repository,
-    names: &Names,
+    (names, stashes): (&Names, &Stashes),
     read: &AtomicU64,
     cancel: &CancelToken,
 ) -> Result<Tally, GitError> {
@@ -570,7 +572,10 @@ async fn tally_git(
     let mut start = 0;
     while start < rows && !cancel.is_cancelled() {
         let end = start.saturating_add(BLOCK_ROWS).min(rows);
-        let ids: Vec<ObjectId> = (start..end).filter_map(|row| names.id(row)).collect();
+        let ids: Vec<ObjectId> = (start..end)
+            .filter_map(|row| names.id(row))
+            .filter(|id| stashes.index_of(id).is_none())
+            .collect();
         reader
             .read(&ids, |_, object| {
                 if let Some(object) = object.filter(|object| object.kind == ObjectKind::Commit) {

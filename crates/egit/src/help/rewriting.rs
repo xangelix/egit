@@ -879,15 +879,39 @@ pub(super) const TOPICS: &[Topic] = &[
         id: "stash",
         group: Group::Stashes,
         title: "Stashing",
-        on: &["Stash", "Stashes · *", "Stashes, latest first"],
+        on: &[
+            "Stash",
+            "Stashes · *",
+            "Stashes, latest first",
+            "Made on",
+            "stash@{*}",
+        ],
         what: "Saves your uncommitted changes (staged and not, and untracked files when asked) \
                in a stash and cleans the work tree. Applying puts them back and keeps the \
-               stash; popping applies, then drops it.",
-        git: "git stash push, apply, pop, drop",
+               stash; popping applies, then drops it. The graph shows each stash as a row of \
+               its own, a dashed square beside the branch, joined to the commit it was made on \
+               where its time puts it among the commits; its menu (or its details: Made on is \
+               that commit) applies, pops, or drops it.",
+        git: "git stash push, apply, pop, drop; git stash list (each one's first parent)",
         cases: &[
             (
                 "Applying conflicts?",
                 "The files changed since: resolve them; a pop that conflicts keeps the stash.",
+            ),
+            (
+                "Why isn't a stash on its branch in the graph?",
+                "A stash belongs to no branch: git keeps it as a commit on the one HEAD was at, \
+                 with commits of its own for what was staged and for untracked files, which the \
+                 graph leaves out. Its line joins the commit it was made on.",
+            ),
+            (
+                "A stash on a commit no branch has any more?",
+                "The graph still shows it, and the commits it was made on: the stash keeps them.",
+            ),
+            (
+                "No stashes in the graph?",
+                "While it shows only some branches, stashes are left out; Show every branch \
+                 brings them back.",
             ),
             ("Dropped one by mistake?", "Undo stores it back."),
             (

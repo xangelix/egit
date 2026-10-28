@@ -17,9 +17,9 @@ use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::sync::Mutex;
 use egit_git::{
     CancelToken, Commit, CountedFile, FileChange, Git, GitError, LineCounts, Object, ObjectFormat,
-    ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, SignatureCheck, TreeEntry,
-    Verdict, check_signatures, commit_changes, history_tips, line_counts, list_references,
-    walk_history, walk_history_from,
+    ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, SignatureCheck, StashNode,
+    TreeEntry, Verdict, check_signatures, commit_changes, history_tips, line_counts,
+    list_references, stash_nodes, walk_history, walk_history_from,
 };
 use egit_gix::GixRepository;
 use egit_graph::{CHUNK_ROWS, Chunk, GraphBuilder};
@@ -56,6 +56,9 @@ pub(crate) struct History {
     rows: u64,
     widest: usize,
     refs: Refs,
+    /// The stashes among the rows ([`Stashes`]), and how many of the rows so far are theirs.
+    stashes: Stashes,
+    stash_rows: u64,
     /// Whether the repository has a commit-graph file, once the walk has looked.
     commit_graph: Option<bool>,
     /// What of the scope asked for it applied: the refs found.
@@ -81,18 +84,21 @@ impl Drop for Loading {
 /// What a walk hands over as it goes.
 #[derive(Debug)]
 enum Piece {
-    /// The refs, whether there is a commit-graph file, and the scope as it applied, before any
-    /// row.
+    /// The refs, whether there is a commit-graph file, the scope as it applied, and the
+    /// stashes shown, before any row.
     Start {
         refs: Refs,
         commit_graph: bool,
         scope: Scope,
+        stashes: Stashes,
     },
-    /// The next rows: their lanes and their commits' names.
+    /// The next rows: their lanes and their commits' names, and how many rows so far are
+    /// stashes'.
     Rows {
         graph: Chunk,
         ids: Arc<[u8]>,
         widest: usize,
+        stash_rows: u64,
     },
     /// The walk's end.
     Done(Result<(), Problem>),
@@ -137,6 +143,8 @@ impl History {
             rows: 0,
             widest: 0,
             refs: Refs::default(),
+            stashes: Stashes::default(),
+            stash_rows: 0,
             commit_graph: None,
             scope: Scope::default(),
             loading: Some(Loading { pieces, cancel }),
@@ -155,17 +163,25 @@ impl History {
                     refs,
                     commit_graph,
                     scope,
+                    stashes,
                 }) => {
                     self.refs = refs;
                     self.commit_graph = Some(commit_graph);
                     self.scope = scope;
+                    self.stashes = stashes;
                 }
-                Ok(Piece::Rows { graph, ids, widest }) => {
+                Ok(Piece::Rows {
+                    graph,
+                    ids,
+                    widest,
+                    stash_rows,
+                }) => {
                     let rows = u64::try_from(graph.len()).unwrap_or(0);
                     self.rows = self.rows.saturating_add(rows);
                     self.graph.push(graph);
                     self.names.chunks.push(ids);
                     self.widest = widest;
+                    self.stash_rows = stash_rows;
                 }
                 Ok(Piece::Done(walked)) => {
                     self.problem = walked.err();
@@ -182,9 +198,19 @@ impl History {
         }
     }
 
-    /// How many rows (commits) it has so far.
+    /// How many rows (commits, and stashes) it has so far.
     pub(crate) const fn rows(&self) -> u64 {
         self.rows
+    }
+
+    /// How many of its rows so far are commits (stashes left out).
+    pub(crate) const fn commits(&self) -> u64 {
+        self.rows.saturating_sub(self.stash_rows)
+    }
+
+    /// The stashes it shows among its rows.
+    pub(crate) const fn stashes(&self) -> &Stashes {
+        &self.stashes
     }
 
     /// The most lanes a row has had open so far.
@@ -494,61 +520,142 @@ async fn walk(
         hidden: hidden.clone(),
         pinned: pinned.as_ref().map(|(name, _)| name.clone()),
     };
+    // The stashes, on the commits they were made on; none while some refs alone are shown.
+    let has_stashes = refs.iter().any(|reference| reference.name == "refs/stash");
+    let nodes = stashes_shown(walking, has_stashes && only.is_empty()).await;
+    let stashes = Stashes::of(&nodes);
     let start = Piece::Start {
         refs: Refs::new(refs),
         commit_graph: repository.has_commit_graph(git).await,
         scope: applied,
+        stashes: stashes.clone(),
     };
     if pieces.send(start).is_err() {
         return Ok(());
     }
     let capacity = CHUNK_ROWS.saturating_mul(repository.object_format().byte_len());
-    let hand_over = |graph: Chunk, ids: Vec<u8>, widest: usize| {
+    let hand_over = |graph: Chunk, ids: Vec<u8>, widest: usize, stash_rows: u64| {
         let ids = Arc::from(ids);
-        let sent = pieces.send(Piece::Rows { graph, ids, widest }).is_ok();
+        let sent = pieces
+            .send(Piece::Rows {
+                graph,
+                ids,
+                widest,
+                stash_rows,
+            })
+            .is_ok();
         ctx.request_repaint();
         sent
     };
     let mut builder = pinned.map_or_else(GraphBuilder::new, |(_, tip)| GraphBuilder::pinned(tip));
     let mut ids = Vec::with_capacity(capacity);
+    // The stashes' rows handed over, and among the rows gathered since.
+    let (mut stash_rows, mut gathered) = (0_u64, 0_u64);
     let each = |id: ObjectId, parents: &[ObjectId]| {
-        if let Some(graph) = builder.push(id, parents) {
+        // A stash is laid out aside: the branch it was made on keeps its lane.
+        let stash = stashes.index_of(&id).is_some();
+        let completed = match parents.first() {
+            Some(&base) if stash => builder.push_aside(id, base),
+            _ => builder.push(id, parents),
+        };
+        if let Some(graph) = completed {
+            stash_rows = stash_rows.saturating_add(std::mem::take(&mut gathered));
             let full = std::mem::replace(&mut ids, Vec::with_capacity(capacity));
-            if !hand_over(graph, full, builder.widest()) {
+            if !hand_over(graph, full, builder.widest(), stash_rows) {
                 return ControlFlow::Break(());
             }
+        }
+        if stash {
+            gathered = gathered.saturating_add(1);
         }
         ids.extend_from_slice(id.as_bytes());
         ControlFlow::Continue(())
     };
-    let tips = if !hidden.is_empty() {
-        Some(
-            history_tips(git, repository, &hidden, walking.cancel)
-                .await
-                .map_err(|error| Problem::git("The history couldn't be read", &error))?,
-        )
-    } else if only.is_empty() {
-        gix.as_ref().and_then(|gix| gix.tips().ok())
-    } else {
-        let mut tips: Vec<ObjectId> = Vec::with_capacity(only.len());
-        for (_, tip) in only {
-            if !tips.contains(&tip) {
-                tips.push(tip);
-            }
-        }
-        Some(tips)
-    };
+    let tips = start_of(walking, gix.as_ref(), &hidden, &only).await?;
     let cancel = walking.cancel;
     match tips {
-        Some(tips) => walk_history_from(git, repository, tips, cancel, each).await,
-        None => walk_history(git, repository, cancel, each).await,
+        Some(tips) => walk_history_from(git, repository, tips, &nodes, cancel, each).await,
+        None => walk_history(git, repository, &nodes, cancel, each).await,
     }
     .map_err(|error| Problem::git("The history couldn't be read", &error))?;
     let widest = builder.widest();
     if let Some(graph) = builder.finish() {
-        hand_over(graph, ids, widest);
+        hand_over(graph, ids, widest, stash_rows.saturating_add(gathered));
     }
     Ok(())
+}
+
+/// The commits a walk starts from: every ref's but those `hidden`, or `only` those refs', or
+/// gitoxide's tips of every ref (none: git lists them itself).
+async fn start_of(
+    walking: &Walking<'_>,
+    gix: Option<&GixRepository>,
+    hidden: &[BString],
+    only: &[(BString, ObjectId)],
+) -> Result<Option<Vec<ObjectId>>, Problem> {
+    if !hidden.is_empty() {
+        return history_tips(walking.git, walking.repository, hidden, walking.cancel)
+            .await
+            .map(Some)
+            .map_err(|error| Problem::git("The history couldn't be read", &error));
+    }
+    if only.is_empty() {
+        return Ok(gix.and_then(|gix| gix.tips().ok()));
+    }
+    let mut tips: Vec<ObjectId> = Vec::with_capacity(only.len());
+    for (_, tip) in only {
+        if !tips.contains(tip) {
+            tips.push(*tip);
+        }
+    }
+    Ok(Some(tips))
+}
+
+/// The stashes a walk shows, where `wanted` (there are some, and the whole history is shown):
+/// none where they can't be listed (said in the log), rather than no history.
+async fn stashes_shown(walking: &Walking<'_>, wanted: bool) -> Vec<StashNode> {
+    if !wanted {
+        return Vec::new();
+    }
+    stash_nodes(walking.git, walking.repository, walking.cancel)
+        .await
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "the stashes couldn't be listed; the history leaves them out");
+            Vec::new()
+        })
+}
+
+/// The stashes a history shows among its rows: each one's commit and its place in the stash
+/// list, sorted by commit (found by a binary search a row). Shared, as the history is read.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Stashes(Arc<[(ObjectId, u32)]>);
+
+impl Stashes {
+    /// Those of `nodes`.
+    fn of(nodes: &[StashNode]) -> Self {
+        let mut stashes: Vec<(ObjectId, u32)> =
+            nodes.iter().map(|node| (node.commit, node.index)).collect();
+        stashes.sort_unstable();
+        Self(stashes.into())
+    }
+
+    /// How many there are.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The place in the stash list (`stash@{n}`) of the stash whose commit is `id`, if it is
+    /// one.
+    pub(crate) fn index_of(&self, id: &ObjectId) -> Option<u32> {
+        if self.0.is_empty() {
+            return None;
+        }
+        self.0
+            .binary_search_by(|(commit, _)| commit.cmp(id))
+            .ok()
+            .and_then(|at| self.0.get(at))
+            .map(|(_, index)| *index)
+    }
 }
 
 /// The refs pointing into a history, found by the commit they point at.
@@ -1370,6 +1477,21 @@ impl HistoryState {
         }
     }
 
+    /// Whether the stashes `listed` (as the stash list was last read) aren't those the history
+    /// shows, once it is read whole and nothing newer is being read (none are shown while only
+    /// some refs are): a stash dropped from the middle of the list changes no ref the watcher
+    /// sees.
+    pub(crate) fn misses_stashes(&self, listed: &[egit_git::Stash]) -> bool {
+        if self.shown.is_loading() || self.next.is_some() || !self.shown.scope().only.is_empty() {
+            return false;
+        }
+        let shown = self.shown.stashes();
+        listed.len() != shown.len()
+            || listed
+                .iter()
+                .any(|stash| shown.index_of(&stash.id) != Some(stash.index))
+    }
+
     /// Reads the history again. The table keeps showing the current one until the new one is
     /// complete, unless the current one isn't complete either.
     pub(crate) fn reload(
@@ -1515,14 +1637,28 @@ mod tests {
             if let Some(graph) = builder.push(commit, &parents) {
                 let ids = Arc::from(std::mem::take(&mut ids));
                 let widest = builder.widest();
-                sender.send(Piece::Rows { graph, ids, widest }).unwrap();
+                sender
+                    .send(Piece::Rows {
+                        graph,
+                        ids,
+                        widest,
+                        stash_rows: 0,
+                    })
+                    .unwrap();
             }
             ids.extend_from_slice(commit.as_bytes());
         }
         let widest = builder.widest();
         if let Some(graph) = builder.finish() {
             let ids = Arc::from(ids);
-            sender.send(Piece::Rows { graph, ids, widest }).unwrap();
+            sender
+                .send(Piece::Rows {
+                    graph,
+                    ids,
+                    widest,
+                    stash_rows: 0,
+                })
+                .unwrap();
         }
         if ended {
             sender.send(Piece::Done(Ok(()))).unwrap();
@@ -1533,6 +1669,8 @@ mod tests {
             rows: 0,
             widest: 0,
             refs: Refs::default(),
+            stashes: Stashes::default(),
+            stash_rows: 0,
             commit_graph: None,
             scope: Scope::default(),
             loading: Some(Loading {
@@ -1640,6 +1778,8 @@ mod tests {
             rows: 0,
             widest: 0,
             refs: Refs::default(),
+            stashes: Stashes::default(),
+            stash_rows: 0,
             commit_graph: None,
             scope: Scope::default(),
             loading: Some(Loading {

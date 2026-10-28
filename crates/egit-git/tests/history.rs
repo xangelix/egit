@@ -17,8 +17,8 @@ use std::path::Path;
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, ChangeKind, Commit, LineCounts, ObjectId, ObjectKind, ObjectReader, RefKind,
-    Repository, Wait as _, commit_changes, commits_between, line_counts, list_references,
-    walk_history, walk_history_from, write_commit_graph,
+    Repository, StashNode, Wait as _, commit_changes, commits_between, history_tips, line_counts,
+    list_references, stash_nodes, walk_history, walk_history_from, write_commit_graph,
 };
 
 fn sandbox() -> Sandbox {
@@ -81,6 +81,7 @@ fn walk_from(
         sandbox.git(),
         &repository,
         tips,
+        &[],
         &CancelToken::new(),
         |id, parents| {
             commits.push((id, parents.to_vec()));
@@ -99,6 +100,7 @@ fn walk(sandbox: &Sandbox, repo: &Path) -> Vec<(ObjectId, Vec<ObjectId>)> {
     let walked = walk_history(
         sandbox.git(),
         &repository,
+        &[],
         &CancelToken::new(),
         |id, parents| {
             commits.push((id, parents.to_vec()));
@@ -159,14 +161,214 @@ fn an_empty_repository_has_no_history() {
     assert_eq!(walk(&sandbox, &repo), []);
 }
 
+/// Runs `git <args>` in `repo` at `seconds` past the epoch (author and committer alike).
+fn at(sandbox: &Sandbox, repo: &Path, seconds: u32, subcommand: &'static str, args: &[&str]) {
+    let date = format!("@{seconds} +0000");
+    let git = sandbox
+        .git_with([("GIT_AUTHOR_DATE", &date), ("GIT_COMMITTER_DATE", &date)])
+        .unwrap();
+    git.write(subcommand)
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .wait()
+        .unwrap();
+}
+
+/// A history with stashes: on an older commit (`one`), with untracked files (`two`, git's
+/// third parent), and on a branch deleted since (`three`).
+fn stashed(sandbox: &Sandbox) -> std::path::PathBuf {
+    let repo = sandbox.init("stashed").unwrap();
+    let commit = |seconds, file: &str, message: &str| {
+        std::fs::write(repo.join(file), message).unwrap();
+        at(sandbox, &repo, seconds, "add", &["--", file]);
+        at(
+            sandbox,
+            &repo,
+            seconds,
+            "commit",
+            &["--quiet", "-m", message],
+        );
+    };
+    commit(1000, "a", "A");
+    commit(2000, "a", "B");
+    std::fs::write(repo.join("a"), "changed").unwrap();
+    at(
+        sandbox,
+        &repo,
+        2500,
+        "stash",
+        &["push", "--quiet", "-m", "one"],
+    );
+    commit(3000, "a", "C");
+    at(
+        sandbox,
+        &repo,
+        3100,
+        "switch",
+        &["--quiet", "-c", "side", "main~2"],
+    );
+    commit(1500, "d", "D");
+    std::fs::write(repo.join("d"), "changed").unwrap();
+    at(
+        sandbox,
+        &repo,
+        3500,
+        "stash",
+        &["push", "--quiet", "-m", "three"],
+    );
+    at(sandbox, &repo, 3600, "switch", &["--quiet", "main"]);
+    at(sandbox, &repo, 3600, "branch", &["--quiet", "-D", "side"]);
+    std::fs::write(repo.join("a"), "again").unwrap();
+    std::fs::write(repo.join("new"), "untracked").unwrap();
+    at(
+        sandbox,
+        &repo,
+        4000,
+        "stash",
+        &["push", "--quiet", "--include-untracked", "-m", "two"],
+    );
+    repo
+}
+
+#[test]
+fn stashes_are_listed_on_the_commits_they_were_made_on() {
+    let sandbox = sandbox();
+    let repo = stashed(&sandbox);
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let nodes = stash_nodes(sandbox.git(), &repository, &CancelToken::new())
+        .wait()
+        .unwrap();
+    let base = |stash: &str| rev(&sandbox, &repo, &format!("{stash}^1"));
+    assert_eq!(
+        nodes,
+        [
+            StashNode {
+                commit: rev(&sandbox, &repo, "stash@{0}"),
+                base: base("stash@{0}"),
+                time: 4000,
+                index: 0
+            },
+            StashNode {
+                commit: rev(&sandbox, &repo, "stash@{1}"),
+                base: base("stash@{1}"),
+                time: 3500,
+                index: 1
+            },
+            StashNode {
+                commit: rev(&sandbox, &repo, "stash@{2}"),
+                base: base("stash@{2}"),
+                time: 2500,
+                index: 2
+            },
+        ]
+    );
+    // None at all: nothing listed.
+    let empty = sandbox.init("empty").unwrap();
+    sandbox.commit_file(&empty, "f", "x", "x").unwrap();
+    let empty = Repository::discover(sandbox.git(), &empty).wait().unwrap();
+    assert_eq!(
+        stash_nodes(sandbox.git(), &empty, &CancelToken::new())
+            .wait()
+            .unwrap(),
+        []
+    );
+}
+
+#[test]
+fn stashes_join_the_walk_on_their_commits_in_their_time() {
+    let sandbox = sandbox();
+    let repo = stashed(&sandbox);
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let cancel = CancelToken::new();
+    let nodes = stash_nodes(sandbox.git(), &repository, &cancel)
+        .wait()
+        .unwrap();
+    let walk = || {
+        let mut commits: Vec<(ObjectId, Vec<ObjectId>)> = Vec::new();
+        let walked = walk_history(
+            sandbox.git(),
+            &repository,
+            &nodes,
+            &cancel,
+            |id, parents| {
+                commits.push((id, parents.to_vec()));
+                ControlFlow::Continue(())
+            },
+        )
+        .wait()
+        .unwrap();
+        assert_eq!(walked.commits, u64::try_from(commits.len()).unwrap());
+        commits
+    };
+    let walked = walk();
+    let time = |id: &ObjectId| -> i64 {
+        let out = sandbox
+            .run(&repo, "log", &["-1", "--format=%ct", &id.to_string()])
+            .unwrap();
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap()
+    };
+    let place = |id: &ObjectId| walked.iter().position(|(walked, _)| walked == id);
+    for stash in &nodes {
+        // Once, on the commit it was made on alone, before it.
+        let at = place(&stash.commit).unwrap();
+        assert_eq!(walked[at].1, [stash.base], "stash@{{{}}}", stash.index);
+        assert!(at < place(&stash.base).unwrap());
+        // After every commit newer than it, before the first older (or its own).
+        for (before, _) in &walked[..at] {
+            if nodes.iter().all(|node| node.commit != *before) {
+                assert!(time(before) > stash.time, "stash@{{{}}}", stash.index);
+            }
+        }
+    }
+    // Git's commits of what was staged and of the untracked files aren't shown; the commit
+    // the deleted branch's stash was made on is.
+    for parent in ["stash@{0}^2", "stash@{0}^3", "stash@{2}^2"] {
+        assert_eq!(place(&rev(&sandbox, &repo, parent)), None, "{parent}");
+    }
+    assert!(place(&rev(&sandbox, &repo, "stash@{1}^1")).is_some());
+    assert_eq!(walked.len(), 4 + 3);
+    // The same from tips already listed, and with a commit-graph (the tips reduced).
+    let tips = history_tips(sandbox.git(), &repository, &[], &cancel)
+        .wait()
+        .unwrap();
+    let mut from_tips = Vec::new();
+    walk_history_from(
+        sandbox.git(),
+        &repository,
+        tips,
+        &nodes,
+        &cancel,
+        |id, parents| {
+            from_tips.push((id, parents.to_vec()));
+            ControlFlow::Continue(())
+        },
+    )
+    .wait()
+    .unwrap();
+    assert_eq!(from_tips, walked);
+    write_commit_graph(sandbox.git(), &repository, &cancel)
+        .wait()
+        .unwrap();
+    assert_eq!(walk(), walked);
+}
+
 #[test]
 fn a_walk_can_stop_early() {
     let sandbox = sandbox();
     let repo = branchy(&sandbox);
     let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
-    let walked = walk_history(sandbox.git(), &repository, &CancelToken::new(), |_, _| {
-        ControlFlow::Break(())
-    })
+    let walked = walk_history(
+        sandbox.git(),
+        &repository,
+        &[],
+        &CancelToken::new(),
+        |_, _| ControlFlow::Break(()),
+    )
     .wait()
     .unwrap();
     assert_eq!(walked.commits, 1);

@@ -32,6 +32,7 @@ mod scrolling;
 mod search;
 mod sidebar;
 mod sign_in;
+mod stashes;
 mod stats;
 mod submodules;
 mod suggested;

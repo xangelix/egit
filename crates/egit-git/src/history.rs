@@ -1,6 +1,7 @@
 //! The history's shape: every commit reachable from a ref, children before parents, and the refs
 //! that point into it.
 
+use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use bstr::{BStr, BString, ByteSlice as _};
@@ -12,11 +13,12 @@ use crate::git::Git;
 use crate::lines::Lines;
 use crate::object_id::ObjectId;
 use crate::repo::Repository;
+use crate::stash::StashNode;
 
 /// How a walk of the history ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Walked {
-    /// How many commits were handed over.
+    /// How many commits were handed over (stashes among them).
     pub commits: u64,
     /// Whether the consumer stopped the walk early.
     pub stopped: bool,
@@ -28,9 +30,15 @@ const MAX_REDUCED_TIPS: usize = 4096;
 
 /// Walks every commit reachable from a ref or `HEAD` (any worktree's), children before parents.
 ///
-/// Stashes are left out. The order is topological: every commit before its parents, and a
-/// branch's commits together. `each` gets a commit and its parents' names (first parent first)
-/// and may stop the walk.
+/// The order is topological: every commit before its parents, and a branch's commits together.
+/// `each` gets a commit and its parents' names (first parent first) and may stop the walk.
+///
+/// `stashes` ([`crate::stash_nodes`]) come too, each as a commit of its own whose one parent is
+/// the commit it was made on (git's commits of what was staged and of untracked files left
+/// out): before the first commit older than it, and before the one it was made on whatever
+/// their times say (a clock set wrong). The commits they were made on are walked from too, so
+/// a stash made on a branch deleted since still shows on what it was made on. The stash ref
+/// itself is never walked from.
 ///
 /// With a commit-graph file ([`Repository::has_commit_graph`]) commits arrive at once; without
 /// one, git must read the whole history before the first. Git's topological walk first reads
@@ -44,6 +52,7 @@ const MAX_REDUCED_TIPS: usize = 4096;
 pub async fn walk_history(
     git: &Git,
     repository: &Repository,
+    stashes: &[StashNode],
     cancel: &CancelToken,
     each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
 ) -> Result<Walked, GitError> {
@@ -56,7 +65,7 @@ pub async fn walk_history(
             .output()
             .await?
             .stdout;
-        let tips: Vec<ObjectId> = listed
+        let mut tips: Vec<ObjectId> = listed
             .lines()
             .filter(|line| !line.is_empty())
             .map(|line| {
@@ -64,11 +73,12 @@ pub async fn walk_history(
                     .ok_or_else(|| GitError::unexpected("rev-list", "a commit's name"))
             })
             .collect::<Result<_, _>>()?;
+        tips.extend(stashes.iter().map(|stash| stash.base));
         Start::Tips(reduced(git, repository, tips, cancel).await?)
     } else {
         Start::All
     };
-    walk_from(git, repository, start, cancel, each).await
+    walk_from(git, repository, start, stashes, cancel, each).await
 }
 
 /// The commits a walk of every ref but `hidden` (full names) starts from.
@@ -112,9 +122,11 @@ pub async fn history_tips(
         .collect()
 }
 
-/// [`walk_history`] from `tips`, the commits `git rev-list --no-walk=unsorted
-/// --exclude=refs/stash --all` lists (in its order), already known: they are reduced as
-/// `walk_history` reduces its own.
+/// [`walk_history`] from `tips` already known.
+///
+/// They are the commits `git rev-list --no-walk=unsorted --exclude=refs/stash --all` lists (in
+/// its order), and are reduced as `walk_history` reduces its own (with the commits `stashes`
+/// were made on).
 ///
 /// # Errors
 ///
@@ -122,16 +134,77 @@ pub async fn history_tips(
 pub async fn walk_history_from(
     git: &Git,
     repository: &Repository,
-    tips: Vec<ObjectId>,
+    mut tips: Vec<ObjectId>,
+    stashes: &[StashNode],
     cancel: &CancelToken,
     each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
 ) -> Result<Walked, GitError> {
+    tips.extend(stashes.iter().map(|stash| stash.base));
     let tips = if repository.has_commit_graph(git).await {
         reduced(git, repository, tips, cancel).await?
     } else {
         tips
     };
-    walk_from(git, repository, Start::Tips(tips), cancel, each).await
+    walk_from(git, repository, Start::Tips(tips), stashes, cancel, each).await
+}
+
+/// The stashes a walk hands over among its commits: each before the first commit older than it,
+/// or before the one it was made on, whichever comes first (a clock set wrong).
+struct Pending {
+    /// The latest first.
+    stashes: Vec<StashNode>,
+    /// Which of them were handed over.
+    handed: Vec<bool>,
+    /// Where those not yet known to be older than a commit walked start.
+    front: usize,
+    /// Each commit's stashes, by their places in `stashes`.
+    made_on: HashMap<ObjectId, Vec<usize>>,
+}
+
+impl Pending {
+    fn of(stashes: &[StashNode]) -> Self {
+        let mut sorted = stashes.to_vec();
+        sorted.sort_by(|a, b| b.time.cmp(&a.time).then(a.index.cmp(&b.index)));
+        let mut made_on: HashMap<ObjectId, Vec<usize>> = HashMap::new();
+        for (at, stash) in sorted.iter().enumerate() {
+            made_on.entry(stash.base).or_default().push(at);
+        }
+        Self {
+            handed: vec![false; sorted.len()],
+            stashes: sorted,
+            front: 0,
+            made_on,
+        }
+    }
+
+    /// Hands `hand` the stashes due before `commit`, made at `time`: those as new as it (the
+    /// latest first), then those made on it. Stops when `hand` does.
+    fn before(
+        &mut self,
+        commit: ObjectId,
+        time: i64,
+        mut hand: impl FnMut(&StashNode) -> ControlFlow<()>,
+    ) -> ControlFlow<()> {
+        let newer = self
+            .stashes
+            .iter()
+            .skip(self.front)
+            .take_while(|stash| stash.time >= time)
+            .count();
+        let made_on = self.made_on.remove(&commit).unwrap_or_default();
+        let due = (self.front..self.front.saturating_add(newer)).chain(made_on);
+        self.front = self.front.saturating_add(newer);
+        for at in due {
+            let (Some(handed), Some(stash)) = (self.handed.get_mut(at), self.stashes.get(at))
+            else {
+                continue;
+            };
+            if !std::mem::replace(handed, true) {
+                hand(stash)?;
+            }
+        }
+        ControlFlow::Continue(())
+    }
 }
 
 /// Where a walk starts.
@@ -142,11 +215,13 @@ enum Start {
     Tips(Vec<ObjectId>),
 }
 
-/// The topological walk itself, from `start`.
+/// The topological walk itself, from `start`, `stashes` among its commits (each commit's time
+/// asked of git only then).
 async fn walk_from(
     git: &Git,
     repository: &Repository,
     start: Start,
+    stashes: &[StashNode],
     cancel: &CancelToken,
     mut each: impl FnMut(ObjectId, &[ObjectId]) -> ControlFlow<()>,
 ) -> Result<Walked, GitError> {
@@ -155,8 +230,22 @@ async fn walk_from(
     let mut commits = 0_u64;
     let mut malformed = None;
     let mut stopped = false;
+    let mut pending = Pending::of(stashes);
+    let timed = !stashes.is_empty();
     let mut handle = |line: &[u8]| -> ControlFlow<()> {
         let mut names = line.split_str(b" ").filter(|name| !name.is_empty());
+        let time = if timed {
+            let Some(time) = names
+                .next()
+                .and_then(|time| time.to_str().ok()?.parse::<i64>().ok())
+            else {
+                malformed = Some(BString::from(line));
+                return ControlFlow::Break(());
+            };
+            time
+        } else {
+            0
+        };
         let Some(commit) = names.next().and_then(ObjectId::from_hex) else {
             malformed = Some(BString::from(line));
             return ControlFlow::Break(());
@@ -169,6 +258,16 @@ async fn walk_from(
             };
             parents.push(parent);
         }
+        if timed {
+            let flow = pending.before(commit, time, |stash| {
+                commits = commits.saturating_add(1);
+                each(stash.commit, &[stash.base])
+            });
+            if flow.is_break() {
+                stopped = true;
+                return flow;
+            }
+        }
         commits = commits.saturating_add(1);
         let flow = each(commit, &parents);
         if flow.is_break() {
@@ -179,6 +278,7 @@ async fn walk_from(
     let walk = git
         .read("rev-list")
         .args(["--topo-order", "--parents"])
+        .args(timed.then_some("--timestamp"))
         .current_dir(repository.work_tree())
         .cancel_token(cancel);
     let walk = match start {
@@ -196,7 +296,17 @@ async fn walk_from(
             }
             walk.arg("--stdin").stdin(names)
         }
-        Start::All => walk.args(["--exclude=refs/stash", "--all"]),
+        Start::All if stashes.is_empty() => walk.args(["--exclude=refs/stash", "--all"]),
+        // And the commits the stashes were made on.
+        Start::All => {
+            let mut names = Vec::with_capacity(stashes.len().saturating_mul(41));
+            for stash in stashes {
+                names.extend_from_slice(stash.base.to_string().as_bytes());
+                names.push(b'\n');
+            }
+            walk.args(["--exclude=refs/stash", "--all", "--stdin"])
+                .stdin(names)
+        }
     };
     walk.stream(|chunk| lines.feed(chunk, &mut handle)).await?;
     if let Some(line) = malformed {
@@ -944,6 +1054,63 @@ mod tests {
             mode,
             id: ObjectId::from_hex(hex.as_bytes()).unwrap(),
         }
+    }
+
+    /// An id of its own for each small number.
+    fn id(number: u8) -> ObjectId {
+        ObjectId::from_hex(format!("{number:040x}").as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn stashes_go_before_the_first_commit_older_or_their_own() {
+        let stash = |number, base, time, index| StashNode {
+            commit: id(number),
+            base: id(base),
+            time,
+            index,
+        };
+        // 10 made on 1 at 50 and 12 on 2 at 60 (clocks set wrong: 1 is at 80, 2 at 70); 11 on
+        // 3 at 45, and 13 and 14 on 3 at the same moment, 40.
+        let mut pending = Pending::of(&[
+            stash(14, 3, 40, 4),
+            stash(13, 3, 40, 3),
+            stash(12, 2, 60, 2),
+            stash(11, 3, 45, 1),
+            stash(10, 1, 50, 0),
+        ]);
+        let mut handed = Vec::new();
+        for (commit, time) in [(1, 80), (2, 70), (3, 30), (4, 20)] {
+            let flow = pending.before(id(commit), time, |stash| {
+                handed.push(stash.commit);
+                ControlFlow::Continue(())
+            });
+            assert!(flow.is_continue());
+            handed.push(id(commit));
+        }
+        // Each once, before its own commit at the latest; at one moment, in the list's order.
+        assert_eq!(
+            handed,
+            [10, 1, 12, 2, 11, 13, 14, 3, 4].map(id),
+            "{handed:?}"
+        );
+    }
+
+    #[test]
+    fn handing_stashes_over_stops_when_asked() {
+        let stash = |number, time, index| StashNode {
+            commit: id(number),
+            base: id(1),
+            time,
+            index,
+        };
+        let mut pending = Pending::of(&[stash(10, 50, 0), stash(11, 40, 1)]);
+        let mut handed = Vec::new();
+        let flow = pending.before(id(1), 10, |stash| {
+            handed.push(stash.commit);
+            ControlFlow::Break(())
+        });
+        assert!(flow.is_break());
+        assert_eq!(handed, [id(10)]);
     }
 
     #[test]

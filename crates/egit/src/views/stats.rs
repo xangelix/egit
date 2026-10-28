@@ -122,7 +122,7 @@ impl StatsView {
         self.stats.request(read_stats(
             git.clone(),
             Arc::clone(shared.repository),
-            history.names(),
+            (history.names(), history.stashes().clone()),
             !config.is_partial_clone(),
             Arc::clone(&self.read),
             self.cancel.clone(),
@@ -149,7 +149,7 @@ impl StatsView {
         self.lines.request(read_lines(
             git.clone(),
             Arc::clone(shared.repository),
-            history.names(),
+            (history.names(), history.stashes().clone()),
             Arc::clone(&self.counted),
             self.cancel.clone(),
         ));
@@ -187,7 +187,7 @@ pub(super) fn show(
                 ui,
                 format!(
                     "{} commits, as the history shows them",
-                    count(history.rows())
+                    count(history.commits())
                 ),
             ));
             if view.stats.is_pending() {

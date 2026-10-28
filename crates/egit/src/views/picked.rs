@@ -114,7 +114,9 @@ impl Picked {
     }
 
     /// Takes in `click` on `row`; `selected` is the row selected before it, which a ⌘-click
-    /// picks too (it was the one picked so far).
+    /// picks too (it was the one picked so far). Stashes' rows are never picked: what is done
+    /// to commits picked (picking them onto a branch, signing them, exporting them) isn't done
+    /// to a stash.
     pub(super) fn click(
         &mut self,
         history: &History,
@@ -125,15 +127,19 @@ impl Picked {
         let Some(id) = history.id(row) else {
             return;
         };
+        let commit = |id: &ObjectId| history.stashes().index_of(id).is_none();
         match click {
             Click::Plain => {
                 self.clear();
                 self.anchor = Some(id);
             }
+            // A ⌘-click on a stash picks nothing.
+            Click::Toggle if !commit(&id) => {}
             Click::Toggle => {
                 if self.set.is_empty()
                     && let Some((at, was)) = selected
                     && was != id
+                    && commit(&was)
                 {
                     self.insert(at, was);
                 }
@@ -154,7 +160,7 @@ impl Picked {
                 let high = high.min(low.saturating_add(MAX_PICKED - 1));
                 self.clear();
                 for at in low..=high {
-                    if let Some(id) = history.id(at) {
+                    if let Some(id) = history.id(at).filter(commit) {
                         self.insert(at, id);
                     }
                 }

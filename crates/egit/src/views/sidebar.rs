@@ -1097,7 +1097,7 @@ fn fit_tail<'t>(
 
 /// A stash's message as people read it: git's "On main: …" or "WIP on main: 1234abcd …" taken
 /// off (the branch it was made on said apart), the words left.
-fn stash_words(message: &str) -> (&str, Option<&str>) {
+pub(super) fn stash_words(message: &str) -> (&str, Option<&str>) {
     let rest = message
         .strip_prefix("WIP on ")
         .or_else(|| message.strip_prefix("On "));
@@ -1832,22 +1832,8 @@ fn stash_row(
     }
     let mut event = clicked.then_some(SidebarEvent::Show(stash.id));
     response.context_menu(|ui| {
-        let idle = drawing.menus.idle();
-        for (glyph, label, pop) in [
-            (icon::TRAY_ARROW_UP, "Apply", false),
-            (icon::ARROW_LINE_UP, "Pop", true),
-        ] {
-            if actions::item(ui, (glyph, label), idle) {
-                event = Some(SidebarEvent::Ask(Ask::Task(Task::ApplyStash {
-                    stash: stash.clone(),
-                    pop,
-                })));
-            }
-        }
-        if actions::danger_item(ui, (icon::TRASH, "Drop…"), idle) {
-            event = Some(SidebarEvent::Ask(Ask::Dialog(Dialog::DropStash(
-                stash.clone(),
-            ))));
+        if let Some(ask) = actions::stash_items(ui, stash, drawing.menus.idle()) {
+            event = Some(SidebarEvent::Ask(ask));
         }
     });
     event

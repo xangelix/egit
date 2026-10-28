@@ -87,6 +87,72 @@ pub async fn stashes(
         .collect()
 }
 
+/// A stash as the history shows it: a commit of its own on the one it was made on.
+///
+/// Git keeps a stash as a merge of the commit `HEAD` was at, a commit of what was staged, and
+/// (with untracked files) one of those; the history shows the stash alone, on the first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StashNode {
+    /// Its commit (what `stash@{index}` names).
+    pub commit: ObjectId,
+    /// The commit it was made on: its first parent.
+    pub base: ObjectId,
+    /// When it was made (seconds since the Unix epoch).
+    pub time: i64,
+    /// Its place in the list, the latest first.
+    pub index: u32,
+}
+
+/// The stashes as the history shows them (`git stash list`, with each one's first parent),
+/// the latest first; none without any.
+///
+/// # Errors
+///
+/// When git fails, is cancelled, or lists what isn't a stash.
+pub async fn stash_nodes(
+    git: &Git,
+    repository: &Repository,
+    cancel: &CancelToken,
+) -> Result<Vec<StashNode>, GitError> {
+    let listed = git
+        .read("stash")
+        .args(["list", "-z", "--format=%H%x1f%P%x1f%ct"])
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .await?;
+    let unexpected = || GitError::unexpected("stash", "a stash and its parents");
+    listed
+        .stdout
+        .split_str(b"\0")
+        .map(|record| record.trim_with(|c| c == '\n'))
+        .filter(|record| !record.is_empty())
+        .enumerate()
+        .map(|(index, record)| {
+            let mut fields = record.splitn_str(3, b"\x1f");
+            let commit = fields
+                .next()
+                .and_then(ObjectId::from_hex)
+                .ok_or_else(unexpected)?;
+            let base = fields
+                .next()
+                .and_then(|parents| parents.split_str(b" ").next())
+                .and_then(ObjectId::from_hex)
+                .ok_or_else(unexpected)?;
+            let time = fields
+                .next()
+                .and_then(|time| time.to_str().ok()?.trim().parse().ok())
+                .ok_or_else(unexpected)?;
+            Ok(StashNode {
+                commit,
+                base,
+                time,
+                index: u32::try_from(index).unwrap_or(u32::MAX),
+            })
+        })
+        .collect()
+}
+
 /// Puts the work tree's changes aside (`git stash push`), with `message` if it isn't empty,
 /// and files git doesn't track too with `untracked`. Returns whether there was anything to
 /// stash.
