@@ -121,12 +121,15 @@ impl Chunk {
     }
 }
 
-/// A lane slot's occupant: its colour, and the next slot whose lane leads to the same commit
-/// ([`NO_SLOT`] for none). The commit it leads to is the key of the chain it's in.
+/// A lane slot's occupant: its colour, the next slot whose lane leads to the same commit
+/// ([`NO_SLOT`] for none), and whether it is set aside (a stash's, [`GraphBuilder::push_aside`]):
+/// the commit it leads to never takes it as its own. The commit it leads to is the key of the
+/// chain it's in.
 #[derive(Clone, Copy, Debug)]
 struct Lane {
     color: u16,
     next: u32,
+    aside: bool,
 }
 
 /// Lays out lanes as commits arrive, children before parents (`git rev-list --topo-order`).
@@ -143,6 +146,10 @@ struct Lane {
 /// A branch can be pinned to the left ([`Self::pinned`]): the first slot is kept for its tip's
 /// first-parent line, which nothing else takes; once the tip has it, the line keeps it, a node
 /// taking the leftmost lane leading to it.
+///
+/// A commit on no branch (a stash) is pushed aside ([`Self::push_aside`]): its node takes a slot
+/// right of the first, and its lane to the commit it was made on gives way there, so the
+/// branches keep their lanes and the stash joins one beside it.
 #[derive(Debug)]
 pub struct GraphBuilder<K> {
     lanes: Vec<Option<Lane>>,
@@ -212,15 +219,28 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
     /// Lays out the next commit, given its parents (first parent first). Returns the chunk this
     /// row completed, if any.
     pub fn push(&mut self, commit: K, parents: &[K]) -> Option<Chunk> {
-        let full = if self.chunk.len() == CHUNK_ROWS {
-            let next = Chunk::starting(self.rows, self.lane_colors());
-            Some(std::mem::replace(&mut self.chunk, next))
-        } else {
-            None
-        };
-        self.lay_out(commit, parents);
+        let full = self.next_chunk();
+        self.lay_out(commit, parents, false);
         self.rows = self.rows.saturating_add(1);
         full
+    }
+
+    /// Lays out the next commit as one on no branch (a stash), made on `base`: its node in a
+    /// slot right of the first, its lane to `base` set aside (`base` takes a lane of its own,
+    /// this one joining it). Returns the chunk this row completed, if any.
+    pub fn push_aside(&mut self, commit: K, base: K) -> Option<Chunk> {
+        let full = self.next_chunk();
+        self.lay_out(commit, &[base], true);
+        self.rows = self.rows.saturating_add(1);
+        full
+    }
+
+    /// The chunk the next row starts after, when the current one is full.
+    fn next_chunk(&mut self) -> Option<Chunk> {
+        (self.chunk.len() == CHUNK_ROWS).then(|| {
+            let next = Chunk::starting(self.rows, self.lane_colors());
+            std::mem::replace(&mut self.chunk, next)
+        })
     }
 
     /// The rows laid out since the last full chunk, if any.
@@ -237,7 +257,7 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
             .collect()
     }
 
-    fn lay_out(&mut self, commit: K, parents: &[K]) {
+    fn lay_out(&mut self, commit: K, parents: &[K], aside: bool) {
         self.leading.clear();
         let mut next = self.chains.remove(&commit).unwrap_or(NO_SLOT);
         while let Some(slot) = slot_index(next) {
@@ -247,20 +267,33 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
         self.leading.sort_unstable();
         let edges_start = u32::try_from(self.chunk.edges.len()).unwrap_or(u32::MAX);
         // The pinned tip starts its lane in the first slot, kept empty for it: every lane
-        // leading to it (its children's) joins it there.
+        // leading to it (its children's) joins it there. Otherwise the node takes the leftmost
+        // lane leading to it but those set aside (a stash's).
         let pinned_here = self.pinned == Some(commit);
+        let own = if pinned_here {
+            None
+        } else {
+            self.leading
+                .iter()
+                .copied()
+                .find(|&slot| self.lane(slot).is_some_and(|lane| !lane.aside))
+        };
         let (node, color, from_above) = if pinned_here {
             self.pinned = None;
             (0, self.new_color(), false)
-        } else if let Some(&first) = self.leading.first() {
-            (first, self.lane(first).map_or(0, |lane| lane.color), true)
+        } else if let Some(own) = own {
+            (own, self.lane(own).map_or(0, |lane| lane.color), true)
         } else {
-            (self.free_slot(0), self.new_color(), false)
+            // A commit on no branch keeps out of the first slot, where a branch's line runs.
+            (self.free_slot(usize::from(aside)), self.new_color(), false)
         };
-        for index in usize::from(!pinned_here)..self.leading.len() {
+        for index in 0..self.leading.len() {
             let Some(&other) = self.leading.get(index) else {
                 continue;
             };
+            if Some(other) == own {
+                continue;
+            }
             let other_color = self.lane(other).map_or(0, |lane| lane.color);
             self.chunk.edges.push(Edge {
                 kind: EdgeKind::Join,
@@ -270,7 +303,7 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
             self.set(other, None);
         }
 
-        let continues = self.lead_to_parents(node, color, parents);
+        let continues = self.lead_to_parents(node, (color, aside), parents);
         self.widest = self.widest.max(self.lanes.len());
         while self.lanes.last().is_some_and(Option::is_none) {
             self.lanes.pop();
@@ -292,14 +325,15 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
         });
     }
 
-    /// Points the node's lane at the first parent and gives each merge parent a lane (a new one,
-    /// or the one already leading there). Returns whether the node's lane goes on.
-    fn lead_to_parents(&mut self, node: usize, color: u16, parents: &[K]) -> bool {
+    /// Points the node's lane (its colour, and whether it is set aside) at the first parent
+    /// and gives each merge parent a lane (a new one, or the one already leading there).
+    /// Returns whether the node's lane goes on.
+    fn lead_to_parents(&mut self, node: usize, (color, aside): (u16, bool), parents: &[K]) -> bool {
         let Some((&first, merged)) = parents.split_first() else {
             self.set(node, None);
             return false;
         };
-        self.open(node, first, color);
+        self.open(node, first, (color, aside));
         for &parent in merged {
             let edge = if let Some(existing) = self.leftmost_leading_to(parent) {
                 Edge {
@@ -310,7 +344,7 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
             } else {
                 let slot = self.free_slot(node.saturating_add(1));
                 let lane_color = self.new_color();
-                self.open(slot, parent, lane_color);
+                self.open(slot, parent, (lane_color, false));
                 Edge {
                     kind: EdgeKind::Fork,
                     lane: slot_number(slot),
@@ -337,11 +371,12 @@ impl<K: Copy + Eq + Hash> GraphBuilder<K> {
         leftmost
     }
 
-    /// Opens a lane in `slot` leading to `expects`, chaining it to the others leading there.
-    fn open(&mut self, slot: usize, expects: K, color: u16) {
+    /// Opens a lane in `slot` leading to `expects` (its colour, and whether it is set aside),
+    /// chaining it to the others leading there.
+    fn open(&mut self, slot: usize, expects: K, (color, aside): (u16, bool)) {
         let link = u32::try_from(slot).unwrap_or(NO_SLOT);
         let next = self.chains.insert(expects, link).unwrap_or(NO_SLOT);
-        self.set(slot, Some(Lane { color, next }));
+        self.set(slot, Some(Lane { color, next, aside }));
     }
 
     /// Puts `lane` in `slot`. Closing a lane ([`None`]) is only done once its chain is gone.

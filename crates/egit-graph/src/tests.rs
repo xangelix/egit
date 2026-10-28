@@ -423,3 +423,43 @@ fn a_window_draws_only_the_lines_crossing_it() {
         });
     }
 }
+
+#[test]
+fn a_stash_set_aside_leaves_the_branch_its_lane() {
+    // Stashes 10 and 11 on the branch's tip 3 (10 the very first row), 12 on 2 below it.
+    let mut builder = GraphBuilder::new();
+    let mut chunks = Vec::new();
+    chunks.extend(builder.push_aside(10, 3));
+    chunks.extend(builder.push_aside(11, 3));
+    chunks.extend(builder.push(3, &[2]));
+    chunks.extend(builder.push_aside(12, 2));
+    chunks.extend(builder.push(2, &[1]));
+    chunks.extend(builder.push(1, &[]));
+    chunks.extend(builder.finish());
+    let rows = drawn(&chunks, 6);
+    let lane = |row: usize| rows[row].1.lane;
+    // The stashes keep out of the first slot, each in a lane of its own.
+    assert_eq!((lane(0), lane(1)), (1, 2));
+    // The tip takes the first slot, as a branch's tip does, both stashes' lanes joining it.
+    let tip = &rows[2];
+    assert_eq!((tip.1.lane, tip.1.from_above), (0, false));
+    assert_eq!(
+        tip.2
+            .iter()
+            .map(|edge| (edge.kind, edge.lane))
+            .collect::<Vec<_>>(),
+        [(EdgeKind::Join, 1), (EdgeKind::Join, 2)]
+    );
+    // Further down, a stash on a commit the branch's line goes through joins that line.
+    assert_eq!(lane(3), 1);
+    let base = &rows[4];
+    assert_eq!((base.1.lane, base.1.from_above), (0, true));
+    assert_eq!(
+        base.2
+            .iter()
+            .map(|edge| (edge.kind, edge.lane))
+            .collect::<Vec<_>>(),
+        [(EdgeKind::Join, 1)]
+    );
+    assert_eq!(lane(5), 0);
+}
