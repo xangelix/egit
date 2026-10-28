@@ -4133,22 +4133,7 @@ impl CommitRows<'_> {
         let color = color_of(graph.color);
         let background = self.shared.palette.background;
         if self.history.stashes().index_of(&id).is_some() {
-            // A stash: a dashed square, on no branch.
-            let square = Rect::from_center_size(center, egui::Vec2::splat(NODE_RADIUS * 2.0));
-            painter.rect_filled(square, 1.0, background);
-            let corners = [
-                square.left_top(),
-                square.right_top(),
-                square.right_bottom(),
-                square.left_bottom(),
-                square.left_top(),
-            ];
-            painter.add(egui::Shape::dashed_line(
-                &corners,
-                Stroke::new(1.5, color),
-                2.5,
-                1.5,
-            ));
+            stash_node(painter, center, color, background);
         } else if graph.merge {
             painter.circle(
                 center,
@@ -4161,6 +4146,38 @@ impl CommitRows<'_> {
         }
         if self.shared.head.commit == Some(id) {
             painter.circle_stroke(center, NODE_RADIUS + 3.0, Stroke::new(1.5, color));
+        }
+    }
+}
+
+/// A stash's node, on no branch: a square's outline in dashes, alike on every side (an L at
+/// each corner, a dash at each side's middle, and equal gaps between). Each dash is a rectangle
+/// on the screen's own pixels, its sizes whole pixels, so none blurs or comes out longer than
+/// another: 1.5 points thick, a corner's arms 3, the gaps 1.5 (exactly so at 2×; rounded to
+/// pixels elsewhere). The middle dashes are as wide as a lane's line: the square's middle is
+/// then where its lane's is, whatever the scale, and the lane meets its bottom side's dash.
+fn stash_node(painter: &egui::Painter, center: Pos2, color: Color32, background: Color32) {
+    let scale = painter.pixels_per_point();
+    let pixels = |points: f32| (points * scale).round().max(1.0);
+    let (thick, arm, middle, gap) = (pixels(1.5), pixels(3.0), pixels(LINE_WIDTH), pixels(1.5));
+    let side = 2.0f32.mul_add(arm + gap, middle);
+    let left = center.x.mul_add(scale, -side / 2.0).round();
+    let top = center.y.mul_add(scale, -side / 2.0).round();
+    let block = |x: f32, y: f32, width: f32, height: f32| {
+        Rect::from_min_size(
+            pos2(x / scale, y / scale),
+            egui::vec2(width / scale, height / scale),
+        )
+    };
+    painter.rect_filled(block(left, top, side, side), 0.0, background);
+    for (along, dash) in [(0.0, arm), (arm + gap, middle), (side - arm, arm)] {
+        for piece in [
+            block(left + along, top, dash, thick),
+            block(left + along, top + side - thick, dash, thick),
+            block(left, top + along, thick, dash),
+            block(left + side - thick, top + along, thick, dash),
+        ] {
+            painter.rect_filled(piece, 0.0, color);
         }
     }
 }

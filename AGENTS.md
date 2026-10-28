@@ -1940,8 +1940,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     when the column is narrower than the graph: "‹ Graph ›") and asks for summaries (the
     screen, then a screen below and above). Graph cells paint lines (cubic curves between
     lanes) and nodes (hollow for merges, ringed for `HEAD`); rows are buttons named by their
-    subject; a stash's row (`stash_cell`: named "stash@{2}: words") its node a dashed square,
-    a "stash@{2}" badge (muted, the archive's icon; a click selects its row) and its words as
+    subject; a stash's row (`stash_cell`: named "stash@{2}: words") its node a dashed square
+    (`stash_node`: alike on every side, each dash a rectangle on whole pixels, the middle ones
+    as wide as a lane's line, so its lane meets it centred at any scale), a "stash@{2}" badge (muted, the archive's icon; a click selects its row) and its words as
     the sidebar says them (`sidebar::stash_words`), the branch it was made on muted after, its
     and its badge's menu the stash's (`stash_menu`: `actions::stash_items`, Apply, Pop,
     Drop…, the stash menu's and the sidebar's too), `refs/stash`'s own badge left out;
