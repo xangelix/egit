@@ -1791,6 +1791,10 @@ fn branches_are_switched_to_made_and_deleted_from_the_graph() {
     harness.get_by_label("Stash and switch").click();
     wait_for_label(&mut harness, "Stashed your changes, and switched to other.");
     wait_for_label(&mut harness, "Stashes · 1");
+    // The stash joins the graph as a row of its own, above the rest: every row moves down
+    // once the history is read again, so a click is aimed only after.
+    wait_for_label(&mut harness, "stash@{0}: Before switching");
+    settle(&mut harness, "the history with the stash", history_shown);
 
     // A branch made at a commit, and switched to.
     harness
@@ -1816,6 +1820,9 @@ fn branches_are_switched_to_made_and_deleted_from_the_graph() {
         .get_by_label("Switch here, without a branch")
         .click();
     wait_for_label(&mut harness, "HEAD, detached");
+    // The sidebar sorts the refs of each history read in a job: two reads close together (the
+    // branch made, then the switch) leave it a moment on an older one, without feature.
+    wait_for_label(&mut harness, "Branches: 3");
     render(&mut harness, "detached-head");
     double_click(&mut harness, &badge("feature"));
     wait_for_label(&mut harness, &on("feature"));
