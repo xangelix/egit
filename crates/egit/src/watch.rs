@@ -266,11 +266,20 @@ impl Watcher {
     }
 
     /// Watches configuration files (through their folders, since editors replace files rather
-    /// than write them in place).
+    /// than write them in place). A change is a file's by its path as given or as its folder's
+    /// links resolve: macOS's `FSEvents` reports the latter (a home folder under a link).
     pub(crate) fn files(
         files: Vec<PathBuf>,
         wake: impl Fn(Duration) + Send + 'static,
     ) -> notify::Result<Self> {
+        let resolved: Vec<PathBuf> = files
+            .iter()
+            .filter_map(|file| {
+                let folder = std::fs::canonicalize(file.parent()?).ok()?;
+                Some(folder.join(file.file_name()?))
+            })
+            .filter(|resolved| !files.contains(resolved))
+            .collect();
         let mut folders: Vec<PathBuf> = files
             .iter()
             .filter_map(|file| file.parent())
@@ -286,7 +295,7 @@ impl Watcher {
         Self::start(
             &watches,
             move |path| {
-                if files.iter().any(|file| file == path) {
+                if files.iter().chain(&resolved).any(|file| file == path) {
                     Changes::CONFIG
                 } else {
                     Changes::NONE
