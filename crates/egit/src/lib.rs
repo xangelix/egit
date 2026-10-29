@@ -22,6 +22,8 @@ mod attachments;
 mod avatars;
 mod blame;
 mod ci;
+#[cfg(not(target_arch = "wasm32"))]
+mod cli;
 mod commands;
 mod desktop;
 mod diff;
@@ -83,18 +85,33 @@ use std::path::PathBuf;
 #[cfg(not(target_arch = "wasm32"))]
 use std::process::ExitCode;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use cli::main;
 #[cfg(target_arch = "wasm32")]
 pub use web::start;
+
+/// egit's id where a desktop names applications.
+///
+/// Its window's on Linux (Wayland's app id, X11's class), its menu entry's and icons'
+/// (`seaworthy.toml`'s `desktop.app-id`), and its macOS bundle's: one id, so the desktop shows the
+/// window under egit's entry and icon. Never changes: macOS keys an app's permissions and
+/// notarization to its bundle id.
+pub const APP_ID: &str = "io.github.xangelix.egit";
+
+/// The window's icon, the 256-pixel rendering of `packaging/icons/egit.svg`.
+#[cfg(not(target_arch = "wasm32"))]
+const ICON_PNG: &[u8] = include_bytes!("../../../packaging/icons/egit-256.png");
 
 /// What `egit --help` prints.
 #[cfg(not(target_arch = "wasm32"))]
 const USAGE: &str = "\
-usage: egit [PATH…]
+usage: egit [PATH…] [-- PATH…]
 
 Opens egit, with the repositories around each PATH in tabs.
 
   -h, --help       print this
   -V, --version    print egit's version
+  --               every argument after it is a PATH, even one starting with -
 
 EGIT_LOG sets what egit logs to stderr (\"warn\" by default; \"debug\" for every git command;
 \"egit_forge=debug,egit_app=debug\" for each request to GitHub or GitLab and what each remote
@@ -106,35 +123,36 @@ was taken for).
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
-    let mut paths = Vec::new();
-    for arg in args {
-        match arg.to_str() {
-            Some("-h" | "--help") => return say(USAGE, ExitCode::SUCCESS),
-            Some("-V" | "--version") => {
-                return say(
-                    &format!("egit {}\n", env!("CARGO_PKG_VERSION")),
-                    ExitCode::SUCCESS,
-                );
-            }
-            Some(option) if option.starts_with('-') => {
-                complain(&format!("unknown option {option}\n\n{USAGE}"));
-                return ExitCode::from(2);
-            }
-            _ => paths.push(PathBuf::from(arg)),
+    let paths: Vec<PathBuf> = match cli::asked(args) {
+        cli::Asked::Help => return say(USAGE, ExitCode::SUCCESS),
+        cli::Asked::Version => {
+            return say(
+                &format!("egit {}\n", env!("CARGO_PKG_VERSION")),
+                ExitCode::SUCCESS,
+            );
         }
-    }
+        cli::Asked::Unknown(option) => {
+            complain(&format!("unknown option {option}\n\n{USAGE}"));
+            return ExitCode::from(2);
+        }
+        cli::Asked::Open(paths) => paths,
+    };
 
     init_logging();
     if let Err(error) = jobs::install_runtime() {
         complain(&format!("couldn't start egit's worker threads: {error}\n"));
         return ExitCode::FAILURE;
     }
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("egit")
+        .with_app_id(APP_ID)
+        .with_inner_size([1280.0, 820.0])
+        .with_min_inner_size([720.0, 480.0]);
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("egit")
-            .with_app_id("egit")
-            .with_inner_size([1280.0, 820.0])
-            .with_min_inner_size([720.0, 480.0]),
+        viewport,
         ..eframe::NativeOptions::default()
     };
     let started = eframe::run_native(
@@ -147,6 +165,27 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Err(error) => {
             complain(&format!("the window couldn't open: {error}\n"));
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// The window's icon, decoded from [`ICON_PNG`]; none (the platform's default, said in the log)
+/// should it not decode.
+#[cfg(not(target_arch = "wasm32"))]
+fn window_icon() -> Option<egui::IconData> {
+    match image::load_from_memory_with_format(ICON_PNG, image::ImageFormat::Png) {
+        Ok(decoded) => {
+            let rgba = decoded.into_rgba8();
+            let (width, height) = rgba.dimensions();
+            Some(egui::IconData {
+                rgba: rgba.into_raw(),
+                width,
+                height,
+            })
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the window's icon didn't decode");
+            None
         }
     }
 }
