@@ -515,6 +515,15 @@ fn location_card(
 ) {
     widgets::card(ui, |ui| {
         widgets::heading(ui, "Where it lives");
+        // A path's cell is as wide as the card leaves it, wrapped within: a grid sizes cells to
+        // what they hold, and a long path would widen the page past the window.
+        let room = (ui.available_width() - widgets::FACT_LABEL - 16.0).max(120.0);
+        let path = |ui: &mut Ui, at: &Path| {
+            ui.allocate_ui(egui::vec2(room, 0.0), |ui| {
+                ui.set_max_width(room);
+                ui.add(egui::Label::new(display_path(at, home)).wrap());
+            });
+        };
         Grid::new(("repo-location", repository.work_tree()))
             .num_columns(2)
             .min_col_width(widgets::FACT_LABEL)
@@ -526,14 +535,14 @@ fn location_card(
                     ui.end_row();
                 }
                 ui.label(muted(ui, "Work tree"));
-                ui.label(display_path(repository.work_tree(), home));
+                path(ui, repository.work_tree());
                 ui.end_row();
                 ui.label(muted(ui, "Git directory"));
-                ui.label(display_path(repository.git_dir(), home));
+                path(ui, repository.git_dir());
                 ui.end_row();
                 if repository.is_linked_worktree() {
                     ui.label(muted(ui, "Shared with"));
-                    ui.label(display_path(repository.common_dir(), home));
+                    path(ui, repository.common_dir());
                     ui.end_row();
                 }
                 ui.label(muted(ui, "Object names"));
