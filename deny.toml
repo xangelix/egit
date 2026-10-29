@@ -47,10 +47,10 @@ wildcards = "deny"
 # The workspace's own crates depend on each other by path.
 allow-wildcard-paths = true
 deny = [
-    # egit drives the system's git binary for every repository operation (docs/ROADMAP.md): a
+    # egit drives the system's git binary for every repository operation (README.md): a
     # second implementation of git inside the process would disagree with the one the user runs.
-    { crate = "git2", reason = "egit drives the git binary; no in-process git (docs/ROADMAP.md)" },
-    { crate = "libgit2-sys", reason = "egit drives the git binary; no in-process git (docs/ROADMAP.md)" },
+    { crate = "git2", reason = "egit drives the git binary; no in-process git" },
+    { crate = "libgit2-sys", reason = "egit drives the git binary; no in-process git" },
     # Git makes every repository connection; egit's own are only to forges' web APIs, over
     # rustls (crates/egit-forge). No second TLS stack, and none that needs OpenSSL at run time.
     { crate = "openssl", reason = "egit's one TLS stack is rustls (forge APIs only)" },

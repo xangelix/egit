@@ -70,7 +70,7 @@ getrandom = "0.4.3"
 libc = "0.2.190"
 rustix = { version = "1.1.5", features = ["event", "net", "process"] }
 # Ahead of crates.io (not published yet): the launcher and its cores' entry, seaworthy's
-# (the owner's packaging, docs/ROADMAP.md, phase 39).
+# (the owner's packaging; seaworthy.toml).
 seaworthy-launcher = { git = "https://github.com/xangelix/seaworthy", rev = "c02ebaa10440c4ae49efcfebf104df91a0b91e09" }
 serde = { version = "1.0.229", features = ["derive"] }
 # Gravatar names pictures by an address's SHA-256 (already in the tree through gix-hash).

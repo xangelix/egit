@@ -7,7 +7,7 @@ egit drives the `git` installed on your system for every repository operation, s
 signing, credential helpers, and your configuration behave exactly as they do on the command
 line. It loads and draws only what is on screen.
 
-It is early work: see [the roadmap](docs/ROADMAP.md).
+It is early work.
 
 ## Requirements
 

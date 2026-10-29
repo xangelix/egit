@@ -1,7 +1,7 @@
 //! egit's in-process reads through gitoxide (`gix`): a repository's references, the commits a
 //! walk of all of them starts from, and objects. Each gives what egit's git commands give
 //! (checked against them in tests), and each was measured faster where egit spends its time
-//! (`docs/ROADMAP.md`, phase 12); everything else stays git's, and every write.
+//! (`tests/measure.rs`); everything else stays git's, and every write.
 //!
 //! A repository gix wouldn't read as git does isn't opened here, so its callers fall back to
 //! git: references kept in a reftable (gix reads files), and replaced objects (`refs/replace/`,

@@ -1,6 +1,6 @@
 # egit's packages, built, verified, and packaged by seaworthy (https://github.com/xangelix/seaworthy),
 # the owner's packaging: its reusable workflow, pinned by its full commit, which is also the
-# seaworthy command's and its scripts' (docs/ROADMAP.md, phase 39; seaworthy.toml). A `v*` tag is a
+# seaworthy command's and its scripts' (seaworthy.toml). A `v*` tag is a
 # release, named by the tag (crates/egit's version must say the same); a run started by hand
 # builds every package, named by that version.
 name: Release

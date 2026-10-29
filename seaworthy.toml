@@ -1,5 +1,5 @@
 # How egit ships: seaworthy (https://github.com/xangelix/seaworthy), the owner's packaging.
-# docs/ROADMAP.md (phase 39) has the decisions; AGENTS.md the commands. Each program is a small
+# AGENTS.md has the commands. Each program is a small
 # launcher and one core per CPU level (crates/egit-launcher, crates/egit-core,
 # crates/egit-relay-core): every level ships, whatever it adds to a download.
 

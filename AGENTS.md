@@ -4,9 +4,9 @@
 
 **egit** — a native git client in egui, built to stay fast on the largest repositories
 (GitKraken's ground, without Electron). The system's `git` binary does every repository
-operation; egit runs it, reads what it prints, and draws only what is on screen.
-`docs/ROADMAP.md` is the plan (five MVP phases, then one at a time) and the decisions behind
-it.
+operation; egit runs it, reads what it prints, and draws only what is on screen. It is
+built a phase at a time, each listed below once done, with the decisions behind it written
+where the code they shaped is (its module's doc comment, and this file).
 
 ## Status
 
@@ -128,7 +128,7 @@ it.
   linked or run there. Do this after touching anything behind a `cfg` of a platform. CI tests
   on both (the platforms job).
 - Text corpus: `cargo test -p egit --release --lib -- --ignored --nocapture --test-threads=1
-  corpus` draws the text grid through the roadmap's worst cases (1M lines of code, plain and
+  corpus` draws the text grid through its worst cases (1M lines of code, plain and
   highlighted, a 10 MB line wrapped and not, CJK and emoji, resizing wrapped at line 900k),
   then the whole application on a commit moving 100,000 files (listed in 105 ms, counted in
   430 ms; as a tree of their folders, arranged 4.9 ms after asking (in a job, its longest frame
@@ -1267,7 +1267,7 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   `scripts/build-web.sh` (the nightly and flags of `scripts/web-env.sh`, wasm-bindgen,
   wasm-opt with threads, `.gz` and `.br` beside each file).
 - `crates/egit-launcher`, `crates/egit-core`, `crates/egit-relay-core` — egit as seaworthy
-  installs it (the owner's packaging: `seaworthy.toml`, docs/ROADMAP.md's phase 39): a small
+  installs it (the owner's packaging: `seaworthy.toml`): a small
   launcher per program (`egit-launcher` installed as `egit`, `egit-relay-launcher` as
   `egit-relay`, each also as `egit-askpass` beside it; seaworthy-launcher's `launcher_main!`
   naming its core and the CPU levels, `x86-64-v4`, `v3`, `v2`, `apple-m1` on macOS, built for
@@ -3087,7 +3087,6 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
 - `packaging/icons/` — egit's icon: `egit.svg` (48 pixels and up), `egit-small.svg` (16 to 32),
   the hicolor PNGs, `egit.ico`, `egit.icns` (Apple's grid), all rendered by `scripts/icons.sh`;
   the window's icon is `egit-256.png` (`egit_app::ICON_PNG`).
-- `docs/ROADMAP.md` — the MVP phases and their exit criteria.
 - `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older
   releases don't compile as C23). `scripts/check-platforms.sh` — lints for Windows and macOS
   from Linux (see Toolchain & commands).

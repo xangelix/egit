@@ -1,4 +1,4 @@
-//! The text grid against its worst cases (the roadmap's corpus): a million lines of code, plain
+//! The text grid against its worst cases: a million lines of code, plain
 //! and highlighted, a 10 MB line wrapped and not, CJK and emoji, and resizing while wrapped at
 //! line 900,000. Each case reports frame times (laid out and tessellated) jumping across the
 //! text and scrolling it. Then the whole application on a commit that moves 100,000 files:
