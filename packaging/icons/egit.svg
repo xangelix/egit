@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- egit's icon: its commit table in small. A main lane (the accent) and a branch (orange)
+       that forks off it and comes back in a merge (hollow, as egit draws one), each row's
+       subject a bar beside its node. scripts/icons.sh renders every size from it. -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C323A"/>
+      <stop offset="1" stop-color="#15191E"/>
+    </linearGradient>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="212" fill="url(#ground)"/>
+  <rect x="50" y="50" width="924" height="924" rx="210" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="4"/>
+  <g fill="none" stroke-linecap="round" stroke-width="56">
+    <path d="M272 256 V 760" stroke="#3FB6A8"/>
+    <path d="M272 760 C 272 676, 472 676, 472 592 V 424 C 472 340, 272 340, 272 256" stroke="#FFB74D"/>
+  </g>
+  <circle cx="472" cy="424" r="76" fill="#FFB74D"/>
+  <circle cx="272" cy="592" r="76" fill="#3FB6A8"/>
+  <circle cx="272" cy="760" r="76" fill="#3FB6A8"/>
+  <circle cx="272" cy="256" r="68" fill="#20252B" stroke="#3FB6A8" stroke-width="52"/>
+  <g fill="#E6E9EE">
+    <rect x="616" y="224" width="216" height="64" rx="32"/>
+    <rect x="616" y="392" width="168" height="64" rx="32" fill-opacity="0.5"/>
+    <rect x="616" y="560" width="192" height="64" rx="32" fill-opacity="0.5"/>
+    <rect x="616" y="728" width="136" height="64" rx="32" fill-opacity="0.5"/>
+  </g>
+</svg>

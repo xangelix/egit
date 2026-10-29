@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- egit's icon for 16 to 32 pixels: egit.svg with three rows, and every shape thicker. -->
+  <defs>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2C323A"/>
+      <stop offset="1" stop-color="#15191E"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="192" fill="url(#ground)"/>
+  <g fill="none" stroke-linecap="round" stroke-width="88">
+    <path d="M272 256 V 768" stroke="#3FB6A8"/>
+    <path d="M272 768 C 272 640, 464 640, 464 512 C 464 384, 272 384, 272 256" stroke="#FFB74D"/>
+  </g>
+  <circle cx="464" cy="512" r="100" fill="#FFB74D"/>
+  <circle cx="272" cy="768" r="100" fill="#3FB6A8"/>
+  <circle cx="272" cy="256" r="88" fill="#20252B" stroke="#3FB6A8" stroke-width="72"/>
+  <g fill="#E6E9EE">
+    <rect x="608" y="208" width="224" height="96" rx="48"/>
+    <rect x="608" y="464" width="184" height="96" rx="48" fill-opacity="0.5"/>
+    <rect x="608" y="720" width="152" height="96" rx="48" fill-opacity="0.5"/>
+  </g>
+</svg>
