@@ -133,6 +133,19 @@ pub fn relay_address() -> Result<String, SandboxError> {
 
 pub use relay::TestRelay;
 
+/// Where sandboxes are made: the temporary folder, its links resolved where paths have them
+/// (macOS's `/var/folders/…` is `/private/var/folders/…`), so a sandbox's paths are those git
+/// gives back (`rev-parse --show-toplevel` resolves links) and a watch reports (`FSEvents`
+/// does). Windows' resolved paths are another form (`\\?\C:\…`): its folder is taken as it is.
+fn temp_parent() -> PathBuf {
+    let temp = std::env::temp_dir();
+    if cfg!(unix) {
+        fs::canonicalize(&temp).unwrap_or(temp)
+    } else {
+        temp
+    }
+}
+
 impl Sandbox {
     /// A new sandbox around the git named by `EGIT_TEST_GIT`, or the one on `PATH`.
     ///
@@ -140,7 +153,9 @@ impl Sandbox {
     ///
     /// When the directory can't be created or git can't be started.
     pub fn new() -> Result<Self, SandboxError> {
-        let root = tempfile::Builder::new().prefix("egit-sandbox-").tempdir()?;
+        let root = tempfile::Builder::new()
+            .prefix("egit-sandbox-")
+            .tempdir_in(temp_parent())?;
         let home = root.path().join("home");
         fs::create_dir(&home)?;
         let global_config = home.join(".gitconfig");

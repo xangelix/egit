@@ -11,7 +11,8 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 
 use super::screens::{
-    harness, history_of, history_shown, open_path, profile_loaded, render, settle, wait_for_label,
+    harness, history_of, history_shown, open_path, profile_loaded, render, settle, uncommitted,
+    wait_for_label,
 };
 use crate::app::EgitApp;
 use crate::desktop::FileDialogs;
@@ -240,8 +241,10 @@ fn a_pasted_diff_applies_as_changes_and_changes_become_patches() {
     let staged = sandbox.run(&repo, "diff", &["--cached"]).unwrap();
     assert!(String::from_utf8(staged.stdout).unwrap().contains("+d"));
 
-    // A commit's patch copied; the commits from one up to HEAD saved as a series.
+    // A commit's patch copied; the commits from one up to HEAD saved as a series. Once the
+    // work in progress's row is back (it moves the rows below it down).
     settle(&mut harness, "the history", history_of(1));
+    wait_for_label(&mut harness, &uncommitted(1));
     harness
         .get_by_role_and_label(Role::Button, "Base")
         .click_secondary();

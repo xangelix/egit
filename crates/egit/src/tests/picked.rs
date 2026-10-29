@@ -239,11 +239,14 @@ fn picked_commits_are_cherry_picked_and_reverted_together() {
     wait_for_label(&mut harness, "Picked 2 commits.");
     assert_eq!(log(&sandbox, &repo, "%s"), ["C", "A", "Main", "Base"]);
 
-    // Both reverted together, the newest first.
+    // Both reverted together, the newest first. side goes first: its commits are named as the
+    // picks are, and which of two made in the same second comes first is git's to choose.
+    sandbox
+        .run(&repo, "branch", &["--quiet", "-D", "side"])
+        .unwrap();
     settle(&mut harness, "the picks shown", |app| {
-        app.state.repos[0].history.shown.rows() == 7
+        app.state.repos[0].history.shown.rows() == 4
     });
-    // The new ones: the newest rows, above side's.
     harness
         .query_all_by_role_and_label(Role::Button, "C")
         .next()

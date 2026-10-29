@@ -879,7 +879,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     one `Pipe` read here or there), `GitProcess` (its answers buffered), `Files` (`sh` scripts,
     as over ssh), `looking.rs`'s sessions (read by a task, `exec::spawn`), and a `CancelToken`
     (`Terminate`) all work as over ssh.
-  - `testing.rs` (feature `testing`) — `Sandbox`; `EGIT_TEST_GIT` picks the git to test;
+  - `testing.rs` (feature `testing`) — `Sandbox` (made in the temporary folder with its links
+    resolved, on Unix: macOS's `/var/folders` is `/private/var/folders`, which git and
+    `FSEvents` report); `EGIT_TEST_GIT` picks the git to test;
     `EGIT_TEST_SSH` runs it as on another computer (`on_another_computer`): an sshd started once
     a process (`/tmp/egit-ts-<pid>`: keys of its own, `-F /dev/null`, `BatchMode`,
     `ControlPersist=5`), kept by a shell that stops it and removes its folder when the test
@@ -1646,7 +1648,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     the user's configuration files through their folders (editors replace files). Paths are
     sorted into `Changes` (refs, state, config, index; `*.lock`, objects, logs ignored), access
     and attribute events ignored, and handed over once quiet for `SETTLE` (120 ms), so one git
-    command causes one refresh. The app watches the files its user snapshot names and reads
+    command causes one refresh. The app watches the files its user snapshot names (each
+    matched as named or with its folder's links resolved, as `FSEvents` reports it) and reads
     every configuration again when one changes. `Watching` keeps a watch that couldn't be set
     up (inotify's per-user limits, often used up by editors) trying again, backing off from
     1 s to 30 s, and hands over `Changes::ALL` once it works, as it does when inotify's queue

@@ -566,8 +566,12 @@ mod tests {
             ])
             .unwrap();
         let listed = candidates_there(&git).wait();
+        // The system's own fonts are listed too (macOS's /System/Library/Fonts): the sandbox's
+        // are those asked about.
+        let root = sandbox.path("");
         let names: Vec<_> = listed
             .iter()
+            .filter(|path| path.starts_with(&root))
             .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(

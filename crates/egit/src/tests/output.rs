@@ -187,9 +187,12 @@ fn a_merge_skips_its_checks(harness: &mut Harness<'_, EgitApp>, sandbox: &Sandbo
     // Read again once the window is back (the hooks folder isn't watched).
     harness.state_mut().state.repos[0].refresh_hooks(sandbox.git());
     wait_for_label(harness, skipped);
-    render(harness, "commit-hooks-skipped");
+    // The new branch in the graph and the sidebar (sorted in a job) before the screen is
+    // checked: its row moves those below it.
     let badge = format!("{} side", icon::GIT_BRANCH);
     wait_for_label(harness, &badge);
+    wait_for_label(harness, "Branches: 2");
+    render(harness, "commit-hooks-skipped");
     menu_item(harness, &badge, "Merge side into main (no fast-forward)");
     wait_for_label(harness, "Merged side, with a merge commit.");
     assert_eq!(head(sandbox, repo), "Merge branch 'side'");

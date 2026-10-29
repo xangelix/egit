@@ -438,8 +438,9 @@ fn elements(harness: &Harness<'_, EgitApp>) -> Vec<Element> {
         let control = !matches!(role, Role::Label | Role::Image)
             && (data.supports_action(Action::Click) || editable);
         // A label is found by its own text: one scrolled out of its panel may otherwise borrow a
-        // neighbouring panel's shapes.
-        let text = (role == Role::Label)
+        // neighbouring panel's shapes. A text run too (a field's text, clipped to the field: a
+        // long path's would otherwise take a button beside it for its own).
+        let text = matches!(role, Role::Label | Role::TextRun)
             .then(|| access.value())
             .flatten()
             .filter(|text| !text.is_empty());
