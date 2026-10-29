@@ -16,7 +16,8 @@ members = [
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-# Not on crates.io (and its own licence isn't chosen yet).
+license = "MIT OR Apache-2.0"
+# Not on crates.io.
 publish = false
 
 [workspace.dependencies]

@@ -4,6 +4,7 @@ description = "egit's interface to the git binary: running it safely, and readin
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [lints]

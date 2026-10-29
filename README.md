@@ -27,3 +27,10 @@ The toolchain is pinned in `rust-toolchain.toml`; rustup installs it on first us
 
 egit's interface is set in [Geist](https://github.com/vercel/geist-font), shipped in
 `crates/egit/fonts/` under the SIL Open Font License 1.1 (`OFL-Geist.txt`).
+
+## License
+
+egit is licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the
+[MIT license](LICENSE-MIT), at your option. Unless you explicitly state otherwise, any
+contribution intentionally submitted for inclusion in egit by you, as defined in the Apache-2.0
+license, shall be dual licensed as above, without any additional terms or conditions.

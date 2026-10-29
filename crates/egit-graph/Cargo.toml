@@ -4,6 +4,7 @@ description = "The commit graph's lanes: laid out in one pass over a topological
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [lints]

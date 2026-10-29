@@ -4,6 +4,7 @@ description = "Text on a grid of cells, as a terminal shows it: lines of bytes, 
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [lints]
