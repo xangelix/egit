@@ -265,10 +265,10 @@ pub(crate) fn outside_repositories() -> &'static Path {
     static OUTSIDE: OnceLock<PathBuf> = OnceLock::new();
     OUTSIDE.get_or_init(|| {
         if cfg!(windows) {
-            let drive = std::env::var_os("SystemDrive").unwrap_or_else(|| "C:".into());
-            let mut root = PathBuf::from(drive);
+            // `C:` and its separator, as text: a path pushed `\` would be replaced by it.
+            let mut root = std::env::var_os("SystemDrive").unwrap_or_else(|| "C:".into());
             root.push("\\");
-            root
+            PathBuf::from(root)
         } else {
             PathBuf::from("/")
         }
