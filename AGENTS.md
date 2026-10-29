@@ -331,10 +331,23 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     dropped) of 16 KiB; `read` lends the `Log` (only the lines shown are touched).
   - `hooks.rs` — `installed_hooks`: the folder git runs hooks from (`rev-parse --git-path
     hooks`, which follows `core.hooksPath`) and those of `KNOWN` there that it would run
-    (executable on Unix; never a `.sample`); `Hooks::of` picks a task's. `tests/hooks.rs`
-    lists them (an unrunnable one and a sample left out; `core.hooksPath`), and transcribes a
+    (executable on Unix; never a `.sample`); `Hooks::of` picks a task's. `Checks` (run, or
+    skip: `--no-verify`) the hooks that judge what is committed (`CHECKS`: `pre-commit`,
+    `pre-merge-commit`, `commit-msg`, `pre-rebase`, `applypatch-msg`, `pre-applypatch`), taken
+    by whatever makes commits: `create_commit`, `reword_head`, `merge`, `rebase`, `pull` (git
+    passes it to the merge alone), `rebase_interactive` and `rebase_keeping_merges` (their
+    rewords' `git commit --amend` too), `apply_patch` as commits, `skip_operation` and
+    `continue_operation` of an `am` (`am --continue --no-verify`: `am` doesn't keep it), and
+    `continue_operation` of a merge, cherry-pick, or revert, whose `--continue` takes none: `git
+    commit --no-edit --no-verify`, then `--continue` while their `sequencer` folder says more
+    is to pick (a clean pick or revert, and a rebase going on, run no hook that checks: git
+    2.43 alike). `tests/hooks.rs`
+    lists them (an unrunnable one and a sample left out; `core.hooksPath`), transcribes a
     commit's hook: its colours and `PRE_COMMIT_COLOR`, a refusal and its end, `--no-verify`
-    skipping it, and one cancelled part-way (no commit, quickly).
+    skipping it, and one cancelled part-way (no commit, quickly); and, with hooks that log,
+    runs every task that makes commits once with the checks and once without (a merge, one
+    continued, two picks continued, a revert continued, a rebase, a reword, `HEAD` reworded, a
+    patch, a series continued): which ran, and what was made.
   - `progress.rs` — `Progress`: a long command's `--progress` lines read as they come, each
     replacing the last (git rewrites them with `\r`): the phase, done and total, the transfer
     (`1.20 MiB | 2.30 MiB/s`), whether the remote is doing it (`remote: `), and the other
@@ -565,7 +578,7 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     starting with `#` is kept), `NewCommit`'s amend, sign-off, trailers (`--trailer`, placed
     by git's rules: co-authors), and signing (`-S`,
     `--no-gpg-sign`, or the configuration's choice); a passphrase is asked through askpass,
-    labelled "Signing the commit"; `no_verify` skips `pre-commit` and `commit-msg`;
+    labelled "Signing the commit"; `checks` skips `pre-commit` and `commit-msg` or not;
     `Committed::output` is what git and its hooks printed (a
     refusal's whole standard error is on the failure). `reword_head`: `HEAD`'s message alone
     (`commit --amend --only --allow-empty`: what is staged stays staged, out of it).
@@ -2127,8 +2140,11 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     into the chips: git adds them back), sign off, sign (`commit.gpgSign` by default),
     (the button "Commit" while nothing is staged, saying why it can't on hover), and the last
     commit's output (its hooks') or problem (git's whole complaint, and "Show the
-    output"); where the repository has `pre-commit` or `commit-msg`, which run first and "Skip
-    hooks" (`--no-verify`, this commit only); while a commit runs, the hooks running and for how
+    output"); "Skip hooks" among the options (`Checks`, the tab's until it closes: `Tasks::checks`,
+    `Action::Checks`; every task here that makes commits takes it as it starts, the output's
+    expected hooks too, `Checks::running`), under them which of `pre-commit` and `commit-msg` run
+    first, or, ticked, which hooks that check won't run, in the warning's colour (the banner's
+    Continue says so on hover); while a commit runs, the hooks running and for how
     long, "Show the output", and Cancel (its token: SIGTERM to git's group, its hooks with it). It clears
     once the tab's `commits_made` grows. A history of 10,000+ commits
     without a commit-graph is offered one (`Action::WriteCommitGraph`; a notice, dismissed for
@@ -2906,8 +2922,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     when the preferences say so.
     `src/tests/output.rs` commits through a pre-commit hook: the form says it runs first; its
     lines show as they come, the output closing after it went well; refused (the output kept
-    open with its words); skipped; cancelled part-way from the output's bar (no commit); and
-    the Overview's Hooks card lists it.
+    open with its words); skipped (the box staying ticked for the tab, saying what won't run;
+    rendered; a merge past a `pre-merge-commit` that refuses); cancelled part-way from the
+    output's bar (no commit); and the Overview's Hooks card lists it.
     `src/tests/foresight.rs` opens a side branch's commit's menu (merging, cherry-picking, and
     rebasing onto it foreseen to conflict in g, said on hover), the commit before's (clean),
     and the latest's (reverting it clean), nothing moved; and reverts a commit changed again

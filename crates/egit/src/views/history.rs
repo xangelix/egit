@@ -970,6 +970,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         preferences: Preferences::of(ui.ctx()),
         config,
         busy: tasks.is_busy(),
+        checks: tasks.checks(),
         committing: work.committing.is_pending(),
         forge,
         scope: history.scope().clone(),
@@ -1663,6 +1664,7 @@ fn details_panel(
                             .and_then(|entry| entry.value),
                         can_push: shared.head.reference.is_some()
                             && shared.config.is_some_and(crate::tasks::has_remotes),
+                        checks: shared.checks,
                     };
                     work_details(ui, shared, view, staging, commit, actions);
                 } else {
@@ -1810,6 +1812,8 @@ pub(super) struct Shared<'a> {
     pub(super) config: Option<&'a ConfigSnapshot>,
     /// Whether a task is running.
     pub(super) busy: bool,
+    /// Whether the hooks that check commits run here, or are skipped ("Skip hooks").
+    pub(super) checks: egit_git::Checks,
     /// Whether a commit is being made.
     committing: bool,
     /// Its remotes on GitHub and GitLab, and their requests.
@@ -4618,6 +4622,7 @@ fn work_details(
             actions.push(Action::Output(shared.id, OutputAsk::CancelCommit));
         }
         Some(WorkEvent::ShowOutput) => actions.push(Action::Output(shared.id, OutputAsk::Show)),
+        Some(WorkEvent::Checks(checks)) => actions.push(Action::Checks(shared.id, checks)),
         Some(WorkEvent::Preferences(preferences)) => {
             actions.push(Action::SetPreferences(preferences));
         }

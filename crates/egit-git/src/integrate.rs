@@ -10,6 +10,7 @@ use bstr::{BStr, ByteSlice as _};
 use crate::cancel::CancelToken;
 use crate::error::GitError;
 use crate::git::Git;
+use crate::hooks::Checks;
 use crate::object_id::ObjectId;
 use crate::repo::{Operation, Repository};
 
@@ -41,6 +42,8 @@ pub enum FastForward {
 /// Merges `what` (a ref's full name, a branch's, or a commit's) into the current branch (`git
 /// merge --no-edit`: git's message), fast-forwarding as `fast_forward` says.
 ///
+/// Its `pre-merge-commit` and `commit-msg` hooks run as `checks` says.
+///
 /// git's message names what it was given as it was typed, so a ref's full name is shortened
 /// first, as far as it stays unambiguous (`rev-parse --abbrev-ref=strict`): "Merge branch
 /// 'topic'", or "'heads/topic'" beside a tag called `topic`, never "'refs/heads/topic'".
@@ -53,6 +56,7 @@ pub async fn merge(
     repository: &Repository,
     what: &BStr,
     fast_forward: FastForward,
+    checks: Checks,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
     let short = if what.starts_with(b"refs/") {
@@ -72,7 +76,8 @@ pub async fn merge(
     };
     let mut command = git
         .write("merge")
-        .args(["--no-edit", "--no-stat", "--quiet"]);
+        .args(["--no-edit", "--no-stat", "--quiet"])
+        .args(checks.flag());
     if fast_forward == FastForward::Never {
         command = command.arg("--no-ff");
     }
@@ -89,7 +94,8 @@ pub async fn merge(
 /// replayed on it.
 ///
 /// With `keep_merges`, its merges too (`--rebase-merges`), which a rebase otherwise flattens
-/// (unless the configuration's `rebase.rebaseMerges` says otherwise).
+/// (unless the configuration's `rebase.rebaseMerges` says otherwise). Its `pre-rebase` hook
+/// runs as `checks` says (a commit it replays runs no hook that checks).
 ///
 /// # Errors
 ///
@@ -99,9 +105,10 @@ pub async fn rebase(
     repository: &Repository,
     onto: &BStr,
     keep_merges: bool,
+    checks: Checks,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
-    let mut command = git.write("rebase").arg("--quiet");
+    let mut command = git.write("rebase").arg("--quiet").args(checks.flag());
     if keep_merges {
         command = command.arg("--rebase-merges");
     }

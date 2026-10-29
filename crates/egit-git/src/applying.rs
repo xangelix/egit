@@ -12,6 +12,7 @@ use bstr::{BStr, BString, ByteSlice as _};
 use crate::cancel::CancelToken;
 use crate::error::GitError;
 use crate::git::Git;
+use crate::hooks::Checks;
 use crate::integrate::{Integrated, has_conflicts};
 use crate::repo::{Operation, Repository};
 
@@ -387,7 +388,8 @@ pub enum ApplyAs {
     },
 }
 
-/// Applies `patch` to the current branch, as `how` says.
+/// Applies `patch` to the current branch, as `how` says; as commits, `am`'s `applypatch-msg`
+/// and `pre-applypatch` hooks run as `checks` says.
 ///
 /// # Errors
 ///
@@ -397,6 +399,7 @@ pub async fn apply_patch(
     repository: &Repository,
     patch: &Arc<[u8]>,
     how: ApplyAs,
+    checks: Checks,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
     let command = match how {
@@ -404,6 +407,7 @@ pub async fn apply_patch(
             .write("am")
             .args(["--3way", "--quiet"])
             .args(sign_off.then_some("--signoff"))
+            .args(checks.flag())
             .prompt_context("Signing the commit"),
         ApplyAs::Changes { staged } => git.write("apply").args(staged.then_some("--3way")),
     };

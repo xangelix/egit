@@ -1346,20 +1346,38 @@ pub(super) const TOPICS: &[Topic] = &[
         group: Group::Everyday,
         title: "Skipping hooks",
         on: &["Skip hooks"],
-        what: "Commits without running the pre-commit and commit-msg hooks, this commit only \
-               (git commit --no-verify). prepare-commit-msg and post-commit run anyway, as git \
-               runs them. It is for a commit the hooks can't judge (work in progress, a hook \
-               that is broken), not a way around checks a team relies on: the server or CI may \
-               still check the same things.",
-        git: "git commit --no-verify",
+        what: "Makes commits without the hooks that judge them (git's --no-verify): a commit's \
+               pre-commit and commit-msg, and, while it is ticked, those of every task here \
+               that makes commits: a merge's pre-merge-commit and commit-msg (a pull's merge \
+               too), the commit Continue makes once conflicts are resolved, a rebase's \
+               pre-rebase (and the commit hooks of its rewords), and a patch's applypatch-msg \
+               and pre-applypatch. It holds for this tab until it closes. prepare-commit-msg, \
+               post-commit, and post-merge run anyway, as git runs them. It is for work the \
+               hooks can't judge (work in progress, a hook that is broken), not a way around \
+               checks a team relies on: the server or CI may still check the same things.",
+        git: "git commit --no-verify; git merge --no-verify; git rebase --no-verify; git am \
+              --no-verify; Continue: git commit --no-edit --no-verify (then git cherry-pick or \
+              revert --continue for the rest of a sequence)",
         cases: &[
             (
                 "Skipped by mistake?",
-                "Amend the commit with the box unticked: the hooks run then.",
+                "Untick it, then amend the commit: the hooks run then.",
+            ),
+            (
+                "Does it stay ticked?",
+                "In this tab while it is open: a tab opened again (or egit started again) runs the hooks.",
             ),
             (
                 "Push hooks too?",
-                "This box skips only the commit's; a pre-push hook still runs when you push.",
+                "No: a pre-push hook still runs when you push.",
+            ),
+            (
+                "A pull that rebases?",
+                "git passes --no-verify to a pull's merge alone: a rebase's pre-rebase runs.",
+            ),
+            (
+                "Cherry-picking or reverting?",
+                "They run no hook that checks unless they stop at conflicts; then Continue commits without them.",
             ),
         ],
     },

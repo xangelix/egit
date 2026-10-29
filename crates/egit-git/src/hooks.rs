@@ -31,6 +31,59 @@ pub const KNOWN: [&str; 17] = [
     "post-index-change",
 ];
 
+/// The hooks that judge what is committed, and may refuse it: those `--no-verify` skips
+/// (`git commit`'s, `merge`'s, `rebase`'s, `am`'s).
+pub const CHECKS: [&str; 6] = [
+    "pre-commit",
+    "pre-merge-commit",
+    "commit-msg",
+    "pre-rebase",
+    "applypatch-msg",
+    "pre-applypatch",
+];
+
+/// Whether the hooks that judge what is committed ([`CHECKS`]) run, as git runs them, or are
+/// skipped (`--no-verify`).
+///
+/// For whatever makes commits: a commit, a merge, continuing one stopped at conflicts, a
+/// rebase, patches applied as commits. Hooks that only follow along
+/// (`prepare-commit-msg`, `post-commit`, `post-merge`, …) run either way, as git runs them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Checks {
+    /// As git runs them.
+    #[default]
+    Run,
+    /// Skipped.
+    Skip,
+}
+
+impl Checks {
+    /// Whether they are skipped.
+    #[must_use]
+    pub const fn skipped(self) -> bool {
+        matches!(self, Self::Skip)
+    }
+
+    /// The flag skipping them, when they are.
+    #[must_use]
+    pub const fn flag(self) -> Option<&'static str> {
+        match self {
+            Self::Run => None,
+            Self::Skip => Some("--no-verify"),
+        }
+    }
+
+    /// Those of `hooks` that run: all of them, or those that aren't checks.
+    #[must_use]
+    pub fn running(self, hooks: &[&'static str]) -> Vec<&'static str> {
+        hooks
+            .iter()
+            .copied()
+            .filter(|hook| !self.skipped() || !CHECKS.contains(hook))
+            .collect()
+    }
+}
+
 /// The hooks a repository has.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hooks {

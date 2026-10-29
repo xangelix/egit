@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    Applies, ApplyAs, CancelToken, Changes, Integrated, ObjectId, Operation, PatchChange,
+    Applies, ApplyAs, CancelToken, Changes, Checks, Integrated, ObjectId, Operation, PatchChange,
     PatchKind, Repository, Wait as _, abort_operation, apply_patch, changes_patch, cherry_pick,
     current_patch, format_patches, skip_operation, summarize_patch,
 };
@@ -216,6 +216,7 @@ fn a_series_applies_as_commits_stopping_where_one_conflicts() {
             &repository,
             &mailbox,
             ApplyAs::Commits { sign_off: true },
+            Checks::Run,
             &cancel
         )
         .wait()
@@ -244,6 +245,7 @@ fn a_series_applies_as_commits_stopping_where_one_conflicts() {
             &repository,
             &mailbox,
             ApplyAs::Commits { sign_off: false },
+            Checks::Run,
             &cancel
         )
         .wait()
@@ -266,9 +268,15 @@ fn a_series_applies_as_commits_stopping_where_one_conflicts() {
 
     // Skipped: the next conflicts too; aborted, all is as it was.
     assert_eq!(
-        skip_operation(git, &repository, Operation::ApplyMailbox, &cancel)
-            .wait()
-            .unwrap(),
+        skip_operation(
+            git,
+            &repository,
+            Operation::ApplyMailbox,
+            Checks::Run,
+            &cancel
+        )
+        .wait()
+        .unwrap(),
         Integrated::Conflicts
     );
     let progress = repository
@@ -323,6 +331,7 @@ fn a_patch_that_doesnt_apply_at_all_stops_with_nothing_to_resolve() {
             &repository,
             &patch,
             ApplyAs::Commits { sign_off: false },
+            Checks::Run,
             &cancel
         )
         .wait()
@@ -339,6 +348,7 @@ fn a_patch_that_doesnt_apply_at_all_stops_with_nothing_to_resolve() {
             &repository,
             &patch,
             ApplyAs::Changes { staged: true },
+            Checks::Run,
             &cancel
         )
         .wait()
@@ -382,6 +392,7 @@ fn changes_become_a_patch_and_apply_as_changes() {
             &repository,
             &all,
             ApplyAs::Changes { staged: false },
+            Checks::Run,
             &cancel
         )
         .wait()
@@ -402,6 +413,7 @@ fn changes_become_a_patch_and_apply_as_changes() {
             &repository,
             &all,
             ApplyAs::Changes { staged: true },
+            Checks::Run,
             &cancel
         )
         .wait()
@@ -425,6 +437,7 @@ fn changes_become_a_patch_and_apply_as_changes() {
             &repository,
             &all,
             ApplyAs::Changes { staged: true },
+            Checks::Run,
             &cancel
         )
         .wait()
@@ -452,9 +465,15 @@ fn a_stopped_cherry_pick_is_skipped() {
     .unwrap();
     assert_eq!(picked, Integrated::Conflicts);
     assert_eq!(
-        skip_operation(sandbox.git(), &repository, Operation::CherryPick, &cancel)
-            .wait()
-            .unwrap(),
+        skip_operation(
+            sandbox.git(),
+            &repository,
+            Operation::CherryPick,
+            Checks::Run,
+            &cancel
+        )
+        .wait()
+        .unwrap(),
         Integrated::Done
     );
     assert_eq!(
@@ -467,8 +486,14 @@ fn a_stopped_cherry_pick_is_skipped() {
     );
     // A merge has nothing to skip.
     assert!(
-        skip_operation(sandbox.git(), &repository, Operation::Merge, &cancel)
-            .wait()
-            .is_err()
+        skip_operation(
+            sandbox.git(),
+            &repository,
+            Operation::Merge,
+            Checks::Run,
+            &cancel
+        )
+        .wait()
+        .is_err()
     );
 }

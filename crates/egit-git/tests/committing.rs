@@ -14,7 +14,8 @@ use std::path::Path;
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, NewCommit, Repository, Wait as _, create_commit, recent_authors, reword_head,
+    CancelToken, Checks, NewCommit, Repository, Wait as _, create_commit, recent_authors,
+    reword_head,
 };
 
 /// `HEAD`'s message.
@@ -200,6 +201,7 @@ fn rewording_head_changes_only_its_message() {
         sandbox.git(),
         &repository,
         "First, said better\n\n# kept\nWhy.",
+        Checks::Run,
         &CancelToken::new(),
     )
     .wait()

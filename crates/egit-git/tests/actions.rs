@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use bstr::BStr;
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, CloneOptions, DeleteBranchError, FastForward, Head, Integrated, ObjectId,
+    CancelToken, Checks, CloneOptions, DeleteBranchError, FastForward, Head, Integrated, ObjectId,
     Operation, Progress, PushFlag, Repository, ResetMode, StashError, SwitchError, SwitchTo,
     Wait as _, cherry_pick, cherry_pick_all, clone, create_branch, create_tag, delete_branch,
     delete_remote_branch, delete_tag, merge, push_tag, rebase, rename_branch, reset, revert,
@@ -232,13 +232,26 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
             .wait()
             .unwrap()
     };
+    let (other_branch, as_configured) = (BStr::new("other"), FastForward::AsConfigured);
     let merge_other = || {
-        let other = BStr::new("other");
         merge(
             git,
             &repository,
-            other,
-            FastForward::AsConfigured,
+            other_branch,
+            as_configured,
+            Checks::Run,
+            &cancel(),
+        )
+        .wait()
+        .unwrap()
+    };
+    let rebase_onto_other = || {
+        rebase(
+            git,
+            &repository,
+            other_branch,
+            false,
+            Checks::Run,
             &cancel(),
         )
         .wait()
@@ -300,12 +313,7 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
     assert_eq!(merge_other(), Integrated::Conflicts);
     assert_eq!(operations(), [Operation::Merge]);
     sandbox.run(&path, "merge", &["--abort"]).unwrap();
-    assert_eq!(
-        rebase(git, &repository, BStr::new("other"), false, &cancel())
-            .wait()
-            .unwrap(),
-        Integrated::Conflicts
-    );
+    assert_eq!(rebase_onto_other(), Integrated::Conflicts);
     assert_eq!(operations(), [Operation::Rebase]);
     sandbox.run(&path, "rebase", &["--abort"]).unwrap();
     assert_eq!(pick(other), Integrated::Conflicts);
@@ -316,12 +324,7 @@ fn commits_are_merged_rebased_picked_reverted_and_reset() {
         .run(&path, "reset", &["--quiet", "--hard", "HEAD~1"])
         .unwrap();
     sandbox.commit_file(&path, "h", "later\n", "Later").unwrap();
-    assert_eq!(
-        rebase(git, &repository, BStr::new("other"), false, &cancel())
-            .wait()
-            .unwrap(),
-        Integrated::Done
-    );
+    assert_eq!(rebase_onto_other(), Integrated::Done);
     assert_eq!(subject(&sandbox, &path, "HEAD~1"), "Other");
 }
 
@@ -344,6 +347,7 @@ fn a_merge_fast_forwards_as_configured_or_never_and_names_a_branch_as_people_do(
             &repository,
             BStr::new("ahead"),
             FastForward::Never,
+            Checks::Run,
             &cancel()
         )
         .wait()
@@ -367,6 +371,7 @@ fn a_merge_fast_forwards_as_configured_or_never_and_names_a_branch_as_people_do(
             &repository,
             BStr::new("ahead"),
             FastForward::AsConfigured,
+            Checks::Run,
             &cancel()
         )
         .wait()
@@ -385,6 +390,7 @@ fn a_merge_fast_forwards_as_configured_or_never_and_names_a_branch_as_people_do(
             &repository,
             BStr::new("refs/heads/ahead"),
             FastForward::Never,
+            Checks::Run,
             &cancel(),
         )
         .wait()

@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
-    Author, CO_AUTHORED_BY, CancelToken, Change, Committed, Direction, EntryKind, Git, NewCommit,
-    ObjectId, Person, Repository, Status, StatusEntry, Uncommitted,
+    Author, CO_AUTHORED_BY, CancelToken, Change, Checks, Committed, Direction, EntryKind, Git,
+    NewCommit, ObjectId, Person, Repository, Status, StatusEntry, Uncommitted,
 };
 use egui::{Align, Frame, Key, Label, Layout, Margin, Modifiers, Response, RichText, Ui};
 use egui_async::Bind;
@@ -50,6 +50,8 @@ pub(super) enum WorkEvent {
     CancelCommit,
     /// Show the output panel (what the hooks printed).
     ShowOutput,
+    /// Run, or skip, the hooks that check commits, here from now on.
+    Checks(Checks),
     /// Show lists of files so (a list, or a tree).
     Preferences(Preferences),
     /// Ask whether to discard whole files' changes not staged.
@@ -84,6 +86,9 @@ pub(super) struct CommitSide<'a> {
     pub(super) hooks: Option<&'a egit_git::Hooks>,
     /// Whether a commit can be pushed after it is made: on a branch, with a remote.
     pub(super) can_push: bool,
+    /// Whether the hooks that check commits run, or are skipped (the tab's, for every task
+    /// that makes commits too).
+    pub(super) checks: Checks,
 }
 
 /// Up to this many recent commits' authors are offered as co-authors.
@@ -111,8 +116,6 @@ struct CommitForm {
     query: String,
     /// Who wrote the recent commits, offered there (read when it first opens).
     authors: Bind<Vec<Author>, Problem>,
-    /// Skip the `pre-commit` and `commit-msg` hooks (`--no-verify`), this commit only.
-    skip_hooks: bool,
 }
 
 impl CommitForm {
@@ -128,7 +131,6 @@ impl CommitForm {
             co_authors: Vec::new(),
             query: String::new(),
             authors: Bind::new(true),
-            skip_hooks: false,
         }
     }
 
@@ -385,8 +387,8 @@ fn commit_form(
     widgets::section_header(ui, ("Commit", None, "Commit"), |_| {});
     let fields = message_fields(ui, form);
     co_authors_row(ui, form, side);
-    options(ui, form, side);
-    hooks_row(ui, form, side);
+    let checks = options(ui, form, side).map(WorkEvent::Checks);
+    hooks_row(ui, side);
     let ready = !busy && !form.summary.trim().is_empty() && (staged > 0 || form.amend);
     let label = if form.amend {
         "Amend the last commit".to_owned()
@@ -456,7 +458,7 @@ fn commit_form(
                 sign_off: form.sign_off,
                 sign: Some(form.sign.unwrap_or(side.sign_by_default)),
                 trailers: form.trailers(),
-                no_verify: form.skip_hooks,
+                checks: side.checks,
             },
             push,
         ));
@@ -469,29 +471,45 @@ fn commit_form(
     if let Some(outcome) = outcome(ui, side.committing) {
         asked = Some(outcome);
     }
-    asked
+    asked.or(checks)
 }
 
-/// The hooks a commit runs, when the repository has `pre-commit` or `commit-msg`: which, and
-/// skipping them (`--no-verify`) for this commit.
-fn hooks_row(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
+/// The hooks that check a commit, where the repository has some: those a commit runs first,
+/// or, while they are skipped, those that won't run (in the warning's colour: it holds for
+/// every task here that makes commits).
+fn hooks_row(ui: &mut Ui, side: &CommitSide<'_>) {
     let Some(hooks) = side.hooks else {
         return;
     };
-    let checks = hooks.of(&["pre-commit", "commit-msg"]);
-    if checks.is_empty() {
-        return;
+    let said = if side.checks.skipped() {
+        let skipped = hooks.of(&egit_git::CHECK_HOOKS);
+        if skipped.is_empty() {
+            return;
+        }
+        RichText::new(format!(
+            "{} won't run, for commits, merges, rebases, and patches here",
+            words_list(&skipped)
+        ))
+        .color(Palette::of(ui.ctx()).warn)
+    } else {
+        let checks = hooks.of(&["pre-commit", "commit-msg"]);
+        if checks.is_empty() {
+            return;
+        }
+        muted(ui, format!("{} run first", checks.join(" and ")))
+    };
+    let said = ui.add(Label::new(said.small()).wrap());
+    crate::help::note_topic(ui, said.rect, "skip-hooks");
+}
+
+/// `words` as a sentence lists them: "a", "a and b", "a, b, and c".
+fn words_list(words: &[&str]) -> String {
+    match words {
+        [] => String::new(),
+        [one] => (*one).to_owned(),
+        [first, second] => format!("{first} and {second}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
     }
-    ui.horizontal_wrapped(|ui| {
-        widgets::checkbox(ui, &mut form.skip_hooks, "Skip hooks")
-            .on_hover_text("git commit --no-verify: this commit only");
-        let runs = if form.skip_hooks {
-            "they won't run".to_owned()
-        } else {
-            format!("{} run first", checks.join(" and "))
-        };
-        ui.label(muted(ui, runs));
-    });
 }
 
 /// The commit under way: the hooks running and for how long, the output, and Cancel.
@@ -784,7 +802,7 @@ async fn read_authors(git: Git, repository: Arc<Repository>) -> Result<Vec<Autho
 }
 
 /// Amending (which reads the last commit's message), signing off, signing.
-fn options(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
+fn options(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) -> Option<Checks> {
     ui.horizontal_wrapped(|ui| {
         let amendable = side.head.is_some();
         if ui
@@ -816,7 +834,17 @@ fn options(ui: &mut Ui, form: &mut CommitForm, side: &CommitSide<'_>) {
         {
             form.sign = Some(sign);
         }
-    });
+        let mut skipping = side.checks.skipped();
+        crate::widgets::checkbox(ui, &mut skipping, "Skip hooks")
+            .on_hover_text(
+                "Without the hooks that check (pre-commit, commit-msg; a merge's, a rebase's, a \
+                 patch's): this commit, and every merge, continue after conflicts, rebase, and \
+                 patch applied in this tab, until it closes (git's --no-verify)",
+            )
+            .changed()
+            .then_some(if skipping { Checks::Skip } else { Checks::Run })
+    })
+    .inner
 }
 
 /// What the last commit printed (its hooks' output), or why it wasn't made (and the way to

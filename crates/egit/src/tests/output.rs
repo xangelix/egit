@@ -1,7 +1,8 @@
 //! Hooks seen from the window: a commit's pre-commit hook running (the commit form says so,
 //! the output opens and shows its lines as they come, and closes after it went well), refusing
-//! (the problem, the output kept open), skipped (`--no-verify`), and cancelled part-way (no
-//! commit made); the Overview lists the hooks.
+//! (the problem, the output kept open), skipped (`--no-verify`: the box staying ticked for the
+//! tab, a merge skipping its own), and cancelled part-way (no commit made); the Overview lists
+//! the hooks.
 
 #![cfg(unix)]
 
@@ -12,15 +13,23 @@ use egui::accesskit::Role;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 
+use egit_git::Checks;
+
 use super::screens::{
-    harness, history_shown, open_path, profile_loaded, render, settle, type_into, uncommitted,
-    wait_for_label,
+    harness, history_shown, menu_item, open_path, profile_loaded, render, settle, type_into,
+    uncommitted, wait_for_label,
 };
 use crate::app::EgitApp;
+use crate::theme::icon;
 
 /// Makes `script` the repository's pre-commit hook.
 fn pre_commit(repo: &Path, script: &str) {
-    let path = repo.join(".git/hooks/pre-commit");
+    hook(repo, "pre-commit", script);
+}
+
+/// Makes `script` the repository's hook `name`.
+fn hook(repo: &Path, name: &str, script: &str) {
+    let path = repo.join(".git/hooks").join(name);
     std::fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
     set_mode(&path, 0o755).unwrap();
 }
@@ -119,11 +128,19 @@ fn a_commit_s_hooks_show_as_they_run_refuse_are_skipped_and_cancelled() {
     // (The form's problem says what the hook said too: the panel's own last line goes.)
     wait_gone(&mut harness, "git commit ended: exit status 1.");
     harness.get_by_label("Skip hooks").click();
+    // Ticked, a line under it says what won't run (the button moves down).
+    wait_for_label(
+        &mut harness,
+        "pre-commit won't run, for commits, merges, rebases, and patches here",
+    );
     harness.get_by_label("Commit 1 file").click();
     settle(&mut harness, "the commit made", |app| {
         app.state.repos[0].commits_made == 2
     });
     assert_eq!(head(&sandbox, &repo), "Refused");
+
+    // Ticked it stays, for the tab, and a merge skips its own checks too.
+    a_merge_skips_its_checks(&mut harness, &sandbox, &repo);
 
     // Cancelled part-way: no commit.
     // Longer than any screen's checks take: only Cancel ends it.
@@ -139,7 +156,7 @@ fn a_commit_s_hooks_show_as_they_run_refuse_are_skipped_and_cancelled() {
         .unwrap()
         .click();
     wait_for_label(&mut harness, "Committing · cancelled");
-    assert_eq!(head(&sandbox, &repo), "Refused");
+    assert_eq!(head(&sandbox, &repo), "Merge branch 'side'");
 
     // The Overview lists the hook.
     harness.get_by_label("Repository").click();
@@ -147,4 +164,39 @@ fn a_commit_s_hooks_show_as_they_run_refuse_are_skipped_and_cancelled() {
     harness.get_by_label("Overview").click();
     wait_for_label(&mut harness, "pre-commit");
     render(&mut harness, "overview-hooks");
+}
+
+/// With "Skip hooks" ticked (and the form cleared after a commit): it stays so, the warning
+/// saying what won't run; a merge goes past a `pre-merge-commit` that refuses; unticked, the
+/// hooks run again.
+fn a_merge_skips_its_checks(harness: &mut Harness<'_, EgitApp>, sandbox: &Sandbox, repo: &Path) {
+    assert_eq!(harness.state().state.repos[0].tasks.checks(), Checks::Skip);
+    let skipped = "pre-commit and pre-merge-commit won't run, for commits, merges, rebases, and \
+                   patches here";
+    hook(repo, "pre-merge-commit", "echo 'no merges'; exit 1");
+    sandbox
+        .run(repo, "switch", &["--quiet", "--create", "side", "HEAD~1"])
+        .unwrap();
+    // Made past the hook that refuses.
+    std::fs::write(repo.join("e"), "side\n").unwrap();
+    sandbox.run(repo, "add", &["e"]).unwrap();
+    sandbox
+        .run(repo, "commit", &["--quiet", "--no-verify", "-m", "Side"])
+        .unwrap();
+    sandbox.run(repo, "switch", &["--quiet", "main"]).unwrap();
+    // Read again once the window is back (the hooks folder isn't watched).
+    harness.state_mut().state.repos[0].refresh_hooks(sandbox.git());
+    wait_for_label(harness, skipped);
+    render(harness, "commit-hooks-skipped");
+    let badge = format!("{} side", icon::GIT_BRANCH);
+    wait_for_label(harness, &badge);
+    menu_item(harness, &badge, "Merge side into main (no fast-forward)");
+    wait_for_label(harness, "Merged side, with a merge commit.");
+    assert_eq!(head(sandbox, repo), "Merge branch 'side'");
+    std::fs::remove_file(repo.join(".git/hooks/pre-merge-commit")).unwrap();
+    harness.state_mut().state.repos[0].refresh_hooks(sandbox.git());
+    harness.get_by_label("Skip hooks").click();
+    settle(harness, "the hooks run again", |app| {
+        app.state.repos[0].tasks.checks() == Checks::Run
+    });
 }

@@ -7,6 +7,7 @@ use bstr::ByteSlice as _;
 use crate::cancel::CancelToken;
 use crate::error::GitError;
 use crate::git::Git;
+use crate::hooks::Checks;
 use crate::repo::Repository;
 
 /// How a commit is made.
@@ -24,9 +25,9 @@ pub struct NewCommit {
     /// Trailers to add (`Co-authored-by: Name <email>`), each by `--trailer`: git places them
     /// with any the message ends with, after a blank line.
     pub trailers: Vec<String>,
-    /// Skip the `pre-commit` and `commit-msg` hooks (`--no-verify`); `prepare-commit-msg` and
-    /// `post-commit` run whatever this says, as git runs them.
-    pub no_verify: bool,
+    /// Whether the `pre-commit` and `commit-msg` hooks run, or are skipped (`--no-verify`);
+    /// `prepare-commit-msg` and `post-commit` run whatever this says, as git runs them.
+    pub checks: Checks,
 }
 
 /// A commit made.
@@ -59,9 +60,7 @@ pub async fn create_commit(
     if commit.amend {
         command = command.arg("--amend");
     }
-    if commit.no_verify {
-        command = command.arg("--no-verify");
-    }
+    command = command.args(commit.checks.flag());
     if commit.sign_off {
         command = command.arg("--signoff");
     }
@@ -86,7 +85,7 @@ pub async fn create_commit(
 /// `git commit --amend --only` (no paths: what is staged stays staged, out of it), the message
 /// written as `create_commit` writes it (whitespace cleaned up, a line starting with `#` kept),
 /// `--allow-empty` (a commit changing nothing keeps changing nothing), signed as the
-/// configuration says, its hooks run.
+/// configuration says, its hooks run as `checks` says.
 ///
 /// # Errors
 ///
@@ -95,6 +94,7 @@ pub async fn reword_head(
     git: &Git,
     repository: &Repository,
     message: &str,
+    checks: Checks,
     cancel: &CancelToken,
 ) -> Result<Committed, GitError> {
     let done = git
@@ -106,6 +106,7 @@ pub async fn reword_head(
             "--file=-",
             "--cleanup=whitespace",
         ])
+        .args(checks.flag())
         .prompt_context("Signing the commit")
         .current_dir(repository.work_tree())
         .stdin(message.as_bytes().to_vec())

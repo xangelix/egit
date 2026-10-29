@@ -15,9 +15,9 @@ use std::time::{Duration, Instant};
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, CloneOptions, FetchOptions, GitError, Operation, Progress, PullMode, Pulled,
-    PushFlag, PushOptions, Repository, Wait as _, abort_operation, clone, continue_operation,
-    count_between, fetch, fetch_refspecs, pull, push, remote_urls, remotes,
+    CancelToken, Checks, CloneOptions, FetchOptions, GitError, Operation, Progress, PullMode,
+    Pulled, PushFlag, PushOptions, Repository, Wait as _, abort_operation, clone,
+    continue_operation, count_between, fetch, fetch_refspecs, pull, push, remote_urls, remotes,
 };
 
 /// A bare repository, `origin.git`, allowing partial clones, with `main` holding a commit; and
@@ -280,7 +280,7 @@ fn pulls_forward_and_asks_when_branches_diverged() {
         pull(
             sandbox.git(),
             &repository,
-            (mode, false),
+            (mode, false, Checks::Run),
             &Progress::new(),
             &CancelToken::new(),
         )
@@ -317,7 +317,7 @@ fn changes_in_a_pulls_way_are_named_or_stashed_and_put_back() {
         pull(
             sandbox.git(),
             &repository,
-            (mode, autostash),
+            (mode, autostash, Checks::Run),
             &Progress::new(),
             &CancelToken::new(),
         )
@@ -409,7 +409,7 @@ fn a_conflicted_pull_is_aborted_or_continued() {
         pull(
             sandbox.git(),
             &repository,
-            (mode, false),
+            (mode, false, Checks::Run),
             &Progress::new(),
             &cancel,
         )
@@ -439,13 +439,25 @@ fn a_conflicted_pull_is_aborted_or_continued() {
 
     // Resolved and staged, the merge carries on (its message as git made it).
     assert_eq!(pulled(PullMode::Merge).unwrap(), Pulled::Conflicts);
-    let refused = continue_operation(sandbox.git(), &repository, Operation::Merge, &cancel);
+    let refused = continue_operation(
+        sandbox.git(),
+        &repository,
+        Operation::Merge,
+        Checks::Run,
+        &cancel,
+    );
     assert!(refused.wait().is_err(), "conflicts are left");
     std::fs::write(mine.join("shared"), "both\n").unwrap();
     sandbox.run(&mine, "add", &["shared"]).unwrap();
-    continue_operation(sandbox.git(), &repository, Operation::Merge, &cancel)
-        .wait()
-        .unwrap();
+    continue_operation(
+        sandbox.git(),
+        &repository,
+        Operation::Merge,
+        Checks::Run,
+        &cancel,
+    )
+    .wait()
+    .unwrap();
     assert_eq!(repository.operations(sandbox.git()).wait().unwrap(), []);
     let parents = sandbox
         .run(&mine, "rev-list", &["--parents", "-n", "1", "HEAD"])

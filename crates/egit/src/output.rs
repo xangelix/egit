@@ -206,20 +206,15 @@ impl Output {
     }
 }
 
-/// The hooks git may run for a commit: `pre-commit` and `commit-msg` unless skipped.
-pub(crate) const fn commit_hooks(skipped: bool) -> &'static [&'static str] {
-    if skipped {
-        &["prepare-commit-msg", "post-commit", "reference-transaction"]
-    } else {
-        &[
-            "pre-commit",
-            "prepare-commit-msg",
-            "commit-msg",
-            "post-commit",
-            "reference-transaction",
-        ]
-    }
-}
+/// The hooks git may run for a commit (`pre-commit` and `commit-msg` but when they are
+/// skipped: `Checks::running`).
+pub(crate) const COMMIT_HOOKS: &[&str] = &[
+    "pre-commit",
+    "prepare-commit-msg",
+    "commit-msg",
+    "post-commit",
+    "reference-transaction",
+];
 
 #[cfg(test)]
 mod tests {

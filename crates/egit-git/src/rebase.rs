@@ -22,6 +22,7 @@ use bstr::ByteSlice as _;
 use crate::cancel::CancelToken;
 use crate::error::GitError;
 use crate::git::Git;
+use crate::hooks::Checks;
 use crate::integrate::{Integrated, stopped};
 use crate::object_id::ObjectId;
 use crate::repo::Repository;
@@ -253,6 +254,9 @@ pub enum RebaseError {
 /// Rebases the current branch onto `base` (`None`: from the root), its commits as `plan`
 /// says, in its order (oldest first).
 ///
+/// Its `pre-rebase` hook, and the `pre-commit` and `commit-msg` of the commit a reword
+/// amends, run as `checks` says.
+///
 /// # Errors
 ///
 /// A [`RebaseError`] for a plan git would refuse (nothing changes then), and
@@ -262,9 +266,10 @@ pub async fn rebase_interactive(
     repository: &Repository,
     base: Option<ObjectId>,
     plan: &[Planned],
+    checks: Checks,
     cancel: &CancelToken,
 ) -> Result<Integrated, RebaseError> {
-    let todo = todo(plan)?;
+    let todo = todo(plan, checks)?;
     // Where git runs (on another computer, there).
     let files = git.files();
     let scratch = files
@@ -286,6 +291,7 @@ pub async fn rebase_interactive(
             "--no-autosquash",
             "--no-update-refs",
         ])
+        .args(checks.flag())
         .env("GIT_SEQUENCE_EDITOR", editor)
         .prompt_context("Rebasing")
         .current_dir(repository.work_tree())
@@ -301,7 +307,8 @@ pub async fn rebase_interactive(
 /// Rebases the current branch onto `base` (`None`: from the root), keeping its merges.
 ///
 /// With `--rebase-merges`: every commit in git's order, those `plan` drops dropped, those it
-/// rewords reworded (merges too), the rest picked.
+/// rewords reworded (merges too), the rest picked; its hooks run as
+/// [`rebase_interactive`]'s, as `checks` says.
 ///
 /// # Errors
 ///
@@ -314,6 +321,7 @@ pub async fn rebase_keeping_merges(
     repository: &Repository,
     base: Option<ObjectId>,
     plan: &[Planned],
+    checks: Checks,
     cancel: &CancelToken,
 ) -> Result<Integrated, RebaseError> {
     if plan.is_empty() || plan.len() > MAX_PLANNED {
@@ -338,7 +346,7 @@ pub async fn rebase_keeping_merges(
     // Git's todo, copied out by a sequence editor that then fails: git gives up before
     // anything moves.
     let copy = format!("cp -- \"$1\" {}; exit 1 #", quote(&shell_path(&theirs)));
-    let tried = merging_rebase(git, repository, base, copy, cancel)
+    let tried = merging_rebase(git, repository, (base, Checks::Run), copy, cancel)
         .output_unchecked()
         .await?;
     let generated = files
@@ -348,14 +356,14 @@ pub async fn rebase_keeping_merges(
     if generated.trim().is_empty() {
         return Err(GitError::failed("rebase", tried.status, tried.stderr).into());
     }
-    let todo = with_plan(&generated, plan)?;
+    let todo = with_plan(&generated, plan, checks)?;
     let ours = scratch.path().join("ours");
     files
         .write(&ours, todo.as_bytes())
         .await
         .map_err(RebaseError::Todo)?;
     let editor = format!("cp -- {}", quote(&shell_path(&ours)));
-    let done = merging_rebase(git, repository, base, editor, cancel)
+    let done = merging_rebase(git, repository, (base, checks), editor, cancel)
         .output()
         .await
         .map(drop);
@@ -363,11 +371,12 @@ pub async fn rebase_keeping_merges(
 }
 
 /// `git rebase --interactive --rebase-merges` onto `base`, its todo given to `editor`; commands
-/// unabbreviated and commits named in full, whatever the configuration says.
+/// unabbreviated and commits named in full, whatever the configuration says; its `pre-rebase`
+/// as `checks` says (the dry run gives up after that hook: it needn't run).
 fn merging_rebase(
     git: &Git,
     repository: &Repository,
-    base: Option<ObjectId>,
+    (base, checks): (Option<ObjectId>, Checks),
     editor: String,
     cancel: &CancelToken,
 ) -> crate::command::GitCommand {
@@ -383,6 +392,7 @@ fn merging_rebase(
             "--no-autosquash",
             "--no-update-refs",
         ])
+        .args(checks.flag())
         .env("GIT_SEQUENCE_EDITOR", editor)
         .prompt_context("Rebasing")
         .current_dir(repository.work_tree())
@@ -394,8 +404,8 @@ fn merging_rebase(
 }
 
 /// Git's todo `generated` with `plan` written in: its drops (`drop`), and its rewords (an
-/// `exec` amending the commit just picked or merged).
-fn with_plan(generated: &str, plan: &[Planned]) -> Result<String, RebaseError> {
+/// `exec` amending the commit just picked or merged, its hooks as `checks` says).
+fn with_plan(generated: &str, plan: &[Planned], checks: Checks) -> Result<String, RebaseError> {
     let step_of = |id: &str| {
         plan.iter()
             .find(|planned| planned.id.to_string() == id)
@@ -423,7 +433,7 @@ fn with_plan(generated: &str, plan: &[Planned]) -> Result<String, RebaseError> {
             (Some(Step::Reword(message)), _) => {
                 todo.push_str(line);
                 todo.push('\n');
-                reword(&mut todo, message);
+                reword(&mut todo, message, checks);
             }
             _ => {
                 todo.push_str(line);
@@ -437,8 +447,8 @@ fn with_plan(generated: &str, plan: &[Planned]) -> Result<String, RebaseError> {
     Ok(todo)
 }
 
-/// The todo git runs for `plan`.
-fn todo(plan: &[Planned]) -> Result<String, RebaseError> {
+/// The todo git runs for `plan`, its rewords' hooks as `checks` says.
+fn todo(plan: &[Planned], checks: Checks) -> Result<String, RebaseError> {
     if plan.is_empty() || plan.len() > MAX_PLANNED {
         return Err(RebaseError::Size);
     }
@@ -465,7 +475,7 @@ fn todo(plan: &[Planned]) -> Result<String, RebaseError> {
             Step::Pick | Step::Reword(_) => {}
         }
         if let Some(message) = group.take() {
-            reword(&mut todo, message);
+            reword(&mut todo, message, checks);
         }
         if let Step::Reword(message) = &planned.step {
             if message.trim().is_empty() {
@@ -477,20 +487,25 @@ fn todo(plan: &[Planned]) -> Result<String, RebaseError> {
         let _ = writeln!(todo, "pick {id}");
     }
     if let Some(message) = group {
-        reword(&mut todo, message);
+        reword(&mut todo, message, checks);
     }
     Ok(todo)
 }
 
 /// An `exec` line giving the commit just made `message` (`printf` prints each line; the commit
-/// keeps its author and date).
-fn reword(todo: &mut String, message: &str) {
+/// keeps its author and date), its `pre-commit` and `commit-msg` as `checks` says.
+fn reword(todo: &mut String, message: &str, checks: Checks) {
     todo.push_str("exec printf '%s\\n'");
     for line in message.trim_end().lines() {
         todo.push(' ');
         todo.push_str(&quote(line));
     }
-    todo.push_str(" | git commit --amend --quiet --allow-empty --cleanup=whitespace --file=-\n");
+    todo.push_str(" | git commit --amend --quiet --allow-empty --cleanup=whitespace");
+    if let Some(flag) = checks.flag() {
+        todo.push(' ');
+        todo.push_str(flag);
+    }
+    todo.push_str(" --file=-\n");
 }
 
 /// `text` quoted for the shell: in single quotes, each `'` closed, escaped, and reopened.
@@ -533,7 +548,7 @@ mod tests {
             planned('e', Step::Fixup),
             planned('f', Step::Reword("Last".to_owned())),
         ];
-        let todo = todo(&plan).unwrap_or_default();
+        let todo = todo(&plan, Checks::Run).unwrap_or_default();
         let amend = "| git commit --amend --quiet --allow-empty --cleanup=whitespace --file=-";
         let expected = [
             format!("pick {}", id('a')),
@@ -546,18 +561,30 @@ mod tests {
             format!("exec printf '%s\\n' 'Last' {amend}"),
         ];
         assert_eq!(todo.lines().collect::<Vec<_>>(), expected);
+        // Its checks skipped, a reword's amend skips them too.
+        let skipping = super::todo(&plan, Checks::Skip).unwrap_or_default();
+        assert_eq!(
+            skipping.lines().last(),
+            Some(
+                "exec printf '%s\\n' 'Last' | git commit --amend --quiet --allow-empty \
+                 --cleanup=whitespace --no-verify --file=-"
+            )
+        );
     }
 
     #[test]
     fn a_plan_git_would_refuse_is_refused() {
         let squash_first = [planned('a', Step::Drop), planned('b', Step::Squash)];
         assert!(matches!(
-            todo(&squash_first),
+            todo(&squash_first, Checks::Run),
             Err(RebaseError::NothingToSquashInto)
         ));
         let empty = [planned('a', Step::Reword(" \n".to_owned()))];
-        assert!(matches!(todo(&empty), Err(RebaseError::EmptyMessage)));
-        assert!(matches!(todo(&[]), Err(RebaseError::Size)));
+        assert!(matches!(
+            todo(&empty, Checks::Run),
+            Err(RebaseError::EmptyMessage)
+        ));
+        assert!(matches!(todo(&[], Checks::Run), Err(RebaseError::Size)));
     }
 
     #[test]
@@ -614,7 +641,7 @@ mod tests {
             planned('d', Step::Reword("Merged".to_owned())),
             planned('e', Step::Pick),
         ];
-        let todo = with_plan(&generated, &plan).unwrap();
+        let todo = with_plan(&generated, &plan, Checks::Run).unwrap();
         let lines: Vec<&str> = todo.lines().filter(|line| !line.is_empty()).collect();
         let amend = "| git commit --amend --quiet --allow-empty --cleanup=whitespace --file=-";
         assert_eq!(
@@ -637,12 +664,12 @@ mod tests {
         );
         let dropped_merge = [planned('d', Step::Drop)];
         assert!(matches!(
-            with_plan(&generated, &dropped_merge),
+            with_plan(&generated, &dropped_merge, Checks::Run),
             Err(RebaseError::DropMerge)
         ));
         let unknown = [planned('f', Step::Pick)];
         assert!(matches!(
-            with_plan(&generated, &unknown),
+            with_plan(&generated, &unknown, Checks::Run),
             Err(RebaseError::Mismatch)
         ));
     }

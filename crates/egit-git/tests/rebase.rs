@@ -17,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, Integrated, ObjectId, Operation, Planned, RangeError, RebaseError, Repository,
-    Step, Wait as _, rebase_interactive, rebase_keeping_merges, rebase_range,
+    CancelToken, Checks, Integrated, ObjectId, Operation, Planned, RangeError, RebaseError,
+    Repository, Step, Wait as _, rebase_interactive, rebase_keeping_merges, rebase_range,
 };
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -150,6 +150,7 @@ fn commits_are_reordered_reworded_squashed_fixed_up_and_dropped() {
         &repository,
         Some(base),
         &steps,
+        Checks::Run,
         &CancelToken::new(),
     )
     .wait()
@@ -173,6 +174,7 @@ fn commits_are_reordered_reworded_squashed_fixed_up_and_dropped() {
         &repository,
         Some(base),
         &steps,
+        Checks::Run,
         &CancelToken::new(),
     )
     .wait()
@@ -195,6 +197,7 @@ fn a_squash_without_a_reword_joins_the_messages() {
         &repository,
         Some(base),
         &steps,
+        Checks::Run,
         &CancelToken::new(),
     )
     .wait()
@@ -224,6 +227,7 @@ fn conflicts_stop_the_rebase_and_rewords_after_them_still_apply() {
         &repository,
         Some(base),
         &steps,
+        Checks::Run,
         &CancelToken::new(),
     )
     .wait()
@@ -282,6 +286,7 @@ fn the_root_is_reworded_and_a_dirty_work_tree_refused() {
         &repository,
         range.base,
         &steps,
+        Checks::Run,
         &CancelToken::new(),
     )
     .wait();
@@ -294,6 +299,7 @@ fn the_root_is_reworded_and_a_dirty_work_tree_refused() {
         &repository,
         range.base,
         &steps,
+        Checks::Run,
         &CancelToken::new(),
     )
     .wait()
@@ -372,8 +378,15 @@ fn a_range_with_a_merge_keeps_it_as_its_plan_drops_and_rewords() {
         (vec![("Side two", Step::Squash)], "melded"),
         (vec![("Merge side", Step::Drop)], "a merge dropped"),
     ] {
-        let refused =
-            rebase_keeping_merges(git, &repository, range.base, &plan(&steps), &cancel).wait();
+        let refused = rebase_keeping_merges(
+            git,
+            &repository,
+            range.base,
+            &plan(&steps),
+            Checks::Run,
+            &cancel,
+        )
+        .wait();
         assert!(refused.is_err(), "{why}");
         assert_eq!(rev(&sandbox, &path, "HEAD"), head, "{why}");
     }
@@ -388,9 +401,16 @@ fn a_range_with_a_merge_keeps_it_as_its_plan_drops_and_rewords() {
         ("Two", Step::Reword("Two, again".to_owned())),
         ("Merge side", Step::Reword("Merge side, again".to_owned())),
     ];
-    let done = rebase_keeping_merges(git, &repository, range.base, &plan(&steps), &cancel)
-        .wait()
-        .unwrap();
+    let done = rebase_keeping_merges(
+        git,
+        &repository,
+        range.base,
+        &plan(&steps),
+        Checks::Run,
+        &cancel,
+    )
+    .wait()
+    .unwrap();
     assert_eq!(done, Integrated::Done);
     let _ = id_of("Side one");
     let subjects = |args: &[&str]| -> Vec<String> {
@@ -443,16 +463,30 @@ fn a_rebase_onto_a_branch_keeps_merges_when_asked() {
     // A copy of `main`, rebased after it without being asked to keep merges.
     sandbox.run(&path, "branch", &["copy", "main"]).unwrap();
     let upstream = bstr::BStr::new("upstream");
-    let done = egit_git::rebase(sandbox.git(), &repository, upstream, true, &cancel)
-        .wait()
-        .unwrap();
+    let done = egit_git::rebase(
+        sandbox.git(),
+        &repository,
+        upstream,
+        true,
+        Checks::Run,
+        &cancel,
+    )
+    .wait()
+    .unwrap();
     assert_eq!(done, Integrated::Done);
     assert_eq!(merges(&sandbox, "main"), "1", "kept");
     assert!(path.join("u").exists());
     sandbox.run(&path, "switch", &["--quiet", "copy"]).unwrap();
-    let done = egit_git::rebase(sandbox.git(), &repository, upstream, false, &cancel)
-        .wait()
-        .unwrap();
+    let done = egit_git::rebase(
+        sandbox.git(),
+        &repository,
+        upstream,
+        false,
+        Checks::Run,
+        &cancel,
+    )
+    .wait()
+    .unwrap();
     assert_eq!(done, Integrated::Done);
     assert_eq!(merges(&sandbox, "copy"), "0", "flattened");
 }

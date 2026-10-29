@@ -22,7 +22,7 @@ use egit_forge::{
 };
 use egit_git::sync::Mutex;
 use egit_git::{
-    ApplyAs, BisectMark, CancelToken, Changes, ConfigEntry, ConfigSnapshot, ConfigTarget,
+    ApplyAs, BisectMark, CancelToken, Changes, Checks, ConfigEntry, ConfigSnapshot, ConfigTarget,
     DeleteBranchError, FastForward, FetchOptions, Foreseen, ForwardFrom, Forwarded, Git, GitError,
     Integrated, MAX_PLANNED, MAX_SIGNED, ObjectId, Operation, Planned, Progress, PullMode, Pulled,
     PushOptions, Pushed, RangeError, RebaseError, RebaseRange, RemoveWorktreeError, Repository,
@@ -676,6 +676,10 @@ pub(crate) struct Tasks {
     pub(crate) background_fetches: u64,
     /// What they brought the current branch's upstream, until the user looks or dismisses it.
     pub(crate) brought: Option<Brought>,
+    /// Whether the hooks that check commits run for the tasks that make them (a merge, a
+    /// continue, a rebase, patches applied as commits), as the commit form's "Skip hooks" says:
+    /// the tab's, until it closes.
+    checks: Checks,
 }
 
 impl Tasks {
@@ -695,7 +699,18 @@ impl Tasks {
             background_problem: None,
             background_fetches: 0,
             brought: None,
+            checks: Checks::Run,
         }
+    }
+
+    /// Whether the hooks that check commits run for the tasks started from now on.
+    pub(crate) const fn checks(&self) -> Checks {
+        self.checks
+    }
+
+    /// Runs, or skips, the hooks that check commits for the tasks started from now on.
+    pub(crate) const fn set_checks(&mut self, checks: Checks) {
+        self.checks = checks;
     }
 
     /// Runs the background fetch every `every` from now on (`None`: never); a shorter wait
@@ -765,6 +780,7 @@ impl Tasks {
         let (progress, cancel) = (self.progress.clone(), self.cancel.clone());
         let running = task.clone();
         let accounts = accounts.to_vec();
+        let checks = self.checks;
         self.result.request(jobs::blocking(async move {
             let _queued = writes.hold().await;
             match &running {
@@ -796,7 +812,8 @@ impl Tasks {
                 }
                 task => {
                     let before = undo::before(&git, &repository, task).await;
-                    let ran = run(&git, &repository, task, &progress, &cancel, &accounts).await;
+                    let asked = (task, checks);
+                    let ran = run(&git, &repository, asked, &progress, &cancel, &accounts).await;
                     if let Ok(outcome) = &ran
                         && let Some(noted) =
                             undo::noted(&git, &repository, task, before, outcome).await
@@ -946,11 +963,11 @@ impl Drop for Tasks {
     }
 }
 
-/// Runs `task`.
+/// Runs `task`, the hooks that check commits as `checks` says.
 async fn run(
     git: &Git,
     repository: &Repository,
-    task: &Task,
+    (task, checks): (&Task, Checks),
     progress: &Progress,
     cancel: &CancelToken,
     accounts: &[Arc<Account>],
@@ -974,7 +991,7 @@ async fn run(
         | Task::DeleteRemoteBranch { .. }
         | Task::FastForwardBranch { .. }
         | Task::DeleteBranchEverywhere { .. } => {
-            remote(git, repository, task, progress, cancel).await
+            remote(git, repository, (task, checks), progress, cancel).await
         }
         Task::Abort(_)
         | Task::Continue(_)
@@ -988,11 +1005,11 @@ async fn run(
         | Task::FastForward { .. }
         | Task::ApplyPatch { .. }
         | Task::Skip(_)
-        | Task::Bisect { .. } => history(git, repository, task, cancel).await,
+        | Task::Bisect { .. } => history(git, repository, (task, checks), cancel).await,
         Task::InteractiveRebase { .. }
         | Task::DropCommit(_)
         | Task::SquashIntoParent(_)
-        | Task::Reword { .. } => rewrite(git, repository, task, cancel).await,
+        | Task::Reword { .. } => rewrite(git, repository, (task, checks), cancel).await,
         Task::SignCommits { commits } => sign(git, repository, commits, progress, cancel).await,
         Task::Discard(discard) => crate::discarding::run(git, repository, discard, cancel).await,
         Task::Ignore(ignore) => crate::ignoring::run(git, repository, ignore, cancel).await,
@@ -1160,23 +1177,23 @@ async fn revert_conflicts(
     }
 }
 
-/// Runs a pull task.
+/// Runs a pull task, a merge's hooks that check as `checks` says.
 async fn pulling(
     git: &Git,
     repository: &Repository,
-    task: &Task,
+    (task, checks): (&Task, Checks),
     progress: &Progress,
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
     match task {
-        Task::Pull(mode) => pull(git, repository, (*mode, false), progress, cancel)
+        Task::Pull(mode) => pull(git, repository, (*mode, false, checks), progress, cancel)
             .await
             .map(Outcome::Pulled)
             .or_else(failed("Pulling failed")),
         Task::PullStashing {
             mode,
             untracked: false,
-        } => pull(git, repository, (*mode, true), progress, cancel)
+        } => pull(git, repository, (*mode, true, checks), progress, cancel)
             .await
             .map(Outcome::Pulled)
             .or_else(failed("Pulling failed")),
@@ -1191,7 +1208,7 @@ async fn pulling(
             if stashed == Outcome::Cancelled {
                 return Ok(stashed);
             }
-            pull(git, repository, (*mode, false), progress, cancel)
+            pull(git, repository, (*mode, false, checks), progress, cancel)
                 .await
                 .map(Outcome::Pulled)
                 .or_else(failed("Pulling failed"))
@@ -1221,7 +1238,7 @@ async fn pulling(
             } else {
                 PullMode::Merge
             };
-            pull(git, repository, (mode, false), progress, cancel)
+            pull(git, repository, (mode, false, checks), progress, cancel)
                 .await
                 .map(Outcome::Pulled)
                 .or_else(failed("Pulling failed"))
@@ -1230,11 +1247,11 @@ async fn pulling(
     }
 }
 
-/// Exchanges with a remote.
+/// Exchanges with a remote (a pull's merge running its hooks that check as `checks` says).
 async fn remote(
     git: &Git,
     repository: &Repository,
-    task: &Task,
+    (task, checks): (&Task, Checks),
     progress: &Progress,
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
@@ -1251,7 +1268,7 @@ async fn remote(
                 .or_else(failed("Fetching failed"))
         }
         Task::Pull(_) | Task::PullStashing { .. } | Task::PullAndRemember { .. } => {
-            pulling(git, repository, task, progress, cancel).await
+            pulling(git, repository, (task, checks), progress, cancel).await
         }
         Task::Push(options) => push(git, repository, options, progress, cancel)
             .await
@@ -1318,11 +1335,12 @@ async fn remote(
     }
 }
 
-/// Changes to the current branch's history, and an operation's end.
+/// Changes to the current branch's history, and an operation's end, the hooks that check
+/// commits as `checks` says.
 async fn history(
     git: &Git,
     repository: &Repository,
-    task: &Task,
+    (task, checks): (&Task, Checks),
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
     match task {
@@ -1330,19 +1348,28 @@ async fn history(
             .await
             .map(|()| Outcome::Aborted)
             .or_else(failed("It couldn't be aborted")),
-        Task::Continue(operation) => continue_operation(git, repository, *operation, cancel)
-            .await
-            .map(|()| Outcome::Continued)
-            .or_else(failed("It couldn't carry on")),
+        Task::Continue(operation) => {
+            continue_operation(git, repository, *operation, checks, cancel)
+                .await
+                .map(|()| Outcome::Continued)
+                .or_else(failed("It couldn't carry on"))
+        }
         Task::Merge {
             what, fast_forward, ..
-        } => merge(git, repository, what.as_ref(), *fast_forward, cancel)
-            .await
-            .map(Outcome::Integrated)
-            .or_else(failed("Merging failed")),
+        } => merge(
+            git,
+            repository,
+            what.as_ref(),
+            *fast_forward,
+            checks,
+            cancel,
+        )
+        .await
+        .map(Outcome::Integrated)
+        .or_else(failed("Merging failed")),
         Task::Rebase {
             onto, keep_merges, ..
-        } => rebase(git, repository, onto.as_ref(), *keep_merges, cancel)
+        } => rebase(git, repository, onto.as_ref(), *keep_merges, checks, cancel)
             .await
             .map(Outcome::Integrated)
             .or_else(failed("Rebasing failed")),
@@ -1383,11 +1410,13 @@ async fn history(
             .await
             .map(Outcome::Forwarded)
             .or_else(failed("The branch couldn't be fast-forwarded")),
-        Task::ApplyPatch { patch, how, .. } => apply_patch(git, repository, &patch.0, *how, cancel)
-            .await
-            .map(Outcome::Integrated)
-            .or_else(failed("The patch couldn't be applied")),
-        Task::Skip(operation) => skip_operation(git, repository, *operation, cancel)
+        Task::ApplyPatch { patch, how, .. } => {
+            apply_patch(git, repository, &patch.0, *how, checks, cancel)
+                .await
+                .map(Outcome::Integrated)
+                .or_else(failed("The patch couldn't be applied"))
+        }
+        Task::Skip(operation) => skip_operation(git, repository, *operation, checks, cancel)
             .await
             .map(Outcome::Integrated)
             .or_else(failed("It couldn't be skipped")),
@@ -1400,7 +1429,7 @@ async fn history(
 async fn rewrite(
     git: &Git,
     repository: &Repository,
-    task: &Task,
+    (task, checks): (&Task, Checks),
     cancel: &CancelToken,
 ) -> Result<Outcome, Problem> {
     const TITLE: &str = "Rebasing failed";
@@ -1445,7 +1474,7 @@ async fn rewrite(
                 .await
                 .map_err(|error| Problem::git("HEAD couldn't be read", &error))?;
             if head.commit == Some(*commit) {
-                return reword_head(git, repository, message, cancel)
+                return reword_head(git, repository, message, checks, cancel)
                     .await
                     .map(|_| Outcome::Done)
                     .or_else(failed("The message couldn't be changed"));
@@ -1463,9 +1492,9 @@ async fn rewrite(
         _ => return Ok(Outcome::Done),
     };
     let rebased = if keep_merges {
-        rebase_keeping_merges(git, repository, base, &plan, cancel).await
+        rebase_keeping_merges(git, repository, base, &plan, checks, cancel).await
     } else {
-        rebase_interactive(git, repository, base, &plan, cancel).await
+        rebase_interactive(git, repository, base, &plan, checks, cancel).await
     };
     match rebased {
         Ok(integrated) => Ok(Outcome::Integrated(integrated)),

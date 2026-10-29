@@ -16,9 +16,14 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use egit_git::testing::{Sandbox, set_mode};
+use std::sync::Arc;
+
+use bstr::ByteSlice as _;
 use egit_git::{
-    CancelToken, Color, GitError, LineKind, NewCommit, Repository, Transcript, Wait as _,
-    create_commit, installed_hooks,
+    ApplyAs, CancelToken, Checks, Color, FastForward, GitError, Integrated, LineKind, NewCommit,
+    ObjectId, Operation, Planned, Repository, Step, Transcript, Wait as _, apply_patch,
+    cherry_pick_all, continue_operation, create_commit, installed_hooks, merge, rebase,
+    rebase_interactive, reword_head,
 };
 
 /// Writes `script` as the hook `name` in `folder`, runnable unless `runnable` is false.
@@ -167,7 +172,7 @@ fn a_hook_s_refusal_and_skipping_it() {
 
     // Skipped: made.
     let skipping = NewCommit {
-        no_verify: true,
+        checks: Checks::Skip,
         ..commit("Skipped")
     };
     create_commit(&git, &repository, &skipping, &CancelToken::new())
@@ -219,4 +224,286 @@ fn a_hook_cancelled_part_way_makes_no_commit() {
         said.last(),
         Some(&(LineKind::Ended { success: false }, "Cancelled.".to_owned()))
     );
+}
+
+/// A repository whose hooks that check (and `post-commit`, which runs anyway) write their
+/// names into `log`: `main` and `side` from `First`, `side` changing `s` and `c`, `main` `c`
+/// too (each other's conflict).
+struct Checked {
+    repo: PathBuf,
+    repository: Repository,
+    log: PathBuf,
+}
+
+impl Checked {
+    fn new(sandbox: &Sandbox, name: &str) -> Self {
+        let repo = sandbox.init(name).unwrap();
+        sandbox.commit_file(&repo, "a", "one\n", "First").unwrap();
+        sandbox
+            .run(&repo, "switch", &["--quiet", "--create", "side"])
+            .unwrap();
+        sandbox.commit_file(&repo, "s", "side\n", "Side").unwrap();
+        sandbox
+            .commit_file(&repo, "c", "side\n", "Side's c")
+            .unwrap();
+        sandbox.run(&repo, "switch", &["--quiet", "main"]).unwrap();
+        sandbox
+            .commit_file(&repo, "c", "main\n", "Main's c")
+            .unwrap();
+        let log = sandbox.path(format!("{name}.log"));
+        for name in egit_git::CHECK_HOOKS.iter().chain(&["post-commit"]) {
+            let line = format!("echo {name} >> '{}'", log.display());
+            hook(&repo.join(".git/hooks"), name, &line, true);
+        }
+        let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+        Self {
+            repo,
+            repository,
+            log,
+        }
+    }
+
+    /// The hooks that ran since last asked.
+    fn ran(&self) -> Vec<String> {
+        let said = std::fs::read_to_string(&self.log).unwrap_or_default();
+        std::fs::remove_file(&self.log).ok();
+        said.lines().map(str::to_owned).collect()
+    }
+
+    /// `c` resolved and staged.
+    fn resolve(&self, sandbox: &Sandbox) {
+        std::fs::write(self.repo.join("c"), "both\n").unwrap();
+        sandbox.run(&self.repo, "add", &["c"]).unwrap();
+    }
+
+    fn rev(&self, sandbox: &Sandbox, name: &str) -> ObjectId {
+        let out = sandbox.run(&self.repo, "rev-parse", &[name]).unwrap();
+        ObjectId::from_hex(out.stdout.trim_ascii()).unwrap()
+    }
+
+    fn subjects(&self, sandbox: &Sandbox, count: &str) -> Vec<String> {
+        let out = sandbox
+            .run(&self.repo, "log", &["--format=%s", count])
+            .unwrap();
+        out.stdout
+            .to_str_lossy()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+}
+
+/// Asserts the hooks that check among `ran` are `wanted`, or none when `checks` skips them.
+fn expect(checks: Checks, ran: &[String], wanted: &[&str], what: &str) {
+    let ran: Vec<&str> = ran
+        .iter()
+        .map(String::as_str)
+        .filter(|hook| egit_git::CHECK_HOOKS.contains(hook))
+        .collect();
+    let wanted = if checks.skipped() { &[][..] } else { wanted };
+    assert_eq!(ran, wanted, "{what}, {checks:?}");
+}
+
+/// What a test of the checks names its repositories after.
+const fn tag(checks: Checks) -> &'static str {
+    if checks.skipped() { "skip" } else { "run" }
+}
+
+#[test]
+fn a_merge_runs_its_checks_or_skips_them_and_so_does_one_continued() {
+    let sandbox = Sandbox::new().unwrap();
+    let (git, cancel) = (sandbox.git(), CancelToken::new());
+    for checks in [Checks::Run, Checks::Skip] {
+        let merging = Checked::new(&sandbox, &format!("merge-{}", tag(checks)));
+        let side = merging.rev(&sandbox, "side~1").to_string();
+        merge(
+            git,
+            &merging.repository,
+            side.as_bytes().as_bstr(),
+            FastForward::Never,
+            checks,
+            &cancel,
+        )
+        .wait()
+        .unwrap();
+        expect(
+            checks,
+            &merging.ran(),
+            &["pre-merge-commit", "commit-msg"],
+            "a merge",
+        );
+        let stopped = merge(
+            git,
+            &merging.repository,
+            b"side".as_bstr(),
+            FastForward::AsConfigured,
+            checks,
+            &cancel,
+        )
+        .wait()
+        .unwrap();
+        assert_eq!(stopped, Integrated::Conflicts);
+        merging.ran();
+        merging.resolve(&sandbox);
+        continue_operation(git, &merging.repository, Operation::Merge, checks, &cancel)
+            .wait()
+            .unwrap();
+        expect(
+            checks,
+            &merging.ran(),
+            &["pre-commit", "commit-msg"],
+            "continued",
+        );
+        // git's message kept, and nothing left under way.
+        assert_eq!(merging.subjects(&sandbox, "-1"), ["Merge branch 'side'"]);
+        assert_eq!(merging.repository.operations(git).wait().unwrap(), []);
+    }
+}
+
+#[test]
+fn picks_and_reverts_continued_run_their_checks_or_skip_them() {
+    let sandbox = Sandbox::new().unwrap();
+    let (git, cancel) = (sandbox.git(), CancelToken::new());
+    for checks in [Checks::Run, Checks::Skip] {
+        // Two picked, the first stopping at a conflict: continued, both made.
+        let picking = Checked::new(&sandbox, &format!("pick-{}", tag(checks)));
+        let commits = [
+            picking.rev(&sandbox, "side"),
+            picking.rev(&sandbox, "side~1"),
+        ];
+        let stopped = cherry_pick_all(git, &picking.repository, &commits, &cancel)
+            .wait()
+            .unwrap();
+        assert_eq!(stopped, Integrated::Conflicts);
+        picking.ran();
+        picking.resolve(&sandbox);
+        let operation = Operation::CherryPick;
+        continue_operation(git, &picking.repository, operation, checks, &cancel)
+            .wait()
+            .unwrap();
+        expect(
+            checks,
+            &picking.ran(),
+            &["pre-commit", "commit-msg"],
+            "picks",
+        );
+        assert_eq!(
+            picking.subjects(&sandbox, "-3"),
+            ["Side", "Side's c", "Main's c"]
+        );
+        assert_eq!(picking.repository.operations(git).wait().unwrap(), []);
+
+        // A revert stopped at a conflict, continued.
+        let reverting = Checked::new(&sandbox, &format!("revert-{}", tag(checks)));
+        sandbox
+            .commit_file(&reverting.repo, "c", "again\n", "Main's c again")
+            .unwrap();
+        let reverted = reverting.rev(&sandbox, "HEAD~1");
+        reverting.ran();
+        let stopped = egit_git::revert(git, &reverting.repository, reverted, &cancel)
+            .wait()
+            .unwrap();
+        assert_eq!(stopped, Integrated::Conflicts);
+        reverting.resolve(&sandbox);
+        let operation = Operation::Revert;
+        continue_operation(git, &reverting.repository, operation, checks, &cancel)
+            .wait()
+            .unwrap();
+        expect(
+            checks,
+            &reverting.ran(),
+            &["pre-commit", "commit-msg"],
+            "a revert",
+        );
+        assert_eq!(reverting.subjects(&sandbox, "-1"), ["Revert \"Main's c\""]);
+    }
+}
+
+#[test]
+fn rebases_and_rewords_run_their_checks_or_skip_them() {
+    let sandbox = Sandbox::new().unwrap();
+    let (git, cancel) = (sandbox.git(), CancelToken::new());
+    for checks in [Checks::Run, Checks::Skip] {
+        let rebasing = Checked::new(&sandbox, &format!("rebase-{}", tag(checks)));
+        sandbox
+            .run(&rebasing.repo, "switch", &["--quiet", "side"])
+            .unwrap();
+        sandbox
+            .run(&rebasing.repo, "reset", &["--quiet", "--hard", "side~1"])
+            .unwrap();
+        let onto = b"main".as_bstr();
+        rebase(git, &rebasing.repository, onto, false, checks, &cancel)
+            .wait()
+            .unwrap();
+        expect(checks, &rebasing.ran(), &["pre-rebase"], "a rebase");
+        let base = rebasing.rev(&sandbox, "main");
+        let plan = [Planned {
+            id: rebasing.rev(&sandbox, "HEAD"),
+            step: Step::Reword("Side, reworded".to_owned()),
+        }];
+        rebase_interactive(
+            git,
+            &rebasing.repository,
+            Some(base),
+            &plan,
+            checks,
+            &cancel,
+        )
+        .wait()
+        .unwrap();
+        let reworded = ["pre-rebase", "pre-commit", "commit-msg"];
+        expect(checks, &rebasing.ran(), &reworded, "a reword");
+        assert_eq!(rebasing.subjects(&sandbox, "-1"), ["Side, reworded"]);
+        reword_head(git, &rebasing.repository, "Side, again", checks, &cancel)
+            .wait()
+            .unwrap();
+        expect(
+            checks,
+            &rebasing.ran(),
+            &["pre-commit", "commit-msg"],
+            "HEAD",
+        );
+        assert_eq!(rebasing.subjects(&sandbox, "-1"), ["Side, again"]);
+    }
+}
+
+#[test]
+fn patches_applied_run_their_checks_or_skip_them_continued_too() {
+    let sandbox = Sandbox::new().unwrap();
+    let (git, cancel) = (sandbox.git(), CancelToken::new());
+    for checks in [Checks::Run, Checks::Skip] {
+        let applying = Checked::new(&sandbox, &format!("am-{}", tag(checks)));
+        let mailbox = |range: &[&str]| -> Arc<[u8]> {
+            let made = sandbox.run(&applying.repo, "format-patch", range).unwrap();
+            made.stdout.as_bytes().into()
+        };
+        let (first, series) = (
+            mailbox(&["--stdout", "-1", "side~1"]),
+            mailbox(&["--stdout", "main..side"]),
+        );
+        let how = ApplyAs::Commits { sign_off: false };
+        apply_patch(git, &applying.repository, &first, how, checks, &cancel)
+            .wait()
+            .unwrap();
+        let checked = ["applypatch-msg", "pre-applypatch"];
+        expect(checks, &applying.ran(), &checked, "a patch");
+        sandbox
+            .run(&applying.repo, "reset", &["--quiet", "--hard", "HEAD~1"])
+            .unwrap();
+        let stopped = apply_patch(git, &applying.repository, &series, how, checks, &cancel)
+            .wait()
+            .unwrap();
+        assert_eq!(stopped, Integrated::Conflicts);
+        applying.ran();
+        applying.resolve(&sandbox);
+        let operation = Operation::ApplyMailbox;
+        continue_operation(git, &applying.repository, operation, checks, &cancel)
+            .wait()
+            .unwrap();
+        expect(checks, &applying.ran(), &["pre-applypatch"], "continued");
+        assert_eq!(
+            applying.subjects(&sandbox, "-3"),
+            ["Side's c", "Side", "Main's c"]
+        );
+    }
 }

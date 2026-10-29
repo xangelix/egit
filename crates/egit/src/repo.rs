@@ -18,7 +18,7 @@ use crate::commands::RepoCommand;
 use crate::forge::RepoForge;
 use crate::history::{HistoryState, Scope};
 use crate::jobs::{self, WriteLock};
-use crate::output::{Ended, Output, commit_hooks};
+use crate::output::{COMMIT_HOOKS, Ended, Output};
 use crate::preferences::Preferences;
 use crate::problem::Problem;
 use crate::staging::{self, StageRequest};
@@ -280,7 +280,7 @@ impl RepoTab {
     pub(crate) fn commit(&mut self, git: &Git, commit: NewCommit, push: bool) {
         // Its hooks' output, as git prints it, in a run of its own.
         self.commit_cancel = CancelToken::new();
-        let hooks = self.installed_hooks(commit_hooks(commit.no_verify));
+        let hooks = self.installed_hooks(&commit.checks.running(COMMIT_HOOKS));
         let title = if commit.amend {
             "Amending"
         } else {
@@ -405,7 +405,7 @@ impl RepoTab {
     /// Starts `task`.
     pub(crate) fn run_task(&mut self, git: &Git, task: Task) {
         // Its commands' output (and its hooks'), as git prints it, in a run of its own.
-        let hooks = self.installed_hooks(task.hooks());
+        let hooks = self.installed_hooks(&self.tasks.checks().running(task.hooks()));
         let (run, transcript) = self.output.begin(task.doing(), hooks, None);
         self.task_run = Some(run);
         let cancel = self.tasks.start(
@@ -419,8 +419,14 @@ impl RepoTab {
         self.output.cancel_with(run, cancel);
     }
 
+    /// Runs, or skips, the hooks that check commits, for this tab's commits and tasks from now
+    /// on.
+    pub(crate) const fn set_checks(&mut self, checks: egit_git::Checks) {
+        self.tasks.set_checks(checks);
+    }
+
     /// Those of `hooks` the repository has.
-    fn installed_hooks(&mut self, hooks: &'static [&'static str]) -> Vec<&'static str> {
+    fn installed_hooks(&mut self, hooks: &[&'static str]) -> Vec<&'static str> {
         self.hooks
             .ok_ref()
             .map_or_default(|installed| installed.of(hooks))

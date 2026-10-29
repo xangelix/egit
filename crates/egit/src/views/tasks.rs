@@ -1267,6 +1267,10 @@ fn operation_banner(
                     "Resolve the conflicts and stage them first: git continues once none is \
                          left",
                 )
+            } else if pane.tasks.checks().skipped() && operation != Operation::Rebase {
+                continuing.on_hover_text(
+                    "Without the hooks that check commits: Skip hooks is on (in the commit form)",
+                )
             } else {
                 continuing
             };

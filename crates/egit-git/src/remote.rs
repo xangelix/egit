@@ -9,6 +9,7 @@ use bstr::{BStr, BString, ByteSlice as _};
 use crate::cancel::CancelToken;
 use crate::error::GitError;
 use crate::git::Git;
+use crate::hooks::Checks;
 use crate::integrate::{Integrated, carried_on};
 use crate::progress::Progress;
 use crate::repo::{Operation, Repository};
@@ -215,7 +216,9 @@ pub enum Pulled {
 ///
 /// With `autostash`, the changes not committed are stashed first and put back after
 /// (`--autostash`: what was staged comes back not staged); a merge or rebase that stops puts
-/// them back once continued or aborted.
+/// them back once continued or aborted. A merge's `pre-merge-commit` and `commit-msg` hooks
+/// run as `checks` says (git passes `--no-verify` to the merge alone: a rebase's `pre-rebase`
+/// runs either way).
 ///
 /// # Errors
 ///
@@ -223,7 +226,7 @@ pub enum Pulled {
 pub async fn pull(
     git: &Git,
     repository: &Repository,
-    (mode, autostash): (PullMode, bool),
+    (mode, autostash, checks): (PullMode, bool, Checks),
     progress: &Progress,
     cancel: &CancelToken,
 ) -> Result<Pulled, GitError> {
@@ -235,6 +238,7 @@ pub async fn pull(
     let mut command = git
         .write("pull")
         .arg("--progress")
+        .args(checks.flag())
         .prompt_context("Pulling")
         .current_dir(repository.work_tree())
         .progress(progress)
@@ -609,7 +613,8 @@ pub async fn abort_operation(
 ///
 /// `git rebase`, `am`, `cherry-pick`, or `revert --skip`; says how it then ended: done, or
 /// stopped again (at conflicts, or a patch that doesn't apply). A merge or a bisect has nothing
-/// to skip.
+/// to skip. The patches `am` applies next run its hooks as `checks` says (`am` doesn't keep
+/// the `--no-verify` it began with); a commit the others replay runs no hook that checks.
 ///
 /// # Errors
 ///
@@ -618,6 +623,7 @@ pub async fn skip_operation(
     git: &Git,
     repository: &Repository,
     operation: Operation,
+    checks: Checks,
     cancel: &CancelToken,
 ) -> Result<Integrated, GitError> {
     let subcommand = match operation {
@@ -632,6 +638,11 @@ pub async fn skip_operation(
     let skipped = git
         .write(subcommand)
         .arg("--skip")
+        .args(
+            checks
+                .flag()
+                .filter(|_| operation == Operation::ApplyMailbox),
+        )
         .prompt_context("Signing the commit")
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
@@ -644,6 +655,13 @@ pub async fn skip_operation(
 /// Carries on with an operation git stopped in the middle of, once its conflicts are resolved
 /// and staged (its commits keep their messages). A bisect has nothing to carry on with.
 ///
+/// The commit a merge, cherry-pick, or revert then makes runs `pre-commit` and `commit-msg`,
+/// and a patch `am` applies its own hooks, as `checks` says. Their `--continue` takes no
+/// `--no-verify` (but `am`'s), so skipping them, the commit is made by `git commit --no-edit
+/// --no-verify` (the message git prepared, as `--continue` would), then a cherry-pick or
+/// revert of several commits goes on with the rest (`--continue`: its `sequencer` folder
+/// says there are). A rebase runs no hook that checks as it goes on.
+///
 /// # Errors
 ///
 /// When git refuses (conflicts left, say) or is cancelled.
@@ -651,8 +669,17 @@ pub async fn continue_operation(
     git: &Git,
     repository: &Repository,
     operation: Operation,
+    checks: Checks,
     cancel: &CancelToken,
 ) -> Result<(), GitError> {
+    if checks.skipped()
+        && matches!(
+            operation,
+            Operation::Merge | Operation::CherryPick | Operation::Revert
+        )
+    {
+        return commit_then_continue(git, repository, operation, cancel).await;
+    }
     let subcommand = match operation {
         Operation::Merge => "merge",
         Operation::Rebase => "rebase",
@@ -666,6 +693,50 @@ pub async fn continue_operation(
             ));
         }
     };
+    git.write(subcommand)
+        .arg("--continue")
+        .args(
+            checks
+                .flag()
+                .filter(|_| operation == Operation::ApplyMailbox),
+        )
+        .prompt_context("Signing the commit")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .await
+        .map(drop)
+}
+
+/// [`continue_operation`]'s way for a merge, cherry-pick, or revert whose checks are skipped:
+/// the commit made without them, then the rest of a sequence picked.
+async fn commit_then_continue(
+    git: &Git,
+    repository: &Repository,
+    operation: Operation,
+    cancel: &CancelToken,
+) -> Result<(), GitError> {
+    git.write("commit")
+        .args(["--no-edit", "--no-verify"])
+        .prompt_context("Signing the commit")
+        .current_dir(repository.work_tree())
+        .cancel_token(cancel)
+        .output()
+        .await?;
+    let subcommand = match operation {
+        Operation::CherryPick => "cherry-pick",
+        Operation::Revert => "revert",
+        _ => return Ok(()),
+    };
+    let sequence = repository.git_dir().join("sequencer");
+    let more = git
+        .files()
+        .exists(&sequence)
+        .await
+        .map_err(|source| GitError::Io { subcommand, source })?;
+    if !more {
+        return Ok(());
+    }
     git.write(subcommand)
         .arg("--continue")
         .prompt_context("Signing the commit")

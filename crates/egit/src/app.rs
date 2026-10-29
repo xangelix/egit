@@ -217,6 +217,9 @@ pub(crate) enum Action {
     Commit(RepoId, NewCommit, bool),
     /// Something of a repository's output: its commit stopped, its panel opened or toggled.
     Output(RepoId, OutputAsk),
+    /// Run, or skip, the hooks that check commits in a repository's tab (its commits, merges,
+    /// continues, rebases, and patches), from now on: the commit form's "Skip hooks".
+    Checks(RepoId, egit_git::Checks),
     /// Fetch, pull, push, or give up or carry on an operation, in a repository.
     Task(RepoId, Task),
     /// Stop a repository's running task.
@@ -546,6 +549,7 @@ impl EgitApp {
                     repo.output_asked(asked);
                 }
             }
+            Action::Checks(id, checks) => state.with_repo(id, |_, repo| repo.set_checks(checks)),
             Action::Commit(id, commit, push) => {
                 state.with_repo(id, |git, repo| repo.commit(git, commit, push));
             }

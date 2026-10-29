@@ -134,7 +134,7 @@ pub use history::{
     line_counts, list_commits, list_references, walk_history, walk_history_from,
     write_commit_graph,
 };
-pub use hooks::{Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
+pub use hooks::{CHECKS as CHECK_HOOKS, Checks, Hooks, KNOWN as KNOWN_HOOKS, installed_hooks};
 pub use host::{Host, SshHost};
 pub use ignore::{
     IgnoreError, IgnoreIn, Ignored, extension_pattern, ignore, ignore_again, path_pattern, unignore,
