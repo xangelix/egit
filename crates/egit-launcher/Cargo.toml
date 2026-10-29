@@ -1,0 +1,24 @@
+[package]
+name = "egit-launcher"
+description = "egit's launchers as seaworthy installs them: each starts the best of its program's per-CPU cores the computer runs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+# Installed as `egit` and `egit-relay` (seaworthy.toml's `launcher-bin`): the names the
+# development binaries hold in this workspace.
+[[bin]]
+name = "egit-launcher"
+path = "src/egit.rs"
+
+[[bin]]
+name = "egit-relay-launcher"
+path = "src/relay.rs"
+
+[dependencies]
+seaworthy-launcher.workspace = true

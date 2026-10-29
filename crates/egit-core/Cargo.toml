@@ -1,0 +1,18 @@
+[package]
+name = "egit-core"
+description = "egit as a per-CPU core: the application, built once per CPU level, which its launcher loads."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+egit.workspace = true
+seaworthy-launcher.workspace = true

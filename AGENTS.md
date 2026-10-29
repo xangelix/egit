@@ -1226,6 +1226,15 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   anywhere but `wasm32`, and refused there without atomics (`compile_error!`). Built by
   `scripts/build-web.sh` (the nightly and flags of `scripts/web-env.sh`, wasm-bindgen,
   wasm-opt with threads, `.gz` and `.br` beside each file).
+- `crates/egit-launcher`, `crates/egit-core`, `crates/egit-relay-core` — egit as seaworthy
+  installs it (the owner's packaging: `seaworthy.toml`, docs/ROADMAP.md's phase 39): a small
+  launcher per program (`egit-launcher` installed as `egit`, `egit-relay-launcher` as
+  `egit-relay`, each also as `egit-askpass` beside it; seaworthy-launcher's `launcher_main!`
+  naming its core and the CPU levels, `x86-64-v4`, `v3`, `v2`, `apple-m1` on macOS, built for
+  its architecture's baseline) and a per-CPU core per program (a `cdylib`, `core_main!` of
+  `egit_app::main` or `egit_relay::main`, built once per level), which the launcher picks for
+  the computer it runs on and runs in its own process. A plain `cargo run` of a launcher exits
+  74 (no cores beside it): the development binaries (`egit`, `egit-relay`) run as ever.
 - `crates/egit-graph` — the commit graph's lanes; no dependencies, knows nothing of git
   (commits are any `Copy + Eq + Hash` key).
   - `layout.rs` — `GraphBuilder::push` lays out each commit as `walk_history` yields it, in
@@ -1283,8 +1292,12 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   GIT_CONFIG_KEY_0=url.$HOME/egui-table-kit.insteadOf
   GIT_CONFIG_VALUE_0=https://github.com/xangelix/egui-table-kit CARGO_NET_GIT_FETCH_WITH_CLI=true
   cargo fetch`), `egui-async` 0.7 (stay on 0.36 until `egui_tiles` and `egui-phosphor` move).
-  - `main.rs` — started as `egit-askpass` it is the askpass helper (`run_helper`; on Windows
-    in any case, `.exe` or not); otherwise `lib.rs`'s `run`: `-h`/`-V`, paths to open,
+  - `main.rs` and `cli.rs` — `egit_app::main`, the executable's and the cores' entry (its exit
+    status a number, as a core hands its launcher one): started as `egit-askpass` it is the
+    askpass helper (`helper_status`; on Windows in any case, `.exe` or not); otherwise
+    `lib.rs`'s `run`: `-h`/`-V`, paths to open (`cli::asked`; after `--` every argument a
+    path, as a file manager opens a folder), the window with egit's icon and app id
+    (`APP_ID`, `io.github.xangelix.egit`),
     `EGIT_LOG` logging, the runtime, the window (no console window behind it on Windows,
     but in a debug build). In a browser, nothing: the page starts egit (`web::start`).
   - `web/` — egit in a browser (`wasm32`): `start` (from `egit-web`): the main thread made the

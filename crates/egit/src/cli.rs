@@ -2,21 +2,21 @@
 
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
-use egit_git::askpass::{HELPER_NAME, run_helper};
+use egit_git::askpass::{HELPER_NAME, helper_status};
 
-/// egit's entry, shared by its executable and its per-CPU cores (`egit-core`).
+/// egit's entry, shared by its executable and its per-CPU cores (`egit-core`), returning the
+/// process's exit status (a core hands its launcher a number).
 ///
 /// Started under the helper's name (the installed `egit-askpass` beside the application, or the
 /// link egit makes to itself elsewhere), it is git's and ssh's askpass helper; else the
 /// application, with the command line's arguments.
 #[must_use]
-pub fn main() -> ExitCode {
+pub fn main() -> u8 {
     let mut args = std::env::args_os();
     let program = args.next().unwrap_or_default();
     if is_helper(&program) {
-        return run_helper(&args.next().unwrap_or_default());
+        return helper_status(&args.next().unwrap_or_default());
     }
     crate::run(args)
 }

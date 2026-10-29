@@ -82,8 +82,6 @@ use std::ffi::OsString;
 use std::io::Write as _;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::PathBuf;
-#[cfg(not(target_arch = "wasm32"))]
-use std::process::ExitCode;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use cli::main;
@@ -118,22 +116,19 @@ EGIT_LOG sets what egit logs to stderr (\"warn\" by default; \"debug\" for every
 was taken for).
 ";
 
-/// Runs egit with the command line's arguments (after the program's name) and returns how the
-/// process should exit.
+/// Runs egit with the command line's arguments (after the program's name) and returns the
+/// process's exit status: 0 done, 1 failed, 2 a command line it didn't understand.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
-pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
+pub fn run(args: impl IntoIterator<Item = OsString>) -> u8 {
     let paths: Vec<PathBuf> = match cli::asked(args) {
-        cli::Asked::Help => return say(USAGE, ExitCode::SUCCESS),
+        cli::Asked::Help => return say(USAGE, SUCCESS),
         cli::Asked::Version => {
-            return say(
-                &format!("egit {}\n", env!("CARGO_PKG_VERSION")),
-                ExitCode::SUCCESS,
-            );
+            return say(&format!("egit {}\n", env!("CARGO_PKG_VERSION")), SUCCESS);
         }
         cli::Asked::Unknown(option) => {
             complain(&format!("unknown option {option}\n\n{USAGE}"));
-            return ExitCode::from(2);
+            return USAGE_ERROR;
         }
         cli::Asked::Open(paths) => paths,
     };
@@ -141,7 +136,7 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
     init_logging();
     if let Err(error) = jobs::install_runtime() {
         complain(&format!("couldn't start egit's worker threads: {error}\n"));
-        return ExitCode::FAILURE;
+        return FAILURE;
     }
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("egit")
@@ -161,10 +156,10 @@ pub fn run(args: impl IntoIterator<Item = OsString>) -> ExitCode {
         Box::new(move |creation| Ok(Box::new(app::EgitApp::new(creation, paths)))),
     );
     match started {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(()) => SUCCESS,
         Err(error) => {
             complain(&format!("the window couldn't open: {error}\n"));
-            ExitCode::FAILURE
+            FAILURE
         }
     }
 }
@@ -202,14 +197,24 @@ fn init_logging() {
         .try_init();
 }
 
-/// Prints `text` to stdout.
+/// Prints `text` to stdout, then exits with `code` (failing should it not print).
 #[cfg(not(target_arch = "wasm32"))]
-fn say(text: &str, code: ExitCode) -> ExitCode {
+fn say(text: &str, code: u8) -> u8 {
     match std::io::stdout().write_all(text.as_bytes()) {
         Ok(()) => code,
-        Err(_) => ExitCode::FAILURE,
+        Err(_) => FAILURE,
     }
 }
+
+/// The exit status of what went as asked.
+#[cfg(not(target_arch = "wasm32"))]
+const SUCCESS: u8 = 0;
+/// The exit status of what failed (the window couldn't open, …).
+#[cfg(not(target_arch = "wasm32"))]
+const FAILURE: u8 = 1;
+/// The exit status of a command line egit didn't understand.
+#[cfg(not(target_arch = "wasm32"))]
+const USAGE_ERROR: u8 = 2;
 
 /// Prints `text` to stderr, prefixed with the program's name.
 #[cfg(not(target_arch = "wasm32"))]

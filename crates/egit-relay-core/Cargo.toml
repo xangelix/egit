@@ -1,0 +1,18 @@
+[package]
+name = "egit-relay-core"
+description = "The relay as a per-CPU core: egit-relay, built once per CPU level, which its launcher loads."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+egit-relay.workspace = true
+seaworthy-launcher.workspace = true

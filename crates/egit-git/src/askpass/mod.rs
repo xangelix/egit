@@ -28,7 +28,7 @@ mod platform;
 #[path = "unsupported.rs"]
 mod platform;
 
-pub use client::run_helper;
+pub use client::{helper_status, run_helper};
 #[cfg(unix)]
 pub(crate) use platform::{ensure_private, is_stale, make_private_dir};
 pub use prompt::Prompt;

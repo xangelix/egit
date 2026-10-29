@@ -6,5 +6,5 @@
 //! (`egit_relay::main`).
 
 fn main() -> std::process::ExitCode {
-    egit_relay::main()
+    std::process::ExitCode::from(egit_relay::main())
 }

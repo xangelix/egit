@@ -12,5 +12,5 @@ const fn main() {}
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> std::process::ExitCode {
-    egit_app::main()
+    std::process::ExitCode::from(egit_app::main())
 }

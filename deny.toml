@@ -67,4 +67,7 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/xangelix/egui-table-kit"]
+allow-git = [
+    "https://github.com/xangelix/egui-table-kit",
+    "https://github.com/xangelix/seaworthy",
+]

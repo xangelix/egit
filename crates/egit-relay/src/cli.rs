@@ -6,9 +6,8 @@
 use std::io::Write as _;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
 
-use crate::{HELPER_NAME, Options, Token, is_proxy_address, run_helper};
+use crate::{HELPER_NAME, Options, Token, helper_status, is_proxy_address};
 
 /// Where a relay listens unless told.
 const LISTEN: &str = "127.0.0.1:7171";
@@ -38,27 +37,29 @@ proxies'. Their token (after `#`) is what lets a browser in. EGIT_RELAY_TOKEN gi
 your own, so the addresses stay the same between runs.
 ";
 
-/// The relay's entry, shared by its executable and its per-CPU cores (`egit-relay-core`): the
-/// askpass helper when started under its name, else the relay with the command line's options.
+/// The relay's entry, shared by its executable and its per-CPU cores (`egit-relay-core`).
+///
+/// The askpass helper when started under its name, else the relay with the command line's
+/// options. Returns the process's exit status (a core hands its launcher a number).
 #[must_use]
-pub fn main() -> ExitCode {
+pub fn main() -> u8 {
     let mut args = std::env::args_os();
     let program = args.next().unwrap_or_default();
     if Path::new(&program)
         .file_name()
         .is_some_and(|name| name == HELPER_NAME)
     {
-        return run_helper(&args.next().unwrap_or_default());
+        return helper_status(&args.next().unwrap_or_default());
     }
     let options = match parse(args) {
         Ok(Some(options)) => options,
         Ok(None) => {
             let _said = std::io::stdout().write_all(USAGE.as_bytes());
-            return ExitCode::SUCCESS;
+            return 0;
         }
         Err(problem) => {
             let _said = writeln!(std::io::stderr(), "egit-relay: {problem}\n\n{USAGE}");
-            return ExitCode::FAILURE;
+            return 1;
         }
     };
     let filter = tracing_subscriber::EnvFilter::try_from_env("EGIT_LOG")
@@ -75,7 +76,7 @@ pub fn main() -> ExitCode {
         Ok(runtime) => runtime,
         Err(error) => {
             let _said = writeln!(std::io::stderr(), "egit-relay: {error}");
-            return ExitCode::FAILURE;
+            return 1;
         }
     };
     runtime.block_on(async move {
@@ -83,7 +84,7 @@ pub fn main() -> ExitCode {
             Ok(bound) => bound,
             Err(error) => {
                 let _said = writeln!(std::io::stderr(), "egit-relay: {error}");
-                return ExitCode::FAILURE;
+                return 1;
             }
         };
         // Standard output: what to open, the relay's own address first.
@@ -94,7 +95,7 @@ pub fn main() -> ExitCode {
         }
         let _said = said.and_then(|()| stdout.flush());
         bound.serve().await;
-        ExitCode::SUCCESS
+        0
     })
 }
 

@@ -33,7 +33,7 @@ use tokio::net::TcpListener;
 use zeroize::Zeroizing;
 
 pub use cli::main;
-pub use egit_git::askpass::{HELPER_NAME, run_helper};
+pub use egit_git::askpass::{HELPER_NAME, helper_status, run_helper};
 
 /// How a relay serves.
 #[derive(Debug)]

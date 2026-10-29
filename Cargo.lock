@@ -1201,6 +1201,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "egit-core"
+version = "0.1.0"
+dependencies = [
+ "egit",
+ "seaworthy-launcher",
+]
+
+[[package]]
 name = "egit-forge"
 version = "0.1.0"
 dependencies = [
@@ -1262,6 +1270,13 @@ name = "egit-graph"
 version = "0.1.0"
 
 [[package]]
+name = "egit-launcher"
+version = "0.1.0"
+dependencies = [
+ "seaworthy-launcher",
+]
+
+[[package]]
 name = "egit-relay"
 version = "0.1.0"
 dependencies = [
@@ -1282,6 +1297,14 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "zeroize",
+]
+
+[[package]]
+name = "egit-relay-core"
+version = "0.1.0"
+dependencies = [
+ "egit-relay",
+ "seaworthy-launcher",
 ]
 
 [[package]]
@@ -3798,6 +3821,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4571,6 +4603,36 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "seaworthy-fsguard"
+version = "0.1.0"
+source = "git+https://github.com/xangelix/seaworthy?rev=c02ebaa10440c4ae49efcfebf104df91a0b91e09#c02ebaa10440c4ae49efcfebf104df91a0b91e09"
+dependencies = [
+ "libc",
+ "thiserror 2.0.21",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "seaworthy-launcher"
+version = "0.1.0"
+source = "git+https://github.com/xangelix/seaworthy?rev=c02ebaa10440c4ae49efcfebf104df91a0b91e09#c02ebaa10440c4ae49efcfebf104df91a0b91e09"
+dependencies = [
+ "libc",
+ "seaworthy-fsguard",
+ "seaworthy-levels",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "seaworthy-levels"
+version = "0.1.0"
+source = "git+https://github.com/xangelix/seaworthy?rev=c02ebaa10440c4ae49efcfebf104df91a0b91e09#c02ebaa10440c4ae49efcfebf104df91a0b91e09"
+dependencies = [
+ "libc",
+ "object",
+]
 
 [[package]]
 name = "security-framework"

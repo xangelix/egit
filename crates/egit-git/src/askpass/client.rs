@@ -10,6 +10,11 @@ use zeroize::Zeroizing;
 use super::protocol::{self, PromptKind, Token};
 use super::{CONTEXT_VAR, INTERACTIVE_VAR, SOCKET_VAR, TOKEN_VAR};
 
+/// The helper answered.
+const SUCCESS: u8 = 0;
+/// It didn't: refused, not allowed to ask, or the window out of reach.
+const FAILURE: u8 = 1;
+
 /// Runs as git's or ssh's askpass helper: sends `prompt` (the argument git or ssh passed) to
 /// egit's window and prints the answer for the asker to read.
 ///
@@ -20,14 +25,21 @@ use super::{CONTEXT_VAR, INTERACTIVE_VAR, SOCKET_VAR, TOKEN_VAR};
     reason = "`ExitCode` is `must_use` already, as newer standard libraries say"
 )]
 pub fn run_helper(prompt: &OsStr) -> ExitCode {
+    ExitCode::from(helper_status(prompt))
+}
+
+/// [`run_helper`]'s exit status as a number: 0 answered, 1 not (a per-CPU core hands its
+/// launcher a number: an `ExitCode` has none to read).
+#[must_use]
+pub fn helper_status(prompt: &OsStr) -> u8 {
     let var = std::env::var_os;
     if var(INTERACTIVE_VAR).is_some_and(|value| value == "0") {
-        return ExitCode::FAILURE;
+        return FAILURE;
     }
     let token = var(TOKEN_VAR).and_then(|token| Token::from_hex(token.as_encoded_bytes()));
     let (Some(socket), Some(token)) = (var(SOCKET_VAR), token) else {
         complain("not started by egit");
-        return ExitCode::FAILURE;
+        return FAILURE;
     };
     let kind = classify(
         prompt.as_encoded_bytes(),
@@ -44,7 +56,7 @@ pub fn run_helper(prompt: &OsStr) -> ExitCode {
     ) {
         Ok(Some(answer)) => match kind {
             // Answered by the exit code alone.
-            PromptKind::Confirm | PromptKind::Notice => ExitCode::SUCCESS,
+            PromptKind::Confirm | PromptKind::Notice => SUCCESS,
             PromptKind::Visible | PromptKind::Secret | PromptKind::YesNo => {
                 let mut stdout = io::stdout().lock();
                 let printed = stdout
@@ -52,18 +64,18 @@ pub fn run_helper(prompt: &OsStr) -> ExitCode {
                     .and_then(|()| stdout.write_all(b"\n"))
                     .and_then(|()| stdout.flush());
                 match printed {
-                    Ok(()) => ExitCode::SUCCESS,
+                    Ok(()) => SUCCESS,
                     Err(error) => {
                         complain(&error.to_string());
-                        ExitCode::FAILURE
+                        FAILURE
                     }
                 }
             }
         },
-        Ok(None) => ExitCode::FAILURE,
+        Ok(None) => FAILURE,
         Err(error) => {
             complain(&error.to_string());
-            ExitCode::FAILURE
+            FAILURE
         }
     }
 }
