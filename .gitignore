@@ -1,1 +1,4 @@
 /target
+# egit's web build for a local package of the relay (seaworthy.toml), copied from
+# target/web; the release workflow unpacks it here.
+/packaging/web

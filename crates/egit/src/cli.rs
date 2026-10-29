@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use egit_git::askpass::{HELPER_NAME, helper_status};
 
-/// egit's entry, shared by its executable and its per-CPU cores (`egit-core`), returning the
+/// egit's entry, shared by its executable and its per-CPU cores (`egit_core`), returning the
 /// process's exit status (a core hands its launcher a number).
 ///
 /// Started under the helper's name (the installed `egit-askpass` beside the application, or the

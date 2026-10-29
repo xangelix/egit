@@ -1,5 +1,5 @@
 //! egit's launcher, installed as `egit` (and again beside it as `egit-askpass`, the helper git
-//! and ssh start): it starts the best of egit's per-CPU cores (`egit-core`, one per level in
+//! and ssh start): it starts the best of egit's per-CPU cores (`egit_core`, one per level in
 //! `seaworthy.toml`) the computer runs, in this process. Built for its architecture's baseline,
 //! so it runs anywhere and can say when a CPU is too old.
 

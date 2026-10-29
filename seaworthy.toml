@@ -1,0 +1,125 @@
+# How egit ships: seaworthy (https://github.com/xangelix/seaworthy), the owner's packaging.
+# docs/ROADMAP.md (phase 39) has the decisions; AGENTS.md the commands. Each program is a small
+# launcher and one core per CPU level (crates/egit-launcher, crates/egit-core,
+# crates/egit-relay-core): every level ships, whatever it adds to a download.
+
+[defaults]
+vendor = "egit"                                    # /opt/egit/<product>, %ProgramFiles%\egit\egit
+targets = ["x86-64-v4", "x86-64-v3", "x86-64-v2"]  # the launchers' cpus, in this order
+macos-targets = ["apple-m1"]                       # every Apple Silicon Mac runs it
+macos-minimum = "11.0"
+channel = "stable"
+maintainer = "Cody Wyatt Neiman <neiman@cody.to>"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/xangelix/egit"
+# No update helper yet (updates.default = "off" below): no release manifests to sign, no
+# release keys. Linux updates through the signed repositories once they are published.
+
+# egit itself: the desktop app.
+[product.app]
+display-name = "egit"
+description = "A native git client, built to stay fast on the largest repositories."
+launcher = "crates/egit-launcher"
+launcher-bin = "egit-launcher"       # `egit` is the development binary's name in the workspace
+executable = "egit"
+# git and ssh start the askpass helper by this name: the launcher again, beside it, finding the
+# same cores (egit_git's AskpassServer takes it as the helper).
+aliases = ["egit-askpass"]
+core = "egit_core"
+kind = "desktop"
+windows-directory = "egit"
+outputs = ["msi", "zip", "deb", "rpm", "pacman", "tar", "dmg"]
+updates.default = "off"
+upgrade-code = "{36B0B205-E911-4A0B-8540-DDAF04D5E5D5}"
+
+[product.app.linux]
+command = "egit"
+glibc = "2.39"                       # Ubuntu 24.04, egit's floor
+# The display libraries eframe opens at run time (no DT_NEEDED: verify can't see them), git-lfs
+# and ssh where repositories use them, the portal egit's file dialogs ask, Node for the agents.
+depends.deb = ["git (>= 1:2.43)", "libc6 (>= 2.39)"]
+depends.rpm = ["git >= 2.43", "glibc >= 2.39"]
+depends.pacman = ["git>=2.43", "glibc>=2.39"]
+recommends.deb = [
+    "libvulkan1 | libegl1",
+    "libxkbcommon0",
+    "libwayland-client0 | libx11-6",
+    "xdg-desktop-portal",
+    "git-lfs",
+    "openssh-client",
+]
+recommends.rpm = [
+    "vulkan-loader",
+    "libxkbcommon",
+    "libwayland-client",
+    "xdg-desktop-portal",
+    "git-lfs",
+    "openssh-clients",
+]
+suggests.deb = ["nodejs (>= 18)"]
+suggests.rpm = ["nodejs >= 18"]
+
+[product.app.desktop]
+app-id = "io.github.xangelix.egit"   # egit_app::APP_ID: the window's Wayland app id and X11 class
+wm-class = "io.github.xangelix.egit"
+linux-icons = [
+    "packaging/icons/egit-16.png",
+    "packaging/icons/egit-22.png",
+    "packaging/icons/egit-24.png",
+    "packaging/icons/egit-32.png",
+    "packaging/icons/egit-48.png",
+    "packaging/icons/egit-64.png",
+    "packaging/icons/egit-96.png",
+    "packaging/icons/egit-128.png",
+    "packaging/icons/egit-192.png",
+    "packaging/icons/egit-256.png",
+    "packaging/icons/egit-512.png",
+    "packaging/icons/egit.svg",
+]
+windows-icon = "packaging/icons/egit.ico"
+categories = ["Development", "RevisionControl"]
+keywords = ["git", "version control", "commit", "branch", "merge", "diff", "GitHub", "GitLab"]
+
+[product.app.macos]
+bundle-id = "io.github.xangelix.egit"
+icon = "packaging/icons/egit.icns"
+category = "public.app-category.developer-tools"
+
+# Per user by default (no administrator rights), or for everyone on request.
+[product.app.msi]
+install-scope = "either"
+
+# The relay: egit in a browser, its git run on the relay's computer (Linux and macOS).
+[product.relay]
+display-name = "egit relay"
+description = "Serves egit to a browser, and runs git for it on this computer."
+kind = "tool"
+outputs = ["deb", "rpm", "pacman", "tar", "pkg"]
+updates.default = "off"
+
+[[product.relay.programs]]
+executable = "egit-relay"
+launcher = "crates/egit-launcher"
+launcher-bin = "egit-relay-launcher"
+aliases = ["egit-askpass"]
+core = "egit_relay_core"
+role = "cli"
+
+[product.relay.linux]
+glibc = "2.39"
+depends.deb = ["git (>= 1:2.43)", "libc6 (>= 2.39)"]
+depends.rpm = ["git >= 2.43", "glibc >= 2.39"]
+depends.pacman = ["git>=2.43", "glibc>=2.39"]
+recommends.deb = ["git-lfs", "openssh-client"]
+recommends.rpm = ["git-lfs", "openssh-clients"]
+
+[product.relay.macos]
+bundle-id = "io.github.xangelix.egit.relay"
+
+# egit's web build (scripts/build-web.sh's target/web), which the relay serves: built by the
+# release workflow's web job and handed to the packaging jobs here (seaworthy's data-artifact);
+# for a local package, copied here first. Data: the browser runs it, not the computer.
+[[product.relay.files]]
+source = "packaging/web"
+destination = "web"
+platforms = ["linux", "macos"]

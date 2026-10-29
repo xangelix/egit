@@ -1,5 +1,5 @@
 //! The relay's launcher, installed as `egit-relay` (and again beside it as `egit-askpass`): it
-//! starts the best of the relay's per-CPU cores (`egit-relay-core`) the computer runs, in this
+//! starts the best of the relay's per-CPU cores (`egit_relay_core`) the computer runs, in this
 //! process.
 
 #[cfg(not(target_os = "macos"))]

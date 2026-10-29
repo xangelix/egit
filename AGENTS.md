@@ -50,6 +50,7 @@ it.
 | 36 | A UI pass over everything (nothing that moves, columns that line up, a log's sections folded and outlined), and the features found missing | done; awaiting the owner's review |
 | 37 | egit in a browser: WebAssembly, threaded (a pool of web workers runs its jobs), git through a relay (patches, artifacts, and dropped files through the browser; fonts from the relay's computer; driven headless in CI) | done; awaiting the owner's review |
 | 38 | Stashes in the graph, as GitKraken shows them: each a row beside its branch, joined to the commit it was made on | done; awaiting the owner's review |
+| 39 | Distribution through seaworthy: launchers and per-CPU cores, packages for every platform, the icon, the licence | Linux packages built and run here; Windows and macOS left to CI's runners; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -97,6 +98,23 @@ it.
   `--disable-features=WebGPU` draws through WebGL2, which a screenshot reads (WebGPU's canvas
   shows blank, headless).
 - Supply chain: `cargo deny check` (`deny.toml`) and `cargo shear` (unused dependencies).
+- Packages: seaworthy (https://github.com/xangelix/seaworthy, the owner's packaging; its clone
+  `~/seaworthy`, changes made there on a branch for the owner to review, as its pull requests
+  are) reads `seaworthy.toml`. `seaworthy check` validates it; `seaworthy build-plan --triple
+  x86_64-unknown-linux-gnu` prints the builds (each launcher once, each core once per CPU level,
+  each in a target directory of its own, `-C target-cpu=<level>` as `target.<triple>.rustflags`,
+  `--release --locked`, `profile.release.strip=false`), which `scripts/ci/seaworthy.sh build`
+  of seaworthy's carries out into an artifacts folder; then `seaworthy package --artifacts <dir>
+  --out <dir> --release 0.1.0 --sequence 1 --platforms linux` verifies, lays out, and packages
+  (nFPM for the Linux packages: seaworthy's `scripts/ci/install-nfpm.sh`). The relay's data is
+  egit's page: `scripts/build-web.sh`, then `target/web` copied to `packaging/web` (ignored by
+  git). The Linux binaries must need no glibc past 2.39 (`linux.glibc`): built on a newer one
+  (Arch's) `verify` refuses them, so build in `ubuntu:24.04` or older (CI's `rust:…-bookworm`),
+  or check a local build with a copy of `seaworthy.toml` beside it raising the floor. A
+  launcher run from the build exits 74 without its cores beside it: lay the package out (or
+  unpack it) and run it there. `scripts/icons.sh` renders every icon from `packaging/icons`'
+  SVGs. `seaworthy-launcher` is pinned to a seaworthy commit, and `release.yml` to the commit of
+  its workflow: bump both to the owner's pushed commits after each change made there.
 - Agents: the bridge's tests need Node.js (`EGIT_REQUIRE_NODE=1` makes their absence fail);
   `cargo test -p egit-agents --test install -- --ignored` installs the Claude Agent SDK for real
   (about 250 MB from npm's registry) and loads it. Moving to a newer SDK: change its version
@@ -3001,6 +3019,18 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     failing anything that moves back while scrolling down or moves once the wheel stops.
     `src/tests/scale.rs`
     and `src/tests/corpus.rs` are the opt-in measurements (see Scale and Text corpus above).
+- `seaworthy.toml` — how egit ships (seaworthy's): vendor `egit`, the CPU levels (every one:
+  `x86-64-v4`, `v3`, `v2`; `apple-m1`), `app` (the desktop app: `egit-launcher` built, shipped
+  as `egit`, its alias `egit-askpass`, `egit_core`; the MSI per user or for everyone, zip, deb,
+  rpm, pacman, tar, dmg; `/usr/bin/egit`; glibc 2.39; git 2.43 depended on, the display
+  libraries eframe opens and git-lfs, ssh, the desktop portal recommended, Node suggested; the
+  menu entry `io.github.xangelix.egit`, its icons; the bundle `io.github.xangelix.egit`) and
+  `relay` (a tool: `egit-relay`, its alias, `egit_relay_core`; deb, rpm, pacman, tar, pkg;
+  `packaging/web` installed as its `web`). No update helper (`updates.default = "off"`), so no
+  release manifests or keys yet.
+- `packaging/icons/` — egit's icon: `egit.svg` (48 pixels and up), `egit-small.svg` (16 to 32),
+  the hicolor PNGs, `egit.ico`, `egit.icns` (Apple's grid), all rendered by `scripts/icons.sh`;
+  the window's icon is `egit-256.png` (`egit_app::ICON_PNG`).
 - `docs/ROADMAP.md` — the MVP phases and their exit criteria.
 - `scripts/build-git.sh` — builds a git release into `target/git/<version>` (as C17: older
   releases don't compile as C23). `scripts/check-platforms.sh` — lints for Windows and macOS
@@ -3061,4 +3091,8 @@ GitHub Actions (`.github/workflows/ci.yml`): formatting, lints, and docs; the te
 latest Ubuntu (screens rendered, every signer required) and in `ubuntu:24.04` with its git
 2.43; macOS and Windows each linted and tested (the platforms job); and the supply chain.
 Every action is used at its latest major version, and Dependabot keeps them there
-(`.github/dependabot.yml`).
+(`.github/dependabot.yml`). `.github/workflows/release.yml`: a `v*` tag (or a run started by
+hand) builds egit's page (the relay's data) and hands it to seaworthy's reusable workflow, pinned
+by its full commit (`data-artifact`, into `packaging/web`), which builds every launcher and core
+on Linux, Windows, and macOS, verifies and packages them, unsigned until the owner sets its
+signers up (`allow-unsigned`); the packages' checksums checked after.

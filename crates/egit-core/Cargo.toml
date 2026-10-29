@@ -1,5 +1,6 @@
 [package]
-name = "egit-core"
+# The library's own name, `_`s and all: seaworthy builds a core by its crate name (`-p egit_core`).
+name = "egit_core"
 description = "egit as a per-CPU core: the application, built once per CPU level, which its launcher loads."
 version.workspace = true
 edition.workspace = true

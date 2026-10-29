@@ -1,0 +1,87 @@
+# egit's packages, built, verified, and packaged by seaworthy (https://github.com/xangelix/seaworthy),
+# the owner's packaging: its reusable workflow, pinned by its full commit, which is also the
+# seaworthy command's and its scripts' (docs/ROADMAP.md, phase 39; seaworthy.toml). A `v*` tag is a
+# release, named by the tag (crates/egit's version must say the same); a run started by hand
+# builds every package, named by that version.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # egit's page, which the relay serves: built here (the packaging jobs run none of egit's code)
+  # and handed to them as data (seaworthy's data-artifact), into packaging/web.
+  web:
+    name: The relay's page (WebAssembly)
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The nightly its threads need (scripts/web-env.sh pins it): its standard library is built
+      # with atomics.
+      - name: Install the page's toolchain
+        run: |
+          . scripts/web-env.sh
+          rustup toolchain install "$web_toolchain" --profile minimal \
+            --component rust-src --target wasm32-unknown-unknown
+
+      # The CLI must be the version the lock file names.
+      - name: Install wasm-bindgen's CLI
+        run: |
+          version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/[^0-9.]/, ""); print }' Cargo.lock)
+          cargo install wasm-bindgen-cli --version "$version" --locked
+
+      - name: Build the page
+        run: scripts/build-web.sh
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: egit-web
+          path: target/web/
+          if-no-files-found: error
+          retention-days: 7
+
+  dist:
+    name: Packages
+    needs: web
+    # seaworthy's egit-distribution branch of 2026-10-29 (launcher-bin, aliases, data-artifact,
+    # weak dependencies): bump to the owner's pushed commit once it is on GitHub.
+    uses: xangelix/seaworthy/.github/workflows/dist.yml@381eda60569d88e3a4a655307bfcb6967c179e5f # egit-distribution of 2026-10-29
+    permissions:
+      contents: read
+    with:
+      release: ${{ startsWith(github.ref, 'refs/tags/v') }}
+      version-file: crates/egit/Cargo.toml
+      environment: release
+      # No signer is set up yet (Authenticode, a Developer ID, the packages' OpenPGP key: the
+      # owner's to choose): the packages are unsigned, said so, and nothing is published.
+      allow-unsigned: true
+      data-artifact: egit-web
+      data-path: packaging/web
+    secrets: inherit
+
+  checksums:
+    name: Checksums
+    needs: dist
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.dist.outputs.packages-artifact }}
+          path: packages
+      - name: Every package as listed
+        run: cd packages && sha256sum --check SHA256SUMS

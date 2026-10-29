@@ -37,7 +37,7 @@ proxies'. Their token (after `#`) is what lets a browser in. EGIT_RELAY_TOKEN gi
 your own, so the addresses stay the same between runs.
 ";
 
-/// The relay's entry, shared by its executable and its per-CPU cores (`egit-relay-core`).
+/// The relay's entry, shared by its executable and its per-CPU cores (`egit_relay_core`).
 ///
 /// The askpass helper when started under its name, else the relay with the command line's
 /// options. Returns the process's exit status (a core hands its launcher a number).

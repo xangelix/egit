@@ -1,5 +1,7 @@
 [package]
-name = "egit-relay-core"
+# The library's own name, `_`s and all: seaworthy builds a core by its crate name
+# (`-p egit_relay_core`).
+name = "egit_relay_core"
 description = "The relay as a per-CPU core: egit-relay, built once per CPU level, which its launcher loads."
 version.workspace = true
 edition.workspace = true
