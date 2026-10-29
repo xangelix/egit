@@ -64,8 +64,8 @@ pub fn find_node() -> Result<Node, AgentError> {
     } else {
         ("node", "npm")
     };
-    let node = on_path(node_name).ok_or(AgentError::NodeMissing)?;
-    let npm = on_path(npm_name).ok_or(AgentError::NodeMissing)?;
+    let node = egit_git::find_program(OsStr::new(node_name)).ok_or(AgentError::NodeMissing)?;
+    let npm = egit_git::find_program(OsStr::new(npm_name)).ok_or(AgentError::NodeMissing)?;
     let out = Command::new(&node)
         .arg("--version")
         .stdin(Stdio::null())
@@ -123,15 +123,6 @@ pub async fn find_node_there(git: &Git) -> Result<Node, AgentError> {
         major,
         version,
     })
-}
-
-/// The first file called `name` in a folder on `PATH`.
-fn on_path(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
 }
 
 /// Where the bridge and the SDK are (or go), for this version of what egit carries: on this
@@ -417,10 +408,12 @@ async fn write_and_install(
     Ok(())
 }
 
-/// `PATH` with Node's folder first.
+/// `PATH` with Node's folder first, then the folders egit looks for programs in.
 fn path_with(node: &Node) -> std::ffi::OsString {
     let mut folders: Vec<PathBuf> = node.node.parent().map(Path::to_owned).into_iter().collect();
-    if let Some(path) = std::env::var_os("PATH") {
+    let path = egit_git::search_path()
+        .map_or_else(|| std::env::var_os("PATH"), |path| Some(path.to_owned()));
+    if let Some(path) = path {
         folders.extend(std::env::split_paths(&path));
     }
     std::env::join_paths(folders).unwrap_or_else(|_| OsStr::new("").to_owned())

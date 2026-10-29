@@ -64,6 +64,7 @@ mod remote_setup;
 mod repo;
 mod running;
 mod search;
+mod search_path;
 mod signatures;
 mod signing;
 mod span;
@@ -177,6 +178,7 @@ pub use repo::{
 };
 pub use running::{Input, Running, Stopping};
 pub use search::{CommitFilter, find_commits, resolve_commit};
+pub use search_path::{SHELL_PATIENCE, WELL_KNOWN, find_program, search_path};
 pub use signatures::{SignatureCheck, Verdict, check_signatures};
 pub use signing::{MAX_SIGNED, SignError, Signed, SigningPlan, plan_signing, sign_commits};
 pub use ssh::{Holding, KEPT_IDLE, SshSharing};

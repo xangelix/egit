@@ -65,6 +65,11 @@ impl Launch {
         if let Some(folder) = self.bridge.parent() {
             command.current_dir(folder);
         }
+        // What Claude Code runs (git, its tools) is looked for where egit looks (a Mac's login
+        // shell's PATH, started from the Finder); the account's own variables win.
+        if let Some(path) = egit_git::search_path() {
+            command.env("PATH", path);
+        }
         for key in &self.unset {
             command.env_remove(key);
         }

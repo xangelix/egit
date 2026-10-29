@@ -66,7 +66,7 @@ impl Git {
             Host::Local => match options.program {
                 Some(program) => (program, None),
                 None => (
-                    find_on_path(OsStr::new(GIT)).ok_or(GitError::NotFound)?,
+                    crate::find_program(OsStr::new(GIT)).ok_or(GitError::NotFound)?,
                     None,
                 ),
             },
@@ -91,6 +91,13 @@ impl Git {
         } else {
             Environment::plan(std::env::vars_os())
         };
+        // Here, git and what it runs (ssh, gpg, git-lfs, hooks, credential helpers) look on the
+        // PATH egit looks on (a Mac's login shell's, started from the Finder).
+        if matches!(options.host, Host::Local)
+            && let Some(path) = crate::search_path()
+        {
+            environment.push(OsString::from("PATH"), path.to_owned());
+        }
         for (key, value) in options.env {
             environment.push(key, value);
         }
@@ -266,26 +273,4 @@ pub(crate) fn outside_repositories() -> &'static Path {
             PathBuf::from("/")
         }
     })
-}
-
-/// The first executable called `name` in a directory on `PATH`.
-fn find_on_path(name: &OsStr) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .map(|dir| dir.join(name))
-        .find(|candidate| is_executable(candidate))
-}
-
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt as _;
-    path.metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-/// On Windows a file is run by its name (`.exe`), not a permission.
-#[cfg(not(unix))]
-fn is_executable(path: &Path) -> bool {
-    path.is_file()
 }

@@ -163,7 +163,8 @@ Linux first: the floor is Ubuntu 24.04 LTS, glibc 2.39 and git 2.43.0. Never use
 newer than 2.43.0 without a fallback, and check its release notes when unsure. macOS (11 or
 newer) and Windows (10 or newer, with Git for Windows) too, since phase 20: what differs lives
 behind `cfg`s in a few places (git's processes, the askpass transport, a watch of the work
-tree, font folders, the browser opener); bytes git prints become paths through bstr's
+tree, font folders, the browser opener; on macOS, an app started from the Finder looks for
+programs on its login shell's `PATH`, `egit_git::search_path`); bytes git prints become paths through bstr's
 `to_path_lossy`/`to_os_str_lossy` (byte for byte on Unix, UTF-8 on Windows, as Git for Windows
 writes paths), never `OsStrExt`.
 
@@ -213,7 +214,7 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
 ## Repository layout
 
 - `crates/egit-git` — the git binary: running it, and parsing what it prints. No egui.
-  - `git.rs` — `Git`: the executable (found on `PATH` (`git.exe` on Windows) or given), its version checked against
+  - `git.rs` — `Git`: the executable (found on `PATH` (`git.exe` on Windows; `find_program`) or given), its version checked against
     `GitVersion::MINIMUM` (`version.rs`), and the environment every git process gets
     (`env.rs`: repository variables (`git rev-parse --local-env-vars`) removed, `LC_MESSAGES=C`
     with the character set kept, no pager, editor `:`, `GIT_TERMINAL_PROMPT=0`, no `GPG_TTY`);
@@ -236,6 +237,15 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `PidReader` takes the id from stderr, holding back what came before it (kept only when it
     never came: ssh's words on a login that failed). `SshHost::terminate`: `kill -TERM --
     -<pid>` there (sshd made the session's shell lead its group; git `exec`s in its place).
+  - `search_path.rs` — where egit looks for the programs it runs here (`find_program`: git,
+    Node, npm) and the `PATH` they get (`search_path`: git's environment here, npm's, the agents'
+    bridge's): on a Mac started without a terminal (`TERM` unset: the Finder, the Dock, which
+    give launchd's `/usr/bin:/bin:/usr/sbin:/sbin`), the login shell's (`$SHELL -l -i -c`, its
+    answer between markers whatever the profile prints, within `SHELL_PATIENCE`, 3 s, its group
+    stopped past it), then the inherited one; a shell that doesn't answer leaves the package
+    managers' folders that exist (`WELL_KNOWN`: Homebrew's, `MacPorts`', Nix's) ahead of the
+    inherited `PATH`. Elsewhere, and from a terminal, `None`: the inherited `PATH` is the
+    person's. Worked out once.
   - `files.rs` — `Files`, a `Git`'s computer's files as egit reads and writes them directly:
     `read`, `read_all` (several in one command there: each a size line, then its bytes),
     `exist`, `exists`, `is_file`, `runnable` (hooks), `look` (`Entry`: nothing, a link and its
@@ -1094,7 +1104,7 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     (`parent`); each item's `changed` against `version`, so views measure again only what
     changed; unknown messages ignored. `ToolCall::summary`: ("Read", path), ("Run", the
     command's first line), …
-  - `install.rs` — `find_node` (Node 18+ and npm on `PATH`); `Install::at(cache)`: a folder per
+  - `install.rs` — `find_node` (Node 18+ and npm on `PATH`, `find_program`'s); `Install::at(cache)`: a folder per
     SDK version and hash of what egit carries; `install` writes the package beside it, runs
     `npm ci --ignore-scripts --legacy-peer-deps` (a `Running`, `wait_unless` cancelled), checks Claude
     Code's binary for this platform is there (`claude()`), marks it ready, renames it into
