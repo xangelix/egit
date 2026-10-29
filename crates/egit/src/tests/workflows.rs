@@ -6,7 +6,8 @@
 //! (each step's own, under its step), the run cancelled (asked first), a job
 //! re-run from its row, and the mark following. The run's artifacts downloaded where the save
 //! dialog says (each checked against its digest: one that doesn't match isn't saved), an
-//! expired one listed but not offered.
+//! expired one listed but not offered. A workflow run on a branch from its menu, then every run
+//! listed.
 
 use egit_forge::ForgeKind;
 use egit_forge::testing::{FakeArtifact, FakeForge, FakeJob, FakePipeline};
@@ -422,6 +423,30 @@ fn a_workflow_is_run_on_a_branch_from_its_menu() {
     }
     harness.get_by_label("Docs").click();
     wait_for_label(&mut harness, "Started Docs on main.");
-    let made = &fake.state().repositories[0].pipelines[0];
-    assert_eq!((made.workflow.1, made.git_ref.as_str()), (12, "main"));
+    // Read and let go: the fake answers nothing while its state is held.
+    let made = fake
+        .state()
+        .repositories
+        .first()
+        .and_then(|repository| repository.pipelines.first())
+        .map(|made| (made.workflow.1, made.git_ref.clone()))
+        .unwrap();
+    assert_eq!(made, (12, "main".to_owned()));
+
+    // Every run, from the top bar's Workflow runs: the one just started first, each run's
+    // commit a link back to the history.
+    harness
+        .get_by_role_and_label(Role::Button, "Workflow runs")
+        .click();
+    wait_for_label(&mut harness, "CI #57: failed");
+    wait_for_label(&mut harness, "all 3");
+    let first = |harness: &egui_kittest::Harness<'_, EgitApp>, name: &str| {
+        harness
+            .query_all_by_label_contains(name)
+            .next()
+            .map(|node| node.rect().top())
+    };
+    let (started, earlier) = (first(&harness, "Docs #58: "), first(&harness, "Docs #9: "));
+    assert!(started.unwrap() < earlier.unwrap(), "the newest first");
+    render(&mut harness, "workflow-runs-list");
 }

@@ -47,9 +47,10 @@ pub use model::{
 };
 pub use pictures::{Fetched, PictureSources, Pictures, Source as PictureSource};
 pub use pipelines::{
-    CiAction, CiGroup, CiStatus, EarlierRun, Job, JobActions, Pipeline, PipelineActions,
-    PipelineDetails, PipelineListing, Stage, Workflow, WorkflowFile, ci_act, has_pipelines,
-    pipeline_details, pipelines, start_pipeline, workflows,
+    CiAction, CiGroup, CiStatus, EarlierRun, Job, JobActions, ListedPipeline, PageAfter, Pipeline,
+    PipelineActions, PipelineDetails, PipelineListing, PipelinesPage, Stage, Workflow,
+    WorkflowFile, ci_act, has_pipelines, pipeline_details, pipelines, pipelines_page,
+    start_pipeline, workflows,
 };
 pub use repository::{
     ForgeRepository, forge_repository, resolve_ssh_alias, resolve_ssh_alias_on, ssh_host_of,

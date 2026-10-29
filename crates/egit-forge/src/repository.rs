@@ -100,6 +100,16 @@ impl ForgeRepository {
         })
     }
 
+    /// Its pipelines' page: GitLab's pipelines, GitHub's Actions (its workflow runs).
+    #[must_use]
+    pub fn pipelines_url(&self) -> String {
+        let path = &self.path;
+        self.host.web_url(&match self.host.kind() {
+            ForgeKind::GitHub => format!("/{path}/actions"),
+            ForgeKind::GitLab => format!("/{path}/-/pipelines"),
+        })
+    }
+
     /// A commit's web page.
     #[must_use]
     pub fn commit_url(&self, commit: ObjectId) -> String {
@@ -372,6 +382,15 @@ mod tests {
         assert_eq!(
             gitlab.branch_url("main"),
             "https://gitlab.com/team/sub/tool/-/tree/main"
+        );
+        // And their pipelines' pages.
+        assert_eq!(
+            github.pipelines_url(),
+            "https://github.com/ada/tool/actions"
+        );
+        assert_eq!(
+            gitlab.pipelines_url(),
+            "https://gitlab.com/team/sub/tool/-/pipelines"
         );
     }
 

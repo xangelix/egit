@@ -51,6 +51,7 @@ it.
 | 37 | egit in a browser: WebAssembly, threaded (a pool of web workers runs its jobs), git through a relay (patches, artifacts, and dropped files through the browser; fonts from the relay's computer; driven headless in CI) | done; awaiting the owner's review |
 | 38 | Stashes in the graph, as GitKraken shows them: each a row beside its branch, joined to the commit it was made on | done; awaiting the owner's review |
 | 39 | Distribution through seaworthy: launchers and per-CPU cores, packages for every platform, the icon, the licence | Linux packages built and run here; Windows and macOS left to CI's runners; awaiting the owner's review |
+| 40 | Dialogs answered by Enter and Escape; Skip hooks for every task that makes commits; every pipeline (workflow run) listed, a page at a time, each commit a link back | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -906,7 +907,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `altssh.gitlab.com` are their forges', then those ssh hosts).
   - `repository.rs` — `ForgeRepository` (a host and a path: GitHub's `owner/name`, GitLab's
     `group/…/project`; `owner`, `name`, `is`, web pages of it, a request (`/pull/12`,
-    `/-/merge_requests/12`), a commit, a branch, its name escaped). `forge_repository`: a
+    `/-/merge_requests/12`), a commit, a branch, its name escaped, its pipelines
+    (`pipelines_url`: GitHub's Actions, GitLab's `/-/pipelines`)). `forge_repository`: a
     remote URL of any form (https, ssh, scp-like, `git://`) to its repository; an ssh host
     alias through `resolve_ssh_alias` (`ssh -G -- <alias>`'s `hostname`, 2 s at most; never an
     option), or `resolve_ssh_alias_on` a git's computer (`Git::run_there`, stopped after 2 s;
@@ -1026,9 +1028,15 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     step's first line given (its own log fed in turn, `JobLog::lines` before each,
     `JobLog::end_part` after: its line under way ended, the groups it left open ended there).
   - `pipelines/` — CI/CD pipelines, GitLab's and GitHub Actions' workflow runs alike
-    (`has_pipelines`: both), each call sent to its forge's (`mod.rs`). `gitlab.rs`: through
-    GitLab's GraphQL API: `pipelines` (a project's newest, 100 a
-    page, each page handed over as it lands, up to a limit; none for a project whose pipelines
+    (`has_pipelines`: both), each call sent to its forge's (`mod.rs`): `pipelines_page` (a
+    page of 100, the newest first: the first, or the one a `PageAfter` names, GitLab's cursor or
+    GitHub's page number; each a `ListedPipeline`, the `Pipeline` with who made it run, how,
+    when it started and finished, and how long it ran; `PipelinesPage::next` where the next
+    starts, none after the last; a first page says whether the forge lists them at all), and
+    `pipelines` (pages read in turn up to a limit, each handed over as it lands, as `Pipeline`s).
+    `gitlab.rs`: through
+    GitLab's GraphQL API: `pipelines_page` (a project's, `pipelines(first, after)`, with
+    `startedAt finishedAt duration source user`; none for a project whose pipelines
     can't be seen: `PipelineListing::Hidden`, GitLab's `pipelines: null`, said, not an error;
     nodes without a number or commit left out, logged), `pipeline_details` (one by its `iid`:
     its stages in order, each one's jobs
@@ -1102,7 +1110,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     the token; the bearer token checked; a rate limit to switch on; requests recorded). `tests/github.rs` and `tests/gitlab.rs` run each call against it,
     signed in through a sandbox's `store` helper (and an askpass script): pipelines a page at a
     time and one whole (stages in order, jobs, pages, needs, earlier runs), retried, cancelled,
-    and started; GitHub's workflow runs listed (each workflow its series), one whole (its
+    and started; a list's pages of either forge (100, then the rest and no more; who, how, how
+    long, none for one running); GitHub's workflow runs listed (each workflow its series), one whole (its
     matrix together, a job's earlier attempt, laid over by its workflow), a job's steps and
     log (through the redirect, without the token), a running job's steps' own logs (a finished
     one's whole, its groups sections; the running one's as far as written, then on from there;
@@ -1442,8 +1451,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     clone, home, profile, close the tab, a tab by number, a theme, a recent repository) and
     `RepoCommand` (fetch, pull, push, undo, redo, search, the sidebar shown or filtered, the
     output shown or hidden (⌘J), the agents shown or hidden (⌘L), the
-    reflog, the work tree, the requests, stash, patches, a branch made or switched to, read
-    again), each's words and shortcut; `pressed` takes the application's own shortcuts at a
+    reflog, the work tree, the requests, the pipelines, stash, patches, a branch made or
+    switched to, read again), each's words and shortcut; `pressed` takes the application's own shortcuts at a
     frame's start (⌘K and ⇧⌘P, ⌘,, ⌘O, ⌘W, ⌘B, ⌘R, ⌘J, ⌘L, ⌘1 … ⌘9; the views take theirs), the more
     specific first. `keys_text`: a shortcut written as a Mac shows it (`⇧⌘Z`) shown so on
     macOS and as `Ctrl+Shift+Z` elsewhere (egui's command key is Ctrl there). `score`: how
@@ -1967,19 +1976,20 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   - `views/history.rs` — the history's chrome (the top bar, the sidebar, the details: `chrome`,
     the panel tone) around the commit table on the window's background. The top bar: Undo and
     Redo, then the views and menus as quiet tools
-    (Search, Reflog, Agents (the agents' panel at the tab's right), Stash, Patches, LFS where the repository keeps files in it (its state;
+    (Search, Reflog, Agents (the agents' panel at the tab's right), Pipelines or Workflow runs
+    where a remote is on a forge (`pipelines_words`: the list of them), Stash, Patches, LFS where the repository keeps files in it (its state;
     pull, fetch, check out, push to each remote, prune; its page), Submodules where it has
     some (how they stand; mend everything, update all to the commits recorded or their
     branches' latest, sync addresses; their page), and Repository (a folder's icon): its
-    Overview, Settings, the submodules' and Git LFS's pages, opening its folder, and reading it
-    again), then the requests (or, while they want a sign-in, "Sign in to GitLab", opening the
+    Overview, Settings, the submodules' and Git LFS's pages, the list of pipelines, opening its
+    folder, and reading it again), then the requests (or, while they want a sign-in, "Sign in to GitLab", opening the
     dialog; `requests_tool`), why the work tree couldn't be read (when it couldn't), and last
     the commit count as a button, "Stats: 222 commits", opening the Stats page in the commit
     table's place (`Tool::Stats`; closed, it is kept, `stats_kept`, and shows again at once
     while the history is the same: `Names::identity`) (a spinner beside it while the history is
     read: the count grows meanwhile, moving nothing but it); at its right `views/tasks.rs`'s bar
     (drawn first, into the row; its words capped at 300 points). Each button's words show
-    beside its icon where there is room: the views' (Search, Reflog, Agents) give theirs up
+    beside its icon where there is room: the views' (Search, Reflog, Agents, Pipelines) give theirs up
     first, then the menus' (`Looks`: `bar_looks`, from `BarRoom`: the left part's width drawn
     compact last frame, room kept for the spinner, plus what each group's words add,
     `widgets::tool_width`, against the room the task bar leaves, its idle width; held while a
@@ -2466,9 +2476,26 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     they go, each's status, number, name, and how long in columns (`steps`, until a step has
     finished: GitHub gives each step's log once it has, the whole job's once the job has
     ended); Escape goes back.
+    `views/pipelines.rs` — `PipelinesView`, every pipeline (workflow run) of a project in the
+    commit table's place (`Tool::Pipelines`; the top bar's Pipelines or Workflow runs, the
+    Repository menu, the palette; the details panel left out; Escape or History goes back;
+    closed, kept, `pipelines_kept`, and shown again as it was): the newest first, read a page at
+    a time (`pipelines_page`: the first as it opens, the next once the rows in view come within
+    `READ_AHEAD`, 30, of the end of what was read; the newest again every `EVERY`, 20 s, while
+    one on it is under way, merged in by id, those made since first; a failed read tried again
+    after as long), several projects chosen between in the bar; each row (60 points, two
+    lines, `show_rows`): how it went (`ci_look`, named "CI #57: failed"), its title, an
+    attempt past the first, its branch or tag, how long it ran (ticking while it runs) and how
+    long ago in columns; under them its commit, a link back to it in the history where the
+    history holds it, its subject (the history's summaries), and who made it run and how; its
+    menu, its page, Show the commit, Open on its forge; ↑ ↓, Enter. Which commits the history
+    holds is worked out in a job (`InHistory`: the history's names scanned against the list's
+    commits, sorted, again for another history or a longer list), so a commit not fetched is
+    never asked of git (a partial clone would fetch it). A click shows the pipeline's page
+    (`PipelineView::from_list`), whose back goes to the list.
     `views/pipeline/` — `PipelineView` (`mod.rs`), a pipeline in the commit table's place (a
-    GitLab pipeline, a GitHub workflow's run; from its mark; the details panel left out; Escape
-    or History goes back), its forge's words its buttons' (`CiWords`: GitLab's or GitHub's): a
+    GitLab pipeline, a GitHub workflow's run; from its mark, or the list of pipelines; the
+    details panel left out; Escape or History, or the list's name, goes back), its forge's words its buttons' (`CiWords`: GitLab's or GitHub's): a
     bar (its title, where its commit ran others a menu of them ("2 more workflow runs for this
     commit": another GitHub workflow's, each showing it in this one's place,
     `PipelineEvent::Other`), and status in words, Refresh (always pressable: a read under way
@@ -2986,7 +3013,10 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     older one of the same commit not), the mark following its pipeline as it finishes (read
     again at once: `read_pipelines_now`), its page (stages in order, jobs and their words, "may
     fail"; rendered), a job opening its page (recorded), Show the commit selecting it, and
-    Escape closing the page; and pipelines GitLab refuses: the notice under the commit table
+    Escape closing the page; every pipeline listed from the top bar (150: the first page of 100,
+    then the rest as the wheel nears the end; a commit the history holds a link, one it doesn't
+    not; rendered), a row's page going back to the list, a commit's link selecting it in the
+    history, the list kept and shown again as it was; and pipelines GitLab refuses: the notice under the commit table
     with its words (rendered), dismissed, then the mark once they can be read; and the
     Overview's card (rendered): a remote on a host egit doesn't know, the project, the
     credential, 2 open, 3 pipelines read and the newest, 2 of their 3 commits in this history
@@ -3017,7 +3047,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     wrote it (the finished one folded under its step, the running one open; rendered), the run cancelled (asked
     first), a job re-run from its row, and the mark following; and the run's artifacts (an
     expired one listed, disabled; rendered): one downloaded, one whose digest doesn't match
-    refused, said (rendered), nothing left on disk, no part either.
+    refused, said (rendered), nothing left on disk, no part either. A workflow run on a branch
+    from its menu, then every run listed from the top bar's Workflow runs, the new one first
+    (rendered).
     `src/tests/stashes.rs` shows three stashes in the graph (at set times: each where its time
     puts it, above the commit it was made on, the branch keeping the first lane; "Stats: 2
     commits"; rendered, and one selected: its details), applies one from its details, drops

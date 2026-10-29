@@ -365,6 +365,48 @@ pub enum PipelineListing {
     Hidden,
 }
 
+/// A pipeline as a list of a repository's shows it: who made it run, how, and how long it
+/// took, beside what [`Pipeline`] says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListedPipeline {
+    /// The pipeline.
+    pub pipeline: Pipeline,
+    /// Who made it run (their username; a GitHub run's triggering actor).
+    pub user: Option<String>,
+    /// What made it run (GitLab's `push`, `schedule`, …; GitHub's event).
+    pub source: Option<String>,
+    /// When it started (seconds since the Unix epoch), once it has.
+    pub started: Option<i64>,
+    /// When it finished, once it has.
+    pub finished: Option<i64>,
+    /// How long it ran, in seconds, once it finished (GitLab's own count; a GitHub run's from
+    /// its start to its end).
+    pub duration: Option<u64>,
+}
+
+/// Where the next page of a repository's pipelines starts: GitLab's cursor, GitHub's page.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PageAfter(After);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum After {
+    /// GitLab's `endCursor`.
+    Cursor(String),
+    /// GitHub's page number.
+    Page(u32),
+}
+
+/// A page of a repository's pipelines, the newest first.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipelinesPage {
+    /// Whether the forge listed them at all (a first page only may say they are hidden).
+    pub listing: PipelineListing,
+    /// The pipelines on it (those without a number or a commit left out).
+    pub pipelines: Vec<ListedPipeline>,
+    /// Where the next starts; none after the last.
+    pub next: Option<PageAfter>,
+}
+
 /// Whether repositories on `kind` have pipelines egit reads: GitLab's, and GitHub's Actions.
 #[must_use]
 pub const fn has_pipelines(kind: ForgeKind) -> bool {
@@ -387,12 +429,61 @@ pub async fn pipelines(
     cancel: &CancelToken,
     mut found: impl FnMut(Vec<Pipeline>) + Send,
 ) -> Result<PipelineListing, ForgeError> {
+    let mut after = None;
+    let mut left = usize::try_from(limit).unwrap_or(usize::MAX);
+    while left > 0 {
+        if cancel.is_cancelled() {
+            return Err(crate::answer::cancelled());
+        }
+        let page = pipelines_page(account, repository, after.as_ref(), cancel).await?;
+        if page.listing == PipelineListing::Hidden {
+            return Ok(PipelineListing::Hidden);
+        }
+        let taken: Vec<Pipeline> = page
+            .pipelines
+            .into_iter()
+            .take(left)
+            .map(|listed| listed.pipeline)
+            .collect();
+        left = left.saturating_sub(taken.len());
+        found(taken);
+        after = page.next;
+        if after.is_none() {
+            break;
+        }
+    }
+    Ok(PipelineListing::Listed)
+}
+
+/// Reads a page of `repository`'s pipelines (a GitHub repository's workflow runs), the newest
+/// first: the first, or the one `after` names (the page before's [`PipelinesPage::next`]).
+///
+/// A first page says whether the forge lists them at all. GitHub numbers its pages, so runs
+/// made meanwhile move the later ones along: one may come again on the next page.
+///
+/// # Errors
+///
+/// Any of [`ForgeError`]'s.
+pub async fn pipelines_page(
+    account: &Account,
+    repository: &ForgeRepository,
+    after: Option<&PageAfter>,
+    cancel: &CancelToken,
+) -> Result<PipelinesPage, ForgeError> {
     match repository.host().kind() {
         ForgeKind::GitLab => {
-            gitlab::pipelines(account, repository, limit, cancel, &mut found).await
+            let cursor = after.and_then(|after| match &after.0 {
+                After::Cursor(cursor) => Some(cursor.as_str()),
+                After::Page(_) => None,
+            });
+            gitlab::pipelines_page(account, repository, cursor, cancel).await
         }
         ForgeKind::GitHub => {
-            github::pipelines(account, repository, limit, cancel, &mut found).await
+            let page = after.map_or(1, |after| match after.0 {
+                After::Page(page) => page,
+                After::Cursor(_) => 1,
+            });
+            github::pipelines_page(account, repository, page, cancel).await
         }
     }
 }

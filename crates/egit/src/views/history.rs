@@ -226,6 +226,8 @@ pub(crate) struct HistoryView {
     /// The Stats page, kept while it is closed: opened again, it shows at once (and reads
     /// again only for a history read again).
     stats_kept: Option<Box<StatsView>>,
+    /// The list of pipelines, closed: shown again as it was.
+    pipelines_kept: Option<Box<super::pipelines::PipelinesView>>,
 }
 
 /// A ref dropped onto another, where.
@@ -294,6 +296,8 @@ enum Tool {
     FileHistory(FileHistoryView),
     PullRequests(PullRequestView),
     Pipeline(Box<PipelineView>),
+    /// Every pipeline (workflow run) of a project, the newest first.
+    Pipelines(Box<super::pipelines::PipelinesView>),
     /// A job's log, in its pipeline's page's place (kept, to go back to).
     Job(Box<super::job::JobView>),
     Patch(PatchView),
@@ -454,6 +458,7 @@ impl HistoryView {
             compare_asked: None,
             picked_asked: None,
             stats_kept: None,
+            pipelines_kept: None,
         }
     }
 
@@ -722,10 +727,19 @@ impl HistoryView {
         }
     }
 
-    /// Shows `mark`'s pipeline in the commit table's place.
+    /// Shows `mark`'s pipeline in the commit table's place (going back to the list the page
+    /// shown was from, if it was).
     fn show_pipeline(&mut self, mark: crate::ci::CiMark) {
         self.file = None;
-        self.tool = Some(Tool::Pipeline(Box::new(PipelineView::new(mark))));
+        let list = match &mut self.tool {
+            Some(Tool::Pipeline(page)) => page.take_list(),
+            _ => None,
+        };
+        let page = match list {
+            Some(list) => PipelineView::from_list(mark, list),
+            None => PipelineView::new(mark),
+        };
+        self.tool = Some(Tool::Pipeline(Box::new(page)));
     }
 
     /// Shows the patches in `files`, to apply, in the commit table's place.
@@ -757,6 +771,24 @@ impl HistoryView {
         self.tool = Some(Tool::Submodules(Box::default()));
     }
 
+    /// The list of pipelines shown: how many were read, and whether there are more (tests).
+    #[cfg(test)]
+    pub(crate) fn pipelines_read(&self) -> Option<(usize, bool)> {
+        match &self.tool {
+            Some(Tool::Pipelines(list)) => Some(list.read_so_far()),
+            _ => None,
+        }
+    }
+
+    /// Whether a pipeline's page shows, and whether it was shown from the list (tests).
+    #[cfg(test)]
+    pub(crate) fn pipeline_page(&self) -> Option<bool> {
+        match &self.tool {
+            Some(Tool::Pipeline(page)) => Some(page.has_list()),
+            _ => None,
+        }
+    }
+
     /// Shows the Stats page (for tests: the top bar's button toggles it).
     #[cfg(test)]
     pub(crate) fn open_stats(&mut self) {
@@ -784,10 +816,46 @@ impl HistoryView {
         }
     }
 
-    /// Closes the tool in the commit table's place (the Stats page is kept).
+    /// Closes the tool in the commit table's place (the Stats page is kept, and the list of
+    /// pipelines, a pipeline's page or job's log shown from it too).
     fn close_tool(&mut self) {
-        if let Some(Tool::Stats(stats)) = self.tool.take() {
-            self.stats_kept = Some(stats);
+        match self.tool.take() {
+            Some(Tool::Stats(stats)) => self.stats_kept = Some(stats),
+            Some(Tool::Pipelines(list)) => self.pipelines_kept = Some(list),
+            Some(Tool::Pipeline(mut page)) => {
+                if let Some(list) = page.take_list() {
+                    self.pipelines_kept = Some(list);
+                }
+            }
+            Some(Tool::Job(mut log)) => {
+                if let Some(list) = log.pipeline.take_list() {
+                    self.pipelines_kept = Some(list);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Shows the list of pipelines in the commit table's place (as it was left), unless it
+    /// shows.
+    fn show_pipelines(&mut self) {
+        if !matches!(self.tool, Some(Tool::Pipelines(_))) {
+            self.toggle_pipelines();
+        }
+    }
+
+    /// Shows the list of pipelines in the commit table's place (as it was left), or (shown)
+    /// the history again.
+    fn toggle_pipelines(&mut self) {
+        self.file = None;
+        let showing = matches!(self.tool, Some(Tool::Pipelines(_)));
+        self.close_tool();
+        if !showing {
+            let list = self
+                .pipelines_kept
+                .take()
+                .unwrap_or_else(|| Box::new(super::pipelines::PipelinesView::new()));
+            self.tool = Some(Tool::Pipelines(list));
         }
     }
 
@@ -1160,6 +1228,7 @@ fn queued_commands(shared: &Shared<'_>, view: &mut HistoryView, pane: &mut TaskP
             )),
             RepoCommand::GoTo(_)
             | RepoCommand::Stats
+            | RepoCommand::Pipelines
             | RepoCommand::Overview
             | RepoCommand::Settings
             | RepoCommand::GitLfs
@@ -1191,6 +1260,7 @@ fn page_command(
                 view.toggle_stats();
             }
         }
+        RepoCommand::Pipelines => view.show_pipelines(),
         RepoCommand::Overview => {
             pane.actions
                 .push(Action::ShowPanel(shared.id, RepoPanel::Overview));
@@ -1608,6 +1678,7 @@ fn details_panel(
         Some(
             Tool::Job(_)
                 | Tool::Pipeline(_)
+                | Tool::Pipelines(_)
                 | Tool::PullRequests(_)
                 | Tool::Patch(_)
                 | Tool::Lfs(_)
@@ -2024,11 +2095,16 @@ fn bar_looks(
     (room, compact): (f32, f32),
 ) -> (Looks, (f32, f32)) {
     let stash = actions::stash_label(stashes);
-    let views = [
+    // The pipelines', where a remote is on a forge.
+    let pipelines = pipelines_words(shared).map(|words| (icon::FLOW_ARROW, words));
+    let views: Vec<(&str, &str)> = [
         (icon::MAGNIFYING_GLASS, "Search"),
         (icon::CLOCK_COUNTER_CLOCKWISE, "Reflog"),
         (icon::ROBOT, "Agents"),
-    ];
+    ]
+    .into_iter()
+    .chain(pipelines)
+    .collect();
     // Git LFS's menu, where the repository keeps files in it; the submodules', where it has
     // some.
     let lfs = shared
@@ -2203,16 +2279,7 @@ fn left_bar(
     undo_buttons(ui, shared, view, task_pane.actions);
     widgets::toolbar_separator(ui);
     let mut cut = LeftOut::new(cutting);
-    let quick = |ui: &Ui, tool| widgets::tool_width(ui, tool, looks.views, false);
-    if cut.fits(ui, quick(ui, (icon::MAGNIFYING_GLASS, "Search"))) {
-        search_button(ui, view, looks.views);
-    }
-    if cut.fits(ui, quick(ui, (icon::CLOCK_COUNTER_CLOCKWISE, "Reflog"))) {
-        reflog_button(ui, view, looks.views);
-    }
-    if cut.fits(ui, quick(ui, (icon::ROBOT, "Agents"))) {
-        agents_button(ui, shared, looks.views, task_pane.actions);
-    }
+    view_buttons(ui, shared, view, (looks.views, &mut cut), task_pane.actions);
     let look = looks.menus;
     let menu = |ui: &Ui, tool| widgets::tool_width(ui, tool, look, true);
     let mut asked = None;
@@ -2255,6 +2322,7 @@ fn left_bar(
         match repository_menu(ui, shared, look, task_pane.actions) {
             Some(Page::Lfs) => view.show_lfs(),
             Some(Page::Submodules) => view.show_submodules(),
+            Some(Page::Pipelines) => view.show_pipelines(),
             None => {}
         }
     }
@@ -2346,6 +2414,7 @@ const SPINNER: f32 = 16.0;
 enum Page {
     Lfs,
     Submodules,
+    Pipelines,
 }
 
 /// The repository's menu: its overview and settings (each a page in place of the history), Git
@@ -2375,6 +2444,12 @@ fn repository_menu(
         }
         if actions::item(ui, (icon::HARD_DRIVES, "Git LFS"), Ok(())) {
             page = Some(Page::Lfs);
+        }
+        // Where a remote is on a forge: its pipelines, as the forge names them.
+        if let Some(words) = pipelines_words(shared)
+            && actions::item_of(ui, (icon::FLOW_ARROW, words), Ok(()), "pipelines-list")
+        {
+            page = Some(Page::Pipelines);
         }
         let revealing = if shared.here() {
             Ok(())
@@ -2746,6 +2821,54 @@ fn requests_tool(shared: &Shared<'_>) -> Option<(&'static str, String)> {
     Some((icon::GIT_PULL_REQUEST, text))
 }
 
+/// The views' buttons, drawn as `look` says while they fit: Search, Reflog, Agents, and where a
+/// remote is on a forge its pipelines.
+fn view_buttons(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    view: &mut HistoryView,
+    (look, cut): (Look, &mut LeftOut),
+    actions: &mut Vec<Action>,
+) {
+    let quick = |ui: &Ui, tool| widgets::tool_width(ui, tool, look, false);
+    if cut.fits(ui, quick(ui, (icon::MAGNIFYING_GLASS, "Search"))) {
+        search_button(ui, view, look);
+    }
+    if cut.fits(ui, quick(ui, (icon::CLOCK_COUNTER_CLOCKWISE, "Reflog"))) {
+        reflog_button(ui, view, look);
+    }
+    if cut.fits(ui, quick(ui, (icon::ROBOT, "Agents"))) {
+        agents_button(ui, shared, look, actions);
+    }
+    if let Some(words) = pipelines_words(shared)
+        && cut.fits(ui, quick(ui, (icon::FLOW_ARROW, words)))
+    {
+        pipelines_button(ui, words, view, look);
+    }
+}
+
+/// The list of pipelines' button (`words`, what the forge calls it): shows it, or (shown) the
+/// history again.
+fn pipelines_button(ui: &mut Ui, words: &str, view: &mut HistoryView, look: Look) {
+    let showing = matches!(view.tool, Some(Tool::Pipelines(_)));
+    let button = widgets::tool(ui, icon::FLOW_ARROW, words, showing, look)
+        .on_hover_text("Every one, the newest first");
+    // Its words are the Overview's too: the list's topic explains it.
+    crate::help::note_topic(ui, button.rect, "pipelines-list");
+    if button.clicked() {
+        view.toggle_pipelines();
+    }
+}
+
+/// What the list of pipelines is called where a remote is on a forge ("Pipelines", "Workflow
+/// runs": the first such remote's forge's word); none without one.
+fn pipelines_words(shared: &Shared<'_>) -> Option<&'static str> {
+    if shared.forge.repositories.is_empty() {
+        return None;
+    }
+    Some(pipeline::CiWords::of(shared.forge.kind()).list)
+}
+
 fn pull_requests_button(
     ui: &mut Ui,
     shared: &Shared<'_>,
@@ -3078,22 +3201,49 @@ fn job_log(
 /// A job's log asked for: the job, and its run's number.
 type JobOpened = (Box<egit_forge::Job>, u64);
 
+/// What a pipeline's page may open in its place: a job's log, another of the commit's pipelines.
+type PageOpens<'a> = (
+    &'a mut Option<JobOpened>,
+    &'a mut Option<Box<crate::ci::CiMark>>,
+);
+
 /// What a pipeline's page asked: the history's part (close, a commit), a job's log opened
-/// (`job_opened`), or another of the commit's pipelines (`other`).
+/// (`job_opened`), another of the commit's pipelines (`other`), or, for a page shown from the
+/// list of pipelines, that list again (`back`).
 fn pipeline_event(
     asked: PipelineEvent,
     shared: &Shared<'_>,
     actions: &mut Vec<Action>,
-    (job_opened, other): (&mut Option<JobOpened>, &mut Option<Box<crate::ci::CiMark>>),
+    ((job_opened, other), back): (PageOpens<'_>, Option<&mut bool>),
 ) -> Option<BlameEvent> {
     match asked {
-        PipelineEvent::Close => return Some(BlameEvent::Close),
+        PipelineEvent::Close => match back {
+            Some(back) => *back = true,
+            None => return Some(BlameEvent::Close),
+        },
         PipelineEvent::ShowCommit(id) => return Some(BlameEvent::ShowCommit(id)),
         PipelineEvent::Open(url) => actions.push(Action::OpenUrl(url)),
         PipelineEvent::Job(job, run) => *job_opened = Some((job, run)),
         PipelineEvent::Acted => actions.push(Action::ReadPipelines(shared.id)),
         PipelineEvent::Other(mark) => *other = Some(mark),
         PipelineEvent::Download(wanted) => actions.push(save_artifact(shared.id, wanted)),
+    }
+    None
+}
+
+/// What the list of pipelines asked: the history view's part of it (closing it, showing a
+/// commit, a pipeline's page: `opened`), or the application's (a page).
+fn pipelines_event(
+    asked: super::pipelines::PipelinesEvent,
+    actions: &mut Vec<Action>,
+    opened: &mut Option<Box<crate::ci::CiMark>>,
+) -> Option<BlameEvent> {
+    use super::pipelines::PipelinesEvent;
+    match asked {
+        PipelinesEvent::Close => return Some(BlameEvent::Close),
+        PipelinesEvent::ShowCommit(id) => return Some(BlameEvent::ShowCommit(id)),
+        PipelinesEvent::Open(url) => actions.push(Action::OpenUrl(url)),
+        PipelinesEvent::Show(mark) => *opened = Some(mark),
     }
     None
 }
@@ -3132,11 +3282,29 @@ fn switch_job_tool(
     }
 }
 
+/// Shows a pipeline's page from the list of pipelines (`opened`), or that list again from the
+/// page (`back`).
+fn switch_list_tool(
+    view: &mut HistoryView,
+    (opened, back): (Option<Box<crate::ci::CiMark>>, bool),
+) {
+    if let Some(mark) = opened
+        && let Some(Tool::Pipelines(list)) = view.tool.take()
+    {
+        view.tool = Some(Tool::Pipeline(Box::new(PipelineView::from_list(
+            *mark, list,
+        ))));
+    }
+    if back && let Some(Tool::Pipeline(mut page)) = view.tool.take() {
+        view.tool = page.take_list().map(Tool::Pipelines);
+    }
+}
+
 /// The tool in the commit table's place, and what it asks.
 fn tool(
     ui: &mut Ui,
     shared: &Shared<'_>,
-    history: &HistoryState,
+    history: &mut HistoryState,
     view: &mut HistoryView,
     actions: &mut Vec<Action>,
 ) {
@@ -3144,6 +3312,8 @@ fn tool(
     // A job's log opened from its pipeline's page, or that page gone back to; or another of the
     // commit's pipelines shown in its place.
     let (mut job_opened, mut job_left, mut other_pipeline) = (None, false, None);
+    // A pipeline's page opened from the list, or the list gone back to from it.
+    let (mut listed_opened, mut list_back) = (None, false);
     let asked = match &mut view.tool {
         Some(Tool::Rebase(rebase)) => match rebase::show(ui, shared, rebase) {
             Some(RebaseEvent::Start(task)) => {
@@ -3165,14 +3335,15 @@ fn tool(
         Some(Tool::FileHistory(found)) => file_history::show(ui, shared, found),
         Some(Tool::PullRequests(pulls)) => pulls::show(ui, shared, history, pulls)
             .and_then(|asked| pull_request_event(asked, shared, actions)),
-        Some(Tool::Pipeline(page)) => pipeline::show(ui, shared, page).and_then(|asked| {
-            pipeline_event(
-                asked,
-                shared,
-                actions,
-                (&mut job_opened, &mut other_pipeline),
-            )
-        }),
+        Some(Tool::Pipeline(page)) => {
+            let back = page.has_list().then_some(&mut list_back);
+            pipeline::show(ui, shared, page).and_then(|asked| {
+                let opened = (&mut job_opened, &mut other_pipeline);
+                pipeline_event(asked, shared, actions, (opened, back))
+            })
+        }
+        Some(Tool::Pipelines(list)) => super::pipelines::show(ui, shared, history, list)
+            .and_then(|asked| pipelines_event(asked, actions, &mut listed_opened)),
         Some(Tool::Job(log)) => {
             job_left = job_log(ui, shared, log, actions);
             None
@@ -3211,6 +3382,7 @@ fn tool(
     if let Some(mark) = other_pipeline {
         view.show_pipeline(*mark);
     }
+    switch_list_tool(view, (listed_opened, list_back));
     if let Some(asked) = menu {
         carry_out(asked, shared, view, actions);
     }
@@ -3220,7 +3392,7 @@ fn tool(
     match asked {
         Some(BlameEvent::Close) => view.close_tool(),
         Some(BlameEvent::ShowCommit(id)) => {
-            view.tool = None;
+            view.close_tool();
             let near = view.selected.map_or(0, |selected| selected.row);
             if let Some(row) = history.shown.row_of(&id, near) {
                 view.select(&history.shown, row, Some(Align::Center));

@@ -8,8 +8,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use super::{
-    CiAction, CiStatus, EarlierRun, Job, JobActions, PAGE, Pipeline, PipelineActions,
-    PipelineDetails, PipelineListing, Stage,
+    After, CiAction, CiStatus, EarlierRun, Job, JobActions, ListedPipeline, PAGE, PageAfter,
+    Pipeline, PipelineActions, PipelineDetails, PipelineListing, PipelinesPage, Stage,
 };
 use crate::account::Account;
 use crate::answer::{cancelled, graphql, not_found, parse_time, read_answer};
@@ -17,75 +17,67 @@ use crate::artifacts::{Artifact, gitlab_artifact};
 use crate::error::ForgeError;
 use crate::repository::ForgeRepository;
 
-/// Reads `repository`'s latest pipelines, and says whether GitLab listed them at all.
-///
-/// The newest first, a page at a time (each handed to `found` as it lands), up to `limit` of
-/// them.
-pub(super) async fn pipelines(
+/// Reads a page of `repository`'s pipelines, the newest first: the first, or the one after
+/// `cursor` (GitLab's `endCursor` of the page before).
+pub(super) async fn pipelines_page(
     account: &Account,
     repository: &ForgeRepository,
-    limit: u32,
+    cursor: Option<&str>,
     cancel: &CancelToken,
-    found: &mut (dyn FnMut(Vec<Pipeline>) + Send),
-) -> Result<PipelineListing, ForgeError> {
-    let mut after: Option<String> = None;
-    let mut read = 0_u32;
-    loop {
-        if cancel.is_cancelled() {
-            return Err(cancelled());
-        }
-        let first = PAGE.min(limit.saturating_sub(read));
-        if first == 0 {
-            return Ok(PipelineListing::Listed);
-        }
-        let data: PipelinesData = graphql(
-            account,
-            PIPELINES,
-            &json!({ "path": repository.path(), "first": first, "after": after }),
-            repository.path(),
-            cancel,
-        )
-        .await?;
-        // A project whose pipelines this account can't see (or that has CI/CD off) has none.
-        let Some(connection) = data
-            .project
-            .ok_or_else(|| not_found(account, repository.full_name()))?
-            .pipelines
-        else {
-            tracing::debug!(
-                project = %repository.full_name(),
-                "GitLab lists no pipelines to this account"
-            );
-            return Ok(PipelineListing::Hidden);
-        };
-        let host = repository.host();
-        let nodes: Vec<PipelineNode> = connection.nodes.into_iter().flatten().collect();
-        let given = nodes.len();
-        let page: Vec<Pipeline> = nodes
-            .into_iter()
-            .filter_map(|node| node.into_pipeline(host, repository))
-            .collect();
-        if page.len() < given {
-            tracing::debug!(
-                project = %repository.full_name(),
-                unread = given.saturating_sub(page.len()),
-                "pipelines without a number or a commit left out"
-            );
-        }
-        read = read.saturating_add(u32::try_from(page.len()).unwrap_or(u32::MAX));
-        let next = connection
-            .page_info
-            .has_next_page
-            .then_some(connection.page_info.end_cursor)
-            .flatten()
-            .filter(|_| !page.is_empty());
-        let more = next.is_some();
-        after.clone_from(&next);
-        found(page);
-        if !more {
-            return Ok(PipelineListing::Listed);
-        }
+) -> Result<PipelinesPage, ForgeError> {
+    if cancel.is_cancelled() {
+        return Err(cancelled());
     }
+    let data: PipelinesData = graphql(
+        account,
+        PIPELINES,
+        &json!({ "path": repository.path(), "first": PAGE, "after": cursor }),
+        repository.path(),
+        cancel,
+    )
+    .await?;
+    // A project whose pipelines this account can't see (or that has CI/CD off) has none.
+    let Some(connection) = data
+        .project
+        .ok_or_else(|| not_found(account, repository.full_name()))?
+        .pipelines
+    else {
+        tracing::debug!(
+            project = %repository.full_name(),
+            "GitLab lists no pipelines to this account"
+        );
+        return Ok(PipelinesPage {
+            listing: PipelineListing::Hidden,
+            pipelines: Vec::new(),
+            next: None,
+        });
+    };
+    let host = repository.host();
+    let nodes: Vec<ListNode> = connection.nodes.into_iter().flatten().collect();
+    let given = nodes.len();
+    let pipelines: Vec<ListedPipeline> = nodes
+        .into_iter()
+        .filter_map(|node| node.into_listed(host, repository))
+        .collect();
+    if pipelines.len() < given {
+        tracing::debug!(
+            project = %repository.full_name(),
+            unread = given.saturating_sub(pipelines.len()),
+            "pipelines without a number or a commit left out"
+        );
+    }
+    let next = connection
+        .page_info
+        .has_next_page
+        .then_some(connection.page_info.end_cursor)
+        .flatten()
+        .filter(|_| given > 0)
+        .map(|cursor| PageAfter(After::Cursor(cursor)));
+    Ok(PipelinesPage {
+        listing: PipelineListing::Listed,
+        pipelines,
+        next,
+    })
 }
 
 /// Reads pipeline `iid` of `repository` whole.
@@ -174,7 +166,8 @@ pub(super) async fn start(
 
 const PIPELINES: &str = "query Pipelines($path: ID!, $first: Int!, $after: String) { \
     project(fullPath: $path) { pipelines(first: $first, after: $after) { pageInfo { \
-    hasNextPage endCursor } nodes { id iid sha ref status warnings createdAt path } } } }";
+    hasNextPage endCursor } nodes { id iid sha ref status warnings createdAt path startedAt \
+    finishedAt duration source user { username } } } } }";
 
 const PIPELINE: &str = "query Pipeline($path: ID!, $iid: ID!) { project(fullPath: $path) { \
     pipeline(iid: $iid) { id iid sha ref status warnings createdAt startedAt finishedAt \
@@ -214,7 +207,38 @@ struct PipelineConnection {
     #[serde(default)]
     page_info: PageInfo,
     #[serde(default)]
-    nodes: Vec<Option<PipelineNode>>,
+    nodes: Vec<Option<ListNode>>,
+}
+
+/// A pipeline as GitLab lists them: who, how, and for how long, beside what a pipeline is.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListNode {
+    #[serde(flatten)]
+    pipeline: PipelineNode,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    duration: Option<u64>,
+    source: Option<String>,
+    user: Option<Username>,
+}
+
+impl ListNode {
+    /// The pipeline as listed, unless its numbers or commit aren't ones.
+    fn into_listed(
+        self,
+        host: &crate::host::ForgeHost,
+        repository: &ForgeRepository,
+    ) -> Option<ListedPipeline> {
+        Some(ListedPipeline {
+            pipeline: self.pipeline.into_pipeline(host, repository)?,
+            user: self.user.map(|user| user.username),
+            source: self.source,
+            started: self.started_at.as_deref().and_then(parse_time),
+            finished: self.finished_at.as_deref().and_then(parse_time),
+            duration: self.duration,
+        })
+    }
 }
 
 #[derive(Default, Deserialize)]

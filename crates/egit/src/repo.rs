@@ -507,6 +507,9 @@ impl RepoTab {
                 Err("It is on another computer")
             }
             RepoCommand::Switch(_) if operation => Err("An operation is in progress"),
+            RepoCommand::Pipelines if self.forge.repositories.is_empty() => {
+                Err("No remote is on GitHub or GitLab")
+            }
             RepoCommand::Fetch
             | RepoCommand::Pull
             | RepoCommand::Push
@@ -527,6 +530,7 @@ impl RepoTab {
             | RepoCommand::Reflog
             | RepoCommand::WorkTree
             | RepoCommand::PullRequests
+            | RepoCommand::Pipelines
             | RepoCommand::GoTo(_)
             | RepoCommand::Stats
             | RepoCommand::Overview

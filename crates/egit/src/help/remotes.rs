@@ -1214,6 +1214,39 @@ pub(super) const TOPICS: &[Topic] = &[
         )],
     },
     Topic {
+        id: "pipelines-list",
+        group: Group::Remotes,
+        title: "Every pipeline",
+        on: &["Show the pipelines (workflow runs)", "attempt *"],
+        what: "Every pipeline of a GitLab project (every workflow run of a GitHub repository), \
+               the newest first, in the history's place (the top bar's Pipelines or Workflow \
+               runs, the Repository menu, or the palette). Each row says how it went, its title, \
+               the branch or tag it ran for, how long it ran (ticking while it runs) and when, \
+               then its commit and the commit's subject, and who made it run and how. The \
+               commit's name is a link back to it in the history, where the history holds it; \
+               a click elsewhere on the row (or Enter) shows the pipeline, its page's back \
+               button coming back here. Only the first page (100) is read when the list opens; \
+               the next as you scroll towards the end of what was read, and the newest again \
+               every 20 seconds while one on it is under way. With remotes on several projects, \
+               the bar chooses which. Closed, the list is kept as it was, and opens again at \
+               once.",
+        git: "GitLab's GraphQL API: project { pipelines(first: 100, after: <cursor>) }; GitHub's REST API: GET /repos/:owner/:name/actions/runs?per_page=100&page=<n>",
+        cases: &[
+            (
+                "A commit that isn't a link?",
+                "The history shown doesn't hold it: it ran for a branch not fetched here, a merge request's merged result GitLab made itself, or a branch the history hides. Fetch, or show every branch.",
+            ),
+            (
+                "A run listed twice for a moment, or skipped?",
+                "GitHub numbers its pages: runs made while you scroll move the later ones along. Refresh reads the list again from the newest.",
+            ),
+            (
+                "None listed?",
+                "GitLab lists none when CI/CD is off for the project or your role may not see them; GitHub shows none when Actions are off, or a fine-grained token lacks Actions: read. The Overview's GitHub and GitLab card says which account reads them.",
+            ),
+        ],
+    },
+    Topic {
         id: "pipeline-mark",
         group: Group::Remotes,
         title: "Pipeline marks",

@@ -98,6 +98,10 @@ pub(super) struct CiWords {
     pub(super) forge: &'static str,
     /// What its pipelines are, in the singular: "pipeline", "workflow run".
     pub(super) noun: &'static str,
+    /// In the plural: "pipelines", "workflow runs".
+    pub(super) nouns: &'static str,
+    /// What its list of them is called: "Pipelines", "Workflow runs".
+    pub(super) list: &'static str,
     /// Running a pipeline's failed jobs again: "Retry failed jobs", "Re-run failed jobs".
     pub(super) retry_failed: &'static str,
     /// Running every job again (GitHub's): "Re-run all jobs".
@@ -119,6 +123,8 @@ impl CiWords {
             ForgeKind::GitLab => Self {
                 forge: "GitLab",
                 noun: "pipeline",
+                nouns: "pipelines",
+                list: "Pipelines",
                 retry_failed: "Retry failed jobs",
                 rerun_all: "Retry failed jobs",
                 cancel: "Cancel the pipeline",
@@ -129,6 +135,8 @@ impl CiWords {
             ForgeKind::GitHub => Self {
                 forge: "GitHub",
                 noun: "workflow run",
+                nouns: "workflow runs",
+                list: "Workflow runs",
                 retry_failed: "Re-run failed jobs",
                 rerun_all: "Re-run all jobs",
                 cancel: "Cancel workflow",
@@ -289,6 +297,8 @@ pub(super) struct PipelineView {
     /// A GitHub run's workflow, read from its file at the run's commit: the file and what it
     /// says, kept for the reads after.
     workflow: KeptWorkflow,
+    /// The list of pipelines it was shown from, gone back to (none: from the history).
+    list: Option<Box<super::pipelines::PipelinesView>>,
 }
 
 /// A GitHub run's workflow, once read: its file, and what it says.
@@ -329,7 +339,25 @@ impl PipelineView {
             confirming: false,
             graph: graph::Graph::default(),
             workflow: Arc::default(),
+            list: None,
         }
+    }
+
+    /// The page of `mark`'s pipeline shown from `list`, which it goes back to.
+    pub(super) fn from_list(mark: CiMark, list: Box<super::pipelines::PipelinesView>) -> Self {
+        let mut page = Self::new(mark);
+        page.list = Some(list);
+        page
+    }
+
+    /// Whether it was shown from a list of pipelines (its back goes there).
+    pub(super) const fn has_list(&self) -> bool {
+        self.list.is_some()
+    }
+
+    /// The list it was shown from, taken (to show again, or keep).
+    pub(super) const fn take_list(&mut self) -> Option<Box<super::pipelines::PipelinesView>> {
+        self.list.take()
     }
 
     /// What its page is titled ("Pipeline #123456", "CI #57").
@@ -747,7 +775,13 @@ fn bar(
     let mut event = None;
     widgets::bar(ui, |ui| {
         ui.horizontal_wrapped(|ui| {
-            if widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT)).clicked() {
+            // Back where it was shown from: the history, or the list of pipelines.
+            let back = if view.list.is_some() {
+                words.list
+            } else {
+                "History"
+            };
+            if widgets::secondary(ui, true, &format!("{}  {back}", icon::ARROW_LEFT)).clicked() {
                 event = Some(BarAsk::Close);
             }
             // Its title; where the commit ran others (a GitHub commit's other workflows), a menu
@@ -1106,7 +1140,7 @@ fn summary(
 }
 
 /// What started a pipeline, in words.
-fn source_words(source: &str) -> String {
+pub(super) fn source_words(source: &str) -> String {
     match source {
         "push" => "on a push".to_owned(),
         "merge_request_event" => "for a merge request".to_owned(),

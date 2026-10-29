@@ -21,8 +21,8 @@ use egit_forge::{
     Account, ArtifactKind, CheckState, CiAction, CiGroup, CiStatus, ForgeError, ForgeHost,
     ForgeKind, ForgeRepository, JobLog, LogRead, Mergeable, NewPullRequest, PipelineListing,
     ReviewDecision, ReviewState, ci_act, create_pull_request, download_artifact, job,
-    pipeline_details, pipelines, pull_request_details, pull_requests, read_log, repository_info,
-    ssh_host, start_pipeline, workflows,
+    pipeline_details, pipelines, pipelines_page, pull_request_details, pull_requests, read_log,
+    repository_info, ssh_host, start_pipeline, workflows,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId, Wait as _};
@@ -340,6 +340,37 @@ fn fake_pipelines(count: u64) -> Vec<FakePipeline> {
             ..FakePipeline::default()
         })
         .collect()
+}
+
+#[test]
+fn a_list_reads_pipelines_a_page_at_a_time_with_who_how_and_how_long() {
+    let (fake, _sandbox, account, project) = setup(0, TOKEN);
+    fake.state().repositories[0].pipelines = fake_pipelines(150);
+    let first = pipelines_page(&account, &project, None, &CancelToken::new())
+        .wait()
+        .unwrap();
+    assert_eq!(first.pipelines.len(), 100);
+    let listed = first
+        .pipelines
+        .iter()
+        .find(|listed| listed.pipeline.status == CiStatus::Success)
+        .unwrap();
+    assert_eq!(listed.user.as_deref(), Some("ada"));
+    assert_eq!(listed.source.as_deref(), Some("push"));
+    assert_eq!(listed.duration, Some(95));
+    assert!(listed.started.is_some() && listed.finished.is_some());
+    let running = first
+        .pipelines
+        .iter()
+        .find(|listed| listed.pipeline.status == CiStatus::Running)
+        .unwrap();
+    assert_eq!((running.duration, running.finished), (None, None));
+    let second = pipelines_page(&account, &project, first.next.as_ref(), &CancelToken::new())
+        .wait()
+        .unwrap();
+    assert_eq!(second.pipelines.len(), 50);
+    assert_eq!(second.pipelines[0].pipeline.iid, 50);
+    assert_eq!(second.next, None);
 }
 
 #[test]

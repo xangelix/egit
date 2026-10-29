@@ -195,6 +195,146 @@ fn each_commit_s_pipeline_is_marked_and_shown_down_to_its_jobs() {
     assert_eq!(fake.state().repositories[0].pipelines[0].git_ref, "main");
 }
 
+/// `count` pipelines for commits the history doesn't hold, numbered from 9001 (the newest
+/// last), a minute apart, all passed.
+fn elsewhere(count: u64) -> Vec<FakePipeline> {
+    (1..=count)
+        .map(|n| FakePipeline {
+            id: n.saturating_add(9_000),
+            iid: n,
+            sha: format!("{n:040x}"),
+            git_ref: "main".to_owned(),
+            status: "SUCCESS".to_owned(),
+            created: format!(
+                "2024-05-01T{:02}:{:02}:00Z",
+                n.checked_div(60).unwrap_or(0).saturating_add(8),
+                n.checked_rem(60).unwrap_or(0)
+            ),
+            ..FakePipeline::default()
+        })
+        .collect()
+}
+
+/// Turns the wheel under the pointer (`delta` points a turn: up is positive) until `done`, 60
+/// turns at most.
+fn wheel_until(
+    harness: &mut egui_kittest::Harness<'_, EgitApp>,
+    delta: f32,
+    done: impl Fn(&egui_kittest::Harness<'_, EgitApp>) -> bool,
+) {
+    for _ in 0..60 {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, delta),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+        if done(harness) {
+            return;
+        }
+    }
+}
+
+#[test]
+fn every_pipeline_is_listed_a_page_at_a_time_its_commit_a_link_back() {
+    let sandbox = Sandbox::new().unwrap();
+    let fake = FakeForge::start(ForgeKind::GitLab, TOKEN, "ada").unwrap();
+    let (work, topic, _fork) = forge_clone(&sandbox, &fake, "team/sub/tool", TOKEN);
+    let head = commit_of(&sandbox, &work, "HEAD");
+    // The newest first: main's running, the topic's failed, then 148 for commits not here.
+    let mut newest = pipeline(9_200, &head, "RUNNING", "RUNNING");
+    newest.created = "2024-05-01T12:00:00Z".to_owned();
+    let mut failed = pipeline(9_199, &topic, "FAILED", "FAILED");
+    failed.created = "2024-05-01T11:59:00Z".to_owned();
+    let mut listed = vec![newest, failed];
+    listed.extend(elsewhere(148).into_iter().rev());
+    fake.state().repositories[0].pipelines = listed;
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &work);
+    settle(&mut harness, "the history", history_of(2));
+    settle(&mut harness, "the merge requests", pull_requests_read(2));
+    harness.state_mut().state.repos[0]
+        .tasks
+        .hold_background_fetch();
+
+    // From the top bar: the first page alone, each row saying how it went.
+    harness
+        .get_by_role_and_label(Role::Button, "Pipelines")
+        .click();
+    wait_for_label(&mut harness, "Pipeline #9200: running");
+    wait_for_label(&mut harness, "Pipeline #9199: failed");
+    let read = |harness: &egui_kittest::Harness<'_, EgitApp>| {
+        harness.state().state.repos[0].history_view.pipelines_read()
+    };
+    settle(&mut harness, "the first page", |app| {
+        app.state.repos[0].history_view.pipelines_read() == Some((100, true))
+    });
+    wait_for_label(&mut harness, "the newest 100");
+    // Its commit's name a link back to the history, where the history holds it.
+    let short = |sha: &str| sha.get(..8).unwrap().to_owned();
+    harness.get_by_role_and_label(Role::Button, &short(&head));
+    assert!(
+        harness
+            .query_by_role_and_label(Role::Button, &short(&format!("{:040x}", 148)))
+            .is_none()
+    );
+    render(&mut harness, "pipelines-list");
+
+    // Scrolled towards the end, the next page is read.
+    let list = harness
+        .get_by_label("Pipeline #9200: running")
+        .rect()
+        .center();
+    harness.hover_at(list);
+    wheel_until(&mut harness, -400.0, |harness| {
+        read(harness) == Some((150, false))
+    });
+    settle(&mut harness, "every page", |app| {
+        app.state.repos[0].history_view.pipelines_read() == Some((150, false))
+    });
+    wait_for_label(&mut harness, "all 150");
+
+    // A row's click shows its page, which goes back to the list; the topic's commit is a link
+    // back to the history, where it is selected.
+    wheel_until(&mut harness, 400.0, |harness| {
+        harness.query_by_label("Pipeline #9200: running").is_some()
+    });
+    harness.run_steps(2);
+    harness.get_by_label("Pipeline #9200: running").click();
+    wait_for_label(&mut harness, "compile: passed");
+    assert_eq!(
+        harness.state().state.repos[0].history_view.pipeline_page(),
+        Some(true)
+    );
+    harness
+        .get_by_label(&format!("{}  Pipelines", icon::ARROW_LEFT))
+        .click();
+    wait_for_label(&mut harness, "Pipeline #9199: failed");
+    harness
+        .get_by_role_and_label(Role::Button, &short(&topic))
+        .click();
+    harness.run_steps(3);
+    let repo = &harness.state().state.repos[0];
+    let selected = repo
+        .history_view
+        .selected_row()
+        .and_then(|row| repo.history.shown.id(row));
+    assert_eq!(selected, egit_git::ObjectId::from_hex(topic.as_bytes()));
+    assert_eq!(repo.history_view.pipelines_read(), None);
+
+    // Opened again, it is as it was: every page read, nothing asked again.
+    harness
+        .get_by_role_and_label(Role::Button, "Pipelines")
+        .click();
+    harness.run_steps(2);
+    assert_eq!(read(&harness), Some((150, false)));
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(2);
+    assert_eq!(read(&harness), None);
+}
+
 #[test]
 fn pipelines_that_can_t_be_read_say_why_until_they_can() {
     let sandbox = Sandbox::new().unwrap();

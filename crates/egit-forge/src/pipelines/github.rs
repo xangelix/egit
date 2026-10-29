@@ -20,8 +20,8 @@ use egit_git::{CancelToken, ObjectId};
 use serde::Deserialize;
 
 use super::{
-    CiAction, CiStatus, EarlierRun, Job, JobActions, PAGE, Pipeline, PipelineActions,
-    PipelineDetails, PipelineListing, grouped,
+    After, CiAction, CiStatus, EarlierRun, Job, JobActions, ListedPipeline, PAGE, PageAfter,
+    Pipeline, PipelineActions, PipelineDetails, PipelineListing, PipelinesPage, grouped,
 };
 use crate::account::Account;
 use crate::answer::{cancelled, not_found, parse_time, read_answer};
@@ -156,6 +156,27 @@ impl Run {
         })
     }
 
+    /// The run as a list shows it: who made it run, by what, and from its start to its end.
+    fn listed(&self, repository: &ForgeRepository) -> Option<ListedPipeline> {
+        let time = |at: &Option<String>| at.as_deref().and_then(parse_time);
+        let started = time(&self.run_started_at).or_else(|| time(&self.created_at));
+        let finished = self.ended().then(|| time(&self.updated_at)).flatten();
+        Some(ListedPipeline {
+            pipeline: self.pipeline(repository)?,
+            user: self
+                .triggering_actor
+                .as_ref()
+                .or(self.actor.as_ref())
+                .map(|actor| actor.login.clone()),
+            source: self.event.clone(),
+            started,
+            finished,
+            duration: started
+                .zip(finished)
+                .and_then(|(started, finished)| u64::try_from(finished.checked_sub(started)?).ok()),
+        })
+    }
+
     /// Its workflow's file in the repository (`.github/workflows/ci.yml`); none for one GitHub
     /// makes itself (`dynamic/…`: Pages, code scanning's default setup).
     fn workflow(&self) -> Option<String> {
@@ -231,50 +252,44 @@ fn succeeded(account: &Account, answer: &Answer, what: &str) -> Result<(), Forge
     read_answer::<serde_json::Value>(account, answer, what).map(|_| ())
 }
 
-/// Reads `repository`'s latest workflow runs, the newest first, a page at a time.
-pub(super) async fn pipelines(
+/// Reads page `page` (from 1) of `repository`'s workflow runs, the newest first.
+pub(super) async fn pipelines_page(
     account: &Account,
     repository: &ForgeRepository,
-    limit: u32,
+    page: u32,
     cancel: &CancelToken,
-    found: &mut (dyn FnMut(Vec<Pipeline>) + Send),
-) -> Result<PipelineListing, ForgeError> {
+) -> Result<PipelinesPage, ForgeError> {
     let what = format!("{}'s workflow runs", repository.full_name());
-    let mut read = 0_u32;
-    let mut page = 1_u32;
-    loop {
-        let per_page = PAGE.min(limit.saturating_sub(read));
-        if per_page == 0 {
-            return Ok(PipelineListing::Listed);
+    let url = rest(
+        account,
+        repository,
+        &format!("/actions/runs?per_page={PAGE}&page={page}&exclude_pull_requests=true"),
+    );
+    let runs: RunsPage = match get(account, &url, &what, cancel).await {
+        Ok(runs) => runs,
+        // Actions the account can't see (or turned off) answer as no repository.
+        Err(ForgeError::NotFound { .. }) if page <= 1 => {
+            tracing::debug!(repository = %repository.full_name(), "GitHub shows no Actions");
+            return Ok(PipelinesPage {
+                listing: PipelineListing::Hidden,
+                pipelines: Vec::new(),
+                next: None,
+            });
         }
-        let url = rest(
-            account,
-            repository,
-            &format!("/actions/runs?per_page={PAGE}&page={page}&exclude_pull_requests=true"),
-        );
-        let runs: RunsPage = match get(account, &url, &what, cancel).await {
-            Ok(runs) => runs,
-            // Actions the account can't see (or turned off) answer as no repository.
-            Err(ForgeError::NotFound { .. }) if read == 0 => {
-                tracing::debug!(repository = %repository.full_name(), "GitHub shows no Actions");
-                return Ok(PipelineListing::Hidden);
-            }
-            Err(error) => return Err(error),
-        };
-        let given = runs.workflow_runs.len();
-        let pipelines: Vec<Pipeline> = runs
-            .workflow_runs
-            .iter()
-            .take(usize::try_from(per_page).unwrap_or(usize::MAX))
-            .filter_map(|run| run.pipeline(repository))
-            .collect();
-        read = read.saturating_add(u32::try_from(pipelines.len()).unwrap_or(u32::MAX));
-        found(pipelines);
-        if given < usize::try_from(PAGE).unwrap_or(usize::MAX) {
-            return Ok(PipelineListing::Listed);
-        }
-        page = page.saturating_add(1);
-    }
+        Err(error) => return Err(error),
+    };
+    let given = runs.workflow_runs.len();
+    let pipelines = runs
+        .workflow_runs
+        .iter()
+        .filter_map(|run| run.listed(repository))
+        .collect();
+    let full = given >= usize::try_from(PAGE).unwrap_or(usize::MAX);
+    Ok(PipelinesPage {
+        listing: PipelineListing::Listed,
+        pipelines,
+        next: full.then(|| PageAfter(After::Page(page.saturating_add(1)))),
+    })
 }
 
 /// Reads workflow run `id` of `repository` whole.

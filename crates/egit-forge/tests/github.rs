@@ -25,10 +25,10 @@ use egit_forge::testing::{
 };
 use egit_forge::{
     Account, ArtifactKind, CheckState, CiAction, CiStatus, ForgeError, ForgeHost, ForgeKind,
-    ForgeRepository, JobLog, LogRead, NewPullRequest, ReviewDecision, ReviewState, Told, Workflow,
-    ci_act, create_pull_request, deliver_artifact, download_artifact, job, pipeline_details,
-    pipelines, pull_request_details, pull_requests, read_log, read_step_log, repository_info,
-    start_pipeline, workflows,
+    ForgeRepository, JobLog, LogRead, NewPullRequest, PipelineListing, ReviewDecision, ReviewState,
+    Told, Workflow, ci_act, create_pull_request, deliver_artifact, download_artifact, job,
+    pipeline_details, pipelines, pipelines_page, pull_request_details, pull_requests, read_log,
+    read_step_log, repository_info, start_pipeline, workflows,
 };
 use egit_git::testing::Sandbox;
 use egit_git::{CancelToken, ObjectId, Wait as _};
@@ -437,6 +437,42 @@ fn workflow_runs_are_pipelines_each_workflow_a_series_of_its_own() {
     assert_eq!(read[2].iid, 7001);
     assert_eq!(read[2].git_ref.as_deref(), Some("main"));
     assert!(read[2].url.ends_with("/octo/tool/actions/runs/7001"));
+}
+
+#[test]
+fn workflow_runs_are_read_a_page_at_a_time_with_who_how_and_how_long() {
+    let (fake, _sandbox, account, repository) = setup(0, TOKEN);
+    with_runs(&fake);
+    let many: Vec<FakePipeline> = (0..150_u64)
+        .map(|at| {
+            let commit = u8::try_from(at % 200).unwrap();
+            run_of(
+                (8_000 + at, at + 1),
+                ("CI", 11),
+                commit,
+                ("SUCCESS", Vec::new()),
+            )
+        })
+        .collect();
+    fake.state().repositories[0].pipelines = many;
+    let first = pipelines_page(&account, &repository, None, &CancelToken::new())
+        .wait()
+        .unwrap();
+    assert_eq!(first.listing, PipelineListing::Listed);
+    assert_eq!(first.pipelines.len(), 100);
+    let listed = &first.pipelines[0];
+    assert_eq!(listed.pipeline.title(), "CI #1");
+    assert_eq!(listed.user.as_deref(), Some("ada"));
+    assert_eq!(listed.source.as_deref(), Some("push"));
+    // From its start to its end: 10:20:30 to 10:25:00.
+    assert_eq!(listed.duration, Some(270));
+    let next = first.next.expect("a second page");
+    let second = pipelines_page(&account, &repository, Some(&next), &CancelToken::new())
+        .wait()
+        .unwrap();
+    assert_eq!(second.pipelines.len(), 50);
+    assert_eq!(second.pipelines[0].pipeline.title(), "CI #101");
+    assert_eq!(second.next, None);
 }
 
 #[test]

@@ -20,6 +20,7 @@ pub(crate) mod palette;
 mod patch;
 mod picked;
 mod pipeline;
+mod pipelines;
 pub(crate) mod preferences;
 pub(crate) mod profile;
 pub(crate) mod prompts;

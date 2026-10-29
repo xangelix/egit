@@ -730,7 +730,7 @@ fn gitlab_pipelines(
         let (start, end) = page(repository.pipelines.len(), variables);
         let nodes: Vec<Value> = repository.pipelines[start..end]
             .iter()
-            .map(|pipeline| gitlab_pipeline(repository, pipeline))
+            .map(|pipeline| gitlab_listed(repository, pipeline, login))
             .collect();
         return json!({ "data": { "project": { "pipelines": {
             "pageInfo": { "hasNextPage": end < repository.pipelines.len(), "endCursor": end.to_string() },
@@ -988,6 +988,28 @@ fn gitlab_job(project: &str, asked: &str, request: &Recorded, state: &FakeState)
         ),
         None => (200, Vec::new(), job.log.clone()),
     })
+}
+
+/// A pipeline as GitLab lists them: who made it run, how, and for how long, beside the rest.
+fn gitlab_listed(repository: &FakeRepository, pipeline: &FakePipeline, login: &str) -> Value {
+    let mut node = gitlab_pipeline(repository, pipeline);
+    if let Some(fields) = node.as_object_mut() {
+        let finished = !matches!(
+            pipeline.status.as_str(),
+            "RUNNING" | "PENDING" | "CREATED" | "MANUAL"
+        );
+        let (ended, took) = if finished {
+            (json!("2024-05-01T10:22:35Z"), json!(95))
+        } else {
+            (Value::Null, Value::Null)
+        };
+        fields.insert("startedAt".to_owned(), json!("2024-05-01T10:21:00Z"));
+        fields.insert("finishedAt".to_owned(), ended);
+        fields.insert("duration".to_owned(), took);
+        fields.insert("source".to_owned(), json!("push"));
+        fields.insert("user".to_owned(), json!({ "username": login }));
+    }
+    node
 }
 
 fn gitlab_pipeline(repository: &FakeRepository, pipeline: &FakePipeline) -> Value {
