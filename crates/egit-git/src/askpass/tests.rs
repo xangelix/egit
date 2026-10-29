@@ -46,6 +46,45 @@ fn executable() -> PathBuf {
     std::env::current_exe().unwrap()
 }
 
+/// Installed with an `egit-askpass` beside the executable (seaworthy's alias of the launcher),
+/// git asks through that one: no link is made, and the environment names it.
+#[test]
+fn an_installed_helper_beside_the_executable_is_the_helper() {
+    let base = Base::new();
+    let install = base.0.join("install");
+    fs::create_dir(&install).unwrap();
+    let executable = install.join(if cfg!(windows) { "egit.exe" } else { "egit" });
+    fs::write(&executable, b"launcher").unwrap();
+    let installed = install.join(HELPER_NAME);
+    fs::write(&installed, b"launcher").unwrap();
+    let (server, _prompts) = AskpassServer::start_in(&base.0, &executable, || {}).unwrap();
+    assert_eq!(server.helper(), installed);
+    let environment = server.environment();
+    for name in ["GIT_ASKPASS", "SSH_ASKPASS"] {
+        assert!(
+            environment
+                .iter()
+                .any(|(key, value)| key == name && *value == installed.as_os_str()),
+            "{name}: {environment:?}"
+        );
+    }
+    // Nothing named as the helper in the server's own directory.
+    let made: Vec<_> = fs::read_dir(&base.0)
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name() != "install")
+        .flat_map(|dir| fs::read_dir(dir.path()).unwrap().filter_map(Result::ok))
+        .filter(|entry| entry.file_name() == HELPER_NAME)
+        .collect();
+    assert!(made.is_empty(), "{made:?}");
+    // A folder of that name isn't a helper: the link is made as ever.
+    fs::remove_file(&installed).unwrap();
+    fs::create_dir(&installed).unwrap();
+    let (server, _prompts) = AskpassServer::start_in(&base.0, &executable, || {}).unwrap();
+    assert_ne!(server.helper(), installed);
+    assert_eq!(server.helper().file_name().unwrap(), HELPER_NAME);
+}
+
 /// The address and token a helper started by `server` would find in its environment.
 fn helper_view(server: &AskpassServer) -> (OsString, Token) {
     let environment = server.environment();

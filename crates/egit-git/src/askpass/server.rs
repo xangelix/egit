@@ -22,9 +22,12 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Relays prompts from git's and ssh's helpers to the window.
 ///
-/// Lives in a directory of its own (removed when it is dropped) holding the socket and the
-/// helper: a link to egit's executable named [`HELPER_NAME`]. Every git process needs
-/// [`Self::environment`] to ask through it.
+/// Lives in a directory of its own (removed when it is dropped) holding the socket and, unless
+/// egit is installed with one, the helper: a link to egit's executable named [`HELPER_NAME`].
+/// Installed (seaworthy's packages), the helper is the `egit-askpass` beside the executable, in
+/// the install directory: the launcher again under that name, which finds its per-CPU cores
+/// beside it as a link elsewhere never would. Every git process needs [`Self::environment`] to
+/// ask through it.
 #[derive(Debug)]
 pub struct AskpassServer {
     dir: PathBuf,
@@ -81,8 +84,13 @@ impl AskpassServer {
         let cleanup = RemoveOnDrop(Some(dir.clone()));
         let presence = platform::mark_present(&dir)?;
 
-        let helper = dir.join(HELPER_NAME);
-        platform::link_helper(executable, &helper)?;
+        let helper = if let Some(installed) = installed_helper(executable) {
+            installed
+        } else {
+            let link = dir.join(HELPER_NAME);
+            platform::link_helper(executable, &link)?;
+            link
+        };
         let (listener, stopper, address) = Listener::bind(&dir)?;
         let (sender, receiver) = mpsc::channel();
         let accept = {
@@ -128,7 +136,8 @@ impl AskpassServer {
         ]
     }
 
-    /// The helper: a link to egit's executable named [`HELPER_NAME`].
+    /// The helper: the installed one beside egit's executable, else a link to it named
+    /// [`HELPER_NAME`].
     #[must_use]
     pub fn helper(&self) -> &Path {
         &self.helper
@@ -153,6 +162,15 @@ impl Drop for AskpassServer {
             tracing::warn!(%error, dir = %self.dir.display(), "couldn't remove the askpass directory");
         }
     }
+}
+
+/// The helper installed beside `executable`, where its packages put one: a file named
+/// [`HELPER_NAME`] in its directory (the launcher again under that name, seaworthy's alias).
+fn installed_helper(executable: &Path) -> Option<PathBuf> {
+    let helper = executable.with_file_name(HELPER_NAME);
+    fs::metadata(&helper)
+        .is_ok_and(|metadata| metadata.is_file())
+        .then_some(helper)
 }
 
 /// Accepts helpers until the server is stopped.

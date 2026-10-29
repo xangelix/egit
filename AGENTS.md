@@ -373,9 +373,11 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   - `askpass/` — prompts from git's and ssh's helpers relayed to the window. `AskpassServer`
     makes `egit-<uid>/<pid>-<nonce>/` (0700, ownership checked) under `$XDG_RUNTIME_DIR` or
     the temporary directory, holding a Unix socket and `egit-askpass`, a link to egit's
-    executable; `environment()` sets `GIT_ASKPASS`, `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`,
-    the socket, and a random token (`getrandom`). Started under that name, egit is the helper
-    (`run_helper`). Connections must come from the same uid (`SO_PEERCRED`; `getpeereid` on
+    executable (none where egit is installed: the `egit-askpass` seaworthy installs beside it,
+    the launcher again under that name, finding its cores there, `installed_helper`);
+    `environment()` sets `GIT_ASKPASS`, `SSH_ASKPASS`, `SSH_ASKPASS_REQUIRE=force`, the socket,
+    and a random token (`getrandom`). Started under that name, egit is the helper
+    (`run_helper`; `egit_app::main`, the executable's and the cores' entry, decides). Connections must come from the same uid (`SO_PEERCRED`; `getpeereid` on
     macOS) and carry the token; fields are bounded (`protocol.rs`); answers are zeroized. Its
     accept loop polls the listener and a socket pair of its own, so stopping never depends on
     the socket's path. Each platform's part: `askpass/unix.rs`; `askpass/windows.rs`, where
