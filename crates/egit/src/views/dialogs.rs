@@ -15,7 +15,7 @@ use bstr::{BString, ByteSlice as _};
 use egit_git::{
     ObjectId, Operation, PullMode, PushOptions, ResetMode, Stash, SwitchTo, check_ref_name,
 };
-use egui::{Id, Key, Modal, RichText, Ui};
+use egui::{Id, Modal, RichText, Ui};
 
 use super::history::ID_DIGITS;
 use super::tasks::TaskPane;
@@ -375,7 +375,7 @@ fn confirm_danger(
     ui.add_space(12.0);
     let mut answer = None;
     widgets::buttons_row(ui, |ui| {
-        if widgets::danger(ui, true, yes).clicked() {
+        if widgets::danger(ui, true, yes).clicked() || widgets::enter_confirms(ui) {
             answer = Some(Answer::Run(go()));
         }
         if widgets::secondary(ui, true, "Cancel").clicked() {
@@ -385,7 +385,8 @@ fn confirm_danger(
     answer
 }
 
-/// The dialog's buttons: `yes` (when `ready`), starting `go`, and Cancel.
+/// The dialog's buttons: `yes` (when `ready`; Enter too), starting `go`, and Cancel (Escape
+/// too).
 fn buttons(ui: &mut Ui, yes: &str, ready: bool, go: impl FnOnce() -> Task) -> Option<Answer> {
     buttons_of(ui, (yes, None), ready, go)
 }
@@ -404,7 +405,7 @@ fn buttons_of(
         if let Some(topic) = topic {
             crate::help::note_topic(ui, run.rect, topic);
         }
-        if run.clicked() {
+        if run.clicked() || (ready && widgets::enter_confirms(ui)) {
             answer = Some(Answer::Run(go()));
         }
         if widgets::secondary(ui, true, "Cancel").clicked() {
@@ -414,17 +415,16 @@ fn buttons_of(
     answer
 }
 
-/// A labelled one-line field, focused when nothing else is; returns whether Enter was pressed
-/// in it.
-fn name_field(ui: &mut Ui, label: &str, text: &mut String) -> bool {
+/// A labelled one-line field, focused when nothing else is (but just after giving the focus up:
+/// on Enter, which the dialog's buttons then take).
+fn name_field(ui: &mut Ui, label: &str, text: &mut String) {
     let label = ui.label(muted(ui, label));
     let field = ui
         .add(crate::widgets::line_field(text).desired_width(f32::INFINITY))
         .labelled_by(label.id);
-    if ui.memory(|memory| memory.focused().is_none()) {
+    if ui.memory(|memory| memory.focused().is_none()) && !field.lost_focus() {
         field.request_focus();
     }
-    field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter))
 }
 
 /// Why `name` won't do as a branch's or tag's, under its field (nothing while it is empty).
@@ -467,7 +467,7 @@ fn diverged(ui: &mut Ui, pane: &TaskPane<'_>, remember: &mut bool) -> Option<Ans
             } else {
                 widgets::secondary(ui, true, label)
             };
-            if button.clicked() {
+            if button.clicked() || (primary && widgets::enter_confirms(ui)) {
                 answer = Some(Answer::Run(if *remember {
                     Task::PullAndRemember { rebase }
                 } else if rebase {
@@ -525,7 +525,7 @@ fn first_push(ui: &mut Ui, pane: &TaskPane<'_>, options: &mut PushOptions) -> Op
         .response
         .labelled_by(remote_label.id);
     ui.add_space(8.0);
-    let entered = name_field(ui, "Its name there", &mut name);
+    name_field(ui, "Its name there", &mut name);
     ui.add_space(8.0);
     ui.label(muted(
         ui,
@@ -535,9 +535,6 @@ fn first_push(ui: &mut Ui, pane: &TaskPane<'_>, options: &mut PushOptions) -> Op
     options.remote_branch = name.trim().to_owned().into();
     ui.add_space(12.0);
     let ready = !options.remote.is_empty() && !options.remote_branch.is_empty();
-    if entered && ready {
-        return Some(Answer::Run(Task::Push(options.clone())));
-    }
     buttons(ui, "Push", ready, || Task::Push(options.clone()))
 }
 
@@ -558,7 +555,7 @@ fn abort(ui: &mut Ui, operation: Operation) -> Option<Answer> {
     ui.add_space(12.0);
     let mut answer = None;
     widgets::buttons_row(ui, |ui| {
-        if widgets::danger(ui, true, "Abort").clicked() {
+        if widgets::danger(ui, true, "Abort").clicked() || widgets::enter_confirms(ui) {
             answer = Some(Answer::Run(Task::Abort(operation)));
         }
         if widgets::secondary(ui, true, "Keep going").clicked() {
@@ -579,7 +576,7 @@ fn create_branch(
         ui,
         &format!("Create a branch at {}", at.abbreviated(ID_DIGITS)),
     );
-    let entered = name_field(ui, "Name", name);
+    name_field(ui, "Name", name);
     let ready = name_problem(ui, name);
     ui.add_space(4.0);
     crate::widgets::checkbox(ui, switch, "Switch to it");
@@ -592,25 +589,19 @@ fn create_branch(
             Task::CreateBranch { name, at }
         }
     };
-    if entered && ready {
-        return Some(Answer::Run(go()));
-    }
     buttons(ui, "Create", ready, go)
 }
 
 /// A branch's new name.
 fn rename_branch(ui: &mut Ui, old: &BString, name: &mut String) -> Option<Answer> {
     title(ui, &format!("Rename {}", old.to_str_lossy()));
-    let entered = name_field(ui, "New name", name);
+    name_field(ui, "New name", name);
     let ready = name_problem(ui, name) && name.trim().as_bytes() != old.as_slice();
     ui.add_space(12.0);
     let go = || Task::RenameBranch {
         old: old.clone(),
         new: name.trim().into(),
     };
-    if entered && ready {
-        return Some(Answer::Run(go()));
-    }
     buttons(ui, "Rename", ready, go)
 }
 
@@ -676,7 +667,7 @@ fn set_upstream(
         "The remote branch it pulls from and pushes to by default, and is compared with.",
     );
     ui.add_space(8.0);
-    let entered = name_field(ui, "Upstream", upstream);
+    name_field(ui, "Upstream", upstream);
     let typed = upstream.trim().to_owned();
     let known = choices.contains(&typed);
     let offered: Vec<&String> = choices
@@ -712,12 +703,11 @@ fn set_upstream(
         branch: branch.clone(),
         upstream: upstream.map(BString::from),
     };
-    if entered && known {
-        return Some(Answer::Run(set(Some(&typed))));
-    }
     let mut answer = None;
     widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, known, "Set upstream").clicked() {
+        if widgets::primary(ui, known, "Set upstream").clicked()
+            || (known && widgets::enter_confirms(ui))
+        {
             answer = Some(Answer::Run(set(Some(upstream.trim()))));
         }
         if widgets::secondary(ui, true, "Cancel").clicked() {
@@ -1078,7 +1068,7 @@ fn stash(
         ui.add(egui::Label::new(muted(ui, said)).wrap());
         ui.add_space(4.0);
     }
-    let entered = name_field(ui, "Message (optional)", message);
+    name_field(ui, "Message (optional)", message);
     if paths.is_empty() {
         ui.add_space(4.0);
         crate::widgets::checkbox(ui, untracked, "Files git doesn't track too");
@@ -1089,9 +1079,6 @@ fn stash(
         untracked: *untracked,
         paths: paths.to_vec(),
     };
-    if entered {
-        return Some(Answer::Run(go()));
-    }
     buttons(ui, "Stash", true, go)
 }
 
@@ -1120,12 +1107,10 @@ fn url_ready(url: &str) -> bool {
 }
 
 /// A labelled one-line field that doesn't take the focus.
-fn field(ui: &mut Ui, label: &str, text: &mut String) -> bool {
+fn field(ui: &mut Ui, label: &str, text: &mut String) {
     let label = ui.label(muted(ui, label));
-    let field = ui
-        .add(crate::widgets::line_field(text).desired_width(f32::INFINITY))
+    ui.add(crate::widgets::line_field(text).desired_width(f32::INFINITY))
         .labelled_by(label.id);
-    field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter))
 }
 
 /// A remote to add.
@@ -1143,10 +1128,10 @@ fn add_remote(
          yours was forked from.",
     );
     ui.add_space(8.0);
-    let named = name_field(ui, "Name", name);
+    name_field(ui, "Name", name);
     let name_ready = remote_problem(ui, pane, name);
     ui.add_space(4.0);
-    let addressed = field(ui, "Address (URL)", url);
+    field(ui, "Address (URL)", url);
     ui.add_space(4.0);
     crate::widgets::checkbox(ui, fetch, "Fetch from it now");
     ui.add_space(12.0);
@@ -1156,9 +1141,6 @@ fn add_remote(
         url: url.trim().to_owned(),
         fetch: *fetch,
     };
-    if (named || addressed) && ready {
-        return Some(Answer::Run(go()));
-    }
     buttons(ui, "Add remote", ready, go)
 }
 
@@ -1170,9 +1152,9 @@ fn edit_remote(
     push: &mut String,
 ) -> Option<Answer> {
     title(ui, &format!("Change {}'s address", remote.to_str_lossy()));
-    let entered = name_field(ui, "Fetches from", url);
+    name_field(ui, "Fetches from", url);
     ui.add_space(4.0);
-    let pushed = field(ui, "Pushes to (empty: where it fetches from)", push);
+    field(ui, "Pushes to (empty: where it fetches from)", push);
     ui.add_space(12.0);
     let push_ready = push.trim().is_empty() || url_ready(push);
     let ready = url_ready(url) && push_ready;
@@ -1181,9 +1163,6 @@ fn edit_remote(
         url: url.trim().to_owned(),
         push: Some(push.trim().to_owned()).filter(|push| !push.is_empty()),
     };
-    if (entered || pushed) && ready {
-        return Some(Answer::Run(go()));
-    }
     buttons(ui, "Save", ready, go)
 }
 
@@ -1200,16 +1179,13 @@ fn rename_remote(
         "Its remote-tracking branches, and the branches following them, are renamed with it.",
     );
     ui.add_space(8.0);
-    let entered = name_field(ui, "New name", name);
+    name_field(ui, "New name", name);
     let ready = remote_problem(ui, pane, name) && name.trim().as_bytes() != old.as_slice();
     ui.add_space(12.0);
     let go = || Task::RenameRemote {
         old: old.clone(),
         new: name.trim().to_owned(),
     };
-    if entered && ready {
-        return Some(Answer::Run(go()));
-    }
     buttons(ui, "Rename", ready, go)
 }
 
@@ -1254,14 +1230,11 @@ fn lock_worktree(
          there, say), nor moved or removed.",
     );
     ui.add_space(8.0);
-    let entered = name_field(ui, "Why (optional)", reason);
+    name_field(ui, "Why (optional)", reason);
     ui.add_space(12.0);
     let go = || Task::LockWorktree {
         path: path.to_path_buf(),
         reason: reason.trim().to_owned(),
     };
-    if entered {
-        return Some(Answer::Run(go()));
-    }
     buttons_of(ui, ("Lock", Some("worktree-lock")), true, go)
 }

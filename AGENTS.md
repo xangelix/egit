@@ -2165,7 +2165,11 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     their dialogs instead. Its parts draw in `Ui`s with ids of their own (`own_ids`): what the
     row drew before them comes and goes.
     `views/dialogs.rs` — the `Dialog` asked (`TasksView::dialog`), one at a time in a modal,
-    what is typed kept in its variant, ending by starting a task or closing: diverged
+    what is typed kept in its variant, ending by starting a task or closing (Enter takes its
+    main button, `widgets::enter_confirms`: not from a field of several lines, nor from a
+    button, checkbox, or combo box with the focus, which takes Enter as its click; Escape
+    closes it, as the pull request form, the sign-in dialog, and git's questions for what to
+    type; a yes-or-no question of ssh's, a host to trust, only by a click): diverged
     branches (Rebase or Merge, optionally remembered as `pull.rebase`), a force push's
     confirmation (`--force-with-lease --force-if-includes`), changes in a pull's way ("Stash,
     pull, and put back", or for files git doesn't track "Stash and pull"; `asks_next` picks
@@ -2858,7 +2862,10 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     can't come or go (moving every row) while a screen is checked. `src/tests/polish.rs` drives preferences (changed from the status bar, in effect
     for a repository opened after: dates as how long ago, a diff side by side, no background
     fetch; kept) and the palette (a command found by a few letters, one that can't run saying
-    why, a branch switched to) and the shortcuts (⌘B, ⌘,, ⌘W, ⌘1). `src/tests/menus.rs` drives the menus' newer
+    why, a branch switched to) and the shortcuts (⌘B, ⌘,, ⌘W, ⌘1). `src/tests/dialogs.rs`
+    answers dialogs from the keyboard: a branch named then Enter (made), Enter in a tag's
+    message a new line, Escape closing it (nothing made), a deletion confirmed by Enter, and
+    again where it isn't merged. `src/tests/menus.rs` drives the menus' newer
     actions: pulling, pushing, fast-forwarding branches, upstreams set and forgotten, a name
     copied, a branch deleted here and on its remote, a patch saved, a worktree opened in a
     tab, the graph narrowed and pinned. `src/tests/bisect.rs` drives a bisection from two

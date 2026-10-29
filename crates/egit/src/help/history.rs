@@ -731,10 +731,11 @@ pub(super) const TOPICS: &[Topic] = &[
         group: Group::Egit,
         title: "Cancel",
         on: &["Cancel"],
-        what: "In a dialog or an editor: closes it, nothing done. While a task runs: stops git \
-               the way git expects to be stopped (it removes its lock files), never killed \
-               mid-write. In git's question for a password: refuses to answer, and the \
-               command fails.",
+        what: "In a dialog or an editor: closes it, nothing done (Escape does too; Enter, \
+               outside a field of several lines, takes the dialog's main button instead). \
+               While a task runs: stops git the way git expects to be stopped (it removes its \
+               lock files), never killed mid-write. In git's question for a password: refuses \
+               to answer, and the command fails.",
         git: "SIGTERM to git's process group (on Windows, as Git for Windows stops a process)",
         cases: &[
             (

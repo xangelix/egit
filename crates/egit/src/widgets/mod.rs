@@ -1230,6 +1230,28 @@ pub(crate) fn buttons_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     );
 }
 
+/// Whether Enter, pressed this frame, answers the dialog `ui` is in as its main button would
+/// (taken, so nothing else answers it too): no modifier held, no popup open (a combo box's list
+/// takes it), and no control of the dialog keeping the keyboard (a field of several lines
+/// writes a new line; a button, checkbox, or combo box with the focus takes Enter as its own
+/// click). A one-line field gives the keyboard up on Enter, so a name typed then Enter
+/// confirms it; what holds the focus behind the dialog can't answer. Asked once its controls
+/// are drawn; Escape closes a dialog (egui's `Modal::should_close`).
+pub(crate) fn enter_confirms(ui: &Ui) -> bool {
+    let ctx = ui.ctx();
+    let pressed = ui.input(|input| input.key_pressed(Key::Enter) && input.modifiers.is_none());
+    let kept = || {
+        ctx.memory(egui::Memory::focused).is_some_and(|focused| {
+            ctx.read_response(focused)
+                .is_some_and(|response| response.layer_id == ui.layer_id())
+        })
+    };
+    pressed
+        && !egui::Popup::is_any_open(ctx)
+        && !kept()
+        && ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, Key::Enter))
+}
+
 /// A note that something is happening in the background.
 pub(crate) fn working(ui: &mut Ui, text: &str) {
     ui.horizontal(|ui| {

@@ -14,7 +14,7 @@ use web_time::Instant;
 
 use egit_forge::{ForgeHost, ForgeKind};
 use egit_git::Git;
-use egui::{Id, Key, Modal, RichText, Ui, UiBuilder};
+use egui::{Id, Modal, RichText, Ui, UiBuilder};
 
 use crate::app::Action;
 use crate::sign_ins::{Keeping, SignInDialog, SignIns};
@@ -101,7 +101,6 @@ fn fill(
     let signing = dialog.signing.is_pending();
     create_step(ui, &host, actions);
     ui.add_space(8.0);
-    let mut submitted = false;
     step(ui, "2", "Paste it here", |ui| {
         let hint = match kind {
             ForgeKind::GitHub => "ghp_…",
@@ -116,7 +115,6 @@ fn fill(
                     .desired_width(320.0),
             )
         });
-        submitted = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
         // Typed into at once.
         if !signing
             && dialog.token.is_empty()
@@ -130,7 +128,9 @@ fn fill(
     let mut close = false;
     let ready = !signing && !dialog.token.trim().is_empty();
     widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, ready, "Sign in").clicked() || (submitted && ready) {
+        if widgets::primary(ui, ready, "Sign in").clicked()
+            || (ready && widgets::enter_confirms(ui))
+        {
             dialog.with_token();
         }
         close = widgets::secondary(ui, !signing, "Cancel").clicked();
@@ -306,7 +306,8 @@ fn signed(
     let setting_up = keeping.is_some_and(|keeping| keeping.setting_up.is_some());
     let mut done = false;
     widgets::buttons_row(ui, |ui| {
-        done = widgets::primary(ui, !setting_up, "Done").clicked();
+        done = widgets::primary(ui, !setting_up, "Done").clicked()
+            || (!setting_up && widgets::enter_confirms(ui));
     });
     done
 }

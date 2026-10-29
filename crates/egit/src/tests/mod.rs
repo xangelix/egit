@@ -6,6 +6,7 @@ mod avatars;
 mod bisect;
 mod columns;
 mod corpus;
+mod dialogs;
 mod discard;
 mod dragging;
 mod exporting;

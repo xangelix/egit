@@ -309,7 +309,9 @@ fn fill(ui: &mut Ui, shared: &Shared<'_>, form: &mut PullRequestForm) -> Option<
         .map(|(target, _)| target.clone());
     let ready = into.is_some() && !form.title.trim().is_empty() && !form.base.trim().is_empty();
     widgets::buttons_row(ui, |ui| {
-        if widgets::primary(ui, ready && !shared.busy, &format!("Create {noun}")).clicked()
+        let creatable = ready && !shared.busy;
+        if (widgets::primary(ui, creatable, &format!("Create {noun}")).clicked()
+            || (creatable && widgets::enter_confirms(ui)))
             && let Some(into) = &into
         {
             let head = (!into.is(&form.head)).then(|| form.head.clone());
@@ -340,7 +342,8 @@ fn field(ui: &mut Ui, label: &str, text: &mut String, focus: bool) {
     let response = ui
         .add(crate::widgets::line_field(text).desired_width(f32::INFINITY))
         .labelled_by(label.id);
-    if focus && ui.memory(|memory| memory.focused().is_none()) {
+    // Not just after giving the focus up: on Enter, which the form's buttons then take.
+    if focus && ui.memory(|memory| memory.focused().is_none()) && !response.lost_focus() {
         response.request_focus();
     }
 }

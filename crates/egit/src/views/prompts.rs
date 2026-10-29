@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use egit_git::SshSharing;
 use egit_git::askpass::{AskpassServer, Prompt, PromptKind};
-use egui::{Id, Key, Modal, RichText};
+use egui::{Id, Modal, RichText};
 use zeroize::Zeroizing;
 
 use crate::jobs;
@@ -238,14 +238,12 @@ impl Prompts {
                     if !field.has_focus() && !field.lost_focus() {
                         field.request_focus();
                     }
-                    let entered =
-                        field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
                     ui.add_space(8.0);
                     widgets::buttons_row(ui, |ui| {
                         let go = widgets::primary(ui, true, "Continue");
                         // Explained as answering a prompt, not an operation's Continue.
                         crate::help::note_topic(ui, go.rect, "ok");
-                        if go.clicked() || entered {
+                        if go.clicked() || widgets::enter_confirms(ui) {
                             decision = Some(Decision::Answer);
                         }
                         if widgets::secondary(ui, true, "Cancel").clicked() {
@@ -314,7 +312,8 @@ enum Decision {
     Refuse,
 }
 
-/// A yes-or-no question's buttons (a host to trust, a key to use); the decision, once taken.
+/// A yes-or-no question's buttons (a host to trust, a key to use); the decision, once taken. Only
+/// a click answers (Escape refuses): Enter pressed out of habit mustn't trust a host.
 fn choices(ui: &mut egui::Ui, kind: PromptKind, host_key: bool) -> Option<Decision> {
     let mut decision = None;
     widgets::buttons_row(ui, |ui| {
