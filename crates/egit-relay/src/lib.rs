@@ -16,6 +16,7 @@
 //! `/proxy/<port>/`, a reverse proxy's folder): given ([`Options::urls`]), its host is let in
 //! and its address is printed too. The page asks for everything relative to its own address.
 
+mod cli;
 mod delivery;
 mod http;
 mod running;
@@ -31,6 +32,7 @@ use std::time::Duration;
 use tokio::net::TcpListener;
 use zeroize::Zeroizing;
 
+pub use cli::main;
 pub use egit_git::askpass::{HELPER_NAME, run_helper};
 
 /// How a relay serves.

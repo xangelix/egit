@@ -1158,9 +1158,11 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
 - `crates/egit-relay` — `egit-relay`, egit in a browser's computer: serves egit's web build
   and runs git (and `sh`, for the files egit reads and writes) for it, over a WebSocket at
   `/relay` (`egit_git::relay`'s protocol), and makes its requests (to a forge, a download, a
-  picture) as egit makes them here (`egit_forge::here`); no egui. `main.rs`: `--listen` (the loopback
+  picture) as egit makes them here (`egit_forge::here`); no egui. `cli.rs` (its entry,
+  `egit_relay::main`, the executable's and the cores' alike): `--listen` (the loopback
   address, `127.0.0.1:7171`: reached through `ssh -L` or a proxy of the user's), `--web` (a
-  folder; `web` beside it), `--host` (a proxy's name), `--url` (an address a proxy gives
+  folder; `web` beside it, else installed on macOS its tool folder's `Resources/web`,
+  `default_web`), `--host` (a proxy's name), `--url` (an address a proxy gives
   browsers for it, perhaps under a path of its own, `{{port}}` the port listened on:
   code-server's `https://…/proxy/{{port}}/`, taken from `VSCODE_PROXY_URI`, which
   code-server's terminals have, unless one is given); prints the addresses to open, one a line
