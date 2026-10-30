@@ -2,7 +2,8 @@
 //! new commits, shown until pulled or dismissed; one failing, its warning gone as soon as a
 //! fetch of the user's own goes through, and none for one a task of the user's stopped; and how
 //! tasks end, under the commit table (nothing above it moving), one that went well going by
-//! itself after a few seconds, one that stopped staying.
+//! itself after a few seconds, one that stopped staying. A background fetch due that can't
+//! start (no remote) leaves egit idle, nothing drawn.
 
 use egit_git::testing::Sandbox;
 use egui::accesskit::Role;
@@ -12,8 +13,26 @@ use crate::theme::icon;
 
 use super::screens::{
     click_when_enabled, colleague_pushes, harness, history_shown, open_path, profile_loaded,
-    render, settle, shared_remote, uncommitted, wait_for_label,
+    render, settle, shared_remote, two_branches, uncommitted, wait_for_label,
 };
+
+#[test]
+fn a_background_fetch_that_can_t_start_leaves_egit_idle() {
+    // No remote to fetch from: due, the fetch can't start, and nothing is drawn meanwhile
+    // (every frame was, idle, once one was due).
+    let sandbox = Sandbox::new().unwrap();
+    let repo = two_branches(&sandbox);
+    let mut harness = harness(&sandbox);
+    settle(&mut harness, "the profile", profile_loaded);
+    open_path(&mut harness, &repo);
+    settle(&mut harness, "the history", history_shown);
+    harness.run_steps(10);
+    harness.state_mut().state.repos[0]
+        .tasks
+        .fetch_in_background_now();
+    let idle = harness.try_run();
+    assert!(idle.is_ok(), "drawn without end: {idle:?}");
+}
 
 #[test]
 fn a_background_fetch_tells_of_new_commits_upstream() {

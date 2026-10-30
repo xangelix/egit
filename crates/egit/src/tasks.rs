@@ -871,8 +871,11 @@ impl Tasks {
             }
             self.background = Bind::new(true);
         }
+        // A fetch can start once due, unless there is nothing to fetch from or a fetch (the
+        // user's task, or the last background one) is under way.
+        let can_start = has_remotes && !self.result.is_pending() && !self.background.is_pending();
         let due = self.background_every.is_some() && now >= self.next_background;
-        if due && has_remotes && !self.result.is_pending() && !self.background.is_pending() {
+        if due && can_start {
             let every = self.background_every.unwrap_or(BACKGROUND_FETCH);
             self.next_background = now.checked_add(every).unwrap_or(now);
             self.background_cancel = CancelToken::new();
@@ -915,7 +918,10 @@ impl Tasks {
                 )))
             }));
         }
-        let wait = if self.background_every.is_some() {
+        // Until it is due; while it can't start, no time brings it nearer: what holds it back
+        // (the configuration naming a remote, a task or fetch ending) wakes the window itself.
+        // Asking for a frame at once then would draw every frame, idle.
+        let wait = if self.background_every.is_some() && can_start {
             self.next_background.saturating_duration_since(now)
         } else {
             NO_FETCH_DUE

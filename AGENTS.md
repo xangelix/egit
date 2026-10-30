@@ -1820,7 +1820,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `Stashed` (whether anything was), `WouldOverwrite` (a switch refused, with the paths), or
     `NotMerged` (a delete refused). And a background fetch as often as the preferences say
     (`fetch_every`; every 5 minutes by default, or never; the first 10 s after opening; only
-    with a remote): non-interactive, without the lock, stopped when the
+    with a remote; while one can't start, no remote or a fetch under way, the window isn't woken
+    for it: what holds it back ending wakes it, and asking at once drew every frame, idle):
+    non-interactive, without the lock, stopped when the
     user starts a task (`Fetched::Stopped`: nothing learned, nothing said), its failure kept
     apart (`background_problem`, until one goes through, or a fetch of the user's does; another
     task reaching the remotes, `Task::reaches_remotes`, that goes through brings the next one
@@ -3118,7 +3120,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     a folder staged whole, a commit's files alike, a list again.
     `src/tests/notices.rs` lets background fetches run: one bringing nothing says nothing, two
     bringing a commit each make one notice of both; one failing (its remote out of reach), its
-    warning gone once the user's own Fetch goes through, and none for one a task stopped.
+    warning gone once the user's own Fetch goes through, and none for one a task stopped; one
+    due that can't start (no remote) leaves egit idle (`try_run`: no frame asked for at once).
     It also shows an outcome under the commit table (the table's head where it was), gone by
     itself five seconds later, and a refused revert staying.
     `src/tests/search.rs` drives the search bar
