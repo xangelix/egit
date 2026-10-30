@@ -286,6 +286,7 @@ impl EgitApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new(creation: &eframe::CreationContext<'_>, paths: Vec<PathBuf>) -> Self {
         let settings = Settings::load(creation.storage);
+        crate::renderer::note(creation);
         let home_dir = std::env::var_os("HOME").map(PathBuf::from);
         // Every git process asks its questions through this window.
         let (prompts, env) = Prompts::start(&creation.egui_ctx);
@@ -321,6 +322,7 @@ impl EgitApp {
         paths: Vec<PathBuf>,
     ) -> Self {
         let settings = Settings::load(creation.storage);
+        crate::renderer::note(creation);
         let (sender, incoming) = std::sync::mpsc::channel();
         let waker = crate::repaint::Repaint::of(&creation.egui_ctx);
         relay.send_prompts_to(sender, move || waker.request_repaint());

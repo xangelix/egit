@@ -326,6 +326,12 @@ fn appearance(ui: &mut Ui, state: &mut AppState, preferences: &mut Preferences) 
             ))
             .wrap(),
         );
+        if let Some(drawn) = crate::renderer::drawn_with(ui.ctx()) {
+            ui.add_space(4.0);
+            widgets::fact(ui, LABEL, "Drawn with", |ui| {
+                ui.add(Label::new(drawn).truncate());
+            });
+        }
     });
 }
 

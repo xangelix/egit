@@ -952,6 +952,20 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "pref-drawn-with",
+        group: Group::Egit,
+        title: "Drawn with",
+        on: &["Drawn with"],
+        what: "What draws egit's window: the graphics interface it chose and the GPU it names. \
+               On a computer, Vulkan, Metal, DirectX 12, or OpenGL; in a browser, WebGPU where \
+               the browser offers it, else WebGL2 (a browser often names no GPU).",
+        git: "",
+        cases: &[(
+            "WebGL2 where WebGPU was expected?",
+            "The browser didn't offer WebGPU: Safari has it from iOS 26 and macOS 26, Chrome on Android from Android 12 on most phones.",
+        )],
+    },
+    Topic {
         id: "pref-text-size",
         group: Group::Egit,
         title: "Text size",

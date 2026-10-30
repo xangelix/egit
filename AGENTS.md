@@ -1434,6 +1434,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     screen leaves (`widgets::dialog_width`); a fact's or form's label above its value where its
     column would take over a third of the row (`widgets::fact`, `fact_top`, `form_row`, and
     `FactGrid`/`fact_rows` for the grids of pages: the Overview, Profile), its parts wrapping.
+  - `renderer.rs` — what draws the window (`note`, as eframe made it: wgpu's adapter's
+    interface and GPU), in words Preferences' Appearance card says ("Drawn with": WebGPU or
+    WebGL2 in a browser; Vulkan, Metal, DirectX 12, or OpenGL elsewhere).
   - `repaint.rs` — `Repaint`, what work done elsewhere (a job, a thread of its own, a worker)
     holds to ask the window to draw again: egui's context here; in a browser, where the context
     is the main thread's alone, the asking handed to that thread (`on_main`), once however
