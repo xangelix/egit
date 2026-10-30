@@ -217,16 +217,24 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
             );
             ui.label(muted(ui, words));
         }
-        ui.horizontal(|ui| {
-            let picking = state.home.picking.is_pending();
-            if !crate::desktop::IN_BROWSER
+        // On a narrow window (a phone's) the folder's button on a row of its own, the path typed
+        // under it.
+        let narrow = crate::narrow::is_narrow(ui.ctx());
+        let picking = state.home.picking.is_pending();
+        let pick = |ui: &mut Ui| {
+            !crate::desktop::IN_BROWSER
                 && widgets::primary(
                     ui,
                     ready && !picking,
                     &format!("{}  Open folder…", icon::FOLDER_OPEN),
                 )
                 .clicked()
-            {
+        };
+        if narrow && pick(ui) {
+            state.actions.push(Action::PickFolder);
+        }
+        ui.horizontal(|ui| {
+            if !narrow && pick(ui) {
                 state.actions.push(Action::PickFolder);
             }
             let field = ui
@@ -237,7 +245,11 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
                         } else {
                             "…or type a path"
                         })
-                        .desired_width((ui.available_width() - 72.0).max(120.0)),
+                        .desired_width((ui.available_width() - 72.0).max(if narrow {
+                            0.0
+                        } else {
+                            120.0
+                        })),
                 )
                 .labelled_by(heading.id);
             let typed = state.home.path.trim();
@@ -261,42 +273,48 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
         if state.is_opening() || state.home.preparing.is_pending() {
             widgets::working(ui, "Opening…");
         }
-        if let Some(problem) = state.home.problem.clone() {
-            ui.add_space(8.0);
-            widgets::problem_box(ui, &problem.problem, |ui| {
-                let busy = state.home.preparing.is_pending();
-                let remedy = problem.remedy.as_ref().map(|remedy| match remedy {
-                    Remedy::Trust(location) => (
-                        "Trust this folder",
-                        format!(
-                            "Adds {} to git's safe.directory setting",
-                            location.path.display()
-                        ),
-                        Action::Trust(location.clone()),
-                    ),
-                    Remedy::Create(location) => (
-                        "Create a repository here",
-                        format!(
-                            "Runs git init in {}: nothing in it changes, and nothing is \
-                             committed yet",
-                            location.path.display()
-                        ),
-                        Action::Init(location.clone()),
-                    ),
-                });
-                if let Some((words, hover, action)) = remedy
-                    && widgets::primary(ui, ready && !busy, words)
-                        .on_hover_text(hover)
-                        .clicked()
-                {
-                    state.actions.push(action);
-                }
-                if widgets::secondary(ui, true, "Dismiss").clicked() {
-                    state.home.problem = None;
-                }
-            });
-        }
+        open_problem(ui, state, ready);
     });
+}
+
+/// Why the repository asked for couldn't be opened, and what would make it open (trusting its
+/// folder, or making it a repository).
+fn open_problem(ui: &mut Ui, state: &mut AppState, ready: bool) {
+    if let Some(problem) = state.home.problem.clone() {
+        ui.add_space(8.0);
+        widgets::problem_box(ui, &problem.problem, |ui| {
+            let busy = state.home.preparing.is_pending();
+            let remedy = problem.remedy.as_ref().map(|remedy| match remedy {
+                Remedy::Trust(location) => (
+                    "Trust this folder",
+                    format!(
+                        "Adds {} to git's safe.directory setting",
+                        location.path.display()
+                    ),
+                    Action::Trust(location.clone()),
+                ),
+                Remedy::Create(location) => (
+                    "Create a repository here",
+                    format!(
+                        "Runs git init in {}: nothing in it changes, and nothing is \
+                         committed yet",
+                        location.path.display()
+                    ),
+                    Action::Init(location.clone()),
+                ),
+            });
+            if let Some((words, hover, action)) = remedy
+                && widgets::primary(ui, ready && !busy, words)
+                    .on_hover_text(hover)
+                    .clicked()
+            {
+                state.actions.push(action);
+            }
+            if widgets::secondary(ui, true, "Dismiss").clicked() {
+                state.home.problem = None;
+            }
+        });
+    }
 }
 
 /// Opening a repository on another computer, on one row: which (as ssh reaches it), the
@@ -304,29 +322,53 @@ fn open_card(ui: &mut Ui, state: &mut AppState) {
 fn open_there(ui: &mut Ui, state: &mut AppState, ready: bool) {
     let mut submitted = false;
     let home = &mut state.home;
-    ui.horizontal(|ui| {
+    // On a narrow window (a phone's): the computer on a row of its own, the folder and the
+    // button under it.
+    let narrow = crate::narrow::is_narrow(ui.ctx());
+    // The computer: its field as wide as `width` makes of the room after its label, which it
+    // returns.
+    let host = |ui: &mut Ui, host: &mut String, width: &dyn Fn(f32) -> f32| {
         let label = ui.label(muted(ui, "On another computer"));
         crate::help::note(ui, label.rect, "On another computer");
-        let room = (ui.available_width() - 260.0).max(240.0);
+        let room = ui.available_width();
         ui.add(
-            widgets::line_field(&mut home.there_host)
+            widgets::line_field(host)
                 .hint_text("host, user@host, or an ssh alias")
-                .desired_width(room * 0.45),
+                .desired_width(width(room)),
         )
         .labelled_by(label.id);
+        room
+    };
+    // On one row, the two fields share what is left after the computer's label.
+    let shared = |room: f32| (room - 260.0).max(240.0);
+    if narrow {
+        ui.horizontal(|ui| host(ui, &mut home.there_host, &|room| room));
+    }
+    ui.horizontal(|ui| {
+        let room = if narrow {
+            0.0
+        } else {
+            shared(host(ui, &mut home.there_host, &|room| shared(room) * 0.45))
+        };
         let folder = ui.label(muted(ui, "folder"));
         crate::help::note(ui, folder.rect, "folder");
+        let open_there = format!("{}  Open there", icon::GLOBE);
+        let width = if narrow {
+            ui.available_width() - widgets::button_width(ui, &open_there) - 8.0
+        } else {
+            room * 0.55
+        };
         let field = ui
             .add(
                 widgets::line_field(&mut home.there_path)
                     .hint_text("~/project")
-                    .desired_width(room * 0.55),
+                    .desired_width(width),
             )
             .labelled_by(folder.id);
         submitted = field.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter));
         let (host, path) = (home.there_host.trim(), home.there_path.trim());
         let complete = ready && !host.is_empty() && !path.is_empty();
-        let clicked = widgets::secondary(ui, complete, &format!("{}  Open there", icon::GLOBE))
+        let clicked = widgets::secondary(ui, complete, &open_there)
             .on_hover_text("egit runs git there over one shared SSH connection")
             .clicked();
         if (clicked || submitted) && complete {
@@ -357,21 +399,28 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
             table.shown = recent.iter().map(|recent| recent.path.clone()).collect();
             table.state = TableState::new("home-recent", recent.len());
         }
+        // A narrow window's (a phone's): which, and when, a tap opening it.
+        let narrow = crate::narrow::is_narrow(ui.ctx());
         let provider = RecentRows::new(&state.settings.recent, state.home_dir.as_deref(), now());
+        let provider = if narrow {
+            provider.without_location()
+        } else {
+            provider
+        };
         let rows = state.settings.recent.len().min(10);
         let height = ROW_HEIGHT * (f32::from(u8::try_from(rows).unwrap_or(10)) + 1.0) + 4.0;
-        let name = 200.0;
-        let opened = 140.0;
-        let location = (ui.available_width() - name - opened).max(160.0);
-        let table_kit = TableKit::new("home-recent", &provider, &mut table.state);
+        let columns = recent_columns(ui, narrow);
+        let table_kit = TableKit::new(
+            if narrow {
+                "home-recent-narrow"
+            } else {
+                "home-recent"
+            },
+            &provider,
+            &mut table.state,
+        );
         let output = crate::tables::styled(table_kit, ui)
-            .with_columns(vec![
-                Column::new(name).range(120.0..=400.0),
-                Column::new(location)
-                    .range(120.0..=f32::INFINITY)
-                    .remainder(true),
-                Column::new(opened).range(80.0..=240.0),
-            ])
+            .with_columns(columns)
             .with_row_height(ROW_HEIGHT)
             .with_max_height(Some(height))
             .show_with_output(ui, |_, _, _, _| None);
@@ -386,9 +435,9 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
             }
         };
         for event in &output.events {
-            if event.kind == RowEventKind::Activated
-                && let Some(recent) = state.settings.recent.get(event.row_index)
-            {
+            let opens = event.kind == RowEventKind::Activated
+                || (narrow && event.kind == RowEventKind::Clicked);
+            if opens && let Some(recent) = state.settings.recent.get(event.row_index) {
                 state.actions.push(Action::Open(recent.location()));
             }
         }
@@ -422,9 +471,35 @@ fn recent_card(ui: &mut Ui, state: &mut AppState) {
             {
                 state.actions.push(Action::Forget(location));
             }
-            ui.label(muted(ui, "Double-click a repository to open it.").small());
+            if !narrow {
+                ui.label(muted(ui, "Double-click a repository to open it.").small());
+            }
         });
     });
+}
+
+/// The recent repositories' columns: which, where, and when; a narrow window's (a phone's)
+/// which and when.
+fn recent_columns(ui: &Ui, narrow: bool) -> Vec<Column> {
+    let name = 200.0;
+    let opened = 140.0;
+    let location = (ui.available_width() - name - opened).max(160.0);
+    if narrow {
+        vec![
+            Column::new(ui.available_width() - 100.0)
+                .range(120.0..=f32::INFINITY)
+                .remainder(true),
+            Column::new(100.0).range(80.0..=240.0),
+        ]
+    } else {
+        vec![
+            Column::new(name).range(120.0..=400.0),
+            Column::new(location)
+                .range(120.0..=f32::INFINITY)
+                .remainder(true),
+            Column::new(opened).range(80.0..=240.0),
+        ]
+    }
 }
 
 /// The repositories suggested, under the recent ones: those beside two egit knows (open, or
@@ -559,6 +634,8 @@ fn suggested_table(
 /// button at the right.
 fn profile_card(ui: &mut Ui, state: &mut AppState) {
     let palette = Palette::of(ui.ctx());
+    // On a narrow window (a phone's) the button goes under the words, which wrap.
+    let narrow = crate::narrow::is_narrow(ui.ctx());
     widgets::card(ui, |ui| {
         ui.horizontal(|ui| {
             // Two lines tall however it stands (being read, read, failed), so the cards below
@@ -606,19 +683,30 @@ fn profile_card(ui: &mut Ui, state: &mut AppState) {
                     });
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if widgets::secondary(
-                    ui,
-                    true,
-                    &format!("{}  Edit your profile", icon::USER_CIRCLE),
-                )
-                .clicked()
-                {
-                    state.actions.push(Action::ShowProfile);
-                }
-            });
+            if !narrow {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    edit_profile(ui, state);
+                });
+            }
         });
+        if narrow {
+            ui.add_space(8.0);
+            edit_profile(ui, state);
+        }
     });
+}
+
+/// The button showing the profile.
+fn edit_profile(ui: &mut Ui, state: &mut AppState) {
+    if widgets::secondary(
+        ui,
+        true,
+        &format!("{}  Edit your profile", icon::USER_CIRCLE),
+    )
+    .clicked()
+    {
+        state.actions.push(Action::ShowProfile);
+    }
 }
 
 /// A folder typed for another computer, as a shell there reads it: `~` its `home` folder,

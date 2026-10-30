@@ -630,26 +630,54 @@ pub(crate) fn column<R>(
 /// The button for the main thing to do: filled with the accent; while it can't be pressed, a
 /// plain one (a faded accent reads as pressable).
 pub(crate) fn primary(ui: &mut Ui, enabled: bool, text: &str) -> Response {
+    primary_as(ui, enabled, (text, text))
+}
+
+/// A [`primary`] button showing `shown` (where room is short, its icon alone, or with a
+/// count), named `name`, the words it shows where there is room.
+pub(crate) fn primary_as(ui: &mut Ui, enabled: bool, (shown, name): (&str, &str)) -> Response {
     let palette = Palette::of(ui.ctx());
-    filled(ui, enabled, text, palette.accent, palette.on_accent)
+    filled(
+        ui,
+        enabled,
+        (shown, name),
+        palette.accent,
+        palette.on_accent,
+    )
 }
 
 /// A button for what can't be undone easily (deleting, a hard reset, a force push): filled
 /// with the danger colour.
 pub(crate) fn danger(ui: &mut Ui, enabled: bool, text: &str) -> Response {
     let palette = Palette::of(ui.ctx());
-    filled(ui, enabled, text, palette.danger, palette.on_danger)
+    filled(ui, enabled, (text, text), palette.danger, palette.on_danger)
+}
+
+/// Names `response` `name` where it shows other words (`shown`: an icon alone), and notes the
+/// name for help.
+fn named(ui: &Ui, response: &Response, (shown, name): (&str, &str)) {
+    if shown != name {
+        let enabled = response.enabled();
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+    }
+    crate::help::note(ui, response.rect, name);
 }
 
 /// A button filled with `fill` (a shade nearer the text's colour under the pointer), its text
 /// `on`; a plain one while disabled.
-fn filled(ui: &mut Ui, enabled: bool, text: &str, fill: Color32, on: Color32) -> Response {
+fn filled(
+    ui: &mut Ui,
+    enabled: bool,
+    (text, name): (&str, &str),
+    fill: Color32,
+    on: Color32,
+) -> Response {
     if !enabled {
         let response = ui.add_enabled(
             false,
             Button::new(text).wrap_mode(egui::TextWrapMode::Extend),
         );
-        crate::help::note(ui, response.rect, text);
+        named(ui, &response, (text, name));
         return response;
     }
     // Whether the pointer was on it last frame: a button's fill is chosen before it is drawn.
@@ -668,17 +696,25 @@ fn filled(ui: &mut Ui, enabled: bool, text: &str, fill: Color32, on: Color32) ->
             .stroke(Stroke::NONE)
             .wrap_mode(egui::TextWrapMode::Extend),
     );
-    crate::help::note(ui, response.rect, text);
+    named(ui, &response, (text, name));
     response
 }
 
 /// Any other button. Its words never wrap: a row too narrow wraps whole buttons instead.
 pub(crate) fn secondary(ui: &mut Ui, enabled: bool, text: &str) -> Response {
+    secondary_as(ui, enabled, (text, text))
+}
+
+/// A [`secondary`] button showing `shown` (where room is short, its icon alone, or with a
+/// count), named `name`, the words it shows where there is room.
+pub(crate) fn secondary_as(ui: &mut Ui, enabled: bool, (shown, name): (&str, &str)) -> Response {
     let response = ui.add_enabled(
         enabled,
-        Button::new(text).wrap_mode(egui::TextWrapMode::Extend),
+        Button::new(shown)
+            .wrap_mode(egui::TextWrapMode::Extend)
+            .min_size(egui::vec2(CONTROL, CONTROL)),
     );
-    crate::help::note(ui, response.rect, text);
+    named(ui, &response, (shown, name));
     response
 }
 

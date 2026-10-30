@@ -1,5 +1,7 @@
 //! The bar along the window's bottom: which git egit runs, what isn't working, the theme, the
-//! preferences, and the command palette.
+//! preferences, and the command palette. On a narrow window (a phone's) its buttons are icons
+//! (named in words) and what isn't working an icon each, its words on hover; which git, only
+//! when it isn't usable.
 
 use egui::Ui;
 
@@ -11,74 +13,57 @@ use crate::widgets::muted;
 
 /// Draws the status bar.
 pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
+    let narrow = crate::narrow::is_narrow(ui.ctx());
     ui.horizontal(|ui| {
         let home = state.home_dir.clone();
         let git_text = match state.git.read_as_ref() {
-            Some(Ok(git)) => format!(
+            Some(Ok(_)) if narrow => None,
+            Some(Ok(git)) => Some(format!(
                 "{}  git {} · {}",
                 icon::TERMINAL,
                 git.version(),
                 display_path(git.program(), home.as_deref())
-            ),
-            Some(Err(_)) => format!("{}  git isn't usable", icon::WARNING),
-            None => format!("{}  Looking for git…", icon::HOURGLASS),
+            )),
+            Some(Err(_)) => Some(format!("{}  git isn't usable", icon::WARNING)),
+            None => Some(format!("{}  Looking for git…", icon::HOURGLASS)),
         };
-        ui.label(muted(ui, git_text).small());
+        if let Some(git_text) = git_text {
+            ui.label(muted(ui, git_text).small());
+        }
         if let Some(reason) = state.watch_problem() {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{}  Changes made outside egit aren't followed",
-                    icon::WARNING
-                ))
-                .small()
-                .color(crate::theme::Palette::of(ui.ctx()).warn),
-            )
-            .on_hover_text(format!(
-                "egit can't watch for them: {reason}. It keeps trying, and catches up once it can."
-            ));
+            warning(
+                ui,
+                "Changes made outside egit aren't followed",
+                &format!(
+                    "egit can't watch for them: {reason}. It keeps trying, and catches up once \
+                     it can."
+                ),
+                narrow,
+            );
         }
         if let Some(reason) = &state.prompts.unavailable {
-            ui.label(
-                egui::RichText::new(format!(
-                    "{}  git can't ask you for passwords",
-                    icon::WARNING
-                ))
-                .small()
-                .color(crate::theme::Palette::of(ui.ctx()).warn),
-            )
-            .on_hover_text(reason.as_str());
+            warning(ui, "git can't ask you for passwords", reason, narrow);
         }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Quiet, as a toolbar's: the bar stays out of the way until wanted.
-            let help = quiet_button(
-                ui,
-                muted(ui, format!("{}  Help  F1", icon::QUESTION)).small(),
-            );
-            crate::help::note(ui, help.rect, "Help");
+            let help = bar_button(ui, (icon::QUESTION, "Help"), Some("F1"), narrow);
             if help
                 .on_hover_text("What everything does, at git's level (or hold Alt over anything)")
                 .clicked()
             {
                 state.actions.push(Action::ShowHelp);
             }
-            let commands = quiet_button(
+            let commands = bar_button(
                 ui,
-                muted(
-                    ui,
-                    format!("{}  Commands  {}", icon::COMMAND, keys_text("⌘K")),
-                )
-                .small(),
+                (icon::COMMAND, "Commands"),
+                Some(&keys_text("⌘K")),
+                narrow,
             );
-            crate::help::note(ui, commands.rect, "Commands");
             if commands.on_hover_text("Every command, by name").clicked() {
                 state.actions.push(Action::ShowPalette);
             }
-            let preferences = quiet_button(
-                ui,
-                muted(ui, format!("{}  Preferences", icon::GEAR_SIX)).small(),
-            );
-            crate::help::note(ui, preferences.rect, "Preferences");
+            let preferences = bar_button(ui, (icon::GEAR_SIX, "Preferences"), None, narrow);
             if preferences
                 .on_hover_text(format!("How egit looks and behaves ({})", keys_text("⌘,")))
                 .clicked()
@@ -86,13 +71,20 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
                 state.actions.push(Action::ShowPreferences);
             }
             let current = state.settings.theme;
-            let label = match current {
-                ThemeChoice::System => format!("{}  System theme", icon::MONITOR),
-                ThemeChoice::Dark => format!("{}  Dark", icon::MOON),
-                ThemeChoice::Light => format!("{}  Light", icon::SUN),
+            let (glyph, words) = match current {
+                ThemeChoice::System => (icon::MONITOR, "System theme"),
+                ThemeChoice::Dark => (icon::MOON, "Dark"),
+                ThemeChoice::Light => (icon::SUN, "Light"),
             };
-            let button = egui::Button::new(muted(ui, label).small()).frame_when_inactive(false);
-            crate::widgets::quiet(ui, |ui| {
+            let label = if narrow {
+                glyph.to_owned()
+            } else {
+                format!("{glyph}  {words}")
+            };
+            let button = egui::Button::new(muted(ui, label).small())
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(crate::widgets::TARGET, crate::widgets::TARGET));
+            let (theme, _) = crate::widgets::quiet(ui, |ui| {
                 egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
                     for (choice, text) in [
                         (
@@ -109,13 +101,65 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
                     }
                 })
             });
+            if narrow {
+                theme.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, words)
+                });
+                crate::help::note(ui, theme.rect, words);
+            }
         });
     });
+}
+
+/// One of the bar's buttons: its icon and words, and the keys it is on (`keys`); on a narrow
+/// window its icon alone, named in words.
+fn bar_button(
+    ui: &mut Ui,
+    (glyph, words): (&str, &str),
+    keys: Option<&str>,
+    narrow: bool,
+) -> egui::Response {
+    let text = match keys {
+        _ if narrow => glyph.to_owned(),
+        Some(keys) => format!("{glyph}  {words}  {keys}"),
+        None => format!("{glyph}  {words}"),
+    };
+    let button = quiet_button(ui, muted(ui, text).small());
+    if narrow {
+        button.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, words));
+    }
+    crate::help::note(ui, button.rect, words);
+    button
+}
+
+/// What isn't working, in the warning's colour: its words and, on hover, `why`; on a narrow
+/// window its icon alone, the words on hover too.
+fn warning(ui: &mut Ui, words: &str, why: &str, narrow: bool) {
+    let text = if narrow {
+        icon::WARNING.to_owned()
+    } else {
+        format!("{}  {words}", icon::WARNING)
+    };
+    let shown = ui.label(
+        egui::RichText::new(text)
+            .small()
+            .color(crate::theme::Palette::of(ui.ctx()).warn),
+    );
+    let hover = if narrow {
+        format!("{words}: {why}")
+    } else {
+        why.to_owned()
+    };
+    shown.on_hover_text(hover);
 }
 
 /// A button without a frame until the pointer is on it.
 fn quiet_button(ui: &mut Ui, text: egui::RichText) -> egui::Response {
     crate::widgets::quiet(ui, |ui| {
-        ui.add(egui::Button::new(text).frame_when_inactive(false))
+        ui.add(
+            egui::Button::new(text)
+                .frame_when_inactive(false)
+                .min_size(egui::vec2(crate::widgets::TARGET, crate::widgets::TARGET)),
+        )
     })
 }

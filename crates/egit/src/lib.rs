@@ -11,6 +11,7 @@
 //! - `jobs` — the runtime and the write locks behind every git command.
 //! - `tables` — what the tables show, as `egui-table-kit` providers.
 //! - `theme`, `widgets`, `format` — colours and fonts, shared pieces, text for people.
+//! - `narrow` — a narrow window (a phone's screen): each view shows one thing at a time.
 //! - `settings` — what is remembered between runs.
 //! - `syntax` — syntax highlighting: grammars parsed in the background, lines coloured on screen.
 //! - `watch` — noticing what changes repositories and configuration behind egit's back.
@@ -45,6 +46,7 @@ mod lfs;
 mod log_folds;
 mod markdown;
 mod merge;
+mod narrow;
 mod output;
 mod pictures;
 mod preferences;

@@ -52,6 +52,7 @@ where the code they shaped is (its module's doc comment, and this file).
 | 38 | Stashes in the graph, as GitKraken shows them: each a row beside its branch, joined to the commit it was made on | done; awaiting the owner's review |
 | 39 | Distribution through seaworthy: launchers and per-CPU cores, packages for every platform, the icon, the licence | Linux packages built and run here; Windows and macOS left to CI's runners; awaiting the owner's review |
 | 40 | Dialogs answered by Enter and Escape; Skip hooks for every task that makes commits; every pipeline (workflow run) listed, a page at a time, each commit a link back | done; awaiting the owner's review |
+| 41 | A phone's screen: a narrow window shows one thing at a time, each view adapting in place | under way: the history, a commit, a file, the sidebar, the work tree, Home, the status bar |
 
 ## Toolchain & commands
 
@@ -1404,6 +1405,18 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `blocking`'s result back by a oneshot channel), never its main thread; `Pace`, a long
     computation's (the syntax walk's) `step().await`, yields every 10 ms there, so the jobs
     sharing its worker go on, and never here.
+  - `narrow.rs` — a narrow window (`is_narrow`, `Room`: narrower than 600 points, or a phone
+    on its side, shorter than 500 and narrower than 1,000), decided each frame from the window's
+    size: each view adapts in place, showing one thing at a time, its parts stacked, a bar's
+    controls on rows of their own. The history (`NarrowPage`: the history, the sidebar, or the
+    details, each the whole width; a row tapped shows its details, a file there its diff, each
+    going back, Escape too; the sidebar's hide button, `SidebarEvent::Hide`, goes back), its
+    rows two lines (`narrow_cell`: badges and subject, then who and when, the pipeline's mark at
+    the end; no column titles), the top bar's first row the sidebar's button and the task bar
+    (Push, Pull, Fetch their icons and counts, named in words: `widgets::primary_as`,
+    `secondary_as`), its second the tools; Home's cards stacked, the recent repositories two
+    columns opened by a tap (`RecentRows::without_location`); the status bar's buttons and
+    warnings icons named in words.
   - `repaint.rs` — `Repaint`, what work done elsewhere (a job, a thread of its own, a worker)
     holds to ask the window to draw again: egui's context here; in a browser, where the context
     is the main thread's alone, the asking handed to that thread (`on_main`), once however
@@ -3058,6 +3071,10 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     commits"; rendered, and one selected: its details), applies one from its details, drops
     one from the middle of the list from its menu (gone from the graph, the others numbered
     anew), and pops the latest.
+    `src/tests/narrow.rs` drives a phone's screen (`screens::phone`: 390 by 844 points at twice
+    the density): Home, the history, a commit tapped (its details), a file (its diff), back
+    twice, the sidebar's page (a branch tapped going to its commit), the work in progress's
+    changes, and Home's recent repositories, each screen audited and rendered.
     `src/tests/suggested.rs` opens two repositories of a folder (and one of another): the
     folder's others suggested by their reflogs' dates (commits at set times), one without a
     commit last, a plain folder and a file left out, nothing from the other folder (rendered);

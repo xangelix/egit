@@ -240,17 +240,28 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
         },
         _ => (0, 0),
     };
+    // A narrow window's (a phone's) show their icons alone, and how far: named in words.
+    let narrow = crate::narrow::is_narrow(ui.ctx());
+    let shown = |glyph: &str, far: u32| match far {
+        0 => glyph.to_owned(),
+        far => format!("{glyph} {far}"),
+    };
     let push_words = if ahead > 0 {
         format!("{}  Push {}{ahead}", icon::ARROW_UP, icon::ARROW_UP)
     } else {
         format!("{}  Push", icon::ARROW_UP)
     };
+    let push_shown = if narrow {
+        shown(icon::ARROW_UP, ahead)
+    } else {
+        push_words.clone()
+    };
     let can_push = on_branch && has_remotes;
     // Pull leads while the branch is behind: a push would be refused until it isn't.
     let push = if ahead > 0 && behind == 0 {
-        widgets::primary(ui, can_push, &push_words)
+        widgets::primary_as(ui, can_push, (&push_shown, &push_words))
     } else {
-        widgets::secondary(ui, can_push, &push_words)
+        widgets::secondary_as(ui, can_push, (&push_shown, &push_words))
     };
     let push = push.on_disabled_hover_text(if has_remotes {
         "Not on a branch: switch to one to push it"
@@ -266,10 +277,15 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     } else {
         format!("{}  Pull", icon::ARROW_DOWN)
     };
-    let pull = if behind > 0 {
-        widgets::primary(ui, has_upstream, &pull_words)
+    let pull_shown = if narrow {
+        shown(icon::ARROW_DOWN, behind)
     } else {
-        widgets::secondary(ui, has_upstream, &pull_words)
+        pull_words.clone()
+    };
+    let pull = if behind > 0 {
+        widgets::primary_as(ui, has_upstream, (&pull_shown, &pull_words))
+    } else {
+        widgets::secondary_as(ui, has_upstream, (&pull_shown, &pull_words))
     };
     if pull
         .on_disabled_hover_text("The branch has no upstream to pull from")
@@ -277,13 +293,15 @@ fn controls(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     {
         pane.start(Task::Pull(PullMode::AsConfigured));
     }
-    if widgets::secondary(
-        ui,
-        has_remotes,
-        &format!("{}  Fetch", icon::ARROWS_CLOCKWISE),
-    )
-    .on_disabled_hover_text("The repository has no remote")
-    .clicked()
+    let fetch_words = format!("{}  Fetch", icon::ARROWS_CLOCKWISE);
+    let fetch_shown = if narrow {
+        icon::ARROWS_CLOCKWISE
+    } else {
+        &fetch_words
+    };
+    if widgets::secondary_as(ui, has_remotes, (fetch_shown, &fetch_words))
+        .on_disabled_hover_text("The repository has no remote")
+        .clicked()
     {
         pane.start(Task::Fetch);
     }
@@ -348,7 +366,10 @@ fn branch_switcher(ui: &mut Ui, view: &mut TasksView, pane: &mut TaskPane<'_>) {
     let refs = &pane.refs;
     let mut asked = None;
     // Its words cut at the task bar's widest (a long name loses its end).
-    let width = (widgets::tool_width(ui, (glyph, &text), widgets::Look::Full, true)).min(WORDS);
+    // Never past the bar's start, either (a narrow window's).
+    let width = (widgets::tool_width(ui, (glyph, &text), widgets::Look::Full, true))
+        .min(WORDS)
+        .min(ui.available_width());
     ui.allocate_ui_with_layout(
         egui::vec2(width, crate::theme::CONTROL),
         egui::Layout::right_to_left(egui::Align::Center),

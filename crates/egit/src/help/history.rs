@@ -722,9 +722,36 @@ pub(super) const TOPICS: &[Topic] = &[
         on: &["Hide the sidebar", "Show the sidebar"],
         what: "The panel at the left listing branches, remotes, requests, tags, stashes, \
                worktrees, and submodules. Hiding it leaves a strip to show it again; ⌘B does \
-               either. Preferences say whether it shows when a repository opens.",
+               either. Preferences say whether it shows when a repository opens. On a narrow \
+               window (a phone's) it is a page of its own, shown by the top bar's first \
+               button.",
         git: "",
         cases: &[],
+    },
+    Topic {
+        id: "narrow-window",
+        group: Group::Egit,
+        title: "On a phone, or a narrow window",
+        on: &[],
+        what: "A window too narrow for panels side by side (a phone's, either way up, or a \
+               desktop window made narrow) shows one thing at a time, each the whole width: \
+               the history, its rows two lines (the subject, then who and when); a commit \
+               tapped shows its details in its place, and a file there its diff, each with a \
+               way back; the sidebar is a page of its own. Push, Pull, and Fetch show their \
+               icons, and how far the branch is from its upstream. Turning the phone, or \
+               widening the window, puts the panels back side by side; what each shows is \
+               kept.",
+        git: "",
+        cases: &[
+            (
+                "Where did the column titles go?",
+                "A narrow window's rows say the author and date under the subject; the commit's name is in its details.",
+            ),
+            (
+                "A long press?",
+                "It is a right click: a commit's, a branch's, or a file's menu opens.",
+            ),
+        ],
     },
     Topic {
         id: "cancel",

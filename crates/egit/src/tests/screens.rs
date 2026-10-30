@@ -68,6 +68,27 @@ fn harness_with_settings(
     })
 }
 
+/// The whole application around `sandbox`'s git on a phone's screen held upright (390 by 844
+/// points), drawn at a phone's density: narrow, one thing at a time.
+pub(super) fn phone(sandbox: &Sandbox, theme: egui::Theme) -> Harness<'static, EgitApp> {
+    let git = sandbox.git().clone();
+    let home = sandbox.home().to_owned();
+    let builder = Harness::builder()
+        .with_size([390.0, 844.0])
+        .with_pixels_per_point(2.0)
+        .with_theme(theme);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    builder.build_eframe(move |creation| {
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            Some(home),
+            Prompts::none(),
+        )
+    })
+}
+
 pub(super) fn harness(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
     harness_with(sandbox.git().clone(), sandbox.home(), egui::Theme::Dark)
 }

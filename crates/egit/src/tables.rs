@@ -292,11 +292,35 @@ pub(crate) struct RecentRows<'a> {
     recent: &'a [Recent],
     home: Option<&'a Path>,
     now: u64,
+    /// The columns shown, by their place in [`RECENT_HEADERS`].
+    shown: &'static [usize],
 }
 
 impl<'a> RecentRows<'a> {
     pub(crate) const fn new(recent: &'a [Recent], home: Option<&'a Path>, now: u64) -> Self {
-        Self { recent, home, now }
+        Self {
+            recent,
+            home,
+            now,
+            shown: &[0, 1, 2],
+        }
+    }
+
+    /// The same rows without where each is (a narrow window's): which, and when.
+    pub(crate) const fn without_location(self) -> Self {
+        Self {
+            shown: &[0, 2],
+            ..self
+        }
+    }
+
+    const fn row(&self, recent: &'a Recent) -> RecentRow<'a> {
+        RecentRow {
+            recent,
+            home: self.home,
+            now: self.now,
+            shown: self.shown,
+        }
     }
 }
 
@@ -307,15 +331,17 @@ struct RecentRow<'a> {
     recent: &'a Recent,
     home: Option<&'a Path>,
     now: u64,
+    shown: &'static [usize],
 }
 
 impl Row for RecentRow<'_> {
     fn cell(&self, col_index: usize) -> Option<TableCell<'_>> {
-        recent_cell(self.recent, self.home, self.now, col_index)
+        let column = *self.shown.get(col_index)?;
+        recent_cell(self.recent, self.home, self.now, column)
     }
 
     fn column_count(&self) -> usize {
-        RECENT_HEADERS.len()
+        self.shown.len()
     }
 }
 
@@ -352,11 +378,12 @@ fn recent_cell(
 
 impl TableProvider for RecentRows<'_> {
     fn column_count(&self) -> usize {
-        RECENT_HEADERS.len()
+        self.shown.len()
     }
 
     fn header(&self, index: usize) -> Option<Cow<'_, str>> {
-        RECENT_HEADERS.get(index).map(|&name| Cow::Borrowed(name))
+        let column = *self.shown.get(index)?;
+        RECENT_HEADERS.get(column).map(|&name| Cow::Borrowed(name))
     }
 
     fn headers(&self) -> HeaderIter<'_> {
@@ -372,20 +399,19 @@ impl TableProvider for RecentRows<'_> {
         row_index: usize,
         col_index: usize,
     ) -> Result<Option<TableCell<'_>>, TableError> {
+        let Some(&column) = self.shown.get(col_index) else {
+            return Ok(None);
+        };
         Ok(self
             .recent
             .get(row_index)
-            .and_then(|recent| recent_cell(recent, self.home, self.now, col_index)))
+            .and_then(|recent| recent_cell(recent, self.home, self.now, column)))
     }
 
     fn for_row_at(&self, index: usize, f: &mut RowCallback<'_>) -> Result<(), TableError> {
-        self.recent.get(index).map_or(Ok(()), |recent| {
-            f(&RecentRow {
-                recent,
-                home: self.home,
-                now: self.now,
-            })
-        })
+        self.recent
+            .get(index)
+            .map_or(Ok(()), |recent| f(&self.row(recent)))
     }
 
     fn for_selected_rows(
@@ -401,11 +427,7 @@ impl TableProvider for RecentRows<'_> {
 
     fn for_all_rows(&self, f: &mut RowCallback<'_>) -> Result<(), TableError> {
         for recent in self.recent {
-            f(&RecentRow {
-                recent,
-                home: self.home,
-                now: self.now,
-            })?;
+            f(&self.row(recent))?;
         }
         Ok(())
     }

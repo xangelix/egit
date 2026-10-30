@@ -210,6 +210,9 @@ pub(super) enum SidebarEvent {
     Submodules,
     /// Sign in to the host the requests want.
     SignIn,
+    /// Hide the sidebar (on a narrow window, where it is a page of its own: back to the
+    /// history).
+    Hide,
 }
 
 /// The filter: what is typed, and what it asks next frame.
@@ -915,8 +918,7 @@ pub(super) fn show(
     lists: &Lists<'_>,
     view: &mut Sidebar,
 ) -> Option<SidebarEvent> {
-    header(ui, view);
-    let mut event = None;
+    let mut event = header(ui, view).then_some(SidebarEvent::Hide);
     view.refresh(refs, lists, shared.forge);
     let sorted = Arc::clone(&view.sorted);
     let drawing = Drawing {
@@ -953,10 +955,10 @@ pub(super) fn show(
     event
 }
 
-/// The filter, and the button hiding the sidebar.
-fn header(ui: &mut Ui, view: &mut Sidebar) {
+/// The filter, and the button hiding the sidebar; returns whether that was clicked.
+fn header(ui: &mut Ui, view: &mut Sidebar) -> bool {
     // In the window's head band, level with the commit table's column titles.
-    crate::widgets::panel_head(ui, crate::widgets::Head::Control, |ui| {
+    let hidden = crate::widgets::panel_head(ui, crate::widgets::Head::Control, |ui| {
         let (_, place) = ui.allocate_space(vec2(TARGET, TARGET));
         let hide = crate::widgets::icon_button(
             ui,
@@ -966,9 +968,7 @@ fn header(ui: &mut Ui, view: &mut Sidebar) {
             "Hide the sidebar",
             true,
         );
-        if hide.on_hover_text("Hide the sidebar").clicked() {
-            view.open = false;
-        }
+        let hidden = hide.on_hover_text("Hide the sidebar").clicked();
         let label = ui.label(muted(ui, "Filter"));
         let field = ui
             .add(
@@ -1006,8 +1006,10 @@ fn header(ui: &mut Ui, view: &mut Sidebar) {
             view.filtered = true;
             view.filter.to_top = true;
         }
+        hidden
     });
     ui.add_space(4.0);
+    hidden
 }
 
 /// A row's place: its whole width, its clickable part (all but `right` pixels kept for a

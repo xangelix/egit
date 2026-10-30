@@ -97,6 +97,17 @@ const FIRST_LANES_SHOWN: u16 = 64;
 /// The digits of a commit's name its row shows.
 pub(super) const ID_DIGITS: usize = 8;
 
+/// A row's height on a narrow window: two lines (the subject, then who and when), a target a
+/// finger finds.
+const NARROW_ROW_HEIGHT: f32 = 52.0;
+
+/// How far each of a narrow row's two lines is moved in from the middle of its half, towards
+/// the other: they read as one.
+const NARROW_LINES_IN: f32 = 2.0;
+
+/// The work in progress's row on a narrow window: one line, a target a finger finds.
+const NARROW_WORK_HEIGHT: f32 = 44.0;
+
 /// The most ref badges a row shows; more are counted.
 const MAX_BADGES: usize = 3;
 
@@ -228,6 +239,21 @@ pub(crate) struct HistoryView {
     stats_kept: Option<Box<StatsView>>,
     /// The list of pipelines, closed: shown again as it was.
     pipelines_kept: Option<Box<super::pipelines::PipelinesView>>,
+    /// What a narrow window shows: one thing at a time.
+    narrow: NarrowPage,
+}
+
+/// What a narrow window (a phone's) shows of a repository, one at a time: each a page of its
+/// own, where a wide one shows them side by side.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum NarrowPage {
+    /// The commit table, or what shows in its place (a file, a tool).
+    #[default]
+    History,
+    /// The sidebar: branches, remotes, tags, stashes, ….
+    Sidebar,
+    /// The details of the commit selected, or the working tree's changes and the commit form.
+    Details,
 }
 
 /// A ref dropped onto another, where.
@@ -459,6 +485,7 @@ impl HistoryView {
             picked_asked: None,
             stats_kept: None,
             pipelines_kept: None,
+            narrow: NarrowPage::History,
         }
     }
 
@@ -1036,6 +1063,7 @@ pub(crate) fn show(ui: &mut Ui, pane: HistoryPane<'_>) {
         operation: operations.first().copied(),
         bisect,
         preferences: Preferences::of(ui.ctx()),
+        room: crate::narrow::Room::of(ui.ctx()),
         config,
         busy: tasks.is_busy(),
         checks: tasks.checks(),
@@ -1663,14 +1691,6 @@ fn details_panel(
     work: WorkSide<'_>,
     actions: &mut Vec<Action>,
 ) {
-    let WorkSide {
-        staging,
-        committing,
-        commits_made,
-        sign_by_default,
-        commit_run,
-        hooks,
-    } = work;
     // Pages that aren't about one commit (a pipeline's, a job's log, the requests, Stats, …)
     // have the room the details would take.
     let details_shown = !matches!(
@@ -1716,34 +1736,90 @@ fn details_panel(
                         .layout(Layout::top_down(Align::Min)),
                 );
                 inside.set_clip_rect(room.intersect(ui.clip_rect()));
-                let ui_outer = ui;
-                let ui = &mut inside;
-                if view.work_selected {
-                    let commit = CommitSide {
-                        committing,
-                        commits_made,
-                        sign_by_default,
-                        run: commit_run,
-                        hooks,
-                        head: shared.head.commit,
-                        git: shared.git,
-                        repository: shared.repository,
-                        objects: &history.objects,
-                        me: shared
-                            .config
-                            .and_then(|config| config.get("user.email"))
-                            .and_then(|entry| entry.value),
-                        can_push: shared.head.reference.is_some()
-                            && shared.config.is_some_and(crate::tasks::has_remotes),
-                        checks: shared.checks,
-                    };
-                    work_details(ui, shared, view, staging, commit, actions);
-                } else {
-                    details(ui, shared, history, view);
-                }
-                ui_outer.allocate_rect(room, Sense::hover());
+                details_body(&mut inside, shared, history, view, work, actions);
+                ui.allocate_rect(room, Sense::hover());
             });
     }
+}
+
+/// What the details hold: the working tree's changes and the commit form, or a commit's.
+fn details_body(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &mut HistoryState,
+    view: &mut HistoryView,
+    work: WorkSide<'_>,
+    actions: &mut Vec<Action>,
+) {
+    let WorkSide {
+        staging,
+        committing,
+        commits_made,
+        sign_by_default,
+        commit_run,
+        hooks,
+    } = work;
+    if view.work_selected {
+        let commit = CommitSide {
+            committing,
+            commits_made,
+            sign_by_default,
+            run: commit_run,
+            hooks,
+            head: shared.head.commit,
+            git: shared.git,
+            repository: shared.repository,
+            objects: &history.objects,
+            me: shared
+                .config
+                .and_then(|config| config.get("user.email"))
+                .and_then(|entry| entry.value),
+            can_push: shared.head.reference.is_some()
+                && shared.config.is_some_and(crate::tasks::has_remotes),
+            checks: shared.checks,
+        };
+        work_details(ui, shared, view, staging, commit, actions);
+    } else {
+        details(ui, shared, history, view);
+    }
+}
+
+/// A narrow window's details, in the history's place: a bar going back to it (or Escape),
+/// then what the details panel holds beside the history on a wide one.
+fn details_page(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &mut HistoryState,
+    view: &mut HistoryView,
+    work: WorkSide<'_>,
+    actions: &mut Vec<Action>,
+) {
+    if back_bar(ui) {
+        view.narrow = NarrowPage::History;
+    }
+    Frame::new()
+        .inner_margin(Margin {
+            left: 12,
+            right: 12,
+            top: 0,
+            bottom: 12,
+        })
+        .show(ui, |ui| {
+            details_body(ui, shared, history, view, work, actions);
+        });
+}
+
+/// A narrow page's bar: back to the history. Returns whether it was clicked, or Escape pressed
+/// (unless a field keeps it for itself).
+fn back_bar(ui: &mut Ui) -> bool {
+    let back = widgets::bar(ui, |ui| {
+        widgets::secondary(ui, true, &format!("{}  History", icon::ARROW_LEFT))
+            .on_hover_text("Back to the history (Escape)")
+            .clicked()
+    });
+    let escaped = !ui.ctx().text_edit_focused()
+        && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
+    back || escaped
 }
 
 /// The details beside the history (a commit's, or the working tree's), and the commit table
@@ -1759,8 +1835,20 @@ fn panels(
 ) {
     let actions = &mut *pane.actions;
     let Sides { work, lists } = sides;
-    side_panel(ui, shared, history, view, lists, actions);
-    details_panel(ui, shared, history, view, work, actions);
+    let mut work = Some(work);
+    // A narrow window shows one thing at a time, each the whole width: the sidebar, a commit's
+    // details, or the history (or what shows in its place).
+    if !shared.narrow() {
+        side_panel(ui, shared, history, view, lists, actions);
+        if let Some(work) = work.take() {
+            details_panel(ui, shared, history, view, work, actions);
+        }
+    }
+    // A commit asked for from the palette, now the history is at hand.
+    if let Some(commit) = view.go_to.take() {
+        view.show_commit(&history.shown, commit);
+        view.narrow = NarrowPage::History;
+    }
     if let Some(asked) = view.asked.take() {
         carry_out(asked, shared, view, actions);
     }
@@ -1770,8 +1858,21 @@ fn panels(
     view.close_unselected_file();
     notices_panel(ui, shared, history, view, pane);
     let actions = &mut *pane.actions;
+    if shared.narrow() && view.narrow == NarrowPage::Sidebar {
+        side_panel(ui, shared, history, view, lists, actions);
+        return;
+    }
+    // Before the first commit, the working tree's changes are all there is to show.
+    let details_shown = shared.narrow()
+        && view.tool.is_none()
+        && view.file.is_none()
+        && (view.narrow == NarrowPage::Details || no_commits);
     egui::CentralPanel::default()
-        .frame(Frame::new())
+        .frame(if details_shown {
+            chrome(shared)
+        } else {
+            Frame::new()
+        })
         .show(ui, |ui| match &mut view.file {
             _ if view.tool.is_some() => tool(ui, shared, history, view, actions),
             Some(file) => {
@@ -1785,6 +1886,11 @@ fn panels(
                 }
                 if let Some(wanted) = wanted {
                     view.open_tool(shared, &history.objects, wanted);
+                }
+            }
+            None if details_shown => {
+                if let Some(work) = work.take() {
+                    details_page(ui, shared, history, view, work, actions);
                 }
             }
             None if no_commits => {
@@ -1815,7 +1921,15 @@ fn side_panel(
     actions: &mut Vec<Action>,
 ) {
     let id = Id::new(("history-sidebar", shared.id, view.sidebar.open));
-    let event = if view.sidebar.open {
+    let event = if shared.narrow() {
+        // A page of its own, the whole width, which the top bar's button shows.
+        egui::CentralPanel::default()
+            .frame(chrome(shared).inner_margin(Margin::symmetric(6, 0)))
+            .show(ui, |ui| {
+                sidebar::show(ui, shared, history.shown.refs(), lists, &mut view.sidebar)
+            })
+            .inner
+    } else if view.sidebar.open {
         egui::Panel::left(id)
             .resizable(true)
             .default_size(260.0)
@@ -1834,17 +1948,34 @@ fn side_panel(
         None
     };
     match event {
-        Some(SidebarEvent::Ask(asked)) => carry_out(asked, shared, view, actions),
+        Some(SidebarEvent::Ask(asked)) => {
+            carry_out(asked, shared, view, actions);
+            // A page asked for shows in the history's place.
+            if view.tool.is_some() {
+                view.narrow = NarrowPage::History;
+            }
+        }
         Some(SidebarEvent::Show(commit)) => {
             view.file = None;
             view.tool = None;
             view.show_commit(&history.shown, commit);
+            // Its row in the history, or (one the history doesn't show) its details.
+            view.narrow = if view.peek.is_some() {
+                NarrowPage::Details
+            } else {
+                NarrowPage::History
+            };
         }
+        Some(SidebarEvent::Hide) if shared.narrow() => view.narrow = NarrowPage::History,
+        Some(SidebarEvent::Hide) => view.sidebar.open = false,
         Some(SidebarEvent::Open(path)) => actions.push(Action::OpenBeside(shared.id, path)),
         Some(SidebarEvent::Reveal(path)) => {
             actions.push(Action::Reveal(path, crate::desktop::Reveal::Open));
         }
-        Some(SidebarEvent::Submodules) => view.show_submodules(),
+        Some(SidebarEvent::Submodules) => {
+            view.show_submodules();
+            view.narrow = NarrowPage::History;
+        }
         Some(SidebarEvent::SignIn) => {
             if let Some((host, _)) = shared.forge.needs_sign_in() {
                 actions.push(Action::SignIn {
@@ -1854,10 +1985,6 @@ fn side_panel(
             }
         }
         None => {}
-    }
-    // A commit asked for from the palette, now the history is at hand.
-    if let Some(commit) = view.go_to.take() {
-        view.show_commit(&history.shown, commit);
     }
 }
 
@@ -1879,6 +2006,8 @@ pub(super) struct Shared<'a> {
     pub(super) bisect: Option<&'a Bisection>,
     /// How the user likes egit.
     pub(super) preferences: Preferences,
+    /// How much room the window has: on a narrow one (a phone's), one thing shows at a time.
+    room: crate::narrow::Room,
     /// The repository's configuration, once read (its remotes, for the menus).
     pub(super) config: Option<&'a ConfigSnapshot>,
     /// Whether a task is running.
@@ -1909,6 +2038,11 @@ pub(super) struct Shared<'a> {
 }
 
 impl Shared<'_> {
+    /// Whether the window is narrow (a phone's): one thing shows at a time.
+    pub(super) fn narrow(&self) -> bool {
+        self.room == crate::narrow::Room::Narrow
+    }
+
     /// Whether the repository is on this computer (its files open in its apps).
     pub(super) fn here(&self) -> bool {
         self.git.is_none_or(|git| git.host().is_local())
@@ -1998,6 +2132,12 @@ fn top_bar(
     let row = ui
         .allocate_space(egui::vec2(ui.available_width(), crate::theme::CONTROL))
         .1;
+    // A narrow window's sidebar is a page of its own: its button first.
+    let row = if shared.narrow() {
+        sidebar_button(ui, row, view)
+    } else {
+        row
+    };
     // The task bar first, from the right: what is left of it is the views' and menus' room.
     let right = tasks::bar(ui, &mut view.tasks, task_pane, row);
     if !task_pane.tasks.is_busy() {
@@ -2005,13 +2145,19 @@ fn top_bar(
     }
     // A running task's progress takes no more than the bar did while idle: the look stays.
     let taken = view.bar.right.max(right.width());
-    let room = Rect::from_min_max(
-        row.min,
-        pos2(
-            (row.right() - taken - BAR_GAP).max(row.left()),
-            row.bottom(),
-        ),
-    );
+    let room = if shared.narrow() {
+        // The views and menus on a row of their own, under the task bar.
+        ui.allocate_space(egui::vec2(ui.available_width(), crate::theme::CONTROL))
+            .1
+    } else {
+        Rect::from_min_max(
+            row.min,
+            pos2(
+                (row.right() - taken - BAR_GAP).max(row.left()),
+                row.bottom(),
+            ),
+        )
+    };
     // Where the room is short for all the bar shows, the views' buttons keep only their icons
     // first (their words on hover, their keys too), then the menus'. Decided from what the
     // words would add to the bar drawn compact, which doesn't depend on the look drawn: it
@@ -2083,6 +2229,37 @@ fn top_bar(
         );
     }
     commit_graph_offer(ui, shared, history, writing, actions);
+}
+
+/// A narrow window's button showing the sidebar (a page of its own), at the start of the top
+/// bar's `row`; returns what is left of the row.
+fn sidebar_button(ui: &mut Ui, row: Rect, view: &mut HistoryView) -> Rect {
+    let builder = UiBuilder::new()
+        .id_salt("sidebar-page")
+        .max_rect(row)
+        .layout(Layout::left_to_right(Align::Center));
+    let shown = view.narrow == NarrowPage::Sidebar;
+    let drawn = ui.scope_builder(builder, |ui| {
+        widgets::tool(
+            ui,
+            icon::SIDEBAR_SIMPLE,
+            "Show the sidebar",
+            shown,
+            Look::Compact,
+        )
+        .clicked()
+    });
+    if drawn.inner {
+        view.narrow = if shown {
+            NarrowPage::History
+        } else {
+            NarrowPage::Sidebar
+        };
+    }
+    Rect::from_min_max(
+        pos2(drawn.response.rect.right() + BAR_GAP, row.top()),
+        row.max,
+    )
 }
 
 /// How the top bar's buttons are drawn in `room` (its width), the bar drawn compact `compact`
@@ -2946,47 +3123,41 @@ fn commit_table(
     if let Some(row) = search::bar(ui, shared, &history.shown, &mut view.search, selected) {
         view.select(&history.shown, row, Some(Align::Center));
     }
-    let keys = ui.id().with("commit-keys");
-    let area = ui.interact(
-        ui.available_rect_before_wrap(),
-        keys,
-        Sense::focusable_noninteractive(),
-    );
-    area.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Commits"));
-    if area.has_focus() {
-        ui.memory_mut(|memory| {
-            memory.set_focus_lock_filter(
-                keys,
-                egui::EventFilter {
-                    vertical_arrows: true,
-                    ..egui::EventFilter::default()
-                },
-            );
-        });
-        move_by_keys(ui, &history.shown, view);
-        if view.picked.is_several()
-            && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
-        {
-            view.picked.clear();
-        }
-    }
-
+    let keys = table_keys(ui, &history.shown, view);
     let salt = ("history", shared.id);
     let place = ui.available_rect_before_wrap();
     let room = place.width() - ui.spacing().scroll.allocated_width();
     let marks = shared.forge.has_pipelines();
     let widths = column_widths(ui, room, (history.shown.widest(), marks));
-    let columns = columns(widths);
+    // A narrow window's rows: the graph (a third of the room at most: it pans), then the rest,
+    // each row two lines, under no titles.
+    let narrow = shared.narrow();
+    let (drawn, row_height, work_height) = if narrow {
+        let [graph, ..] = widths;
+        let graph = graph.min((room / 3.0).max(GRAPH_RANGE.0));
+        (
+            vec![graph, room - graph],
+            NARROW_ROW_HEIGHT,
+            NARROW_WORK_HEIGHT,
+        )
+    } else {
+        (widths.to_vec(), ROW_HEIGHT, ROW_HEIGHT)
+    };
+    let columns = columns(&drawn);
     let all = columns.len();
     // Under the titles, pinned as they are, the work in progress when there is some: the
     // graph's column, then the rest as one.
-    let mut headers = vec![HeaderRow::new(HEADER_HEIGHT)];
-    let mut height = HEADER_HEIGHT;
+    let mut headers = if narrow {
+        Vec::new()
+    } else {
+        vec![HeaderRow::new(HEADER_HEIGHT)]
+    };
+    let mut height = if narrow { 0.0 } else { HEADER_HEIGHT };
     if let Some(status) = shared.work_status.filter(|status| !status.is_empty()) {
-        height += ROW_HEIGHT;
+        height += work_height;
         view.work_counts.of(status);
         headers.push(HeaderRow {
-            height: ROW_HEIGHT,
+            height: work_height,
             groups: vec![0..1, 1..all],
         });
     }
@@ -3016,28 +3187,66 @@ fn commit_table(
         asked: None,
         picked: None,
         now: crate::format::now(),
+        row_height,
+        work_header: usize::from(!narrow),
     };
     table.show(ui, &mut rows);
-    let shown_rows = f32::from(u16::try_from(shown.rows()).unwrap_or(u16::MAX));
-    let work = height > HEADER_HEIGHT;
-    column_lines(
-        ui,
-        place,
-        widths,
-        (shown_rows.mul_add(ROW_HEIGHT, height), work),
-    );
+    if !narrow {
+        let shown_rows = f32::from(u16::try_from(shown.rows()).unwrap_or(u16::MAX));
+        let work = height > HEADER_HEIGHT;
+        column_lines(
+            ui,
+            place,
+            widths,
+            (shown_rows.mul_add(ROW_HEIGHT, height), work),
+        );
+    }
     let asked = rows.asked.take();
     let picked_event = rows.picked.take();
     if let Some((row, click)) = rows.clicked {
         let before = view.selected.map(|selected| (selected.row, selected.id));
         view.picked.click(shown, row, before, click);
         view.select(shown, row, None);
+        // A narrow window shows its details in the history's place.
+        if narrow && click == Click::Plain {
+            view.narrow = NarrowPage::Details;
+        }
         ui.memory_mut(|memory| memory.request_focus(keys));
     }
     picked_asked(picked_event, (shared, &history.objects), view, actions);
     if let Some(asked) = asked {
         carry_out(asked, shared, view, actions);
     }
+}
+
+/// The commit table's keys: a focusable area over it, which, focused, takes the arrows, the
+/// page keys, Home and End (and Escape, letting commits picked together go). Returns its id.
+fn table_keys(ui: &Ui, history: &History, view: &mut HistoryView) -> Id {
+    let keys = ui.id().with("commit-keys");
+    let area = ui.interact(
+        ui.available_rect_before_wrap(),
+        keys,
+        Sense::focusable_noninteractive(),
+    );
+    area.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Commits"));
+    if area.has_focus() {
+        ui.memory_mut(|memory| {
+            memory.set_focus_lock_filter(
+                keys,
+                egui::EventFilter {
+                    vertical_arrows: true,
+                    ..egui::EventFilter::default()
+                },
+            );
+        });
+        move_by_keys(ui, history, view);
+        if view.picked.is_several()
+            && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            view.picked.clear();
+        }
+    }
+    keys
 }
 
 /// Carries out what several commits picked were asked for (by their menu or their panel).
@@ -3612,10 +3821,10 @@ fn column_widths(ui: &Ui, room: f32, (widest, marks): (usize, bool)) -> [f32; 5]
 /// column's right edge (the message, filling what is left, would then move its left one along,
 /// each frame); egit moves the lines between them itself ([`column_lines`]). Ids of their own,
 /// so widths table-kit kept for the old columns don't apply.
-fn columns(widths: [f32; 5]) -> Vec<Column> {
+fn columns(widths: &[f32]) -> Vec<Column> {
     ["graph", "message", "author", "date", "commit"]
         .iter()
-        .zip(widths)
+        .zip(widths.iter().copied())
         .map(|(name, width)| {
             Column::new(width)
                 .range(width..=width)
@@ -3813,6 +4022,10 @@ struct CommitRows<'a> {
     picked: Option<PickedEvent>,
     /// Now (seconds since the Unix epoch), for dates as how long ago.
     now: u64,
+    /// Each row's height: taller on a narrow window, two lines.
+    row_height: f32,
+    /// Which header row is the work in progress's (under the titles; a narrow window has none).
+    work_header: usize,
 }
 
 impl TableDelegate for CommitRows<'_> {
@@ -3846,7 +4059,7 @@ impl TableDelegate for CommitRows<'_> {
     }
 
     fn header_cell_ui(&mut self, ui: &mut Ui, cell: &HeaderCellInfo) {
-        if cell.row_nr == 1 {
+        if cell.row_nr == self.work_header {
             self.work_cell(ui, cell.col_range.start);
             return;
         }
@@ -3998,98 +4211,25 @@ impl TableDelegate for CommitRows<'_> {
             self.graph_cell(ui, cell.row_nr, id);
             return;
         }
-        ui.add_space(GRAPH_MARGIN);
-        if cell.col_nr == 1
-            && let Some(index) = self.history.stashes().index_of(&id)
-        {
-            self.stash_cell(ui, cell.row_nr, id, index);
+        if self.shared.narrow() {
+            self.narrow_cell(ui, cell.row_nr, id);
             return;
         }
-        if cell.col_nr == 1 {
-            let menus = self.shared.menus(self.history.refs());
-            let refs = self.history.refs().at(&id);
-            // A branch hidden from the graph loses its badge too.
-            let scope = Some(&self.shared.scope);
-            // A detached HEAD's commit says so first: what is committed there joins no branch.
-            if menus.branch.is_none()
-                && menus.head == Some(id)
-                && detached_badge(ui, &menus, self.shared.palette, &mut self.asked)
-            {
-                self.clicked = Some((cell.row_nr, Click::Plain));
-            }
-            if badges(
-                ui,
-                (refs, scope),
-                &menus,
-                self.shared.palette,
-                &mut self.asked,
-            ) {
-                self.clicked = Some((cell.row_nr, Click::Plain));
-            }
-            pull_badges(
-                ui,
-                self.shared.forge.badges_at(&id),
-                self.shared,
-                &mut self.asked,
-            );
-        }
-        if cell.col_nr == 4 {
-            // Room for a pipeline's mark on every row while any commit has one.
-            let forge = self.shared.forge;
-            if forge.has_pipelines() {
-                match pipeline::mark(ui, forge, id, self.shared.palette) {
-                    Some(MarkEvent::Show(mark)) => self.asked = Some(Ask::Pipeline(Box::new(mark))),
-                    Some(MarkEvent::Open(url)) => self.asked = Some(Ask::Open(url)),
-                    None => {}
+        ui.add_space(GRAPH_MARGIN);
+        match cell.col_nr {
+            1 => self.message_cell(ui, cell.row_nr, id),
+            2 => {
+                if let Some(summary) = self.summaries.get(&id) {
+                    authors_cell(ui, summary, self.shared.palette);
                 }
             }
-            let name = id.abbreviated(ID_DIGITS).to_string();
-            ui.add(
-                Label::new(
-                    RichText::new(name)
-                        .monospace()
-                        .color(self.shared.palette.muted),
-                )
-                .selectable(false),
-            );
-            return;
+            3 => self.date_cell(ui, id),
+            _ => self.commit_cell(ui, id),
         }
-        let Some(summary) = self.summaries.get(&id) else {
-            return;
-        };
-        if cell.col_nr == 1 && summary.signed {
-            seal(ui, self.signatures.get(&id), self.shared.palette);
-        }
-        if cell.col_nr == 2 {
-            authors_cell(ui, summary, self.shared.palette);
-            return;
-        }
-        let ago;
-        let (text, color): (&str, Color32) = match cell.col_nr {
-            1 => (&summary.subject, self.shared.palette.text),
-            _ if self.shared.preferences.dates == crate::preferences::Dates::Ago => {
-                ago = u64::try_from(summary.time)
-                    .map_or_else(|_| String::new(), |time| crate::format::ago(time, self.now));
-                (&ago, self.shared.palette.muted)
-            }
-            _ => (&summary.date, self.shared.palette.muted),
-        };
-        // Dates in columns of their own: each digit under the one above.
-        let style = if cell.col_nr == 3 {
-            egui::TextStyle::Monospace
-        } else {
-            egui::TextStyle::Body
-        };
-        fonts::note_text(ui, &style.resolve(ui.style()), text);
-        ui.add(
-            Label::new(RichText::new(text).text_style(style).color(color))
-                .selectable(false)
-                .truncate(),
-        );
     }
 
     fn default_row_height(&self) -> f32 {
-        ROW_HEIGHT
+        self.row_height
     }
 }
 
@@ -4131,7 +4271,195 @@ fn authors_cell(ui: &mut Ui, summary: &crate::history::Summary, palette: Palette
 /// An avatar's size in the commit table.
 const AVATAR: f32 = 18.0;
 
+/// When `summary`'s commit was made, as the preferences write dates: in the viewer's time zone,
+/// or how long ago.
+fn when_made(
+    summary: &crate::history::Summary,
+    dates: crate::preferences::Dates,
+    now: u64,
+) -> std::borrow::Cow<'_, str> {
+    if dates == crate::preferences::Dates::Ago {
+        u64::try_from(summary.time).map_or(std::borrow::Cow::Borrowed(""), |time| {
+            std::borrow::Cow::Owned(crate::format::ago(time, now))
+        })
+    } else {
+        std::borrow::Cow::Borrowed(&summary.date)
+    }
+}
+
 impl CommitRows<'_> {
+    /// A commit's message column: a stash's words, or the commit's badges (a detached `HEAD`'s
+    /// first, then its refs', then its pull requests'), its seal where signed, and its subject.
+    fn message_cell(&mut self, ui: &mut Ui, row: u64, id: ObjectId) {
+        if let Some(index) = self.history.stashes().index_of(&id) {
+            self.stash_cell(ui, row, id, index);
+            return;
+        }
+        let menus = self.shared.menus(self.history.refs());
+        let refs = self.history.refs().at(&id);
+        // A branch hidden from the graph loses its badge too.
+        let scope = Some(&self.shared.scope);
+        // A detached HEAD's commit says so first: what is committed there joins no branch.
+        if menus.branch.is_none()
+            && menus.head == Some(id)
+            && detached_badge(ui, &menus, self.shared.palette, &mut self.asked)
+        {
+            self.clicked = Some((row, Click::Plain));
+        }
+        if badges(
+            ui,
+            (refs, scope),
+            &menus,
+            self.shared.palette,
+            &mut self.asked,
+        ) {
+            self.clicked = Some((row, Click::Plain));
+        }
+        pull_badges(
+            ui,
+            self.shared.forge.badges_at(&id),
+            self.shared,
+            &mut self.asked,
+        );
+        let Some(summary) = self.summaries.get(&id) else {
+            return;
+        };
+        if summary.signed {
+            seal(ui, self.signatures.get(&id), self.shared.palette);
+        }
+        let style = egui::TextStyle::Body;
+        fonts::note_text(ui, &style.resolve(ui.style()), &summary.subject);
+        ui.add(
+            Label::new(RichText::new(&*summary.subject).color(self.shared.palette.text))
+                .selectable(false)
+                .truncate(),
+        );
+    }
+
+    /// When a commit was made, as the preferences write dates: in a column of its own, each
+    /// digit under the one above.
+    fn date_cell(&mut self, ui: &mut Ui, id: ObjectId) {
+        let (dates, now) = (self.shared.preferences.dates, self.now);
+        let Some(summary) = self.summaries.get(&id) else {
+            return;
+        };
+        let when = when_made(summary, dates, now);
+        let style = egui::TextStyle::Monospace;
+        fonts::note_text(ui, &style.resolve(ui.style()), &when);
+        ui.add(
+            Label::new(
+                RichText::new(&*when)
+                    .text_style(style)
+                    .color(self.shared.palette.muted),
+            )
+            .selectable(false)
+            .truncate(),
+        );
+    }
+
+    /// A commit's name, its pipeline's mark before it while any commit ran one.
+    fn commit_cell(&mut self, ui: &mut Ui, id: ObjectId) {
+        self.pipeline_mark(ui, id);
+        let name = id.abbreviated(ID_DIGITS).to_string();
+        ui.add(
+            Label::new(
+                RichText::new(name)
+                    .monospace()
+                    .color(self.shared.palette.muted),
+            )
+            .selectable(false),
+        );
+    }
+
+    /// The mark of `id`'s latest pipeline (a click shows it, its menu opens it on its forge),
+    /// or the room for one, while any commit ran one.
+    fn pipeline_mark(&mut self, ui: &mut Ui, id: ObjectId) {
+        let forge = self.shared.forge;
+        if forge.has_pipelines() {
+            match pipeline::mark(ui, forge, id, self.shared.palette) {
+                Some(MarkEvent::Show(mark)) => self.asked = Some(Ask::Pipeline(Box::new(mark))),
+                Some(MarkEvent::Open(url)) => self.asked = Some(Ask::Open(url)),
+                None => {}
+            }
+        }
+    }
+
+    /// A row on a narrow window, beside the graph: its message column's line (badges and
+    /// subject), and under it, smaller, who wrote it and when, its pipeline's mark at the end.
+    fn narrow_cell(&mut self, ui: &mut Ui, row: u64, id: ObjectId) {
+        let rect = ui.max_rect();
+        let rect = rect.with_min_x(rect.left() + GRAPH_MARGIN);
+        // Each line a little nearer the row's middle than its half's: they read as one.
+        let (top, bottom) = rect.split_top_bottom_at_fraction(0.5);
+        let top = top.translate(egui::vec2(0.0, NARROW_LINES_IN));
+        let bottom = bottom.translate(egui::vec2(0.0, -NARROW_LINES_IN));
+        let line = |rect: Rect, salt: &str| {
+            UiBuilder::new()
+                .id_salt(salt)
+                .max_rect(rect)
+                .layout(Layout::left_to_right(Align::Center))
+        };
+        let clip = ui.clip_rect();
+        ui.scope_builder(line(top, "subject"), |ui| {
+            ui.set_clip_rect(top.intersect(clip));
+            self.message_cell(ui, row, id);
+        });
+        if self.history.stashes().index_of(&id).is_some() {
+            return;
+        }
+        ui.scope_builder(line(bottom, "byline"), |ui| {
+            ui.set_clip_rect(bottom.intersect(clip));
+            self.byline(ui, bottom, id);
+        });
+    }
+
+    /// Who wrote a commit, and when (a narrow window's second line): the date and the
+    /// pipeline's mark keep their room at the right, the names losing their end first.
+    fn byline(&mut self, ui: &mut Ui, rect: Rect, id: ObjectId) {
+        let (dates, now, palette) = (self.shared.preferences.dates, self.now, self.shared.palette);
+        let marks = self.shared.forge.has_pipelines();
+        let Some(summary) = self.summaries.get(&id) else {
+            return;
+        };
+        let when = when_made(summary, dates, now).into_owned();
+        let spacing = ui.spacing().item_spacing.x;
+        let mark = if marks {
+            pipeline::MARK_WIDTH + spacing
+        } else {
+            0.0
+        };
+        let right = widgets::text_width(ui, &when) + mark;
+        let who = Rect::from_min_max(
+            rect.min,
+            pos2(
+                (rect.right() - right - spacing * 2.0).max(rect.left()),
+                rect.bottom(),
+            ),
+        );
+        ui.scope_builder(
+            UiBuilder::new()
+                .id_salt("who")
+                .max_rect(who)
+                .layout(Layout::left_to_right(Align::Center)),
+            |ui| {
+                ui.set_clip_rect(who.intersect(ui.clip_rect()));
+                authors_cell(ui, summary, palette);
+            },
+        );
+        let after = Rect::from_min_max(pos2(who.right() + spacing, rect.top()), rect.max);
+        ui.scope_builder(
+            UiBuilder::new()
+                .id_salt("when")
+                .max_rect(after)
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| {
+                self.pipeline_mark(ui, id);
+                fonts::note_text(ui, &egui::TextStyle::Body.resolve(ui.style()), &when);
+                ui.add(Label::new(muted(ui, &*when)).selectable(false));
+            },
+        );
+    }
+
     /// The work in progress's row, pinned under the titles: in the graph's column a hollow node
     /// on `HEAD`'s lane, a dashed line down towards it; in the rest, how many files are
     /// uncommitted (and how many of them staged). A click shows them, as a commit's row shows
@@ -4165,6 +4493,9 @@ impl CommitRows<'_> {
         response.widget_info(|| WidgetInfo::selected(WidgetType::Button, true, selected, &files));
         if response.clicked() {
             self.view.select_work();
+            if self.shared.narrow() {
+                self.view.narrow = NarrowPage::Details;
+            }
         }
         let detail = match (counts.staged, counts.files) {
             // Conflicts first: what is left to do.
