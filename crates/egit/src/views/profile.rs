@@ -13,7 +13,7 @@ use egit_forge::{ForgeHost, ForgeHosts, ForgeKind};
 use egit_git::{
     ConfigEntry, ConfigScope, ConfigSnapshot, PullFastForward, PullRebase, SigningFormat,
 };
-use egui::{Grid, RichText, Ui};
+use egui::{RichText, Ui};
 use egui_async::Bind;
 use egui_table_kit::table::TableKit;
 
@@ -23,7 +23,7 @@ use crate::problem::Problem;
 use crate::tables::{ConfigRows, ROW_HEIGHT, SnapshotTable};
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
-use crate::widgets::{self, muted};
+use crate::widgets::{self, FactGrid, muted};
 
 /// The size of the profile's text fields (a grid would otherwise size them to their text).
 const FIELD: [f32; 2] = [340.0, 26.0];
@@ -252,38 +252,38 @@ fn identity_card(
             "Every commit you make records this name and email.",
         ));
         ui.add_space(8.0);
-        Grid::new("profile-identity")
-            .num_columns(3)
-            .min_col_width(widgets::FACT_LABEL)
-            .spacing([12.0, 8.0])
-            .show(ui, |ui| {
-                let label = ui.label("Name");
-                ui.add_sized(
-                    FIELD,
-                    crate::widgets::line_field(&mut view.form.name)
-                        .hint_text("Your Name")
-                        .vertical_align(egui::Align::Center),
-                )
-                .labelled_by(label.id);
-                widgets::origin(ui, profile.name(), home);
-                ui.end_row();
-
-                let label = ui.label("Email");
-                ui.add_sized(
-                    FIELD,
-                    crate::widgets::line_field(&mut view.form.email)
-                        .hint_text("you@example.com")
-                        .vertical_align(egui::Align::Center),
-                )
-                .labelled_by(label.id);
-                widgets::origin(ui, profile.email(), home);
-                ui.end_row();
-
+        let [width, height] = FIELD;
+        FactGrid::new("profile-identity", 3)
+            .gap(12.0, 8.0)
+            .plain()
+            .show(ui, |rows| {
+                rows.field("Name", width, |ui, label, width| {
+                    ui.add_sized(
+                        [width, height],
+                        crate::widgets::line_field(&mut view.form.name)
+                            .hint_text("Your Name")
+                            .vertical_align(egui::Align::Center),
+                    )
+                    .labelled_by(label);
+                    widgets::origin(ui, profile.name(), home);
+                });
+                rows.field("Email", width, |ui, label, width| {
+                    ui.add_sized(
+                        [width, height],
+                        crate::widgets::line_field(&mut view.form.email)
+                            .hint_text("you@example.com")
+                            .vertical_align(egui::Align::Center),
+                    )
+                    .labelled_by(label);
+                    widgets::origin(ui, profile.email(), home);
+                });
                 for entry in profile.identity_overrides() {
-                    ui.label(muted(ui, entry.key.to_string()));
-                    ui.label(entry.text().to_string());
-                    widgets::origin(ui, Some(entry), home);
-                    ui.end_row();
+                    let key = entry.key.to_string();
+                    let text = muted(rows.ui(), key);
+                    rows.row_text(text, |ui| {
+                        ui.label(entry.text().to_string());
+                        widgets::origin(ui, Some(entry), home);
+                    });
                 }
             });
         if profile.use_config_only().value {
@@ -310,66 +310,66 @@ fn signing_card(
             "git signs with your own tools: gpg for OpenPGP and X.509, ssh-keygen for SSH keys.",
         ));
         ui.add_space(8.0);
-        Grid::new("profile-signing")
-            .num_columns(3)
-            .min_col_width(widgets::FACT_LABEL)
-            .spacing([12.0, 8.0])
-            .show(ui, |ui| {
-                ui.label("Format");
-                ui.horizontal(|ui| {
-                    for (format, label) in [
-                        (SigningFormat::OpenPgp, "OpenPGP"),
-                        (SigningFormat::Ssh, "SSH"),
-                        (SigningFormat::X509, "X.509"),
-                    ] {
-                        crate::widgets::radio_value(ui, &mut view.form.format, format, label);
-                    }
+        let [width, height] = FIELD;
+        FactGrid::new("profile-signing", 3)
+            .gap(12.0, 8.0)
+            .plain()
+            .show(ui, |rows| {
+                rows.row("Format", |ui| {
+                    ui.horizontal(|ui| {
+                        for (format, label) in [
+                            (SigningFormat::OpenPgp, "OpenPGP"),
+                            (SigningFormat::Ssh, "SSH"),
+                            (SigningFormat::X509, "X.509"),
+                        ] {
+                            crate::widgets::radio_value(ui, &mut view.form.format, format, label);
+                        }
+                    });
+                    widgets::origin(ui, signing.format.entry, home);
                 });
-                widgets::origin(ui, signing.format.entry, home);
-                ui.end_row();
-
-                let label = ui.label("Key");
                 let hint = match view.form.format {
                     SigningFormat::OpenPgp => "A key id, or empty: gpg picks one by your email",
                     SigningFormat::Ssh => "~/.ssh/id_ed25519.pub, or a key itself",
                     SigningFormat::X509 => "A certificate id",
                 };
-                ui.add_sized(
-                    FIELD,
-                    crate::widgets::line_field(&mut view.form.key)
-                        .hint_text(hint)
-                        .vertical_align(egui::Align::Center),
-                )
-                .labelled_by(label.id);
-                widgets::origin(ui, signing.key, home);
-                ui.end_row();
-
-                ui.label("Commits");
-                crate::widgets::checkbox(ui, &mut view.form.sign_commits, "Sign every commit");
-                widgets::origin(ui, signing.commits.entry, home);
-                ui.end_row();
-
-                ui.label("Tags");
-                crate::widgets::checkbox(ui, &mut view.form.sign_tags, "Sign every annotated tag");
-                widgets::origin(ui, signing.tags.entry, home);
-                ui.end_row();
-
+                rows.field("Key", width, |ui, label, width| {
+                    ui.add_sized(
+                        [width, height],
+                        crate::widgets::line_field(&mut view.form.key)
+                            .hint_text(hint)
+                            .vertical_align(egui::Align::Center),
+                    )
+                    .labelled_by(label);
+                    widgets::origin(ui, signing.key, home);
+                });
+                rows.row("Commits", |ui| {
+                    crate::widgets::checkbox(ui, &mut view.form.sign_commits, "Sign every commit");
+                    widgets::origin(ui, signing.commits.entry, home);
+                });
+                rows.row("Tags", |ui| {
+                    crate::widgets::checkbox(
+                        ui,
+                        &mut view.form.sign_tags,
+                        "Sign every annotated tag",
+                    );
+                    widgets::origin(ui, signing.tags.entry, home);
+                });
                 if let Some(program) = signing.program {
-                    ui.label("Program");
-                    ui.label(program.text().to_string());
-                    widgets::origin(ui, Some(program), home);
-                    ui.end_row();
+                    rows.row("Program", |ui| {
+                        ui.label(program.text().to_string());
+                        widgets::origin(ui, Some(program), home);
+                    });
                 }
                 if view.form.format == SigningFormat::Ssh {
-                    ui.label("Trusted signers");
-                    if let Some(entry) = signing.allowed_signers {
-                        ui.label(entry.text().to_string());
-                        widgets::origin(ui, Some(entry), home);
-                    } else {
-                        ui.label(muted(ui, "Not set: SSH signatures can't be verified."));
-                        ui.label("");
-                    }
-                    ui.end_row();
+                    rows.row("Trusted signers", |ui| {
+                        if let Some(entry) = signing.allowed_signers {
+                            ui.label(entry.text().to_string());
+                            widgets::origin(ui, Some(entry), home);
+                        } else {
+                            ui.label(muted(ui, "Not set: SSH signatures can't be verified."));
+                            ui.label("");
+                        }
+                    });
                 }
             });
     });
@@ -441,16 +441,15 @@ fn credentials_card(
                 );
             }
         }
-        Grid::new("profile-credentials")
-            .num_columns(3)
-            .min_col_width(widgets::FACT_LABEL)
-            .spacing([12.0, 6.0])
-            .show(ui, |ui| {
+        FactGrid::new("profile-credentials", 3)
+            .gap(12.0, 6.0)
+            .plain()
+            .show(ui, |rows| {
                 for &helper in &helpers {
-                    ui.label("Helper");
-                    ui.label(helper.text().to_string());
-                    widgets::origin(ui, Some(helper), home);
-                    ui.end_row();
+                    rows.row("Helper", |ui| {
+                        ui.label(helper.text().to_string());
+                        widgets::origin(ui, Some(helper), home);
+                    });
                 }
                 for helper in profile.credential_helpers_for_urls() {
                     let key = helper.key.to_string();
@@ -459,10 +458,10 @@ fn credentials_card(
                         .and_then(|rest| rest.strip_suffix(".helper"))
                         .unwrap_or(&key)
                         .to_owned();
-                    ui.label(format!("For {url}"));
-                    ui.label(helper.text().to_string());
-                    widgets::origin(ui, Some(helper), home);
-                    ui.end_row();
+                    rows.row_text(format!("For {url}"), |ui| {
+                        ui.label(helper.text().to_string());
+                        widgets::origin(ui, Some(helper), home);
+                    });
                 }
             });
         // One just set up: how it went.
@@ -539,7 +538,6 @@ fn accounts(
     snapshot: &ConfigSnapshot,
     actions: &mut Vec<Action>,
 ) {
-    let palette = Palette::of(ui.ctx());
     let listed = |key| {
         snapshot
             .get_all(key)
@@ -547,64 +545,72 @@ fn accounts(
     };
     let hosts = ForgeHosts::with_listed(listed(GITHUB_HOSTS_KEY), listed(GITLAB_HOSTS_KEY));
     ui.label(RichText::new("Accounts").semibold());
-    Grid::new("profile-forge-accounts")
-        .num_columns(3)
-        .min_col_width(widgets::FACT_LABEL)
-        .spacing([12.0, 6.0])
-        .show(ui, |ui| {
+    FactGrid::new("profile-forge-accounts", 3)
+        .gap(12.0, 6.0)
+        .plain()
+        .show(ui, |rows| {
             for host in hosts.hosts() {
-                ui.label(format!("{} ({})", host.name(), host.kind().name()));
-                let signed_in = match sign_ins.who(git, host) {
-                    None => {
-                        widgets::working(ui, "Asking…");
-                        None
-                    }
-                    Some(Ok(Some(login))) => {
-                        ui.label(
-                            RichText::new(format!("{}  Signed in as {login}", icon::CHECK_CIRCLE))
-                                .color(palette.ok),
-                        );
-                        Some(true)
-                    }
-                    Some(Ok(None)) => {
-                        ui.label(muted(ui, "Not signed in"));
-                        Some(false)
-                    }
-                    Some(Err(problem)) => {
-                        ui.label(RichText::new(problem.title.as_str()).color(palette.danger))
-                            .on_hover_text(problem.detail.as_str());
-                        Some(false)
-                    }
-                };
-                let leaving = sign_ins.is_signing_out(host);
-                match signed_in {
-                    Some(true) => {
-                        if widgets::secondary(ui, !leaving, "Sign out")
-                            .on_hover_text(format!(
-                                "git's credential helper forgets the token it keeps for {}: git \
-                                 asks again the next time it reaches it over HTTPS",
-                                host.name()
-                            ))
-                            .clicked()
-                        {
-                            actions.push(Action::SignOut(host.clone()));
-                        }
-                    }
-                    Some(false) => {
-                        if widgets::secondary(ui, true, "Sign in…").clicked() {
-                            actions.push(Action::SignIn {
-                                repo: None,
-                                host: host.clone(),
-                            });
-                        }
-                    }
-                    None => {
-                        ui.label("");
-                    }
-                }
-                ui.end_row();
+                let named = format!("{} ({})", host.name(), host.kind().name());
+                rows.row_text(named, |ui| account(ui, (sign_ins, git, host), actions));
             }
         });
+}
+
+/// What a forge's account shows: who is signed in to `host`, and Sign in… or Sign out.
+fn account(
+    ui: &mut Ui,
+    (sign_ins, git, host): (&mut crate::sign_ins::SignIns, &egit_git::Git, &ForgeHost),
+    actions: &mut Vec<Action>,
+) {
+    let palette = Palette::of(ui.ctx());
+    let signed_in = match sign_ins.who(git, host) {
+        None => {
+            widgets::working(ui, "Asking…");
+            None
+        }
+        Some(Ok(Some(login))) => {
+            ui.label(
+                RichText::new(format!("{}  Signed in as {login}", icon::CHECK_CIRCLE))
+                    .color(palette.ok),
+            );
+            Some(true)
+        }
+        Some(Ok(None)) => {
+            ui.label(muted(ui, "Not signed in"));
+            Some(false)
+        }
+        Some(Err(problem)) => {
+            ui.label(RichText::new(problem.title.as_str()).color(palette.danger))
+                .on_hover_text(problem.detail.as_str());
+            Some(false)
+        }
+    };
+    let leaving = sign_ins.is_signing_out(host);
+    match signed_in {
+        Some(true) => {
+            if widgets::secondary(ui, !leaving, "Sign out")
+                .on_hover_text(format!(
+                    "git's credential helper forgets the token it keeps for {}: git \
+                         asks again the next time it reaches it over HTTPS",
+                    host.name()
+                ))
+                .clicked()
+            {
+                actions.push(Action::SignOut(host.clone()));
+            }
+        }
+        Some(false) => {
+            if widgets::secondary(ui, true, "Sign in…").clicked() {
+                actions.push(Action::SignIn {
+                    repo: None,
+                    host: host.clone(),
+                });
+            }
+        }
+        None => {
+            ui.label("");
+        }
+    }
 }
 
 /// One forge's hosts in the profile: each listed, removable where the user's own settings list
@@ -691,17 +697,16 @@ impl HostList<'_> {
 
     /// The hosts listed, each with where it is set, and its ssh hosts on names of their own.
     fn listed(&self, ui: &mut Ui, snapshot: &ConfigSnapshot, actions: &mut Vec<Action>) {
-        Grid::new(("profile-forge-hosts", self.key))
-            .num_columns(3)
-            .min_col_width(widgets::FACT_LABEL)
-            .spacing([12.0, 6.0])
-            .show(ui, |ui| {
+        FactGrid::new(("profile-forge-hosts", self.key), 3)
+            .gap(12.0, 6.0)
+            .plain()
+            .show(ui, |rows| {
                 for entry in snapshot.get_all(self.key) {
                     let host = entry.text().to_string();
-                    ui.label(&host);
-                    widgets::origin(ui, Some(entry), self.home);
-                    self.remove(ui, (&entry, &host), (self.key.into(), &host), actions);
-                    ui.end_row();
+                    rows.row_text(host.as_str(), |ui| {
+                        widgets::origin(ui, Some(entry), self.home);
+                        self.remove(ui, (&entry, &host), (self.key.into(), &host), actions);
+                    });
                     // Its ssh on names of its own (a self-managed GitLab's often is).
                     let name =
                         ForgeHost::parse(self.kind, &host).map(|parsed| parsed.name().to_owned());
@@ -711,11 +716,12 @@ impl HostList<'_> {
                         if !same {
                             continue;
                         }
-                        ui.label(muted(ui, format!("    its ssh: {ssh}")));
-                        widgets::origin(ui, Some(set), self.home);
-                        let key = crate::forge::ssh_host_key(&listed);
-                        self.remove(ui, (&set, &ssh), (key.into(), &ssh), actions);
-                        ui.end_row();
+                        let its = muted(rows.ui(), format!("    its ssh: {ssh}"));
+                        rows.row_text(its, |ui| {
+                            widgets::origin(ui, Some(set), self.home);
+                            let key = crate::forge::ssh_host_key(&listed);
+                            self.remove(ui, (&set, &ssh), (key.into(), &ssh), actions);
+                        });
                     }
                 }
             });
@@ -726,58 +732,55 @@ fn pull_push_card(ui: &mut Ui, snapshot: &ConfigSnapshot, home: Option<&Path>) {
     let profile = snapshot.profile();
     widgets::card(ui, |ui| {
         widgets::heading(ui, "Pull and push");
-        Grid::new("profile-pull-push")
-            .num_columns(3)
-            .min_col_width(widgets::FACT_LABEL)
-            .spacing([12.0, 6.0])
-            .show(ui, |ui| {
+        FactGrid::new("profile-pull-push", 3)
+            .gap(12.0, 6.0)
+            .plain()
+            .show(ui, |rows| {
                 let rebase = profile.pull_rebase();
-                ui.label("Pull");
-                ui.label(match rebase.map(|setting| setting.value) {
-                    None => "Asks when branches have diverged",
-                    Some(PullRebase::Merge) => "Merges",
-                    Some(PullRebase::Rebase) => "Rebases",
-                    Some(PullRebase::RebaseMerges) => "Rebases, keeping merges",
-                    Some(PullRebase::Interactive) => "Rebases interactively",
+                rows.row("Pull", |ui| {
+                    ui.label(match rebase.map(|setting| setting.value) {
+                        None => "Asks when branches have diverged",
+                        Some(PullRebase::Merge) => "Merges",
+                        Some(PullRebase::Rebase) => "Rebases",
+                        Some(PullRebase::RebaseMerges) => "Rebases, keeping merges",
+                        Some(PullRebase::Interactive) => "Rebases interactively",
+                    });
+                    widgets::origin(ui, rebase.and_then(|setting| setting.entry), home);
                 });
-                widgets::origin(ui, rebase.and_then(|setting| setting.entry), home);
-                ui.end_row();
-
                 let fast_forward = profile.pull_fast_forward();
-                ui.label("Fast-forward");
-                ui.label(match fast_forward.map(|setting| setting.value) {
-                    None | Some(PullFastForward::Allowed) => "When possible",
-                    Some(PullFastForward::Never) => "Never: always merge",
-                    Some(PullFastForward::Only) => "Only: refuse anything else",
+                rows.row("Fast-forward", |ui| {
+                    ui.label(match fast_forward.map(|setting| setting.value) {
+                        None | Some(PullFastForward::Allowed) => "When possible",
+                        Some(PullFastForward::Never) => "Never: always merge",
+                        Some(PullFastForward::Only) => "Only: refuse anything else",
+                    });
+                    widgets::origin(ui, fast_forward.and_then(|setting| setting.entry), home);
                 });
-                widgets::origin(ui, fast_forward.and_then(|setting| setting.entry), home);
-                ui.end_row();
-
                 let auto = profile.push_auto_setup_remote();
-                ui.label("New branches");
-                ui.label(if auto.value {
-                    "Pushing sets up tracking"
-                } else {
-                    "Need an upstream before pushing"
+                rows.row("New branches", |ui| {
+                    ui.label(if auto.value {
+                        "Pushing sets up tracking"
+                    } else {
+                        "Need an upstream before pushing"
+                    });
+                    widgets::origin(ui, auto.entry, home);
                 });
-                widgets::origin(ui, auto.entry, home);
-                ui.end_row();
-
                 let default = profile.push_default();
-                ui.label("Push");
-                ui.label(
-                    default.map_or_else(|| "simple".to_owned(), |entry| entry.text().to_string()),
-                );
-                widgets::origin(ui, default, home);
-                ui.end_row();
-
+                rows.row("Push", |ui| {
+                    ui.label(
+                        default
+                            .map_or_else(|| "simple".to_owned(), |entry| entry.text().to_string()),
+                    );
+                    widgets::origin(ui, default, home);
+                });
                 let branch = profile.default_branch();
-                ui.label("First branch");
-                ui.label(
-                    branch.map_or_else(|| "master".to_owned(), |entry| entry.text().to_string()),
-                );
-                widgets::origin(ui, branch, home);
-                ui.end_row();
+                rows.row("First branch", |ui| {
+                    ui.label(
+                        branch
+                            .map_or_else(|| "master".to_owned(), |entry| entry.text().to_string()),
+                    );
+                    widgets::origin(ui, branch, home);
+                });
             });
     });
 }

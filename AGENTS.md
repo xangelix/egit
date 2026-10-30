@@ -52,7 +52,7 @@ where the code they shaped is (its module's doc comment, and this file).
 | 38 | Stashes in the graph, as GitKraken shows them: each a row beside its branch, joined to the commit it was made on | done; awaiting the owner's review |
 | 39 | Distribution through seaworthy: launchers and per-CPU cores, packages for every platform, the icon, the licence | Linux packages built and run here; Windows and macOS left to CI's runners; awaiting the owner's review |
 | 40 | Dialogs answered by Enter and Escape; Skip hooks for every task that makes commits; every pipeline (workflow run) listed, a page at a time, each commit a link back | done; awaiting the owner's review |
-| 41 | A phone's screen: a narrow window shows one thing at a time, each view adapting in place | under way: the history, a commit, a file, the sidebar, the work tree, Home, the status bar |
+| 41 | A phone's screen: a narrow window shows one thing at a time, each view adapting in place | under way: the history, a commit, a file, the sidebar, the work tree, Home, the status bar, the agents, pull requests, pipelines and job logs, tabs, menus, dialogs, the palette, the Overview, Preferences, Profile, touch scrolling in diffs and logs, the page in a phone's browser |
 
 ## Toolchain & commands
 
@@ -1257,7 +1257,10 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   into, Enter) shows its Stats, nothing in the page or its workers saying an error or
   panicking; and served by a proxy of the test's under `/proxy/7171` (the prefix taken off
   each request's path, as code-server does), opened without its last slash, the same (the
-  slash added, the address then `…/proxy/7171/`); screens kept in `target/web-screens`.
+  slash added, the address then `…/proxy/7171/`); and as a phone (390 by 844, touches
+  emulated: at a pixel a point, as emulation's resize observer gives eframe the canvas unscaled),
+  the page kept to what shows, a tap on a commit showing its details; screens kept in
+  `target/web-screens`.
 - `crates/egit-web` — egit in a browser: the page (`web/index.html`: its one script of its own
   adds its address's last slash where a proxy served it without one, else its files would be
   looked for a folder too high, and only then names them (`start.js` and its preload, added
@@ -1416,7 +1419,21 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     (Push, Pull, Fetch their icons and counts, named in words: `widgets::primary_as`,
     `secondary_as`), its second the tools; Home's cards stacked, the recent repositories two
     columns opened by a tap (`RecentRows::without_location`); the status bar's buttons and
-    warnings icons named in words.
+    warnings icons named in words. The agents take the whole tab while shown
+    (`views/repo.rs`'s `agents_panel`); the pull requests show their list, then (a row or a
+    badge tapped) one's details under a bar back to it (`narrow_details`; Escape too); a
+    pipeline's job rows leave their quick actions out (a finger tapping the row for its log
+    would land on them: the job's menu, a long press, and its log's bar have them) and their
+    chips where the name would keep under `NAME_LEAST`; a wrapping bar's labels never wrap
+    under the buttons after them (`widgets::row_label`). In a browser
+    (`egit-web/web/`): the viewport's `maximum-scale=1` (Safari zooms into a field otherwise),
+    the canvas `touch-action: none` (every touch egui's: eframe's touches are a pointer, a long
+    press a secondary click), and the page kept to the visual viewport (`start.js`), so a
+    phone's keyboard shortens it rather than covering egit. The tabs a bar of their own
+    (`tabs.rs`'s `narrow`); a file's diff unified (no side by side); dialogs no wider than the
+    screen leaves (`widgets::dialog_width`); a fact's or form's label above its value where its
+    column would take over a third of the row (`widgets::fact`, `fact_top`, `form_row`, and
+    `FactGrid`/`fact_rows` for the grids of pages: the Overview, Profile), its parts wrapping.
   - `repaint.rs` — `Repaint`, what work done elsewhere (a job, a thread of its own, a worker)
     holds to ask the window to draw again: egui's context here; in a browser, where the context
     is the main thread's alone, the asking handed to that thread (`on_main`), once however
@@ -1427,7 +1444,10 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `show_nth` (⌘W, ⌘1 … ⌘9), `close` (`Closing`: a tab, or every other; `Action::CloseTabs`:
     a middle click, a tab's menu); Home can't be closed; closing a repository's tab pushes
     `Closed`. A tab's menu: close it or the others, a repository's path copied, its folder
-    opened (here only); a "+" after the tabs goes Home (`Action::ShowHome`).
+    opened (here only); a "+" after the tabs goes Home (`Action::ShowHome`). A narrow window
+    (`narrow`) has no room for tabs side by side: a bar names the tab in front, a menu of every
+    tab (one chosen comes to the front; Close the other tabs), its close button, and "+", the
+    tab's page under it (egui_tiles' bar would scroll its tabs with arrows nobody named).
     Tabs underline under the pointer (`widgets::tab_hover`; egui_tiles' don't answer it), and
     their close button is 24 points. The selected tab is the chrome's tone, joining what it
     shows below; the bar and the other tabs are deeper (`Palette::recess`).
@@ -1711,7 +1731,10 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     selects in one pane between cells (`selected_lines` gives the lines it covers; hit-tested
     against the rows drawn last frame;
     dragging past an edge scrolls), ⌘A selects a pane, Escape clears (focused or not: egui
-    drops focus on Escape), and ⌘C (`Event::Copy`) copies the bytes as they are. `find.rs`:
+    drops focus on Escape), and ⌘C (`Event::Copy`) copies the bytes as they are. A finger's drag
+    (a touch screen's: `any_touches` as it starts) scrolls instead (`Touching`), up and down or
+    sideways as it first moves, and let go the text coasts, slowing (egui's scroll areas'
+    friction and stop speed), until touched again or wheeled. `find.rs`:
     ⌘F opens a find bar over the top right (against the grid's edge, what it says in a place of
     its own width; Enter, Shift+Enter, Previous, Next; Escape or
     Close); every pane is searched in a job as the query changes (its text shared), at most
@@ -2860,7 +2883,12 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     outline of their colour, 18 points tall: "may fail", "Draft", a label), `column` (a place of
     fixed width in a row, its contents at its start, end, or centre: rows' columns line up, and
     what changes width moves nothing), `duration_width` (the longest duration's width, digits at
-    their widest) and `text_width`, `row_fill` a list row's background (a selected
+    their widest) and `text_width`, `chips_width`, `row_label` (a label in a wrapping row: on
+    the next line where it doesn't fit, cut short where it doesn't even there, never wrapping
+    under what follows), `dialog_width` (a dialog no wider than a phone's screen leaves),
+    `primary_as`/`secondary_as` (a button showing an icon, named in words), `FactGrid` and
+    `fact_rows` (a grid of facts, each label above its value where its column leaves too little
+    room), `row_fill` a list row's background (a selected
     one lightens under the pointer), cards, origin labels, problem boxes; `banner` (every
     banner and notice alike, tinted by its `Tone`: done, info, warning, danger) and `notice`
     (a line of it: the tone's icon, its words wrapping in what its buttons leave, its buttons
@@ -2895,10 +2923,11 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     interface change. Every rendered screen first passes `src/tests/audit.rs` (after eshine's):
     no egui id clashes, no text or control drawn partly over another on the same layer (a
     floating scroll bar aside: it lies over what it scrolls; slivers under a point, text
-    runs flowing one after another; and what a layer above covers, a dialog over the history),
-    nothing moving while idle, and every control named in words or numbers (link a field to
-    its visible label with `labelled_by`), and every one-line field a control's height, its
-    text centred top to bottom and 8 points from its side. `EGIT_GUI_RECTS=1` writes each
+    runs flowing one after another; and what a layer above covers, a dialog over the history,
+    or a modal dialog dims), nothing moving while idle, and every control named in words or
+    numbers (link a field to its visible label with `labelled_by`), and every one-line field a
+    control's height, its text centred top to bottom and 8 points from its side; on a narrow
+    window, nothing cut off by its sides (`past_the_edges`). `EGIT_GUI_RECTS=1` writes each
     rendered screen's elements (role, rectangle, name) to `<screen>.rects` beside it, to
     measure a screen to the point. `wait_for_label` lets what it found lay out two
     more frames (a window's first frame only sizes it: clicks there are lost); a wait that
@@ -3074,7 +3103,11 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `src/tests/narrow.rs` drives a phone's screen (`screens::phone`: 390 by 844 points at twice
     the density): Home, the history, a commit tapped (its details), a file (its diff), back
     twice, the sidebar's page (a branch tapped going to its commit), the work in progress's
-    changes, and Home's recent repositories, each screen audited and rendered.
+    changes, the agents, and Home's recent repositories; a pull request's badge (its details,
+    back to the list, another); a pipeline's mark, a job's log, Escape back, every pipeline;
+    a commit's menu by a long press, a dialog from it, the palette (from Every command), the
+    Overview from it, Preferences, the profile, and the tab bar's menu; each screen audited
+    (and, narrow, nothing past the window's edges) and rendered.
     `src/tests/suggested.rs` opens two repositories of a folder (and one of another): the
     folder's others suggested by their reflogs' dates (commits at set times), one without a
     commit last, a plain folder and a file left out, nothing from the other folder (rendered);

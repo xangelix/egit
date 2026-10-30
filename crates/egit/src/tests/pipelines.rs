@@ -23,10 +23,10 @@ use super::screens::{
 use crate::app::EgitApp;
 use crate::theme::icon;
 
-const TOKEN: &str = "glpat-t0ken";
+pub(super) const TOKEN: &str = "glpat-t0ken";
 
 /// A pipeline of `sha`, its build passed, its tests as `tests` says, and a manual deploy.
-fn pipeline(id: u64, sha: &str, status: &str, tests: &str) -> FakePipeline {
+pub(super) fn pipeline(id: u64, sha: &str, status: &str, tests: &str) -> FakePipeline {
     FakePipeline {
         id,
         iid: id.saturating_sub(9_000),

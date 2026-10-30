@@ -29,6 +29,9 @@ use crate::widgets::{self, muted};
 /// A row's height in the list.
 const ROW_HEIGHT: f32 = 46.0;
 
+/// The bar's spinner's size, while the requests are read.
+const SPINNER: f32 = 16.0;
+
 /// The pull request view's state.
 #[derive(Debug)]
 pub(super) struct PullRequestView {
@@ -45,6 +48,9 @@ pub(super) struct PullRequestView {
     cancel: CancelToken,
     /// What drawing the description's Markdown keeps.
     markdown: egui_commonmark::CommonMarkCache,
+    /// On a narrow window (a phone's), whether the selected one's details show, in the list's
+    /// place.
+    narrow_details: bool,
 }
 
 impl Drop for PullRequestView {
@@ -74,6 +80,8 @@ impl PullRequestView {
             head_row: None,
             cancel: CancelToken::new(),
             markdown: egui_commonmark::CommonMarkCache::default(),
+            // One asked for by name (a badge's) shows at once.
+            narrow_details: selected.is_some(),
         }
     }
 
@@ -116,9 +124,15 @@ pub(super) fn show(
     view: &mut PullRequestView,
 ) -> Option<PullRequestEvent> {
     let forge = shared.forge;
+    let narrow = shared.narrow();
     let escape = !ui.ctx().text_edit_focused()
         && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::Escape));
-    let mut event = escape.then_some(PullRequestEvent::Close);
+    // On a narrow window, Escape goes from the details back to the list first.
+    let back = escape && narrow && view.narrow_details;
+    if back {
+        view.narrow_details = false;
+    }
+    let mut event = (escape && !back).then_some(PullRequestEvent::Close);
     let found = forge.found();
     let count = found.pulls.len();
     keys(ui, view, &found.pulls);
@@ -151,6 +165,10 @@ pub(super) fn show(
             });
         return event;
     }
+    if narrow {
+        narrow_pages(ui, shared, history, view, &mut event);
+        return event;
+    }
     // The list at full height, the one selected's details beside it.
     let room = ui.available_width();
     egui::Panel::left(Id::new(("pull-request-list", shared.id)))
@@ -167,6 +185,44 @@ pub(super) fn show(
             }
         });
     event
+}
+
+/// On a narrow window (a phone's): the list, or (one tapped) its details in the list's place,
+/// under a bar going back to it.
+fn narrow_pages(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    view: &mut PullRequestView,
+    event: &mut Option<PullRequestEvent>,
+) {
+    if !view.narrow_details {
+        egui::CentralPanel::default()
+            .frame(Frame::new())
+            .show(ui, |ui| {
+                if list(ui, shared, view) {
+                    view.narrow_details = true;
+                }
+            });
+        return;
+    }
+    let nouns = shared.forge.nouns();
+    let back = format!("{}  {}", icon::ARROW_LEFT, capitalized(nouns));
+    let clicked = widgets::bar(ui, |ui| {
+        widgets::secondary(ui, true, &back)
+            .on_hover_text(format!("Back to the {nouns} (Escape)"))
+            .clicked()
+    });
+    if clicked {
+        view.narrow_details = false;
+    }
+    egui::CentralPanel::default()
+        .frame(Frame::new().inner_margin(Margin::same(12)))
+        .show(ui, |ui| {
+            if let Some(asked) = details(ui, shared, history, view) {
+                *event = Some(asked);
+            }
+        });
 }
 
 /// The place in `pulls` of the pull request `selected` names.
@@ -236,17 +292,22 @@ fn bar(
             if count > 0 || problem.is_none() {
                 ui.label(muted(ui, open));
             }
-            // What comes and goes follows the buttons.
+            // What comes and goes follows the buttons, the spinner's room kept beside Refresh:
+            // a wrapped bar (a narrow window's) keeps its lines as a read starts and ends.
+            widgets::room_for(ui, &[widgets::button_width(ui, "Refresh"), SPINNER]);
             if widgets::secondary(ui, !forge.is_reading(), "Refresh").clicked() {
                 event = Some(PullRequestEvent::Refresh);
             }
             if forge.is_reading() {
-                ui.spinner();
+                ui.add(egui::Spinner::new().size(SPINNER));
+            } else {
+                ui.allocate_exact_size(egui::vec2(SPINNER, SPINNER), Sense::hover());
             }
             if count > 0
                 && let Some(problem) = problem
             {
-                ui.label(
+                widgets::row_label(
+                    ui,
                     RichText::new(format!("{}  {}", icon::WARNING_CIRCLE, said(problem)))
                         .color(palette.danger),
                 );
@@ -351,8 +412,10 @@ pub(super) fn said(problem: &ForgeProblem) -> String {
 }
 
 /// The pull requests, drawn as far as they show.
-fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut PullRequestView) {
+/// The list; returns whether a row was clicked.
+fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut PullRequestView) -> bool {
     let now = format::now();
+    let mut clicked = false;
     let found = shared.forge.found();
     let pitch = ROW_HEIGHT + ui.spacing().item_spacing.y;
     let mut scroll = egui::ScrollArea::vertical()
@@ -383,6 +446,7 @@ fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut PullRequestView) {
             let selected = view.selected == Some(key);
             if row(ui, shared, listed, selected, several, now) {
                 view.selected = Some(key);
+                clicked = true;
             }
         }
     });
@@ -393,6 +457,7 @@ fn list(ui: &mut Ui, shared: &Shared<'_>, view: &mut PullRequestView) {
             shown.state.offset.y,
         );
     });
+    clicked
 }
 
 /// One pull request's row; returns whether it was clicked.

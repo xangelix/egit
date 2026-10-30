@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- A phone's: no zooming the page into a field typed into (Safari's, under 16px text); the
+       canvas takes every touch itself, as egit's own. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>egit</title>
   <!-- Served under a proxy's path without its last slash (code-server's /proxy/7171), the
@@ -26,7 +28,12 @@ if (/\/(index\.html)?$/.test(location.pathname)) {
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #1c1d22; }
     @media (prefers-color-scheme: light) { html, body { background: #f4f4f6; } }
-    canvas { display: block; width: 100%; height: 100%; outline: none; }
+    canvas {
+      display: block; width: 100%; height: 100%; outline: none;
+      /* Every touch is egit's: no panning, zooming, or callouts of the browser's own. */
+      touch-action: none; user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+    }
     #problem {
       position: absolute; inset: 0; margin: auto; height: fit-content; max-width: 36rem;
       padding: 1.5rem; font: 15px/1.5 system-ui, sans-serif; color: #e6e6ea;

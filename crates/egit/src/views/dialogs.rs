@@ -167,7 +167,7 @@ pub(super) fn show(ctx: &egui::Context, dialog: &mut Option<Dialog>, pane: &mut 
     let shown = Modal::new(Id::new(("task-dialog", pane.id)))
         .frame(frame)
         .show(ctx, |ui| {
-            ui.set_width(480.0);
+            ui.set_width(crate::widgets::dialog_width(ui, 480.0, 20.0));
             ask(ui, asked, pane)
         });
     let answer = if shown.should_close() {

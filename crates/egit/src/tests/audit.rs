@@ -119,6 +119,7 @@ pub(crate) fn run(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<Strin
         }
     }
 
+    let modal = harness.ctx.memory(egui::Memory::top_modal_layer);
     // A floating scroll bar lies over what it scrolls by design (shown as the pointer nears).
     let shown: Vec<&Element> = after
         .iter()
@@ -133,10 +134,12 @@ pub(crate) fn run(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<Strin
             // rounded apart) is no overlap anyone sees.
             let sliver = shared.width() < 1.0 || shared.height() < 1.0;
             // What a layer above covers (a dialog over the history) shows nobody an overlap; its
-            // own shapes there aren't the elements' below either.
+            // own shapes there aren't the elements' below either. Nor does what a modal dialog
+            // dims, beside it too (a narrow screen's dialog leaves the screen's edges beside it).
             let covered = shown
                 .iter()
-                .any(|over| over.layer.order > a.layer.order && over.visible.contains_rect(shared));
+                .any(|over| over.layer.order > a.layer.order && over.visible.contains_rect(shared))
+                || modal.is_some_and(|modal| a.layer != modal && a.layer.order <= modal.order);
             if a.layer == b.layer
                 && shared.is_positive()
                 && shared.area() > 4.0
@@ -153,8 +156,27 @@ pub(crate) fn run(harness: &mut Harness<'_, EgitApp>, screen: &str) -> Vec<Strin
         }
     }
     problems.extend(fields(&after, screen));
+    if crate::narrow::is_narrow(&harness.ctx) {
+        problems.extend(past_the_edges(&after, harness.ctx.content_rect(), screen));
+    }
     problems.extend(interaction(harness, screen));
     problems
+}
+
+/// On a narrow window (a phone's), nothing cut off by its sides: whatever runs past them (shown
+/// up to them) doesn't fit. What a scroll area inside cuts off is that area's to show.
+fn past_the_edges(shown: &[Element], window: Rect, screen: &str) -> Vec<String> {
+    shown
+        .iter()
+        .filter(|element| element.visible.is_positive())
+        .filter(|element| {
+            (element.rect.right() > window.right() + 0.5
+                && element.visible.right() >= window.right() - 0.5)
+                || (element.rect.left() < window.left() - 0.5
+                    && element.visible.left() <= window.left() + 0.5)
+        })
+        .map(|element| format!("{screen}: past the window's edge: {}", element.describe()))
+        .collect()
 }
 
 /// One-line fields: a control's height, their text centred top to bottom and inset from their

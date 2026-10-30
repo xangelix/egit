@@ -196,7 +196,7 @@ impl Prompts {
         // code's font, its "(yes/no/[fingerprint])" said by the buttons instead.
         let host_key = kind == PromptKind::YesNo && prompt.text().contains("authenticity of host");
         let modal = Modal::new(Id::new("askpass")).frame(frame).show(ctx, |ui| {
-            ui.set_width(480.0);
+            ui.set_width(crate::widgets::dialog_width(ui, 480.0, 20.0));
             let (glyph, title) = if host_key {
                 (icon::FINGERPRINT, "Trust this host?")
             } else {

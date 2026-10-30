@@ -60,7 +60,7 @@ pub(crate) fn show(
         .corner_radius(egui::CornerRadius::same(crate::theme::RADIUS_CARD))
         .inner_margin(egui::Margin::same(20));
     let shown = Modal::new(Id::new("sign-in")).frame(frame).show(ctx, |ui| {
-        ui.set_width(520.0);
+        ui.set_width(crate::widgets::dialog_width(ui, 520.0, 20.0));
         fill(ui, dialog, keeping.as_ref(), actions)
     });
     // Escape or a click outside closes it, but not while the host is being asked.

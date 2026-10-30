@@ -545,6 +545,10 @@ pub(super) fn show(
     file: &mut FileView,
     actions: &mut Vec<Action>,
 ) -> bool {
+    // A narrow window (a phone's) has no room for two sides: its diffs are unified.
+    if shared.narrow() {
+        file.split = false;
+    }
     file.follow_status(shared);
     // Escape closes a find bar or clears a selection first (the grid takes it), then closes
     // the view.
@@ -729,12 +733,14 @@ fn shown_controls(ui: &mut Ui, shared: &Shared<'_>, file: &mut FileView) {
         if file.shown == Shown::Preview {
             return;
         }
-        if file.shown == Shown::Diff {
+        if file.shown == Shown::Diff && !crate::narrow::is_narrow(ui.ctx()) {
             widgets::segmented(
                 ui,
                 &mut file.split,
                 &[(false, "Unified"), (true, "Side by side")],
             );
+        }
+        if file.shown == Shown::Diff {
             if widgets::checkbox(ui, &mut file.reading.whole, "Whole file").changed() {
                 file.read_diff(shared);
             }

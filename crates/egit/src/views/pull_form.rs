@@ -200,7 +200,7 @@ pub(super) fn show(
     let shown = Modal::new(Id::new(("pull-request-form", shared.id)))
         .frame(frame)
         .show(ctx, |ui| {
-            ui.set_width(560.0);
+            ui.set_width(crate::widgets::dialog_width(ui, 560.0, 20.0));
             fill(ui, shared, open)
         });
     let answer = if shown.should_close() {

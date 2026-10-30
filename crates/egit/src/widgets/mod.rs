@@ -323,6 +323,9 @@ pub(crate) fn fact<R>(
     label: &str,
     add_value: impl FnOnce(&mut Ui) -> R,
 ) -> R {
+    if stacked(ui, width) {
+        return stacked_fact(ui, label, add_value).1;
+    }
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), CONTROL),
         egui::Layout::left_to_right(egui::Align::Center),
@@ -342,6 +345,11 @@ pub(crate) fn fact_of<R>(
     (label, topic): (&str, &'static str),
     add_value: impl FnOnce(&mut Ui) -> R,
 ) -> R {
+    if stacked(ui, width) {
+        let (shown, value) = stacked_fact(ui, label, add_value);
+        crate::help::note_topic(ui, shown.rect, topic);
+        return value;
+    }
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), CONTROL),
         egui::Layout::left_to_right(egui::Align::Center),
@@ -354,6 +362,171 @@ pub(crate) fn fact_of<R>(
     .inner
 }
 
+/// Facts in rows, `columns` cells each (a label, its value, perhaps where it is set): a grid
+/// whose labels are [`FACT_LABEL`] wide, its rows `rows` adds through [`FactRows::row`]; where
+/// that column leaves the values too little room (a narrow window's page), each label above
+/// its value, which wraps. The Overview's: muted labels, rows 8 points apart.
+pub(crate) fn fact_rows(
+    ui: &mut Ui,
+    id: impl egui::AsIdSalt,
+    columns: usize,
+    rows: impl FnOnce(&mut FactRows<'_>),
+) {
+    FactGrid::new(id, columns).show(ui, rows);
+}
+
+/// [`fact_rows`] with other gaps between them, or labels naming fields (in the text's colour).
+pub(crate) struct FactGrid {
+    id: egui::Id,
+    columns: usize,
+    gap: egui::Vec2,
+    plain: bool,
+}
+
+impl FactGrid {
+    pub(crate) fn new(id: impl egui::AsIdSalt, columns: usize) -> Self {
+        Self {
+            id: egui::Id::new(id),
+            columns,
+            gap: egui::vec2(16.0, 8.0),
+            plain: false,
+        }
+    }
+
+    /// Columns `x` apart, rows `y` apart.
+    pub(crate) const fn gap(mut self, x: f32, y: f32) -> Self {
+        self.gap = egui::vec2(x, y);
+        self
+    }
+
+    /// Labels in the text's colour: they name the fields beside them.
+    pub(crate) const fn plain(mut self) -> Self {
+        self.plain = true;
+        self
+    }
+
+    /// Draws the rows `rows` adds.
+    pub(crate) fn show(self, ui: &mut Ui, rows: impl FnOnce(&mut FactRows<'_>)) {
+        let plain = self.plain;
+        if stacked(ui, FACT_LABEL) {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
+                rows(&mut FactRows {
+                    ui,
+                    stacked: true,
+                    plain,
+                });
+            });
+            return;
+        }
+        egui::Grid::new(self.id)
+            .num_columns(self.columns)
+            .min_col_width(FACT_LABEL)
+            .spacing(self.gap)
+            .show(ui, |ui| {
+                rows(&mut FactRows {
+                    ui,
+                    stacked: false,
+                    plain,
+                });
+            });
+    }
+}
+
+/// The rows a [`FactGrid`] adds.
+pub(crate) struct FactRows<'u> {
+    ui: &'u mut Ui,
+    stacked: bool,
+    plain: bool,
+}
+
+impl FactRows<'_> {
+    /// A row: its label, and what `add_value` adds (its cells, one widget each).
+    pub(crate) fn row(&mut self, label: &str, add_value: impl FnOnce(&mut Ui)) {
+        let text = if self.plain {
+            RichText::new(label)
+        } else {
+            muted(self.ui, label)
+        };
+        self.row_text(text, add_value);
+    }
+
+    /// A row labelled `text` as it is drawn (someone's words, or muted among plain labels).
+    pub(crate) fn row_text(
+        &mut self,
+        text: impl Into<WidgetText>,
+        add_value: impl FnOnce(&mut Ui),
+    ) {
+        if self.stacked {
+            self.ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                ui.add(egui::Label::new(text).selectable(false));
+                ui.horizontal_wrapped(add_value);
+            });
+        } else {
+            self.ui.label(text);
+            add_value(self.ui);
+            self.ui.end_row();
+        }
+    }
+
+    /// Where the rows are drawn (to style a label by).
+    pub(crate) const fn ui(&self) -> &Ui {
+        self.ui
+    }
+
+    /// A field's row: its label (which names it: `add_field` is given its id), the field `width`
+    /// wide (no wider than the room, when above it), and what follows it.
+    pub(crate) fn field(
+        &mut self,
+        label: &str,
+        width: f32,
+        add_field: impl FnOnce(&mut Ui, egui::Id, f32),
+    ) {
+        if self.stacked {
+            self.ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                let shown = ui.add(egui::Label::new(label).selectable(false));
+                ui.horizontal_wrapped(|ui| {
+                    let width = width.min(ui.available_width());
+                    add_field(ui, shown.id, width);
+                });
+            });
+        } else {
+            let shown = self.ui.label(label);
+            add_field(self.ui, shown.id, width);
+            self.ui.end_row();
+        }
+    }
+}
+
+/// Whether a fact's (or a form's) label column `width` wide leaves its value too little room
+/// (on a narrow window's page): the label goes above the value instead.
+fn stacked(ui: &Ui, width: f32) -> bool {
+    width > ui.available_width() * STACKED_PAST
+}
+
+/// The share of a row a label column may take beside its value: more, and it goes above.
+const STACKED_PAST: f32 = 0.35;
+
+/// A fact with its label above its value (where a column beside would leave the value too
+/// little room): the label, and what `add_value` returns.
+fn stacked_fact<R>(
+    ui: &mut Ui,
+    label: &str,
+    add_value: impl FnOnce(&mut Ui) -> R,
+) -> (Response, R) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        let shown = ui.add(egui::Label::new(muted(ui, label)).selectable(false));
+        crate::help::note(ui, shown.rect, label);
+        // Its parts wrap onto lines of their own where they don't fit side by side.
+        let value = ui.horizontal_wrapped(add_value).inner;
+        (shown, value)
+    })
+    .inner
+}
+
 /// A fact whose value may take several lines: the label beside the value's first line, both
 /// as far below the row's top (and the last line as far above its bottom) as a one-line
 /// [`fact`]'s text, so facts keep one rhythm.
@@ -363,6 +536,16 @@ pub(crate) fn fact_top<R>(
     label: &str,
     add_value: impl FnOnce(&mut Ui) -> R,
 ) -> R {
+    if stacked(ui, width) {
+        return ui
+            .vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                let shown = ui.add(egui::Label::new(muted(ui, label)).selectable(false));
+                crate::help::note(ui, shown.rect, label);
+                add_value(ui)
+            })
+            .inner;
+    }
     let line = ui.text_style_height(&egui::TextStyle::Body);
     let inset = ((CONTROL - line) / 2.0).max(0.0);
     ui.vertical(|ui| {
@@ -405,6 +588,10 @@ pub(crate) fn form_row(
     label: &str,
     add_field: impl FnOnce(&mut Ui) -> Response,
 ) -> Response {
+    if stacked(ui, width) {
+        let (shown, field) = stacked_fact(ui, label, add_field);
+        return field.labelled_by(shown.id);
+    }
     ui.allocate_ui_with_layout(
         egui::vec2(ui.available_width(), CONTROL),
         egui::Layout::left_to_right(egui::Align::Center),
@@ -540,7 +727,7 @@ pub(crate) fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
     let galley =
         ui.painter()
             .layout_no_wrap(text.to_owned(), egui::FontId::proportional(SMALL), color);
-    let size = egui::vec2(galley.size().x + 12.0, HEIGHT);
+    let size = egui::vec2(galley.size().x + CHIP_PAD, HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().rect_stroke(
         rect,
@@ -555,6 +742,18 @@ pub(crate) fn chip(ui: &mut Ui, text: &str, color: Color32) -> Response {
     ui.painter().galley(at, galley, color);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text));
     response
+}
+
+/// How much wider a [`chip`] is than its words.
+const CHIP_PAD: f32 = 12.0;
+
+/// How wide [`chip`]s showing `texts` are, one after another (the spacing between included).
+pub(crate) fn chips_width(ui: &Ui, texts: &[&str]) -> f32 {
+    let spacing = ui.spacing().item_spacing.x;
+    texts
+        .iter()
+        .map(|text| text_width_as(ui, text, &egui::TextStyle::Small) + CHIP_PAD + spacing)
+        .sum()
 }
 
 /// How wide `text` is in the body's font.
@@ -792,6 +991,35 @@ pub(crate) fn room_for(ui: &mut Ui, widths: &[f32]) {
     if ui.available_size_before_wrap().x < needed {
         ui.end_row();
     }
+}
+
+/// How wide a dialog's contents are: `wanted`, or, on a narrow screen (a phone's), what keeps
+/// the dialog, its frame's `margin` either side, [`DIALOG_GUTTER`] in from the screen's edges.
+pub(crate) fn dialog_width(ui: &Ui, wanted: f32, margin: f32) -> f32 {
+    let room = 2.0f32.mul_add(-(DIALOG_GUTTER + margin), ui.ctx().content_rect().width());
+    wanted.min(room.max(0.0))
+}
+
+/// The least room between a dialog and the screen's edges.
+const DIALOG_GUTTER: f32 = 12.0;
+
+/// A label in a wrapping row (`ui.horizontal_wrapped`): on the next row where it doesn't fit
+/// beside what came before, cut short where it doesn't fit even there. Never wrapping inside
+/// the row, whose next parts it would lie under.
+pub(crate) fn row_label(ui: &mut Ui, text: impl Into<WidgetText>) -> Response {
+    let text = text.into();
+    let width = text
+        .clone()
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Body,
+        )
+        .size()
+        .x;
+    room_for(ui, &[width.min(ui.available_width())]);
+    ui.add(egui::Label::new(text).truncate())
 }
 
 /// How wide [`tool`] (or, for a `menu`, [`tool_menu`]) draws its button as `look` says: its
@@ -1209,8 +1437,14 @@ pub(crate) fn tab_hover(response: &Response) {
 
 /// Where a setting comes from: its scope and file, or git's default when nothing sets it.
 pub(crate) fn origin(ui: &mut Ui, entry: Option<ConfigEntry<'_>>, home: Option<&Path>) {
-    let text = origin_text(entry, home);
-    let response = ui.label(muted(ui, text).small());
+    let text = muted(ui, origin_text(entry, home)).small();
+    // In a wrapping row (a fact's value under its label), on a line of its own where it
+    // doesn't fit after what came before.
+    let response = if ui.layout().main_wrap {
+        row_label(ui, text)
+    } else {
+        ui.label(text)
+    };
     if let Some(file) = entry.and_then(ConfigEntry::file) {
         response.on_hover_text(file.display().to_string());
     }

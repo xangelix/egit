@@ -326,25 +326,63 @@ fn row_contents(
             ui.label(RichText::new(job.status.word()).color(color));
         });
         // What comes and goes (as the job moves on) in a `Ui` of its own, as wide on every row.
-        ui.scope_builder(
-            egui::UiBuilder::new()
-                .id(Id::new(("pipeline-job-actions", place)))
-                .layout(Layout::right_to_left(Align::Center)),
-            |ui| {
-                ui.set_min_width(crate::theme::CONTROL);
-                asked = quick_actions(ui, job, said);
-            },
-        );
-        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            ui.add(
-                egui::Label::new(RichText::new(&job.name).color(palette.text))
-                    .selectable(false)
-                    .truncate(),
+        // Not on a narrow window (a phone's), where it would be under a finger tapping the row
+        // for its log: the job's menu (a long press) and its log's bar do the same.
+        if !crate::narrow::is_narrow(ui.ctx()) {
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .id(Id::new(("pipeline-job-actions", place)))
+                    .layout(Layout::right_to_left(Align::Center)),
+                |ui| {
+                    ui.set_min_width(crate::theme::CONTROL);
+                    asked = quick_actions(ui, job, said);
+                },
             );
-            chips(ui, palette, job);
+        }
+        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            // Its chips only where the name keeps some room beside them (a narrow window's
+            // rows say the name alone).
+            let said = chip_words(job);
+            let words: Vec<&str> = said.iter().map(AsRef::as_ref).collect();
+            let chips_room = widgets::chips_width(ui, &words);
+            let shown = ui.available_width() - chips_room >= NAME_LEAST;
+            let name_room = if shown {
+                ui.available_width() - chips_room
+            } else {
+                ui.available_width()
+            };
+            ui.scope(|ui| {
+                ui.set_max_width(name_room);
+                ui.add(
+                    egui::Label::new(RichText::new(&job.name).color(palette.text))
+                        .selectable(false)
+                        .truncate(),
+                );
+            });
+            if shown {
+                chips(ui, palette, job);
+            }
         });
     });
     asked
+}
+
+/// The least a job's name keeps beside its chips: with less, the chips are left out.
+const NAME_LEAST: f32 = 80.0;
+
+/// The words of the chips after a job's name.
+fn chip_words(job: &Job) -> Vec<std::borrow::Cow<'static, str>> {
+    let mut words = Vec::new();
+    if job.allow_failure {
+        words.push("may fail".into());
+    }
+    if job.manual {
+        words.push("manual".into());
+    }
+    if !job.earlier.is_empty() {
+        words.push(format!("{} runs", job.earlier.len().saturating_add(1)).into());
+    }
+    words
 }
 
 /// What a job's click asks: its latest run's log, or a trigger job's pipeline on GitLab.
@@ -357,18 +395,14 @@ pub(super) fn clicked(job: &Job) -> Option<JobAsk> {
 
 /// The chips after a job's name: may fail, manual, how many times it ran.
 fn chips(ui: &mut Ui, palette: Palette, job: &Job) {
-    if job.allow_failure {
-        widgets::chip(ui, "may fail", palette.muted);
-    }
-    if job.manual {
-        widgets::chip(ui, "manual", palette.muted);
-    }
-    if !job.earlier.is_empty() {
-        widgets::chip(
-            ui,
-            &format!("{} runs", job.earlier.len().saturating_add(1)),
-            palette.accent,
-        );
+    for words in chip_words(job) {
+        // How many times it ran stands out; the rest are muted.
+        let color = if words.ends_with(" runs") {
+            palette.accent
+        } else {
+            palette.muted
+        };
+        widgets::chip(ui, &words, color);
     }
 }
 

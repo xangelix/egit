@@ -4,8 +4,9 @@
 //! (`?open=`), titled by it, and shows the history's statistics from the palette (each git
 //! through the relay); it is threaded (cross-origin isolated, its workers started), and nothing
 //! in it or its workers panics or says an error. And served by a proxy under a path of its own
-//! (as code-server's `/proxy/<port>`), opened without its last slash, it does the same. Its
-//! screens are kept in `target/web-screens`.
+//! (as code-server's `/proxy/<port>`), opened without its last slash, it does the same. On a
+//! phone (its screen and touches emulated) it fits its screen, and a tap on a commit shows its
+//! details. Its screens are kept in `target/web-screens`.
 
 #![cfg(unix)]
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
@@ -342,14 +343,49 @@ impl Page {
         self.call("Input.insertText", json!({ "text": text })).await;
     }
 
-    /// Keeps the page's screen as `target/web-screens/<name>.png`.
-    async fn keep(&mut self, name: &str) {
+    /// Taps at `x`, `y`, as a finger does.
+    async fn tap(&mut self, x: u32, y: u32) {
+        self.call(
+            "Input.dispatchTouchEvent",
+            json!({ "type": "touchStart", "touchPoints": [{ "x": x, "y": y }] }),
+        )
+        .await;
+        self.call(
+            "Input.dispatchTouchEvent",
+            json!({ "type": "touchEnd", "touchPoints": [] }),
+        )
+        .await;
+    }
+
+    /// Makes the page a phone's, held upright (390 by 844), touched rather than clicked. At a
+    /// pixel a point: emulated, a phone's density says three, but the canvas's resize observer
+    /// (by which eframe sizes it) says one, so egui would lay out a third of the screen.
+    async fn as_phone(&mut self) {
+        self.call(
+            "Emulation.setDeviceMetricsOverride",
+            json!({ "width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": true }),
+        )
+        .await;
+        self.call(
+            "Emulation.setTouchEmulationEnabled",
+            json!({ "enabled": true, "maxTouchPoints": 5 }),
+        )
+        .await;
+    }
+
+    /// The page's screen, as a PNG.
+    async fn screen(&mut self) -> Vec<u8> {
         let shot = self
             .call("Page.captureScreenshot", json!({ "format": "png" }))
             .await;
-        let png = base64::engine::general_purpose::STANDARD
+        base64::engine::general_purpose::STANDARD
             .decode(shot["data"].as_str().unwrap())
-            .unwrap();
+            .unwrap()
+    }
+
+    /// Keeps the page's screen as `target/web-screens/<name>.png`.
+    async fn keep(&mut self, name: &str) {
+        let png = self.screen().await;
         let folder = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/web-screens");
         std::fs::create_dir_all(&folder).unwrap();
         std::fs::write(folder.join(format!("{name}.png")), png).unwrap();
@@ -517,6 +553,50 @@ fn egit_opens_under_a_proxy_s_path_given_without_its_last_slash() {
             "browser-proxied",
         )
         .await;
+        assert!(
+            page.wrong.is_empty(),
+            "the page went wrong: {:?}",
+            page.wrong
+        );
+    });
+}
+
+#[test]
+fn egit_fits_a_phone_and_answers_its_touches() {
+    let Some((program, web)) = wanted() else {
+        return;
+    };
+    let sandbox = Sandbox::new().unwrap();
+    let repo = repository(&sandbox);
+    let relay = relay_of(&web);
+    let browser = Browser::start(&program);
+    runtime().block_on(async {
+        let mut page = Page::of(&browser).await;
+        page.as_phone().await;
+        let address = format!(
+            "http://{}/?open={}#{}",
+            relay.address,
+            encoded(&repo),
+            relay.token
+        );
+        page.opens(
+            &address,
+            &format!("http://{}/", relay.address),
+            "browser-phone",
+        )
+        .await;
+        // The page kept to what shows (above a keyboard, when one opens).
+        assert_eq!(
+            page.evaluate("document.documentElement.style.height").await,
+            "844px"
+        );
+        // The newest commit's row, the first under the top bar's two rows, tapped: its details
+        // in the history's place.
+        let history = page.screen().await;
+        page.tap(195, 140).await;
+        page.idle(Duration::from_secs(2)).await;
+        page.keep("browser-phone-commit").await;
+        assert_ne!(page.screen().await, history, "the tap showed nothing");
         assert!(
             page.wrong.is_empty(),
             "the page went wrong: {:?}",

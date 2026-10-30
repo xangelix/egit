@@ -9,7 +9,7 @@ use egit_git::{
     Committed, ConfigSnapshot, Git, Head, Operation, Repository, Stash, Submodule, Tracking,
     Worktree,
 };
-use egui::{Grid, RichText, Ui};
+use egui::{RichText, Ui};
 use egui_async::Bind;
 
 use crate::app::{Action, AppState};
@@ -28,7 +28,8 @@ use crate::views::sidebar::Lists;
 use crate::widgets::{self, muted};
 use crate::worktree::WorkTree;
 
-/// Draws repository `id`'s tab.
+/// Draws repository `id`'s tab: its agents at its right (on a narrow window, while shown, the
+/// whole tab), what its tasks printed at its bottom, and its history or one of its pages.
 pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
     let AppState {
         git,
@@ -62,7 +63,10 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState, id: RepoId) {
                 crate::agents::AgentsSetup::there(repo.git.clone(), home_dir.as_deref())
             })
     });
-    agents_panel(ui, (setup, &mut repo.agents), (id, around), actions);
+    // On a narrow window (a phone's) they take the whole tab while shown.
+    if agents_panel(ui, (setup, &mut repo.agents), (id, around), actions) {
+        return;
+    }
     super::output::show(ui, &mut repo.output, id);
     let following_there = repo
         .following_there()
@@ -372,55 +376,45 @@ fn branch_card(ui: &mut Ui, head: &Head, palette: Palette) {
     widgets::card(ui, |ui| {
         widgets::heading(ui, "Branch");
         ui.add_space(4.0);
-        Grid::new("repo-branch")
-            .num_columns(2)
-            .min_col_width(widgets::FACT_LABEL)
-            .spacing([16.0, 8.0])
-            .show(ui, |ui| match head {
-                Head::Branch(branch) => {
-                    ui.label(muted(ui, "On"));
+        widgets::fact_rows(ui, "repo-branch", 2, |rows| match head {
+            Head::Branch(branch) => {
+                rows.row("On", |ui| {
                     ui.label(
                         RichText::new(format!("{}  {}", icon::GIT_BRANCH, branch.name)).semibold(),
                     );
-                    ui.end_row();
-
-                    ui.label(muted(ui, "Commit"));
-                    match &branch.commit {
-                        Some(commit) => commit_label(
-                            ui,
-                            &commit.id.abbreviated(10).to_string(),
-                            &commit.subject.to_str_lossy(),
-                        ),
-                        None => {
-                            ui.label(muted(ui, "No commits yet"));
-                        }
+                });
+                rows.row("Commit", |ui| match &branch.commit {
+                    Some(commit) => commit_label(
+                        ui,
+                        &commit.id.abbreviated(10).to_string(),
+                        &commit.subject.to_str_lossy(),
+                    ),
+                    None => {
+                        ui.label(muted(ui, "No commits yet"));
                     }
-                    ui.end_row();
-
-                    ui.label(muted(ui, "Upstream"));
-                    match &branch.upstream {
-                        None => {
-                            ui.label(muted(ui, "None: this branch doesn't track another"));
-                        }
-                        Some(upstream) => {
-                            ui.horizontal(|ui| {
-                                ui.label(upstream.name.to_str_lossy());
-                                tracking_label(ui, upstream.tracking, palette);
-                            });
-                        }
+                });
+                rows.row("Upstream", |ui| match &branch.upstream {
+                    None => {
+                        ui.label(muted(ui, "None: this branch doesn't track another"));
                     }
-                    ui.end_row();
-                }
-                Head::Detached(commit) => {
-                    ui.label(muted(ui, "Detached at"));
+                    Some(upstream) => {
+                        ui.horizontal(|ui| {
+                            ui.label(upstream.name.to_str_lossy());
+                            tracking_label(ui, upstream.tracking, palette);
+                        });
+                    }
+                });
+            }
+            Head::Detached(commit) => {
+                rows.row("Detached at", |ui| {
                     commit_label(
                         ui,
                         &commit.id.abbreviated(10).to_string(),
                         &commit.subject.to_str_lossy(),
                     );
-                    ui.end_row();
-                }
-            });
+                });
+            }
+        });
     });
 }
 
@@ -471,14 +465,10 @@ fn identity_card(ui: &mut Ui, panels: &mut Panels<'_>) {
                     "What commits made in this repository record, and where it is set.",
                 ));
                 ui.add_space(4.0);
-                Grid::new(("repo-identity", panels.id))
-                    .num_columns(3)
-                    .min_col_width(widgets::FACT_LABEL)
-                    .spacing([16.0, 8.0])
-                    .show(ui, |ui| {
-                        for (label, entry) in [("Name", profile.name()), ("Email", profile.email())]
-                        {
-                            ui.label(muted(ui, label));
+                let home = panels.home;
+                widgets::fact_rows(ui, ("repo-identity", panels.id), 3, |rows| {
+                    for (label, entry) in [("Name", profile.name()), ("Email", profile.email())] {
+                        rows.row(label, |ui| {
                             match entry {
                                 Some(entry) => {
                                     ui.label(entry.text().to_string());
@@ -489,19 +479,19 @@ fn identity_card(ui: &mut Ui, panels: &mut Panels<'_>) {
                                     );
                                 }
                             }
-                            widgets::origin(ui, entry, panels.home);
-                            ui.end_row();
-                        }
-                        let signing = profile.signing();
-                        ui.label(muted(ui, "Signing"));
+                            widgets::origin(ui, entry, home);
+                        });
+                    }
+                    let signing = profile.signing();
+                    rows.row("Signing", |ui| {
                         ui.label(if signing.commits.value {
                             format!("Every commit ({})", signing.format.value.name())
                         } else {
                             "Off".to_owned()
                         });
-                        widgets::origin(ui, signing.commits.entry, panels.home);
-                        ui.end_row();
+                        widgets::origin(ui, signing.commits.entry, home);
                     });
+                });
             }
         }
     });
@@ -524,28 +514,26 @@ fn location_card(
                 ui.add(egui::Label::new(display_path(at, home)).wrap());
             });
         };
-        Grid::new(("repo-location", repository.work_tree()))
-            .num_columns(2)
-            .min_col_width(widgets::FACT_LABEL)
-            .spacing([16.0, 8.0])
-            .show(ui, |ui| {
-                if let Some((computer, _)) = there {
-                    ui.label(muted(ui, "Computer"));
+        widgets::fact_rows(ui, ("repo-location", repository.work_tree()), 2, |rows| {
+            // Each label above its value, a path wraps in what the row gives it.
+            let path = |ui: &mut Ui, at: &Path| {
+                if ui.layout().main_wrap {
+                    ui.add(egui::Label::new(display_path(at, home)).wrap());
+                } else {
+                    path(ui, at);
+                }
+            };
+            if let Some((computer, _)) = there {
+                rows.row("Computer", |ui| {
                     ui.label(format!("{computer}, over SSH"));
-                    ui.end_row();
-                }
-                ui.label(muted(ui, "Work tree"));
-                path(ui, repository.work_tree());
-                ui.end_row();
-                ui.label(muted(ui, "Git directory"));
-                path(ui, repository.git_dir());
-                ui.end_row();
-                if repository.is_linked_worktree() {
-                    ui.label(muted(ui, "Shared with"));
-                    path(ui, repository.common_dir());
-                    ui.end_row();
-                }
-                ui.label(muted(ui, "Object names"));
+                });
+            }
+            rows.row("Work tree", |ui| path(ui, repository.work_tree()));
+            rows.row("Git directory", |ui| path(ui, repository.git_dir()));
+            if repository.is_linked_worktree() {
+                rows.row("Shared with", |ui| path(ui, repository.common_dir()));
+            }
+            rows.row("Object names", |ui| {
                 ui.label(
                     repository
                         .object_format()
@@ -553,13 +541,13 @@ fn location_card(
                         .to_uppercase()
                         .replace("SHA", "SHA-"),
                 );
-                ui.end_row();
-                if let Some((_, Some(following))) = there {
-                    ui.label(muted(ui, "Changes there"));
-                    ui.add(egui::Label::new(following).wrap());
-                    ui.end_row();
-                }
             });
+            if let Some((_, Some(following))) = there {
+                rows.row("Changes there", |ui| {
+                    ui.add(egui::Label::new(following).wrap());
+                });
+            }
+        });
     });
 }
 
@@ -595,7 +583,8 @@ fn configuration(ui: &mut Ui, panels: &mut Panels<'_>) {
         });
 }
 
-/// The agents' panel at the tab's right, while shown (the top bar's Agents shows it).
+/// The agents' panel at the tab's right, while shown (the top bar's Agents shows it); on a
+/// narrow window (a phone's) the whole tab. Returns whether it took the whole tab.
 fn agents_panel(
     ui: &mut Ui,
     (setup, agents): (
@@ -604,10 +593,38 @@ fn agents_panel(
     ),
     (id, around): (RepoId, super::agents::Around<'_>),
     actions: &mut Vec<Action>,
-) {
+) -> bool {
     if !agents.shown {
-        return;
+        return false;
     }
+    let palette = crate::theme::Palette::of(ui.ctx());
+    let narrow = crate::narrow::is_narrow(ui.ctx());
+    if narrow {
+        egui::CentralPanel::default()
+            .frame(egui::Frame::new().fill(palette.panel))
+            .show(ui, |ui| {
+                super::agents::panel(ui, (setup, agents), around, actions);
+            });
+    } else {
+        side_agents(ui, (setup, agents), (id, around), actions);
+    }
+    // Drawn, the conversation shown is seen: a turn it ended no longer calls for attention.
+    if let Some(conversation) = agents.current() {
+        conversation.seen();
+    }
+    narrow
+}
+
+/// The agents' panel at the tab's right, beside everything else.
+fn side_agents(
+    ui: &mut Ui,
+    (setup, agents): (
+        &mut crate::agents::AgentsSetup,
+        &mut crate::agents::RepoAgents,
+    ),
+    (id, around): (RepoId, super::agents::Around<'_>),
+    actions: &mut Vec<Action>,
+) {
     let palette = crate::theme::Palette::of(ui.ctx());
     egui::Panel::right(egui::Id::new(("agents", id)))
         .resizable(true)
@@ -624,8 +641,4 @@ fn agents_panel(
         .show(ui, |ui| {
             super::agents::panel(ui, (setup, agents), around, actions);
         });
-    // Drawn, the conversation shown is seen: a turn it ended no longer calls for attention.
-    if let Some(conversation) = agents.current() {
-        conversation.seen();
-    }
 }

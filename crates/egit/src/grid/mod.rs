@@ -16,7 +16,7 @@ use egit_text::{Cells, Glyph, Measure, Position, Rows, Text, Wrap};
 use egui::text::LayoutJob;
 use egui::{
     Color32, CornerRadius, FontId, Id, Key, Modifiers, Painter, Pos2, Rect, Response, Sense,
-    Stroke, TextFormat, Ui, pos2, vec2,
+    Stroke, TextFormat, Ui, Vec2, pos2, vec2,
 };
 
 use crate::fonts;
@@ -198,7 +198,29 @@ pub(crate) struct TextGrid {
     /// Whether the view rested at the text's end last frame (all of it fitting, too).
     at_end: bool,
     find: Find,
+    /// A finger dragging the text (a touch screen's), which scrolls it.
+    touching: Touching,
 }
+
+/// A finger dragging the text (a touch screen's): it scrolls the text, where a mouse's drag
+/// selects, and, let go, the text moves on a moment, slowing, as egui's scroll areas do.
+#[derive(Debug, Default)]
+struct Touching {
+    /// Whether a finger drags the text now.
+    dragging: bool,
+    /// Which way it moves the text, decided by its first movement: sideways, or up and down.
+    sideways: Option<bool>,
+    /// Cells moved sideways, short of a whole one.
+    cells: f32,
+    /// How fast the text moves on, let go: points a second, down the text.
+    coasting: f32,
+}
+
+/// How fast coasting text slows: points a second, each second (egui's scroll areas').
+const FRICTION: f32 = 1_000.0;
+
+/// Below this many points a second, coasting text stops (egui's scroll areas').
+const STOP_SPEED: f32 = 20.0;
 
 /// A place between two cells of a line: before cell `cell`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -266,6 +288,7 @@ impl TextGrid {
             drawn_size: (0.0, 0.0),
             at_end: true,
             find: Find::default(),
+            touching: Touching::default(),
         }
     }
 
@@ -531,13 +554,20 @@ impl TextGrid {
         let measure = first.measure();
         if response.hovered() {
             let delta = ui.input_mut(|input| std::mem::take(&mut input.smooth_scroll_delta));
+            if delta != Vec2::ZERO {
+                self.touching.coasting = 0.0;
+            }
             self.scroll(measure, frame, -delta.y);
             self.scroll_sideways(measure, frame, -delta.x / frame.cell);
         }
         if response.clicked() || response.drag_started() {
             response.request_focus();
         }
-        self.select(ui, response, measure, frame);
+        // A finger's drag scrolls; a mouse's selects.
+        self.touch(ui, response, measure, frame);
+        if !self.touching.dragging {
+            self.select(ui, response, measure, frame);
+        }
         if response.has_focus()
             && ui.input_mut(|input| input.consume_key(Modifiers::COMMAND, Key::F))
         {
@@ -908,6 +938,53 @@ impl TextGrid {
                 cell: measure.cells(last),
             },
         });
+    }
+
+    /// Scrolls by a finger's drag (a touch screen's), up and down or sideways as it first
+    /// moves; let go, the text moves on, slowing, until it stops or is touched again.
+    fn touch(&mut self, ui: &Ui, response: &Response, measure: &Measure, frame: &Frame) {
+        if response.drag_started() && ui.input(egui::InputState::any_touches) {
+            self.touching = Touching {
+                dragging: true,
+                ..Touching::default()
+            };
+        }
+        if response.is_pointer_button_down_on() && !self.touching.dragging {
+            self.touching.coasting = 0.0;
+        }
+        if self.touching.dragging && response.dragged() {
+            let delta = ui.input(|input| input.pointer.delta());
+            let sideways = *self
+                .touching
+                .sideways
+                .get_or_insert_with(|| delta.x.abs() > delta.y.abs());
+            if sideways && frame.cell > 0.0 {
+                self.touching.cells -= delta.x / frame.cell;
+                let whole = self.touching.cells.trunc();
+                self.touching.cells -= whole;
+                self.scroll_sideways(measure, frame, whole);
+            } else if !sideways {
+                self.scroll(measure, frame, -delta.y);
+            }
+        }
+        if self.touching.dragging && response.drag_stopped() {
+            self.touching.dragging = false;
+            if self.touching.sideways == Some(false) {
+                self.touching.coasting = -ui.input(|input| input.pointer.velocity()).y;
+            }
+        }
+        let speed = self.touching.coasting.abs();
+        if speed > 0.0 {
+            let dt = ui.input(|input| input.stable_dt).min(0.1);
+            let friction = FRICTION * dt;
+            if friction > speed || speed < STOP_SPEED {
+                self.touching.coasting = 0.0;
+            } else {
+                self.touching.coasting -= friction * self.touching.coasting.signum();
+                self.scroll(measure, frame, self.touching.coasting * dt);
+                ui.ctx().request_repaint();
+            }
+        }
     }
 
     /// Selects by dragging (scrolling a row a frame while dragged past the top or bottom); a
@@ -1577,6 +1654,71 @@ mod tests {
             .map_or((0, 0.0), |drawn| (drawn.line, drawn.top + row));
         let bottom = grid.drawn_texts.first().map_or(0.0, egui::Rect::bottom);
         (stood, row, (last.0, last.1 - bottom))
+    }
+
+    /// A grid of 200 numbered lines, 300 points tall, dragged from `from` to `to` (a finger's
+    /// drag, or a mouse's), a frame for each tenth of the way; where its top row is after, and
+    /// whether anything is selected.
+    fn dragged(finger: bool, from: egui::Pos2, to: egui::Pos2) -> (u32, bool) {
+        let text = (0..200).fold(String::new(), |mut text, line| {
+            let _ = writeln!(text, "line {line}");
+            text
+        });
+        let state = (TextGrid::new("dragged"), plain(&text));
+        let mut harness = egui_kittest::Harness::builder()
+            .with_size([400.0, 300.0])
+            .build_ui_state(
+                |ui, (grid, source): &mut (TextGrid, Plain)| {
+                    grid.show(ui, source);
+                },
+                state,
+            );
+        harness.run_steps(2);
+        let touch = |phase, pos| egui::Event::Touch {
+            device_id: egui::TouchDeviceId(0),
+            id: egui::TouchId(0),
+            phase,
+            pos,
+            force: None,
+        };
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        if finger {
+            harness.event(touch(egui::TouchPhase::Start, from));
+        }
+        harness.event(egui::Event::PointerMoved(from));
+        harness.event(button(from, true));
+        harness.step();
+        for step in 1..=10_u8 {
+            let at = from.lerp(to, f32::from(step) / 10.0);
+            if finger {
+                harness.event(touch(egui::TouchPhase::Move, at));
+            }
+            harness.event(egui::Event::PointerMoved(at));
+            harness.step();
+        }
+        if finger {
+            harness.event(touch(egui::TouchPhase::End, to));
+        }
+        harness.event(button(to, false));
+        harness.run_steps(3);
+        let (grid, _) = harness.state();
+        (grid.top.line, grid.selection.is_some())
+    }
+
+    #[test]
+    fn a_finger_s_drag_scrolls_and_a_mouse_s_selects() {
+        let (from, to) = (egui::pos2(200.0, 250.0), egui::pos2(200.0, 50.0));
+        let (top, selected) = dragged(true, from, to);
+        assert!(top >= 8, "the finger scrolled to line {top}");
+        assert!(!selected);
+        let (top, selected) = dragged(false, from, to);
+        assert_eq!(top, 0);
+        assert!(selected);
     }
 
     #[test]

@@ -1,8 +1,10 @@
 //! The tabs across the window: Home, the profile, and one per open repository, laid out by
 //! `egui_tiles` (tabs can be dragged beside each other).
 
-use egui::{Color32, Ui, WidgetText};
-use egui_tiles::{Container, SimplificationOptions, Tile, TileId, Tiles, Tree, UiResponse};
+use egui::{Color32, Ui, UiBuilder, WidgetText};
+use egui_tiles::{
+    Behavior as _, Container, SimplificationOptions, Tile, TileId, Tiles, Tree, UiResponse,
+};
 
 use crate::app::{Action, AppState};
 use crate::repo::RepoId;
@@ -220,9 +222,62 @@ fn tabs_container(tree: &Tree<Pane>) -> Option<TileId> {
 
 /// Draws the tabs and what the visible ones show.
 pub(crate) fn draw(tree: &mut Tree<Pane>, state: &mut AppState, ui: &mut Ui) {
+    if crate::narrow::is_narrow(ui.ctx()) {
+        narrow(tree, state, ui);
+        return;
+    }
     let mut behavior = Behavior { state };
     tree.ui(&mut behavior, ui);
 }
+
+/// A narrow window's (a phone's) tabs, which have no room side by side: a bar naming the tab
+/// in front, a menu of every tab (one chosen comes to the front), its close button, and "+";
+/// the tab in front under it, the whole width.
+fn narrow(tree: &mut Tree<Pane>, state: &mut AppState, ui: &mut Ui) {
+    let Some(shown) = front(tree) else {
+        return;
+    };
+    let open = in_order(tree);
+    let mut behavior = Behavior { state };
+    let palette = Palette::of(ui.ctx());
+    let (bar, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), NARROW_BAR),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(bar, 0.0, palette.recess);
+    let row = UiBuilder::new()
+        .id_salt("narrow-tabs")
+        .max_rect(bar.shrink2(egui::vec2(6.0, 0.0)))
+        .layout(egui::Layout::left_to_right(egui::Align::Center));
+    let chosen = ui
+        .scope_builder(row, |ui| behavior.narrow_bar(ui, (shown, &open)))
+        .inner;
+    if let Some(chosen) = chosen {
+        self::show(tree, chosen);
+    }
+    let rest = egui::Rect::from_min_max(egui::pos2(bar.left(), bar.bottom()), ui.max_rect().max);
+    let page = UiBuilder::new()
+        .id_salt("narrow-page")
+        .max_rect(rest)
+        .layout(egui::Layout::top_down(egui::Align::Min));
+    ui.scope_builder(page, |ui| {
+        ui.set_clip_rect(rest.intersect(ui.clip_rect()));
+        pane_page(ui, behavior.state, shown);
+    });
+}
+
+/// What `pane`'s tab shows.
+fn pane_page(ui: &mut Ui, state: &mut AppState, pane: Pane) {
+    match pane {
+        Pane::Home => views::home::show(ui, state),
+        Pane::Profile => views::profile::show(ui, state),
+        Pane::Preferences => views::preferences::show(ui, state),
+        Pane::Repo(id) => views::repo::show(ui, state, id),
+    }
+}
+
+/// The narrow tab bar's height: the wide one's.
+const NARROW_BAR: f32 = 34.0;
 
 struct Behavior<'a> {
     state: &'a mut AppState,
@@ -230,12 +285,7 @@ struct Behavior<'a> {
 
 impl egui_tiles::Behavior<Pane> for Behavior<'_> {
     fn pane_ui(&mut self, ui: &mut Ui, _tile_id: TileId, pane: &mut Pane) -> UiResponse {
-        match *pane {
-            Pane::Home => views::home::show(ui, self.state),
-            Pane::Profile => views::profile::show(ui, self.state),
-            Pane::Preferences => views::preferences::show(ui, self.state),
-            Pane::Repo(id) => views::repo::show(ui, self.state, id),
-        }
+        pane_page(ui, self.state, *pane);
         UiResponse::None
     }
 
@@ -382,6 +432,69 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
 }
 
 impl Behavior<'_> {
+    /// A narrow window's tab bar: the tab in front (`shown`) a menu of those `open`, its close
+    /// button (but Home's), and "+". Returns the tab chosen in the menu.
+    fn narrow_bar(&mut self, ui: &mut Ui, (shown, open): (Pane, &[Pane])) -> Option<Pane> {
+        let title = self.tab_title_for_pane(&shown).text().to_owned();
+        let (glyph, words) = title.split_once("  ").unwrap_or(("", title.as_str()));
+        let titles: Vec<(Pane, String)> = open
+            .iter()
+            .map(|pane| (*pane, self.tab_title_for_pane(pane).text().to_owned()))
+            .collect();
+        // What is on the right first, so the menu's words are cut short, not them.
+        let mut chosen = None;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            self.top_bar_right_ui_narrow(ui);
+            if shown != Pane::Home
+                && crate::widgets::icon_tool(ui, true, icon::X, "Close the tab").clicked()
+            {
+                self.state
+                    .actions
+                    .push(Action::CloseTabs(Closing::This(shown)));
+            }
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                ui.set_max_width(ui.available_width());
+                crate::widgets::tool_menu_of(
+                    ui,
+                    (glyph, words),
+                    crate::widgets::Look::Full,
+                    "tabs",
+                    |ui| {
+                        for (pane, title) in &titles {
+                            let (glyph, words) =
+                                title.split_once("  ").unwrap_or(("", title.as_str()));
+                            let glyph = if *pane == shown { icon::CHECK } else { glyph };
+                            if views::actions::item_named(ui, (glyph, words), Ok(()), "tabs") {
+                                chosen = Some(*pane);
+                            }
+                        }
+                        ui.separator();
+                        if views::actions::item(
+                            ui,
+                            (icon::X_SQUARE, "Close the other tabs"),
+                            Ok(()),
+                        ) {
+                            self.state
+                                .actions
+                                .push(Action::CloseTabs(Closing::Others(shown)));
+                        }
+                    },
+                );
+            });
+        });
+        chosen
+    }
+
+    /// The narrow tab bar's "+": Home, where repositories are opened, cloned, and made.
+    fn top_bar_right_ui_narrow(&mut self, ui: &mut Ui) {
+        if crate::widgets::icon_tool(ui, true, icon::PLUS, "Open or clone a repository")
+            .on_hover_text("Home: open, clone, or create a repository")
+            .clicked()
+        {
+            self.state.actions.push(Action::ShowHome);
+        }
+    }
+
     /// A tab's menu: close it or the others; a repository's path copied, its folder opened.
     fn tab_menu(&mut self, ui: &mut Ui, pane: Pane) {
         let actions = &mut self.state.actions;

@@ -351,7 +351,8 @@ fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -
                 event = Some(JobEvent::Back);
             }
             let (glyph, color) = ci_look(status, palette);
-            let name = ui.label(
+            let name = widgets::row_label(
+                ui,
                 RichText::new(format!("{glyph}  {}", view.job.name))
                     .color(color)
                     .semibold(),
@@ -382,7 +383,8 @@ fn bar(ui: &mut Ui, palette: Palette, view: &mut JobView, seen: Option<&Seen>) -
                 .filter(|run| run.status == CiStatus::Failed)
                 .and_then(|run| run.failure.as_deref())
             {
-                ui.label(
+                widgets::row_label(
+                    ui,
                     RichText::new(format!("{}  {}", icon::WARNING, failure_words(why)))
                         .color(palette.danger),
                 );

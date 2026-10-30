@@ -250,7 +250,7 @@ pub(crate) fn show(ctx: &egui::Context, view: &mut PaletteView) -> Option<Comman
     let id = Id::new("command-palette");
     let area = Modal::default_area(id).anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 96.0));
     let shown = Modal::new(id).area(area).frame(frame).show(ctx, |ui| {
-        ui.set_width(560.0);
+        ui.set_width(crate::widgets::dialog_width(ui, 560.0, 14.0));
         chosen = contents(ui, view);
     });
     if shown.should_close() || chosen.is_some() {
