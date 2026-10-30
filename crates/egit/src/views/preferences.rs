@@ -426,6 +426,19 @@ fn shortcuts(ui: &mut Ui) {
     widgets::card(ui, |ui| {
         widgets::heading(ui, "Keyboard shortcuts");
         ui.add_space(8.0);
+        // On a narrow window (a phone's, a keyboard attached) each one's keys above what they
+        // do: side by side, they would run past the screen.
+        if crate::narrow::is_narrow(ui.ctx()) {
+            for (keys, what) in Command::shortcuts() {
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    ui.label(RichText::new(keys_text(keys)).monospace());
+                    ui.add(Label::new(muted(ui, what)).wrap());
+                });
+                ui.add_space(4.0);
+            }
+            return;
+        }
         Grid::new("preferences-shortcuts")
             .num_columns(2)
             .spacing([24.0, 6.0])

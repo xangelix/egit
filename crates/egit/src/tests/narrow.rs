@@ -13,7 +13,7 @@ use egui_kittest::kittest::Queryable as _;
 
 use super::pipelines::{TOKEN, pipeline};
 use super::screens::{
-    commit_of, forge_clone, history_of, history_shown, open_path, phone, profile_loaded,
+    commit_of, forge_clone, history_of, history_shown, into_view, open_path, phone, profile_loaded,
     pull_requests_read, render, settle, two_branches, wait_for_label,
 };
 use crate::theme::icon;
@@ -213,6 +213,8 @@ fn a_narrow_window_s_menus_dialogs_and_pages_fit_it() {
     harness.get_by_label("Preferences").click();
     wait_for_label(&mut harness, "Keyboard shortcuts");
     render(&mut harness, "narrow-preferences");
+    into_view(&mut harness, "Keyboard shortcuts");
+    render(&mut harness, "narrow-shortcuts");
     harness.get_by_label("Open or clone a repository").click();
     wait_for_label(
         &mut harness,
