@@ -30,7 +30,16 @@ fn a_background_fetch_that_can_t_start_leaves_egit_idle() {
     harness.state_mut().state.repos[0]
         .tasks
         .fetch_in_background_now();
-    let idle = harness.try_run();
+    // A watch settling asks for a frame too, a while off by the clock, which the harness's frames
+    // take none of: it ends, as drawing every frame wouldn't.
+    let mut idle = harness.try_run();
+    for _ in 0..40 {
+        if idle.is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        idle = harness.try_run();
+    }
     assert!(idle.is_ok(), "drawn without end: {idle:?}");
 }
 
