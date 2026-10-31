@@ -2,9 +2,9 @@
 //! picks every row from the last one clicked to this one, ⌘-click (Ctrl elsewhere) adds one or
 //! takes it away, ⇧↑ and ⇧↓ stretch the range, Escape lets them go. They are kept by their
 //! names, so a history read again keeps them (where they are still in it); while several are
-//! picked, the details show them, and a right click on one offers what can be done to all:
-//! signing them, comparing two, saving or copying them as patches (their changes as one, or
-//! one each), copying a changelog of them.
+//! picked, the details show them and what they change together (each file opening its diff),
+//! and a right click on one offers what can be done to all: signing them, comparing two, saving
+//! or copying them as patches (their changes as one, or one each), copying a changelog of them.
 
 use std::collections::HashSet;
 
@@ -82,6 +82,16 @@ impl Picked {
     pub(super) fn clear(&mut self) {
         self.rows.clear();
         self.set.clear();
+    }
+
+    /// Lets `id` go, and the other too where one would be left: one alone is just the selection.
+    pub(super) fn leave_out(&mut self, id: &ObjectId) {
+        if self.set.remove(id) {
+            self.rows.retain(|(_, other)| other != id);
+        }
+        if !self.is_several() {
+            self.clear();
+        }
     }
 
     /// Picks just these two, as a ⌘-click on each would; returns whether the history shows
@@ -198,6 +208,8 @@ pub(super) enum PickedEvent {
     Export(Vec<ObjectId>, Exporting),
     /// Something done to the current branch with them: cherry-picked onto it, or reverted.
     Run(crate::tasks::Task),
+    /// Let this one go: it doesn't go together with those before it.
+    LeaveOut(ObjectId),
     /// Let them go.
     Clear,
 }
@@ -283,19 +295,22 @@ pub(super) const fn signing_allowed(menus: &Menus<'_>, count: usize) -> Result<(
     }
 }
 
-/// The details' place while several commits are picked: how many, what can be done to them
-/// all, and which they are.
+/// The details' first row while several commits are picked: how many.
+pub(super) fn head(ui: &mut Ui, picked: &Picked) {
+    widgets::panel_head(ui, widgets::Head::Title, |ui| {
+        widgets::panel_title(ui, format!("{} commits selected", picked.len()));
+    });
+}
+
+/// What can be done to the commits picked, all of them, and which they are.
 pub(super) fn panel(
     ui: &mut Ui,
     shared: &Shared<'_>,
     summaries: &Summaries,
-    picked: &Picked,
+    ids: &[ObjectId],
     menus: &Menus<'_>,
 ) -> Option<PickedEvent> {
     let mut event = None;
-    widgets::panel_head(ui, widgets::Head::Title, |ui| {
-        widgets::panel_title(ui, format!("{} commits selected", picked.len()));
-    });
     let (range, one) = clicks();
     ui.add(
         Label::new(muted(
@@ -305,41 +320,35 @@ pub(super) fn panel(
         .wrap(),
     );
     ui.add_space(8.0);
-    let ids = picked.ids();
     // Looking at them first (two compared, the one thing most often wanted of two), then what
     // they do to the current branch, then the rest; each row wrapped in the panel's width.
     ui.horizontal_wrapped(|ui| {
-        if let Ok((from, to)) = two(&ids)
+        if let Ok((from, to)) = two(ids)
             && widgets::primary(ui, true, "Compare these two").clicked()
         {
             event = Some(PickedEvent::Compare { from, to });
         }
         let (_, exported) =
             widgets::tool_menu(ui, icon::EXPORT, "Export", widgets::Look::Full, |ui| {
-                export_items(ui, &ids, menus.idle())
+                export_items(ui, ids, menus.idle())
             });
         if let Some(Some(exported)) = exported {
             event = Some(exported);
         }
         if widgets::secondary(ui, true, "Copy their names").clicked() {
-            ui.ctx().copy_text(names(&ids));
+            ui.ctx().copy_text(names(ids));
         }
     });
     ui.horizontal_wrapped(|ui| {
         let button = |ui: &mut Ui, (_, words): (&str, &str), allowed: Result<(), &str>| {
-            let response = widgets::secondary(ui, allowed.is_ok(), words);
-            match allowed {
-                Err(why) => response.on_disabled_hover_text(why),
-                Ok(()) => response,
-            }
-            .clicked()
+            fitted_button(ui, words, allowed).clicked()
         };
-        if let Some(chosen) = branch_items(ui, menus, &ids, button) {
+        if let Some(chosen) = branch_items(ui, menus, ids, button) {
             event = Some(chosen);
         }
         let allowed = signing_allowed(menus, ids.len());
         if button(ui, ("", "Sign these commits…"), allowed) {
-            event = Some(PickedEvent::Sign(ids.clone()));
+            event = Some(PickedEvent::Sign(ids.to_vec()));
         }
     });
     if widgets::link(ui, "Clear the selection").clicked() {
@@ -353,31 +362,40 @@ pub(super) fn panel(
         &format!("{} commits selected", ids.len()),
     );
     ui.add_space(4.0);
-    egui::ScrollArea::vertical()
-        .id_salt("picked-commits")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for id in ids.iter().take(LISTED) {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(id.abbreviated(super::history::ID_DIGITS).to_string())
-                            .monospace()
-                            .color(shared.palette.muted),
-                    );
-                    let subject = summaries
-                        .peek(id)
-                        .map_or_else(String::new, |summary| summary.subject.to_string());
-                    ui.add(Label::new(subject).truncate());
-                });
-            }
-            if ids.len() > LISTED {
-                ui.label(muted(
-                    ui,
-                    format!("and {} more", ids.len().saturating_sub(LISTED)),
-                ));
-            }
+    for id in ids.iter().take(LISTED) {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(id.abbreviated(super::history::ID_DIGITS).to_string())
+                    .monospace()
+                    .color(shared.palette.muted),
+            );
+            let subject = summaries
+                .peek(id)
+                .map_or_else(String::new, |summary| summary.subject.to_string());
+            ui.add(Label::new(subject).truncate());
         });
+    }
+    if ids.len() > LISTED {
+        ui.label(muted(
+            ui,
+            format!("and {} more", ids.len().saturating_sub(LISTED)),
+        ));
+    }
     event
+}
+
+/// A button whose `words` name a branch, cut to the panel's width (whole on hover); disabled,
+/// why not on hover.
+fn fitted_button(ui: &mut Ui, words: &str, allowed: Result<(), &str>) -> egui::Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let room = 2.0f32.mul_add(-ui.spacing().button_padding.x, ui.max_rect().width());
+    let shown = widgets::fitted(ui, words, &font, room);
+    let response = widgets::secondary_as(ui, allowed.is_ok(), (&shown, words));
+    match allowed {
+        Err(why) => response.on_disabled_hover_text(why),
+        Ok(()) if shown != words => response.on_hover_text(words),
+        Ok(()) => response,
+    }
 }
 
 /// The clicks that pick, as this platform's keys name them.

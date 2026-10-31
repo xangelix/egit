@@ -16,10 +16,11 @@ use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::sync::Mutex;
 use egit_git::{
-    CancelToken, Commit, CountedFile, FileChange, Git, GitError, LineCounts, Object, ObjectFormat,
-    ObjectId, ObjectKind, ObjectReader, RefKind, Reference, Repository, SignatureCheck, StashNode,
-    TreeEntry, Verdict, check_signatures, commit_changes, history_tips, line_counts,
-    list_references, stash_nodes, walk_history, walk_history_from,
+    CancelToken, CombineError, Combining, Commit, CountedFile, FileChange, Git, GitError,
+    LineCounts, Object, ObjectFormat, ObjectId, ObjectKind, ObjectReader, RefKind, Reference,
+    Repository, SignatureCheck, StashNode, TreeEntry, Verdict, check_signatures, combine_commits,
+    commit_changes, history_tips, line_counts, list_references, stash_nodes, walk_history,
+    walk_history_from,
 };
 use egit_gix::GixRepository;
 use egit_graph::{CHUNK_ROWS, Chunk, GraphBuilder};
@@ -1312,18 +1313,74 @@ pub(crate) async fn read_comparison(
     from: ObjectId,
     to: ObjectId,
 ) -> Result<Arc<CommitDetails>, Problem> {
+    jobs::blocking(async move { compared(&git, &repository, &objects, from, to).await }).await
+}
+
+/// `to`'s details with `from` as its only parent.
+async fn compared(
+    git: &Git,
+    repository: &Repository,
+    objects: &Objects,
+    from: ObjectId,
+    to: ObjectId,
+) -> Result<Arc<CommitDetails>, Problem> {
+    let mut commit = read_commit(git, repository, objects, to).await?;
+    commit.parents = vec![from];
+    let changes = commit_changes(git, repository, to, Some(from))
+        .await
+        .map_err(|error| Problem::git("The commits couldn't be compared", &error))?;
+    Ok(Arc::new(CommitDetails {
+        id: to,
+        commit,
+        changes,
+        in_head: false,
+    }))
+}
+
+/// Why commits picked can't be shown together.
+#[derive(Clone, Debug)]
+pub(crate) enum NotTogether {
+    /// This one doesn't apply onto those before it.
+    Conflict(ObjectId),
+    /// Too many commits apart to merge in turn unasked.
+    TooMany,
+    /// Stopped: others were picked.
+    Stopped,
+    /// What went wrong.
+    Problem(Problem),
+}
+
+impl From<Problem> for NotTogether {
+    fn from(problem: Problem) -> Self {
+        Self::Problem(problem)
+    }
+}
+
+/// What `commits` (any, the newest first) change together: the details of what they run to,
+/// with what they run from as its only parent, so its files, lines, and diffs are theirs.
+/// Merging commits apart fetches nothing and asks nothing: it is worked out as they are picked.
+pub(crate) async fn read_together(
+    git: Git,
+    repository: Arc<Repository>,
+    objects: Objects,
+    commits: Vec<ObjectId>,
+    cancel: CancelToken,
+) -> Result<Arc<CommitDetails>, NotTogether> {
     jobs::blocking(async move {
-        let mut commit = read_commit(&git, &repository, &objects, to).await?;
-        commit.parents = vec![from];
-        let changes = commit_changes(&git, &repository, to, Some(from))
+        let run = combine_commits(&git, &repository, &commits, Combining::Unasked, &cancel)
             .await
-            .map_err(|error| Problem::git("The commits couldn't be compared", &error))?;
-        Ok(Arc::new(CommitDetails {
-            id: to,
-            commit,
-            changes,
-            in_head: false,
-        }))
+            .map_err(|error| match error {
+                CombineError::Conflict(commit) => NotTogether::Conflict(commit),
+                CombineError::TooMany => NotTogether::TooMany,
+                CombineError::Nothing | CombineError::Git(GitError::Cancelled { .. }) => {
+                    NotTogether::Stopped
+                }
+                CombineError::Git(error) => NotTogether::Problem(Problem::git(
+                    "What they change together couldn't be worked out",
+                    &error,
+                )),
+            })?;
+        Ok(compared(&git, &repository, &objects, run.from, run.to).await?)
     })
     .await
 }

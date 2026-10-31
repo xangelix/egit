@@ -13,8 +13,8 @@ use std::sync::Arc;
 use bstr::{BStr, BString, ByteSlice as _};
 use egit_git::{
     Bisection, CancelToken, Changes, Committed, ConfigSnapshot, FileChange, Git, Head, LfsTransfer,
-    MailboxProgress, ObjectId, Operation, RefKind, Reference, Repository, SignatureCheck, Stash,
-    Status, Uncommitted, Verdict, looks_like_patch,
+    MAX_REPLAYED, MailboxProgress, ObjectId, Operation, RefKind, Reference, Repository,
+    SignatureCheck, Stash, Status, Uncommitted, Verdict, looks_like_patch,
 };
 use egit_graph::{Chunk, Level, Segment, for_each_row};
 use egui::epaint::CubicBezierShape;
@@ -53,8 +53,8 @@ use crate::fonts;
 use crate::forge::{Badge, RepoForge, request_noun, request_number};
 use crate::format::{count, date_time};
 use crate::history::{
-    ChangeCounts, CommitDetails, History, HistoryState, Objects, Refs, Scope, Signatures,
-    Summaries, read_change_counts, read_comparison, read_details,
+    ChangeCounts, CommitDetails, History, HistoryState, NotTogether, Objects, Refs, Scope,
+    Signatures, Summaries, read_change_counts, read_comparison, read_details, read_together,
 };
 use crate::preferences::Preferences;
 use crate::problem::Problem;
@@ -234,6 +234,8 @@ pub(crate) struct HistoryView {
     compare_asked: Option<(ObjectId, ObjectId)>,
     /// What their panel asked for this frame.
     picked_asked: Option<PickedEvent>,
+    /// What they change together, while several are picked.
+    together: Option<Together>,
     /// The Stats page, kept while it is closed: opened again, it shows at once (and reads
     /// again only for a history read again).
     stats_kept: Option<Box<StatsView>>,
@@ -403,6 +405,124 @@ struct Comparison {
     kept: Kept,
 }
 
+/// How long commits picked rest before what they change together is worked out: a range
+/// stretched a row at a time asks only for where it ends.
+const TOGETHER_RESTS: f64 = 0.25;
+
+/// What the commits picked change together, under them in the details: a comparison from where
+/// they start to where they end.
+#[derive(Debug)]
+struct Together {
+    /// Those picked as last seen, the newest first, and when they became these (egui's clock).
+    picked: Vec<ObjectId>,
+    since: f64,
+    /// Those being read, or read.
+    asked: Vec<ObjectId>,
+    read: Bind<Arc<CommitDetails>, NotTogether>,
+    cancel: CancelToken,
+    /// What shows: the last read, until the next lands.
+    shown: Option<Arc<CommitDetails>>,
+    counting: Counting,
+    changes: ChangesTable,
+    repo: RepoId,
+}
+
+impl Together {
+    fn new(repo: RepoId) -> Self {
+        Self {
+            picked: Vec::new(),
+            since: 0.0,
+            asked: Vec::new(),
+            read: Bind::new(true),
+            cancel: CancelToken::new(),
+            shown: None,
+            counting: Counting::default(),
+            changes: ChangesTable::new(format!("together-changes-{repo}")),
+            repo,
+        }
+    }
+
+    /// Follows the commits `picked`: read once they have rested. Returns whether they are
+    /// others than those last seen.
+    fn follow(
+        &mut self,
+        ctx: &egui::Context,
+        shared: &Shared<'_>,
+        objects: &Objects,
+        picked: &[ObjectId],
+    ) -> bool {
+        let now = ctx.input(|input| input.time);
+        let changed = self.picked != picked;
+        if changed {
+            self.picked = picked.to_vec();
+            self.since = now;
+            self.asked.clear();
+            self.cancel.cancel();
+        }
+        if self.asked != self.picked
+            && let Some(git) = shared.git
+        {
+            let rested = now - self.since;
+            if rested >= TOGETHER_RESTS {
+                self.cancel = CancelToken::new();
+                self.asked.clone_from(&self.picked);
+                self.read.request(read_together(
+                    git.clone(),
+                    Arc::clone(shared.repository),
+                    objects.clone(),
+                    self.picked.clone(),
+                    self.cancel.clone(),
+                ));
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_secs_f64(
+                    TOGETHER_RESTS - rested,
+                ));
+            }
+        }
+        self.take_in();
+        changed
+    }
+
+    /// What was read takes over from what shows: its files, counted anew.
+    fn take_in(&mut self) {
+        if self.read.is_pending() {
+            return;
+        }
+        match self.read.read_as_ref() {
+            Some(Ok(details)) => {
+                let new = self
+                    .shown
+                    .as_ref()
+                    .is_none_or(|shown| !Arc::ptr_eq(shown, details));
+                if new {
+                    let details = Arc::clone(details);
+                    self.counting = Counting::default();
+                    self.changes = ChangesTable::new(format!("together-changes-{}", self.repo));
+                    self.shown = Some(details);
+                }
+            }
+            Some(Err(NotTogether::Stopped)) | None => {}
+            Some(Err(_)) => self.shown = None,
+        }
+    }
+
+    /// Whether what shows may be another's: what is picked isn't read yet.
+    fn is_working(&mut self) -> bool {
+        self.asked != self.picked || self.read.is_pending()
+    }
+
+    /// The commit its files' diffs run to, where they show.
+    fn runs_to(&self) -> Option<ObjectId> {
+        self.shown.as_ref().map(|shown| shown.id)
+    }
+}
+
+impl Drop for Together {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
+
 /// What keeps a comparison shown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Kept {
@@ -483,6 +603,7 @@ impl HistoryView {
             compare: None,
             compare_asked: None,
             picked_asked: None,
+            together: None,
             stats_kept: None,
             pipelines_kept: None,
             narrow: NarrowPage::History,
@@ -674,13 +795,24 @@ impl HistoryView {
     /// Closes the file looked at unless it belongs to what is selected: a commit's to that
     /// commit, the work tree's to the work tree.
     fn close_unselected_file(&mut self) {
+        // Those picked let go, a diff of what they changed together goes with them, even where
+        // it runs to the commit selected: it runs from elsewhere.
+        if !self.picked.is_several()
+            && let Some(together) = self.together.take()
+            && together.runs_to().is_some()
+            && self.file.as_ref().and_then(FileView::commit) == together.runs_to()
+        {
+            self.file = None;
+        }
         let compared = self.compare.as_ref().map(|compare| compare.to);
+        let together = self.together.as_ref().and_then(Together::runs_to);
         let belongs = self.file.as_ref().is_none_or(|file| match file.commit() {
             Some(commit) => {
                 !self.work_selected
                     && (self.selected.map(|selected| selected.id) == Some(commit)
                         || self.peek == Some(commit)
-                        || compared == Some(commit))
+                        || compared == Some(commit)
+                        || together == Some(commit))
             }
             None => self.work_selected,
         });
@@ -3266,6 +3398,7 @@ fn picked_asked(
         }
         Some(PickedEvent::Export(commits, how)) => export(commits, how, shared, actions),
         Some(PickedEvent::Run(task)) => actions.push(Action::Task(shared.id, task)),
+        Some(PickedEvent::LeaveOut(commit)) => view.picked.leave_out(&commit),
         Some(PickedEvent::Clear) => view.picked.clear(),
         None => {}
     }
@@ -5175,10 +5308,168 @@ fn picked_details(
     if !view.picked.is_several() || view.peeked().is_some() {
         return false;
     }
+    let ids = view.picked.ids();
+    let together = view
+        .together
+        .get_or_insert_with(|| Together::new(shared.id));
+    let shown_to = together.runs_to();
+    if together.follow(ui.ctx(), shared, &history.objects, &ids)
+        && view.file.as_ref().and_then(FileView::commit) == shown_to
+        && shown_to.is_some()
+    {
+        view.file = None;
+    }
     let menus = shared.menus(history.shown.refs());
+    picked::head(ui, &view.picked);
+    let height = ui.available_height();
+    // Shared with a commit's message and facts: the line below stays where it was dragged.
+    let room = split_room(ui, height);
+    let saved_scroll = ui.spacing().scroll;
+    widgets::show_overflow(ui);
+    let mut asked = None;
+    let above = message_area(room, height).show(ui, |ui| {
+        ui.spacing_mut().scroll = saved_scroll;
+        widgets::within_width(ui, |ui| {
+            asked = picked::panel(ui, shared, &history.summaries, &ids, &menus);
+        });
+    });
+    ui.spacing_mut().scroll = saved_scroll;
+    let drawn = if room.is_some() {
+        above.inner_rect.height()
+    } else {
+        above.content_size.y.min(above.inner_rect.height())
+    };
+    split_line(ui, height, drawn);
+    let left_out = together_files(ui, shared, history, view);
     // Carried out once the details are drawn, where actions are taken.
-    view.picked_asked = picked::panel(ui, shared, &history.summaries, &view.picked, &menus);
+    view.picked_asked = asked.or(left_out);
     true
+}
+
+/// What the commits picked change together: their files, each opening its diff, or why they
+/// don't go together. Returns what it asked.
+fn together_files(
+    ui: &mut Ui,
+    shared: &Shared<'_>,
+    history: &HistoryState,
+    view: &mut HistoryView,
+) -> Option<PickedEvent> {
+    let together = view.together.as_mut()?;
+    let working = together.is_working();
+    let Some(shown) = together.shown.clone() else {
+        if working {
+            widgets::working(ui, "Working out what they change together…");
+            return None;
+        }
+        return match together.read.read_as_ref() {
+            Some(Err(NotTogether::Conflict(commit))) => {
+                let commit = *commit;
+                not_together(ui, history, commit)
+            }
+            Some(Err(NotTogether::TooMany)) => {
+                ui.add(
+                    Label::new(muted(
+                        ui,
+                        format!(
+                            "More than {MAX_REPLAYED} commits apart: pick a range, or fewer, to \
+                             see what they change together."
+                        ),
+                    ))
+                    .wrap(),
+                );
+                None
+            }
+            Some(Err(NotTogether::Problem(problem))) => {
+                let problem = problem.clone();
+                widgets::problem_box(ui, &problem, |_| {});
+                None
+            }
+            _ => None,
+        };
+    };
+    let counts = together.counting.of(shared, &shown);
+    files_heading(
+        ui,
+        (shown.changes.len(), working),
+        counts.as_ref(),
+        shared.palette,
+        &mut view.asked,
+    );
+    // Commits apart ran to a commit made of them.
+    let apart = !together.picked.contains(&shown.id);
+    if apart && !working {
+        ui.add(
+            Label::new(muted(
+                ui,
+                "Not next to each other: each merged onto those before it, as cherry-picking them \
+                 would. Nothing here changes.",
+            ))
+            .wrap(),
+        );
+    }
+    ui.add_space(4.0);
+    if shown.changes.is_empty() {
+        ui.label(muted(ui, "Together they change nothing."));
+        return None;
+    }
+    let counts = counts.and_then(Result::ok);
+    let asked = widgets::list_box(ui, |ui| {
+        let height = ui.available_height();
+        together
+            .changes
+            .show(ui, &shown, counts.as_deref(), (height, shared.here()))
+    });
+    let newest = together.picked.first().copied();
+    // A file blamed: as the newest of them left it, not the commit made of them, which has no
+    // history to blame.
+    let asked = match asked {
+        Some(ChangeAsk::Blame(entry))
+            if apart
+                && shown
+                    .changes
+                    .get(entry)
+                    .is_some_and(|change| change.kind != egit_git::ChangeKind::Deleted) =>
+        {
+            if let Some(change) = shown.changes.get(entry) {
+                let path = change.path.clone();
+                let wanted = FileWanted::Blame { at: newest, path };
+                view.open_tool(shared, &history.objects, wanted);
+            }
+            None
+        }
+        other => other,
+    };
+    if let Some(index) = change_asked(shared, &history.objects, view, &shown, asked)
+        && let Some(change) = shown.changes.get(index)
+    {
+        let file = FileView::open(shared, &shown, change.clone(), view.file.as_ref());
+        view.file = Some(file.blaming_at(newest.filter(|_| apart)));
+    }
+    None
+}
+
+/// Why the commits picked don't go together: `commit` changes what one not picked changed.
+/// Returns Leave it out, clicked.
+fn not_together(ui: &mut Ui, history: &HistoryState, commit: ObjectId) -> Option<PickedEvent> {
+    let subject = history
+        .summaries
+        .peek(&commit)
+        .map_or_else(String::new, |summary| summary.subject.to_string());
+    let name = commit.abbreviated(ID_DIGITS);
+    ui.add(
+        Label::new(muted(
+            ui,
+            format!(
+                "They don't go together: {name} ({subject}) changes what a commit not picked \
+                 changed. Pick that one too, or leave this one out."
+            ),
+        ))
+        .wrap(),
+    );
+    ui.add_space(4.0);
+    widgets::secondary(ui, true, "Leave it out")
+        .clicked()
+        .then_some(PickedEvent::LeaveOut(commit))
 }
 
 /// Two commits picked, compared, in the details' place: which they are (Swap, Close), and the
@@ -5282,7 +5573,7 @@ fn compared_files(ui: &mut Ui, shared: &Shared<'_>, objects: &Objects, view: &mu
     let counts = compare.counting.of(shared, &shown);
     files_heading(
         ui,
-        shown.changes.len(),
+        (shown.changes.len(), false),
         counts.as_ref(),
         shared.palette,
         &mut view.asked,
@@ -5386,7 +5677,7 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
     let counts = view.counting.of(shared, &shown);
     files_heading(
         ui,
-        shown.changes.len(),
+        (shown.changes.len(), false),
         counts.as_ref(),
         shared.palette,
         &mut view.asked,
@@ -5512,10 +5803,10 @@ fn read_shown(
 }
 
 /// The changed files' section title (named "3 files changed"), and the lines they gained and
-/// lost once counted, at its right.
+/// lost once counted, at its right; a spinner beside them while others are `working`d out.
 fn files_heading(
     ui: &mut Ui,
-    files: usize,
+    (files, working): (usize, bool),
     counts: Option<&Result<Arc<ChangeCounts>, Problem>>,
     palette: Palette,
     asked: &mut Option<Ask>,
@@ -5543,6 +5834,9 @@ fn files_heading(
                     .on_hover_text(problem.to_string());
             }
             None => {}
+        }
+        if working {
+            ui.add(egui::Spinner::new().size(14.0));
         }
     });
     // Too many to say beside the title (a panel at its narrowest): whole, on a line of their

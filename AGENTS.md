@@ -718,9 +718,14 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     (the empty tree for a root) to the newest when each is the next's parent, else each merged
     in turn onto those before it (`merge-tree --write-tree --merge-base=<its parent>`, onto
     unreferenced commits `commit-tree` makes; `CombineError::Conflict` names the commit that
-    needs one left out). `tests/exporting.rs` lists commits, makes a series that `git am`
-    applies, and combines commits that follow each other, commits apart, a root's, and refuses
-    a conflict.
+    needs one left out). `combine_commits`: where any commits run, `Combined` (`from`, `to`), the
+    same working out: a closed range (one newest, what they started from the one parent outside,
+    `count_between` their number) from what it started from (the empty tree for a root) to its
+    newest, merges and all; else merged in turn, `Combining::Asked` for an export,
+    `Combining::Unasked` for commits being picked (`GIT_NO_LAZY_FETCH`, `non_interactive`, at
+    most `MAX_REPLAYED`: `CombineError::TooMany`). `tests/exporting.rs` lists commits, makes a
+    series that `git am` applies, and combines commits that follow each other, commits apart, a
+    root's, and refuses a conflict; where commits together run, and too many apart unasked.
   - `foresee.rs` — what bringing commits in would do, worked out without touching the work
     tree, the index, or a ref (`Foreseen`: up to date, a fast-forward, clean, empty, the files
     in conflict and the commit a rebase stops at, or too long): `foresee_merge` (`merge-base
@@ -1551,7 +1556,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     every frame; forgotten when the configuration is read again.
     `read_details` (the commit and its `commit_changes`); `read_comparison` (two commits: the
     newer's details with the older as its only parent, so the details' files, counts, and
-    diffs run from one to the other); `read_change_counts` (its
+    diffs run from one to the other); `read_together` (commits picked: the same, from and to
+    what `combine_commits` says; `NotTogether`: one that conflicts, too many, stopped, a
+    problem); `read_change_counts` (its
     `line_counts`, lined up with the changes by path should their orders differ, and their
     total). `HistoryState`: the history shown,
     and a re-read (`reload`) that takes over only once complete (`replaced`), so the table
@@ -2319,8 +2326,15 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     a plain click lets them go; kept by name across a history read again (`follow`). While
     several are picked they alone show as selected, the details show them (`panel`: how many,
     Sign these commits…, Compare these two (exactly two), Export (a menu), Copy their names,
-    Clear the selection, wrapped in the panel's width; the first 200 listed), and a right click
-    on one opens their menu ("Bulk actions on 3 commits": the same). Cherry-picked onto the current branch (the oldest first) or reverted in it (the newest
+    Clear the selection, wrapped in the panel's width, a branch's name in a button cut to it,
+    `fitted_button`; the first 200 listed; what scrolls above `split_line`, shared with a commit's
+    message), under it what they change together (`views/history.rs`'s `Together`, worked out
+    once they rest 0.25 s, `TOGETHER_RESTS`, the last shown with a spinner until it lands: "2
+    files changed", their lines, each file opening its diff in a `FileView`, blamed at the newest
+    picked where they are apart, as the commit made of them has no history of its own; apart, said
+    so; one that doesn't go with those before it named, Leave it out, `Picked::leave_out`; a
+    diff of theirs closing with them), and a right click on one opens their menu ("Bulk actions
+    on 3 commits": the same). Cherry-picked onto the current branch (the oldest first) or reverted in it (the newest
     first) together, `Task::CherryPickAll`, `Task::RevertAll` (at most 500, each named on git's
     command line). The panel's actions: Compare these two (primary, for two), Export, Copy
     their names; Cherry-pick onto main, Revert in main, Sign these commits…; Clear the
@@ -2730,7 +2744,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     (`core.hooksPath` said), those installed, where their output shows) or the settings table, under a bar
     going back to the history (or Escape) and switching between the two), `status_bar` (git's
     version and path, the theme, Commands and Preferences (quiet buttons: framed only under the
-    pointer), a warning when questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
+    pointer, drawn first, the words at the left cut to what they leave), a warning when questions
+    can't be relayed), `prompts` (git's and ssh's questions: the app starts an
     `AskpassServer` and an `SshSharing` at launch and gives git their environment; questions queue and show one
     at a time in a modal (`PromptKind` decides the field and buttons: Continue for what is
     typed; ssh's question about a host it hasn't met as "Trust this host?", its fingerprint in
@@ -2885,7 +2900,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     shown while text is cut, thin, in room of their own: egui's floating ones show only under
     the pointer), `link` (in the links' colour, hanging into its inset, its words aligned with
     text above and below), `icon_button` exactly its place, `chip` (a few small words in a thin
-    outline of their colour, 18 points tall: "may fail", "Draft", a label), `column` (a place of
+    outline of their colour, 18 points tall: "may fail", "Draft", a label), `within_width` (drawing
+    that can't widen what is drawn after it: egui's `max_rect` grows with what is too wide, and
+    a scroll area with it), `fitted` (a text cut to a width), `column` (a place of
     fixed width in a row, its contents at its start, end, or centre: rows' columns line up, and
     what changes width moves nothing), `duration_width` (the longest duration's width, digits at
     their widest) and `text_width`, `chips_width`, `row_label` (a label in a wrapping row: on
@@ -2982,7 +2999,10 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     alone, holding still once let go, a double click putting them back), and the details'
     line between the message and the files alike;
     `src/tests/long_text.rs` edits a 200-line message in place and types one into the commit
-    form, each scrolling inside its field, the buttons below still on screen.
+    form, each scrolling inside its field, the buttons below still on screen; and a long branch's
+    name at the details' least width: its badge cut, every file's numbers and the totals whole
+    (`files_heading` giving the totals a line of their own where they don't fit), as a list and a
+    tree (rendered).
     `src/tests/submodules.rs` meets a fresh clone's submodule not set up (the banner mends
     it), updates it to its branch's latest from its page (the commit it brings shown), records
     it, shows its change in the work tree; and adds one from the page.
@@ -2992,7 +3012,11 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `src/tests/picked.rs` picks two commits by ⇧-click, adds and takes away a third by ⌘-click,
     signs the two from their menu (the one after them made again too, the first left alone;
     their signatures good in `git log`), and undoes it; and signs one commit from its menu's
-    Bulk actions. `src/tests/avatars.rs` serves pictures from stand-ins for
+    Bulk actions; picks a range and shows what it changes together (a file's diff, from where
+    they started to where they ended; Escape keeping them; a pick fewer, read anew; rendered),
+    commits apart (merged in turn, its diff and blame; refs and the work tree untouched;
+    rendered), one that doesn't go with those before it left out (rendered), and keeps the
+    panel's buttons inside it past a long branch's name (rendered). `src/tests/avatars.rs` serves pictures from stand-ins for
     GitHub and Gravatar on the loopback address: one GitHub knows drawn from it (Gravatar not
     asked), one it answers its placeholder for drawn from Gravatar, one neither has kept to
     initials; all kept on disk, a window opened after asking nothing; and keeps to initials

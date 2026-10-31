@@ -165,6 +165,9 @@ pub(super) struct FileView {
     previews: Previews,
     /// A submodule's move and the commits it brings, read the first time it is shown.
     moved: Bind<Arc<crate::submodules::Moved>, Problem>,
+    /// The commit to blame the file at, where that isn't the one it shows: commits picked
+    /// together run to one made of them, which only they lead to.
+    blame_at: Option<ObjectId>,
     /// What its bar asked to see of the file instead: its blame, or its history.
     pub(super) wanted: Option<FileWanted>,
     /// A dialog its bar asked for: whether to discard the file.
@@ -205,6 +208,12 @@ impl FileView {
             change,
         };
         Self::with_source(shared, source, previous)
+    }
+
+    /// Blames the file at `commit`, where the commit it shows has no history of its own.
+    pub(super) const fn blaming_at(mut self, commit: Option<ObjectId>) -> Self {
+        self.blame_at = commit;
+        self
     }
 
     /// Whether its diff shows side by side.
@@ -257,6 +266,7 @@ impl FileView {
             documents: Bind::new(true),
             previews: Previews::default(),
             moved: Bind::new(true),
+            blame_at: None,
             wanted: None,
             asked: None,
         };
@@ -436,7 +446,7 @@ impl FileView {
                 if change.kind == ChangeKind::Deleted {
                     *parent
                 } else {
-                    Some(*commit)
+                    Some(self.blame_at.unwrap_or(*commit))
                 }
             }
             Source::WorkTree(work) if work.change == "Deleted" => shared.head_commit(),

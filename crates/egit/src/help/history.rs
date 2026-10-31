@@ -1041,15 +1041,38 @@ pub(super) const TOPICS: &[Topic] = &[
             "Selected",
             "Copy their names",
             "Clear the selection",
+            "Leave it out",
         ],
         what: "Shift-click picks every commit from the one last clicked to this one; Ctrl-click \
                (⌘ on a Mac) adds one or takes it away; Shift with ↑ or ↓ stretches the range. \
                While several are picked, the details list them, and a right click on one offers \
                what can be done to them all: signing them, comparing two, saving or copying them \
                as patches or a changelog, copying their names (one commit's menu has signing \
-               too, under Bulk actions). Picking changes nothing in the repository.",
-        git: "",
+               too, under Bulk actions). Below them, what they change together: every file, its \
+               lines gained and lost, each opening its diff. A range runs from what it started \
+               from to its newest commit, merges and all; commits apart are each merged onto \
+               those before it, as cherry-picking them would, in the object store alone. Picking \
+               changes nothing in the repository: no branch moves, and the work tree stays.",
+        git: "git diff <what the oldest started from> <the newest>; commits apart: git merge-tree \
+              --write-tree --merge-base=<each one's parent>, then git commit-tree, referred to \
+              by nothing",
         cases: &[
+            (
+                "They don't go together?",
+                "A commit changes lines one not picked changed, so it can't be replayed without it: pick that one too, or Leave it out to see the rest.",
+            ),
+            (
+                "A file looks different from the branch?",
+                "It shows only what the commits picked did. Between commits apart, what the others in between did isn't there.",
+            ),
+            (
+                "Does picking leave anything behind?",
+                "Commits apart leave a few objects in the object store that nothing refers to, as asking what a merge would do does. No branch or tag points to them, and git's garbage collection clears them in time.",
+            ),
+            (
+                "A partial clone says files are missing?",
+                "Working out commits apart needs their files, and nothing is fetched just for picking: a range needs none of them to list, and Export fetches what it needs.",
+            ),
             (
                 "Rows in between picked too?",
                 "A range is every row between, as the graph lays them out, other branches' too: Ctrl-click takes one away.",
