@@ -15,36 +15,6 @@ use crate::widgets::muted;
 pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
     let narrow = crate::narrow::is_narrow(ui.ctx());
     ui.horizontal(|ui| {
-        let home = state.home_dir.clone();
-        let git_text = match state.git.read_as_ref() {
-            Some(Ok(_)) if narrow => None,
-            Some(Ok(git)) => Some(format!(
-                "{}  git {} · {}",
-                icon::TERMINAL,
-                git.version(),
-                display_path(git.program(), home.as_deref())
-            )),
-            Some(Err(_)) => Some(format!("{}  git isn't usable", icon::WARNING)),
-            None => Some(format!("{}  Looking for git…", icon::HOURGLASS)),
-        };
-        if let Some(git_text) = git_text {
-            ui.label(muted(ui, git_text).small());
-        }
-        if let Some(reason) = state.watch_problem() {
-            warning(
-                ui,
-                "Changes made outside egit aren't followed",
-                &format!(
-                    "egit can't watch for them: {reason}. It keeps trying, and catches up once \
-                     it can."
-                ),
-                narrow,
-            );
-        }
-        if let Some(reason) = &state.prompts.unavailable {
-            warning(ui, "git can't ask you for passwords", reason, narrow);
-        }
-
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Quiet, as a toolbar's: the bar stays out of the way until wanted.
             let help = bar_button(ui, (icon::QUESTION, "Help"), Some("F1"), narrow);
@@ -107,8 +77,45 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
                 });
                 crate::help::note(ui, theme.rect, words);
             }
+            // In what the buttons leave: cut short rather than under them.
+            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                said(ui, state, narrow);
+            });
         });
     });
+}
+
+/// Which git egit runs, and what isn't working.
+fn said(ui: &mut Ui, state: &mut AppState, narrow: bool) {
+    let home = state.home_dir.clone();
+    let git_text = match state.git.read_as_ref() {
+        Some(Ok(_)) if narrow => None,
+        Some(Ok(git)) => Some(format!(
+            "{}  git {} · {}",
+            icon::TERMINAL,
+            git.version(),
+            display_path(git.program(), home.as_deref())
+        )),
+        Some(Err(_)) => Some(format!("{}  git isn't usable", icon::WARNING)),
+        None => Some(format!("{}  Looking for git…", icon::HOURGLASS)),
+    };
+    if let Some(git_text) = git_text {
+        ui.add(egui::Label::new(muted(ui, git_text).small()).truncate());
+    }
+    if let Some(reason) = state.watch_problem() {
+        warning(
+            ui,
+            "Changes made outside egit aren't followed",
+            &format!(
+                "egit can't watch for them: {reason}. It keeps trying, and catches up once it \
+                 can."
+            ),
+            narrow,
+        );
+    }
+    if let Some(reason) = &state.prompts.unavailable {
+        warning(ui, "git can't ask you for passwords", reason, narrow);
+    }
 }
 
 /// One of the bar's buttons: its icon and words, and the keys it is on (`keys`); on a narrow
@@ -140,10 +147,13 @@ fn warning(ui: &mut Ui, words: &str, why: &str, narrow: bool) {
     } else {
         format!("{}  {words}", icon::WARNING)
     };
-    let shown = ui.label(
-        egui::RichText::new(text)
-            .small()
-            .color(crate::theme::Palette::of(ui.ctx()).warn),
+    let shown = ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .small()
+                .color(crate::theme::Palette::of(ui.ctx()).warn),
+        )
+        .truncate(),
     );
     let hover = if narrow {
         format!("{words}: {why}")
