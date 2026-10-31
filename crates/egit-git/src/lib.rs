@@ -110,7 +110,7 @@ pub use credential::{
     installed_helpers, reject_credential, store_credential,
 };
 pub use diff::{
-    DiffLine, DiffLineKind, DiffOptions, FileDiff, Uncommitted, WHOLE_FILE, file_diff,
+    DiffLine, DiffLineKind, DiffOptions, FileDiff, Uncommitted, WHOLE_FILE, file_diff, text_diff,
     uncommitted_diff,
 };
 pub use discard::{

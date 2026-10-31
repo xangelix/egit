@@ -15,7 +15,7 @@ use bstr::{BStr, ByteSlice as _};
 use egit_git::testing::Sandbox;
 use egit_git::{
     CancelToken, DiffLineKind, DiffOptions, FileDiff, ObjectId, Repository, Uncommitted,
-    WHOLE_FILE, Wait as _, file_diff, uncommitted_diff,
+    WHOLE_FILE, Wait as _, file_diff, text_diff, uncommitted_diff,
 };
 
 fn sandbox() -> Sandbox {
@@ -332,4 +332,146 @@ fn shows_a_new_file_before_the_first_commit_and_untracked() {
         ["@ 0 0 @@ -0,0 +1,2 @@", "+ 0 1 x", "+ 0 2 y"]
     );
     assert_eq!(untracked.text, b"@@ -0,0 +1,2 @@\nx\ny\n");
+}
+
+/// `before` against `after` with `options`, in no repository.
+fn texts(sandbox: &Sandbox, before: &str, after: &str, options: &DiffOptions) -> FileDiff {
+    text_diff(
+        sandbox.git(),
+        before.as_bytes(),
+        after.as_bytes(),
+        options,
+        &CancelToken::new(),
+    )
+    .wait()
+    .unwrap()
+}
+
+/// The diff's lines, each its kind's mark and its text.
+fn marked(diff: &FileDiff) -> Vec<String> {
+    let lines = String::from_utf8_lossy(&diff.text);
+    diff.lines
+        .iter()
+        .zip(lines.split('\n'))
+        .map(|(line, text)| {
+            let mark = match line.kind {
+                DiffLineKind::Hunk => "@",
+                DiffLineKind::Context => " ",
+                DiffLineKind::Added => "+",
+                DiffLineKind::Removed => "-",
+            };
+            format!("{mark}{text}")
+        })
+        .collect()
+}
+
+#[test]
+fn two_texts_differ_as_two_files_would() {
+    let sandbox = sandbox();
+    let shown = texts(
+        &sandbox,
+        "one\ntwo\nthree\n",
+        "one\nTWO\nthree\nfour\n",
+        &DiffOptions::default(),
+    );
+    assert_eq!(
+        marked(&shown),
+        [
+            "@@@ -1,3 +1,4 @@",
+            " one",
+            "-two",
+            "+TWO",
+            " three",
+            "+four"
+        ]
+    );
+    let numbers: Vec<(u32, u32)> = shown
+        .lines
+        .iter()
+        .map(|line| (line.old, line.new))
+        .collect();
+    assert_eq!(numbers, [(0, 0), (1, 1), (2, 0), (0, 2), (3, 3), (0, 4)]);
+    assert!(!shown.binary);
+
+    // The same, or nothing on one side.
+    assert_eq!(
+        texts(&sandbox, "same\n", "same\n", &DiffOptions::default()),
+        FileDiff::default()
+    );
+    let added = texts(&sandbox, "", "new\n", &DiffOptions::default());
+    assert_eq!(marked(&added), ["@@@ -0,0 +1 @@", "+new"]);
+    let removed = texts(&sandbox, "old\n", "", &DiffOptions::default());
+    assert_eq!(marked(&removed), ["@@@ -1 +0,0 @@", "-old"]);
+}
+
+#[test]
+fn a_texts_missing_last_newline_is_no_difference() {
+    let sandbox = sandbox();
+    let same = texts(&sandbox, "a\nb", "a\nb\n", &DiffOptions::default());
+    assert_eq!(same, FileDiff::default());
+    let changed = texts(&sandbox, "a\nb", "a\nc", &DiffOptions::default());
+    assert_eq!(marked(&changed), ["@@@ -1,2 +1,2 @@", " a", "-b", "+c"]);
+    assert!(changed.lines.iter().all(|line| !line.missing_newline));
+}
+
+#[test]
+fn two_texts_read_as_asked_whatever_is_configured() {
+    let sandbox = sandbox();
+    // What would change the patch, or stop it being one.
+    for (key, value) in [
+        ("color.ui", "always"),
+        ("diff.noprefix", "true"),
+        ("diff.mnemonicPrefix", "true"),
+        ("diff.external", "false"),
+        ("diff.relative", "true"),
+        ("core.autocrlf", "true"),
+    ] {
+        sandbox
+            .run(sandbox.home(), "config", &["--global", key, value])
+            .unwrap();
+    }
+    let whole = DiffOptions {
+        context: WHOLE_FILE,
+        ..DiffOptions::default()
+    };
+    // A line ending is a difference, and a text holding a NUL still text.
+    let shown = texts(&sandbox, "a\r\nb\0c\nd\n", "a\nb\0C\nd\n", &whole);
+    assert_eq!(
+        marked(&shown),
+        ["@@@ -1,3 +1,3 @@", "-a\r", "-b\0c", "+a", "+b\0C", " d"]
+    );
+    let ignoring = DiffOptions {
+        ignore_whitespace: true,
+        ..DiffOptions::default()
+    };
+    assert_eq!(
+        texts(&sandbox, "a  b\n\tc\n", "a b\nc\n", &ignoring),
+        FileDiff::default()
+    );
+}
+
+#[test]
+fn two_long_texts_are_parsed_as_they_stream() {
+    // Past what a command collects (64 MiB): each line differs, so the patch holds them both.
+    const LINES: usize = 40_000;
+    let sandbox = sandbox();
+    let line = |word: &str| format!("{word} {}\n", "x".repeat(1000));
+    let before = line("before").repeat(LINES);
+    let after = line("after").repeat(LINES);
+    let shown = text_diff(
+        sandbox.git(),
+        before.as_bytes(),
+        after.as_bytes(),
+        &DiffOptions::default(),
+        &CancelToken::new(),
+    )
+    .wait()
+    .unwrap();
+    let removed = shown
+        .lines
+        .iter()
+        .filter(|line| line.kind == DiffLineKind::Removed)
+        .count();
+    assert_eq!(removed, LINES);
+    assert!(shown.text.len() > 64 * 1024 * 1024);
 }

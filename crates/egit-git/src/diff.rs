@@ -2,16 +2,20 @@
 //!
 //! A commit's patch comes from `git diff-tree -p` (plumbing: no colour, pager, external diff,
 //! textconv, or prefix settings apply); uncommitted changes from `git diff`, its every setting
-//! that changes the patch pinned. Either is parsed as it streams: each line is kept without its
-//! `+`, `-`, or ` ` prefix, numbered in the old and new file, so the raw patch is never held
-//! whole.
+//! that changes the patch pinned; two texts of no repository from `git diff --no-index` between
+//! temporary files. Each is parsed as it streams: each line is kept without its `+`, `-`, or ` `
+//! prefix, numbered in the old and new file, so the raw patch is never held whole.
+
+use std::io;
+use std::path::Path;
 
 use bstr::{BStr, ByteSlice as _};
 
 use crate::cancel::CancelToken;
 use crate::command::GitCommand;
 use crate::error::GitError;
-use crate::git::Git;
+use crate::files::Files;
+use crate::git::{Git, outside_repositories};
 use crate::lines::Lines;
 use crate::object_id::ObjectId;
 use crate::repo::Repository;
@@ -140,28 +144,72 @@ pub async fn uncommitted_diff(
             parse_streamed(command.args(["--cached", "-M", "--"]).args(paths)).await
         }
         Uncommitted::Untracked => {
-            // Against nothing: `--no-index` says whether they differ by exiting 1.
-            let output = command
-                .args(["--no-index", "--", "/dev/null"])
-                .args(paths)
-                .output_unchecked()
-                .await?;
-            if !matches!(output.status.code(), Some(0 | 1)) {
-                return Err(GitError::failed("diff", output.status, output.stderr));
-            }
-            let mut parser = Parser::default();
-            let mut failed = None;
-            let _ = Lines::default().feed(&output.stdout, &mut |line| {
-                parser
-                    .line(line)
-                    .map_err(|error| failed = Some(error))
-                    .map_or(
-                        std::ops::ControlFlow::Break(()),
-                        std::ops::ControlFlow::Continue,
-                    )
-            });
-            failed.map_or(Ok(parser.diff), Err)
+            // Against nothing.
+            parse_no_index(command.args(["--no-index", "--", "/dev/null"]).args(paths)).await
         }
+    }
+}
+
+/// The diff of two texts, as two files holding them would differ, in no repository.
+///
+/// It is `git diff --no-index` between temporary files where git runs (a folder only its user
+/// reads, removed as this ends), from outside any repository, so only the user's own
+/// configuration applies to how (`diff.algorithm`). Each is text whatever it holds (`--text`),
+/// and a last line without a newline is given one first: that a paste ends sooner than its text
+/// isn't a difference.
+///
+/// # Errors
+///
+/// When the texts can't be written, or git fails, is cancelled, or prints something that isn't
+/// a patch.
+pub async fn text_diff(
+    git: &Git,
+    before: &[u8],
+    after: &[u8],
+    options: &DiffOptions,
+    cancel: &CancelToken,
+) -> Result<FileDiff, GitError> {
+    let io = |source| GitError::Io {
+        subcommand: "diff",
+        source,
+    };
+    let files = git.files();
+    let there = files.temp_dir("egit-diff-").await.map_err(io)?;
+    let (old, new) = (there.path().join("before"), there.path().join("after"));
+    write_text(&files, &old, before).await.map_err(io)?;
+    write_text(&files, &new, after).await.map_err(io)?;
+    let mut command = git
+        .read("diff")
+        .config("core.autocrlf", "false")
+        .args([
+            "--text",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--no-relative",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+        ])
+        .arg(format!("--unified={}", options.context))
+        .current_dir(outside_repositories())
+        .cancel_token(cancel);
+    if let Some(algorithm) = &options.algorithm {
+        command = command.arg(format!("--diff-algorithm={algorithm}"));
+    }
+    if options.ignore_whitespace {
+        command = command.arg("--ignore-all-space");
+    }
+    parse_no_index(command.args(["--no-index", "--"]).arg(&old).arg(&new)).await
+}
+
+/// Writes `text` to `path`, its last line ended.
+async fn write_text(files: &Files<'_>, path: &Path, text: &[u8]) -> io::Result<()> {
+    files.write(path, text).await?;
+    if text.is_empty() || text.ends_with(b"\n") {
+        Ok(())
+    } else {
+        files.append(path, b"\n").await
     }
 }
 
@@ -217,23 +265,51 @@ pub async fn file_diff(
 
 /// Runs `command`, parsing the patch it prints as it streams.
 async fn parse_streamed(command: GitCommand) -> Result<FileDiff, GitError> {
-    let mut parser = Parser::default();
-    let mut lines = Lines::default();
-    let mut failed = None;
-    command
-        .stream(|chunk| {
-            lines.feed(chunk, &mut |line| match parser.line(line) {
-                Ok(()) => std::ops::ControlFlow::Continue(()),
-                Err(error) => {
-                    failed = Some(error);
-                    std::ops::ControlFlow::Break(())
-                }
-            })
-        })
+    let mut parsing = Parsing::default();
+    command.stream(|chunk| parsing.feed(chunk)).await?;
+    parsing.finish()
+}
+
+/// Parses `git diff --no-index`'s patch as it streams: it says whether they differ by exiting 1.
+async fn parse_no_index(command: GitCommand) -> Result<FileDiff, GitError> {
+    let mut parsing = Parsing::default();
+    let streamed = command
+        .stream_unchecked(|chunk| parsing.feed(chunk))
         .await?;
-    match failed {
-        Some(error) => Err(error),
-        None => Ok(parser.diff),
+    if !streamed.stopped && !matches!(streamed.status.code(), Some(0 | 1)) {
+        return Err(GitError::failed("diff", streamed.status, streamed.stderr));
+    }
+    parsing.finish()
+}
+
+/// A patch being parsed as it comes, its lines split across chunks.
+#[derive(Debug, Default)]
+struct Parsing {
+    parser: Parser,
+    lines: Lines,
+    failed: Option<GitError>,
+}
+
+impl Parsing {
+    /// Takes in the next chunk; stops at what isn't a patch.
+    fn feed(&mut self, chunk: &[u8]) -> std::ops::ControlFlow<()> {
+        let Self {
+            parser,
+            lines,
+            failed,
+        } = self;
+        lines.feed(chunk, &mut |line| match parser.line(line) {
+            Ok(()) => std::ops::ControlFlow::Continue(()),
+            Err(error) => {
+                *failed = Some(error);
+                std::ops::ControlFlow::Break(())
+            }
+        })
+    }
+
+    /// The diff, unless what came wasn't a patch.
+    fn finish(self) -> Result<FileDiff, GitError> {
+        self.failed.map_or(Ok(self.parser.diff), Err)
     }
 }
 

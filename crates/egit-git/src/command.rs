@@ -384,12 +384,35 @@ impl GitCommand {
     ///
     /// [`GitError::Failed`] when git exits unsuccessfully (unless the consumer stopped it), and
     /// the errors of [`Self::output_unchecked`] other than the size limit.
+    pub async fn stream(
+        self,
+        consume: impl FnMut(&[u8]) -> ControlFlow<()>,
+    ) -> Result<Streamed, GitError> {
+        let subcommand = self.subcommand;
+        let streamed = self.stream_unchecked(consume).await?;
+        if streamed.stopped || streamed.status.success() {
+            Ok(streamed)
+        } else {
+            Err(GitError::failed(
+                subcommand,
+                streamed.status,
+                streamed.stderr,
+            ))
+        }
+    }
+
+    /// [`Self::stream`], whatever git exits with: for a command whose exit says more than
+    /// whether it worked.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::output_unchecked`] other than the size limit.
     #[allow(
         clippy::unused_async,
         clippy::unused_async_trait_impl,
         reason = "here it blocks; through a relay it will await"
     )]
-    pub async fn stream(
+    pub async fn stream_unchecked(
         self,
         mut consume: impl FnMut(&[u8]) -> ControlFlow<()>,
     ) -> Result<Streamed, GitError> {
@@ -412,19 +435,11 @@ impl GitCommand {
                 }
             })
             .await?;
-        if attempt.stopped || attempt.status.success() {
-            Ok(Streamed {
-                status: attempt.status,
-                stderr: attempt.stderr,
-                stopped: attempt.stopped,
-            })
-        } else {
-            Err(GitError::failed(
-                self.subcommand,
-                attempt.status,
-                attempt.stderr,
-            ))
-        }
+        Ok(Streamed {
+            status: attempt.status,
+            stderr: attempt.stderr,
+            stopped: attempt.stopped,
+        })
     }
 
     /// Starts git and keeps it running for one of its batch protocols (such as
