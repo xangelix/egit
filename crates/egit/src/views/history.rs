@@ -4569,7 +4569,7 @@ impl CommitRows<'_> {
             text: palette.text,
             strong: false,
         };
-        let galley = badge_galley(ui, &label, &look);
+        let galley = badge_galley(ui, &label, &look, f32::INFINITY);
         let badge = paint_badge(ui, galley, &look, &label)
             .on_hover_text("A stash: changes put aside, on no branch");
         crate::help::note_topic(ui, badge.rect, "stash");
@@ -4831,11 +4831,23 @@ fn badges(
             text,
             strong: checked_out,
         };
-        let galley = badge_galley(ui, &label, &look);
+        // Where badges wrap (the details), one alone wider than a line is cut to it.
+        let most = if ui.layout().main_wrap {
+            2.0f32.mul_add(-BADGE_PAD, ui.max_rect().width())
+        } else {
+            f32::INFINITY
+        };
+        let galley = badge_galley(ui, &label, &look, most);
         if !fits(ui, &galley, total.saturating_sub(drawn)) {
             break;
         }
+        let cut = galley.elided;
         let badge = paint_badge(ui, galley, &look, &label);
+        let badge = if cut {
+            badge.on_hover_text(&label)
+        } else {
+            badge
+        };
         drawn = drawn.saturating_add(1);
         dragging(ui, &badge, reference, &label, asked);
         if badge.double_clicked() {
@@ -4867,7 +4879,7 @@ fn detached_badge(
         text: palette.on_accent,
         strong: true,
     };
-    let galley = badge_galley(ui, &label, &look);
+    let galley = badge_galley(ui, &label, &look, f32::INFINITY);
     let badge = paint_badge(ui, galley, &look, "HEAD, detached").on_hover_text(
         "HEAD is detached here: commits made now belong to no branch until you create one",
     );
@@ -4897,15 +4909,18 @@ struct BadgeLook {
 }
 
 /// A badge's words, laid out to be measured, then drawn.
-fn badge_galley(ui: &Ui, label: &str, look: &BadgeLook) -> Arc<egui::Galley> {
+fn badge_galley(ui: &Ui, label: &str, look: &BadgeLook, most: f32) -> Arc<egui::Galley> {
     let family = if look.strong {
         crate::theme::Weight::SemiBold.family()
     } else {
         egui::FontFamily::Proportional
     };
-    fonts::note_text(ui, &egui::FontId::new(12.0, family.clone()), label);
-    ui.painter()
-        .layout_no_wrap(label.to_owned(), egui::FontId::new(12.0, family), look.text)
+    let font = egui::FontId::new(12.0, family);
+    fonts::note_text(ui, &font, label);
+    let mut job = egui::text::LayoutJob::simple_singleline(label.to_owned(), font, look.text);
+    job.wrap =
+        egui::text::TextWrapping::from_wrap_mode_and_width(egui::TextWrapMode::Truncate, most);
+    ui.painter().layout_job(job)
 }
 
 /// Whether a badge of `galley` fits in what is left of its row, with room for the count of the
@@ -5057,7 +5072,7 @@ fn pull_badges(
             text: palette.text,
             strong: false,
         };
-        let galley = badge_galley(ui, &label, &look);
+        let galley = badge_galley(ui, &label, &look, f32::INFINITY);
         if !fits(ui, &galley, pulls.len().saturating_sub(drawn)) {
             break;
         }
@@ -5339,22 +5354,25 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
             history.signatures.want(git, shared.repository, [shown.id]);
         }
         let check = history.signatures.get(&shown.id);
-        let (parent, description) = commit_info(
-            ui,
-            (&shown, !editing, stash),
-            history.shown.refs(),
-            check,
-            shared,
-            &mut view.asked,
-        );
-        go_to = parent;
-        // A double click on the description edits the message too.
-        if let Some(rect) = description
-            && rewordable == Some(Ok(()))
-            && double_clicked(ui, rect)
-        {
-            view.message_edit = Some(MessageEdit::of(&shown));
-        }
+        // Nothing here widens the panel's rest: the files' numbers keep their place.
+        widgets::within_width(ui, |ui| {
+            let (parent, description) = commit_info(
+                ui,
+                (&shown, !editing, stash),
+                history.shown.refs(),
+                check,
+                shared,
+                &mut view.asked,
+            );
+            go_to = parent;
+            // A double click on the description edits the message too.
+            if let Some(rect) = description
+                && rewordable == Some(Ok(()))
+                && double_clicked(ui, rect)
+            {
+                view.message_edit = Some(MessageEdit::of(&shown));
+            }
+        });
     });
     ui.spacing_mut().scroll = saved_scroll;
     // As tall as it is drawn: its room, or its content up to half (its rect is the most it may
@@ -5392,12 +5410,17 @@ fn details(ui: &mut Ui, shared: &Shared<'_>, history: &mut HistoryState, view: &
         }
     }
 
+    if let Some(parent) = go_to {
+        go_to_parent(history, view, parent, peeked.is_some());
+    }
+}
+
+/// Selects `parent`, a link in the details asked for, where the history has it (a parent of the
+/// reflog's commit, `peeked`, is shown in the history).
+fn go_to_parent(history: &HistoryState, view: &mut HistoryView, parent: ObjectId, peeked: bool) {
     let near = view.selected.map_or(0, |selected| selected.row);
-    if let Some(parent) = go_to
-        && let Some(row) = history.shown.row_of(&parent, near)
-    {
-        // A parent of the reflog's commit is shown in the history.
-        if peeked.is_some() {
+    if let Some(row) = history.shown.row_of(&parent, near) {
+        if peeked {
             view.tool = None;
         }
         view.select(&history.shown, row, Some(Align::Center));
@@ -5505,22 +5528,16 @@ fn files_heading(
             count(u64::try_from(files).unwrap_or(u64::MAX))
         )
     };
+    let mut below = None;
     widgets::section_header(ui, ("Changed files", Some(files), &name), |ui| {
         if let Some(preferences) = widgets::tree_toggle(ui) {
             *asked = Some(Ask::Preferences(preferences));
         }
         match counts {
-            Some(Ok(counts)) => {
-                // From the right: what was lost, then what was gained before it.
-                let total = counts.total;
-                ui.label(
-                    RichText::new(format!("−{}", count(u64::from(total.removed))))
-                        .color(palette.danger),
-                );
-                ui.label(
-                    RichText::new(format!("+{}", count(u64::from(total.added)))).color(palette.ok),
-                );
+            Some(Ok(counts)) if totals_fit(ui, counts.total) => {
+                totals(ui, counts.total, palette);
             }
+            Some(Ok(counts)) => below = Some(counts.total),
             Some(Err(problem)) => {
                 ui.label(muted(ui, "Lines not counted"))
                     .on_hover_text(problem.to_string());
@@ -5528,6 +5545,42 @@ fn files_heading(
             None => {}
         }
     });
+    // Too many to say beside the title (a panel at its narrowest): whole, on a line of their
+    // own under it.
+    if let Some(total) = below {
+        ui.allocate_ui_with_layout(
+            egui::vec2(
+                ui.available_width(),
+                ui.text_style_height(&egui::TextStyle::Body),
+            ),
+            Layout::right_to_left(Align::Center),
+            |ui| totals(ui, total, palette),
+        );
+    }
+}
+
+/// Whether lines gained and lost fit in what is left of a right-to-left row, a little apart
+/// from what is before them.
+fn totals_fit(ui: &Ui, total: egit_git::LineCounts) -> bool {
+    let (added, removed) = total_words(total);
+    let spacing = ui.spacing().item_spacing.x;
+    let needed = widgets::text_width(ui, &added) + widgets::text_width(ui, &removed);
+    needed + spacing * 2.0 <= ui.available_width()
+}
+
+/// Lines gained and lost, in words.
+fn total_words(total: egit_git::LineCounts) -> (String, String) {
+    (
+        format!("+{}", count(u64::from(total.added))),
+        format!("−{}", count(u64::from(total.removed))),
+    )
+}
+
+/// Lines gained and lost, in a right-to-left row: what was lost, then what was gained before it.
+fn totals(ui: &mut Ui, total: egit_git::LineCounts, palette: Palette) {
+    let (added, removed) = total_words(total);
+    ui.label(RichText::new(removed).color(palette.danger));
+    ui.label(RichText::new(added).color(palette.ok));
 }
 
 impl MessageEdit {
@@ -5764,8 +5817,8 @@ fn commit_info(
     }
     widgets::fact_of(ui, DETAIL_LABEL, ("Commit", "commit-name"), |ui| {
         // Within the room the copy button leaves: the details never push the panel wider.
-        let room =
-            (ui.available_width() - crate::theme::CONTROL - ui.spacing().item_spacing.x).max(0.0);
+        let copy = widgets::button_width(ui, icon::COPY);
+        let room = (ui.available_width() - copy - ui.spacing().item_spacing.x).max(0.0);
         ui.allocate_ui(egui::vec2(room, crate::theme::CONTROL), |ui| {
             let name = details.id.abbreviated(ID_DIGITS * 2).to_string();
             ui.add(Label::new(RichText::new(name).monospace()).truncate());

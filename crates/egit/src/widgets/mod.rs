@@ -993,6 +993,51 @@ pub(crate) fn room_for(ui: &mut Ui, widths: &[f32]) {
     }
 }
 
+/// Draws `add` at `ui`'s width, what it holds never widening `ui`: what is too wide for it (a
+/// long name with nothing to cut it) stops at its edge, and what follows keeps its width. Only
+/// its height counts.
+pub(crate) fn within_width<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let place = ui.available_rect_before_wrap();
+    let mut inside = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(place)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+    );
+    let clip = ui.clip_rect();
+    inside.set_clip_rect(egui::Rect::from_x_y_ranges(
+        place.x_range().intersection(clip.x_range()),
+        clip.y_range(),
+    ));
+    let added = add(&mut inside);
+    let height = inside.min_rect().height();
+    ui.advance_cursor_after_rect(egui::Rect::from_min_size(
+        place.min,
+        egui::vec2(place.width(), height),
+    ));
+    added
+}
+
+/// `text` as fits in `width` points of `font`: whole, or cut with an ellipsis.
+pub(crate) fn fitted(ui: &Ui, text: &str, font: &egui::FontId, width: f32) -> String {
+    ui.fonts_mut(|fonts| {
+        let whole: f32 = text.chars().map(|c| fonts.glyph_width(font, c)).sum();
+        if whole <= width {
+            return text.to_owned();
+        }
+        let budget = width - fonts.glyph_width(font, '…');
+        let mut used = 0.0;
+        let mut end = 0;
+        for (index, character) in text.char_indices() {
+            used += fonts.glyph_width(font, character);
+            if used > budget {
+                break;
+            }
+            end = index.saturating_add(character.len_utf8());
+        }
+        format!("{}…", text.get(..end).unwrap_or_default().trim_end())
+    })
+}
+
 /// How wide a dialog's contents are: `wanted`, or, on a narrow screen (a phone's), what keeps
 /// the dialog, its frame's `margin` either side, [`DIALOG_GUTTER`] in from the screen's edges.
 pub(crate) fn dialog_width(ui: &Ui, wanted: f32, margin: f32) -> f32 {

@@ -375,24 +375,7 @@ fn conversations_menu(
 
 /// `text`'s first line as fits in `width` points of `font`: whole, or cut with an ellipsis.
 fn fitted(ui: &Ui, text: &str, font: &egui::FontId, width: f32) -> String {
-    let first = first_line(text);
-    ui.fonts_mut(|fonts| {
-        let whole: f32 = first.chars().map(|c| fonts.glyph_width(font, c)).sum();
-        if whole <= width {
-            return first.to_owned();
-        }
-        let budget = width - fonts.glyph_width(font, '…');
-        let mut used = 0.0;
-        let mut end = 0;
-        for (index, character) in first.char_indices() {
-            used += fonts.glyph_width(font, character);
-            if used > budget {
-                break;
-            }
-            end = index.saturating_add(character.len_utf8());
-        }
-        format!("{}…", first.get(..end).unwrap_or_default().trim_end())
-    })
+    widgets::fitted(ui, first_line(text), font, width)
 }
 
 /// A button of one icon a control's height square, named with someone's words (`name`:

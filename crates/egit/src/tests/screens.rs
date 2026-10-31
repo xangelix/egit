@@ -68,14 +68,19 @@ fn harness_with_settings(
     })
 }
 
-/// The whole application around `sandbox`'s git on a phone's screen held upright (390 by 844
-/// points), drawn at a phone's density: narrow, one thing at a time.
-pub(super) fn phone(sandbox: &Sandbox, theme: egui::Theme) -> Harness<'static, EgitApp> {
+/// The whole application around `sandbox`'s git in a window of `size` points, drawn at
+/// `density` pixels a point.
+pub(super) fn windowed(
+    sandbox: &Sandbox,
+    size: [f32; 2],
+    density: f32,
+    theme: egui::Theme,
+) -> Harness<'static, EgitApp> {
     let git = sandbox.git().clone();
     let home = sandbox.home().to_owned();
     let builder = Harness::builder()
-        .with_size([390.0, 844.0])
-        .with_pixels_per_point(2.0)
+        .with_size(size)
+        .with_pixels_per_point(density)
         .with_theme(theme);
     let builder = if rendering() { builder.wgpu() } else { builder };
     builder.build_eframe(move |creation| {
@@ -87,6 +92,12 @@ pub(super) fn phone(sandbox: &Sandbox, theme: egui::Theme) -> Harness<'static, E
             Prompts::none(),
         )
     })
+}
+
+/// The whole application around `sandbox`'s git on a phone's screen held upright (390 by 844
+/// points), drawn at a phone's density: narrow, one thing at a time.
+pub(super) fn phone(sandbox: &Sandbox, theme: egui::Theme) -> Harness<'static, EgitApp> {
+    windowed(sandbox, [390.0, 844.0], 2.0, theme)
 }
 
 pub(super) fn harness(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
