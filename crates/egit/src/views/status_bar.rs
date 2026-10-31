@@ -1,5 +1,5 @@
-//! The bar along the window's bottom: which git egit runs, what isn't working, the theme, the
-//! preferences, and the command palette. On a narrow window (a phone's) its buttons are icons
+//! The bar along the window's bottom: which git egit runs, what isn't working, Quick diff, the
+//! theme, the preferences, and the command palette. On a narrow window (a phone's) its buttons are icons
 //! (named in words) and what isn't working an icon each, its words on hover; which git, only
 //! when it isn't usable.
 
@@ -8,6 +8,7 @@ use egui::Ui;
 use crate::app::{Action, AppState};
 use crate::commands::keys_text;
 use crate::format::display_path;
+use crate::tabs::Pane;
 use crate::theme::{ThemeChoice, icon};
 use crate::widgets::muted;
 
@@ -38,7 +39,7 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
                 .on_hover_text(format!("How egit looks and behaves ({})", keys_text("⌘,")))
                 .clicked()
             {
-                state.actions.push(Action::ShowPreferences);
+                state.actions.push(Action::Show(Pane::Preferences));
             }
             let current = state.settings.theme;
             let (glyph, words) = match current {
@@ -76,6 +77,13 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, true, words)
                 });
                 crate::help::note(ui, theme.rect, words);
+            }
+            let quick_diff = bar_button(ui, (icon::GIT_DIFF, "Quick diff"), None, narrow);
+            if quick_diff
+                .on_hover_text(format!("Compare any two texts ({})", keys_text("⇧⌘D")))
+                .clicked()
+            {
+                state.actions.push(Action::Show(Pane::QuickDiff));
             }
             // In what the buttons leave: cut short rather than under them.
             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {

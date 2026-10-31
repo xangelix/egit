@@ -64,6 +64,8 @@ pub(crate) struct AppState {
     pub(crate) repos: Vec<RepoTab>,
     pub(crate) home: HomeView,
     pub(crate) profile: ProfileView,
+    /// The Quick diff tab's, while it is open.
+    pub(crate) quick_diff: Option<Box<crate::views::quick_diff::QuickDiffView>>,
     /// Git's and ssh's questions, waiting for the user.
     pub(crate) prompts: Prompts,
     pub(crate) settings: Settings,
@@ -201,8 +203,8 @@ pub(crate) enum Action {
     Init(Location),
     /// Remove a repository from the recent ones.
     Forget(Location),
-    /// Show the profile tab.
-    ShowProfile,
+    /// Show this tab, adding it if it isn't there: the profile, the preferences, Home, Quick diff.
+    Show(Pane),
     /// Write changes to the user's configuration.
     SaveProfile(Vec<ConfigChange>),
     /// Read a repository's state again.
@@ -226,10 +228,6 @@ pub(crate) enum Action {
     CancelTask(RepoId),
     /// Put these preferences in effect, and keep them.
     SetPreferences(Preferences),
-    /// Show the preferences' tab.
-    ShowPreferences,
-    /// Show Home's tab (opening, cloning, and the recent repositories).
-    ShowHome,
     /// Close a tab, or every tab but one (never Home's).
     CloseTabs(tabs::Closing),
     /// Open the command palette.
@@ -429,6 +427,7 @@ impl EgitApp {
                     .find_map(|recent| recent.host.as_deref()),
             ),
             profile: ProfileView::default(),
+            quick_diff: None,
             prompts,
             settings,
             home_dir,
@@ -481,6 +480,7 @@ impl EgitApp {
             Command::OpenRepository => state.actions.push(Action::PickFolder),
             Command::CloneRepository | Command::Home => tabs::show(&mut self.tabs, Pane::Home),
             Command::Profile => tabs::show(&mut self.tabs, Pane::Profile),
+            Command::QuickDiff => tabs::show(&mut self.tabs, Pane::QuickDiff),
             Command::CloseTab => {
                 if let Some(Pane::Repo(id)) = tabs::close_front(&mut self.tabs) {
                     state.actions.push(Action::Closed(id));
@@ -538,7 +538,7 @@ impl EgitApp {
             Action::Trust(location) => state.prepare(location, Prepare::Trust),
             Action::Init(location) => state.prepare(location, Prepare::Init),
             Action::Forget(location) => state.settings.forget(&location),
-            Action::ShowProfile => tabs::show(&mut self.tabs, Pane::Profile),
+            Action::Show(pane) => tabs::show(&mut self.tabs, pane),
             Action::SaveProfile(changes) => state.save_profile(changes),
             Action::ShowPanel(id, panel) => state.show_panel(id, panel),
             Action::Refresh(id) => state.with_repo(id, |git, repo| repo.refresh(git)),
@@ -568,8 +568,6 @@ impl EgitApp {
                 theme::apply(ctx, choice);
             }
             Action::SetPreferences(preferences) => state.prefer(ctx, preferences),
-            Action::ShowPreferences => tabs::show(&mut self.tabs, Pane::Preferences),
-            Action::ShowHome => tabs::show(&mut self.tabs, Pane::Home),
             Action::CloseTabs(closing) => {
                 for pane in tabs::close(&mut self.tabs, closing) {
                     if let Pane::Repo(id) = pane {
@@ -1243,6 +1241,11 @@ impl eframe::App for EgitApp {
         CentralPanel::default()
             .frame(Frame::new().fill(palette.background))
             .show(ui, |ui| tabs::draw(&mut self.tabs, &mut self.state, ui));
+        // Its texts go with its tab, however that closed.
+        if self.state.quick_diff.is_some() && self.tabs.tiles.find_pane(&Pane::QuickDiff).is_none()
+        {
+            crate::views::quick_diff::closed(ui.ctx(), &mut self.state);
+        }
         if let Some(command) = palette::show(ui.ctx(), &mut self.state.palette) {
             self.run(command);
         }

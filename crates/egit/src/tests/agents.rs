@@ -227,7 +227,7 @@ fn conversations_run_as_the_accounts_added() {
         .state_mut()
         .state
         .actions
-        .push(crate::app::Action::ShowPreferences);
+        .push(crate::app::Action::Show(crate::tabs::Pane::Preferences));
     wait_for_label(&mut harness, "Add the account");
     let type_in = |harness: &mut Harness<'_, EgitApp>, field: &str, text: &str| {
         let node = harness.get_by_role_and_label(Role::TextInput, field);

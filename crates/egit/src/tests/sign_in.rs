@@ -161,7 +161,7 @@ fn signing_in_is_offered_wherever_it_counts_and_works_with_a_token() {
         .state_mut()
         .state
         .actions
-        .push(crate::app::Action::ShowProfile);
+        .push(crate::app::Action::Show(crate::tabs::Pane::Profile));
     let who = format!("{}  Signed in as ada", icon::CHECK_CIRCLE);
     wait_for_label(&mut harness, &who);
     into_view(&mut harness, "Sign out");
@@ -255,7 +255,11 @@ fn a_sign_in_nothing_keeps_holds_everywhere_until_a_helper_is_set_up() {
     });
 
     // Profile's credentials offer the same: store set up, it keeps the sign-in.
-    harness.state_mut().state.actions.push(Action::ShowProfile);
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(Action::Show(crate::tabs::Pane::Profile));
     wait_for_label(&mut harness, "In a file, unencrypted (store)");
     into_view(&mut harness, "In a file, unencrypted (store)");
     harness

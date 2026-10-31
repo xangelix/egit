@@ -67,6 +67,8 @@ pub(crate) enum Command {
     CloneRepository,
     Home,
     Profile,
+    /// Any two texts compared, in no repository.
+    QuickDiff,
     CloseTab,
     /// The `n`th tab (from 1).
     Tab(usize),
@@ -114,6 +116,7 @@ impl Command {
             .chain([
                 Self::OpenRepository,
                 Self::CloneRepository,
+                Self::QuickDiff,
                 Self::Home,
                 Self::Profile,
                 Self::Preferences,
@@ -137,6 +140,7 @@ impl Command {
             Self::CloneRepository => "Clone a repository".to_owned(),
             Self::Home => "Go home".to_owned(),
             Self::Profile => "Your git profile".to_owned(),
+            Self::QuickDiff => "Quick diff: compare two texts".to_owned(),
             Self::CloseTab => "Close the tab".to_owned(),
             Self::Tab(n) => format!("Go to tab {n}"),
             Self::Theme(ThemeChoice::System) => "Theme: as the desktop's".to_owned(),
@@ -187,6 +191,7 @@ impl Command {
             Self::Help => "F1",
             Self::Preferences => "⌘,",
             Self::OpenRepository => "⌘O",
+            Self::QuickDiff => "⇧⌘D",
             Self::CloseTab => CLOSE_TAB,
             Self::Repo(RepoCommand::Search) => "⌘F",
             Self::Repo(RepoCommand::Undo) => "⌘Z",
@@ -208,7 +213,7 @@ impl Command {
 
 /// The shortcuts the application itself takes (the views take theirs: ⌘F, ⌘Z, …), the more
 /// specific first (⌘K alone would match ⇧⌘K too).
-fn global() -> [(Modifiers, Key, Command); 10] {
+fn global() -> [(Modifiers, Key, Command); 11] {
     [
         (Modifiers::NONE, Key::F1, Command::Help),
         // ⇧⌘P, as other editors have it.
@@ -218,6 +223,11 @@ fn global() -> [(Modifiers, Key, Command); 10] {
             Command::Palette,
         ),
         (Modifiers::COMMAND, Key::K, Command::Palette),
+        (
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Key::D,
+            Command::QuickDiff,
+        ),
         (Modifiers::COMMAND, Key::Comma, Command::Preferences),
         (Modifiers::COMMAND, Key::O, Command::OpenRepository),
         (TAB_MODIFIERS, Key::W, Command::CloseTab),
@@ -336,7 +346,7 @@ pub(crate) fn keys_text(mac: &'static str) -> Cow<'static, str> {
 pub(crate) const SWITCH_TO: &str = "Switch to ";
 
 /// Every shortcut, and what it does, as the Preferences tab lists them.
-const SHORTCUTS: [(&str, &str); 27] = [
+const SHORTCUTS: [(&str, &str); 29] = [
     ("⌘K, ⇧⌘P", "Show every command"),
     ("F1", "Help: every topic"),
     (
@@ -345,6 +355,7 @@ const SHORTCUTS: [(&str, &str); 27] = [
     ),
     ("⌘,", "Preferences"),
     ("⌘O", "Open a repository"),
+    ("⇧⌘D", "Quick diff: compare two texts"),
     (CLOSE_TAB, "Close the tab"),
     (TAB_NUMBERS, "Go to a tab"),
     ("⌘R", "Read the repository again"),
@@ -358,6 +369,7 @@ const SHORTCUTS: [(&str, &str); 27] = [
     ("Escape", "Back to the history (from a file, the reflog, …)"),
     ("⌘Enter", "Commit what is staged (the working tree's form)"),
     ("⇧⌘Enter", "Commit what is staged, then push the branch"),
+    ("⌘Enter", "Compare the two texts (Quick diff)"),
     (
         "P R S F D",
         "Pick, reword, squash, fix up, drop (the rebase editor)",

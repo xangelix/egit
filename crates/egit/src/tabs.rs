@@ -1,4 +1,4 @@
-//! The tabs across the window: Home, the profile, and one per open repository, laid out by
+//! The tabs across the window: Home, the profile, Quick diff, and one per open repository, laid out by
 //! `egui_tiles` (tabs can be dragged beside each other).
 
 use egui::{Color32, Ui, UiBuilder, WidgetText};
@@ -20,6 +20,8 @@ pub(crate) enum Pane {
     Profile,
     /// egit's own preferences, and the keyboard shortcuts.
     Preferences,
+    /// Any two texts compared, in no repository.
+    QuickDiff,
     /// An open repository.
     Repo(RepoId),
 }
@@ -103,7 +105,7 @@ pub(crate) fn after_restored(
 ) -> impl Fn(Pane) -> bool + '_ {
     move |pane| match pane {
         Pane::Repo(other) => places.get(&other).is_none_or(|other| *other > place),
-        Pane::Profile | Pane::Preferences => true,
+        Pane::Profile | Pane::Preferences | Pane::QuickDiff => true,
         Pane::Home => false,
     }
 }
@@ -272,6 +274,7 @@ fn pane_page(ui: &mut Ui, state: &mut AppState, pane: Pane) {
         Pane::Home => views::home::show(ui, state),
         Pane::Profile => views::profile::show(ui, state),
         Pane::Preferences => views::preferences::show(ui, state),
+        Pane::QuickDiff => views::quick_diff::show(ui, state),
         Pane::Repo(id) => views::repo::show(ui, state, id),
     }
 }
@@ -294,6 +297,7 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
             Pane::Home => format!("{}  Home", icon::HOUSE).into(),
             Pane::Profile => format!("{}  Profile", icon::USER_CIRCLE).into(),
             Pane::Preferences => format!("{}  Preferences", icon::GEAR_SIX).into(),
+            Pane::QuickDiff => format!("{}  Quick diff", icon::GIT_DIFF).into(),
             Pane::Repo(id) => {
                 let repo = self.state.repos.iter().find(|repo| repo.id == *id);
                 let title = repo.map_or("Repository", |repo| repo.title.as_str());
@@ -369,7 +373,7 @@ impl egui_tiles::Behavior<Pane> for Behavior<'_> {
             .on_hover_text("Home: open, clone, or create a repository")
             .clicked()
         {
-            self.state.actions.push(Action::ShowHome);
+            self.state.actions.push(Action::Show(Pane::Home));
         }
     }
 
@@ -491,7 +495,7 @@ impl Behavior<'_> {
             .on_hover_text("Home: open, clone, or create a repository")
             .clicked()
         {
-            self.state.actions.push(Action::ShowHome);
+            self.state.actions.push(Action::Show(Pane::Home));
         }
     }
 
@@ -548,6 +552,7 @@ mod tests {
                 Pane::Home => "H".to_owned(),
                 Pane::Profile => "Pr".to_owned(),
                 Pane::Preferences => "P".to_owned(),
+                Pane::QuickDiff => "Q".to_owned(),
                 Pane::Repo(id) => id.to_string(),
             })
             .collect()

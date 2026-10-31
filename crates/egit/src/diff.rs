@@ -14,7 +14,7 @@ use bstr::BString;
 use egit_git::sync::Mutex;
 use egit_git::{
     CancelToken, DiffLine, DiffLineKind, DiffOptions, FileDiff, Git, ObjectId, Repository,
-    Uncommitted, file_diff, uncommitted_diff,
+    Uncommitted, file_diff, text_diff, uncommitted_diff,
 };
 use egit_text::{ChangedWords, Measure, Text, changed_words};
 use egui::Color32;
@@ -693,6 +693,24 @@ pub(crate) async fn read_uncommitted_diff(
             .await
             .map(|diff| Arc::new(DiffDocument::new(diff, path)))
             .map_err(|error| Problem::git("The diff couldn't be read", &error))
+    })
+    .await
+}
+
+/// Reads the diff of two texts of no repository, and measures it, its colours those of a file
+/// called `name`; `cancel` stops git.
+pub(crate) async fn read_text_diff(
+    git: Git,
+    (before, after): (Arc<[u8]>, Arc<[u8]>),
+    name: BString,
+    options: DiffOptions,
+    cancel: CancelToken,
+) -> Result<Arc<DiffDocument>, Problem> {
+    jobs::blocking(async move {
+        text_diff(&git, &before, &after, &options, &cancel)
+            .await
+            .map(|diff| Arc::new(DiffDocument::new(diff, name)))
+            .map_err(|error| Problem::git("The texts couldn't be compared", &error))
     })
     .await
 }

@@ -53,6 +53,7 @@ where the code they shaped is (its module's doc comment, and this file).
 | 39 | Distribution through seaworthy: launchers and per-CPU cores, packages for every platform, the icon, the licence | Linux packages built and run here; Windows and macOS left to CI's runners; awaiting the owner's review |
 | 40 | Dialogs answered by Enter and Escape; Skip hooks for every task that makes commits; every pipeline (workflow run) listed, a page at a time, each commit a link back | done; awaiting the owner's review |
 | 41 | A phone's screen: a narrow window shows one thing at a time, each view adapting in place | under way: the history, a commit, a file, the sidebar, the work tree, Home, the status bar, the agents, pull requests, pipelines and job logs, tabs, menus, dialogs, the palette, the Overview, Preferences, Profile, touch scrolling in diffs and logs, the page in a phone's browser |
+| 42 | Quick diff: any two texts compared, in no repository | done; awaiting the owner's review |
 
 ## Toolchain & commands
 
@@ -151,7 +152,11 @@ where the code they shaped is (its module's doc comment, and this file).
   listed 280 ms after opening (its longest frame meanwhile 5.6 ms: they are sorted in a job),
   scrolled at 0.7–1.1 ms p99, the tags unfolded in a frame of 1.2 ms, each letter typed in the
   filter 0.6 ms at most (the rows made in a job, landing 3–5 ms after the last letter); then the command palette over its 50,001 branches: opened in a frame
-  of 2.8 ms, each letter typed 4.1 ms at most; peak 179 MB. `corpus_markdown`: a Markdown
+  of 2.8 ms, each letter typed 4.1 ms at most; peak 179 MB. `corpus_quick_diff`: Quick diff on
+  two pasted texts of 1,000,000 lines (33 MB), a line in fifty changed: each taken in a frame of
+  6 ms and on the grid 90 ms after, both showing at 0.23 ms p99, compared in 268 ms (180,000
+  lines), scrolled unified at 0.40 ms p99, lined up side by side in 27 ms and scrolled at 0.19 ms
+  p99, peak 320 MB. `corpus_markdown`: a Markdown
   document of 1,020 KiB changed (each of its 2,600 headings), previewed before and after: read,
   compared, and first drawn in 13 ms, wheel-scrolled at 5.0 ms p99 (drawn whole, as
   `egui_commonmark` draws a document, 780 ms a frame and 943 MB), peak 214 MB.
@@ -310,7 +315,7 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   - `command.rs` — `GitCommand` from `Git::read` / `Git::write`: `-c` settings, arguments,
     directory, stdin, and a `CancelToken`; `output` (collected up to `stdout_limit`, failing
     unless git succeeds), `output_unchecked` (any exit), `stream` (chunks through one reused
-    buffer; the consumer may stop it). Reads add `--no-optional-locks`; writes are retried
+    buffer; the consumer may stop it), `stream_unchecked` (any exit). Reads add `--no-optional-locks`; writes are retried
     (25 ms … 800 ms) while `Stderr::held_lock` finds another git's lock. Every command gets
     `-c color.ui=never -c core.quotePath=false`. Stderr is drained on a helper thread into a
     64 KiB tail (`output.rs`), and into a `Progress` when the command has one (`progress`);
@@ -502,7 +507,12 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     `--no-index` against `/dev/null`, which exits 1 when they differ), with every setting that
     changes the patch pinned (`--no-relative`, prefixes, colour, external diff, textconv); the
     work tree's side comes through clean filters and line-ending conversion, in the form git
-    stores. Parsed as it streams into `FileDiff`: each line's text without
+    stores. `text_diff`: two texts of no repository, as two files holding them would differ:
+    `--no-index` between files in a `Files::temp_dir` (where git runs: a relay's or another
+    computer's too), from outside any repository, so only the user's configuration applies
+    (`diff.algorithm`), every setting that changes the patch pinned (`--text`, so a NUL is no
+    binary file; `core.autocrlf` off); a last line without a newline given one, as a copy
+    stopping short of it is no difference. Parsed as it streams into `FileDiff`: each line's text without
     its prefix (hunk headers as lines), its `DiffLineKind`, old and new numbers, and a
     missing final newline; a binary file is flagged and has no lines; `blobs`, its `index`
     line's (the work tree's side as git would store it). `lines.rs` — `Lines`,
@@ -1259,7 +1269,7 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
   served, headless Chromium driven over its developer tools protocol (no npm: a WebSocket of
   JSON): the page opens a sandbox's repository its address names (titled by it; the address
   then plain), threaded (cross-origin isolated, its workers started), the palette (⌘K, typed
-  into, Enter) shows its Stats, nothing in the page or its workers saying an error or
+  into, Enter) shows its Stats, Quick diff (⇧⌘D) compares two texts pasted, nothing in the page or its workers saying an error or
   panicking; and served by a proxy of the test's under `/proxy/7171` (the prefix taken off
   each request's path, as code-server does), opened without its last slash, the same (the
   slash added, the address then `…/proxy/7171/`); and as a phone (390 by 844, touches
@@ -1446,8 +1456,8 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     holds to ask the window to draw again: egui's context here; in a browser, where the context
     is the main thread's alone, the asking handed to that thread (`on_main`), once however
     often meanwhile.
-  - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Preferences,
-    Repo(id)}` (a repository's on another computer titled with it, "repo · devbox", under a
+  - `tabs.rs` — the window's `egui_tiles` tree: `Pane::{Home, Profile, Preferences, QuickDiff,
+    Repo(id)}` (each but a repository's shown by `Action::Show`) (a repository's on another computer titled with it, "repo · devbox", under a
     globe); `show` focuses or adds a tab; `front` (the tab in front), `close_front`,
     `show_nth` (⌘W, ⌘1 … ⌘9), `close` (`Closing`: a tab, or every other; `Action::CloseTabs`:
     a middle click, a tab's menu); Home can't be closed; closing a repository's tab pushes
@@ -2654,6 +2664,25 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     them: `take_keys`; the pointer picks a row only as it moves), Enter or a click runs it,
     Escape closes. A repository's command is queued on its history view (`HistoryView::queue`),
     carried out next frame by the same code as its button.
+    `views/quick_diff.rs` — `QuickDiffView` (`AppState::quick_diff`, while its tab is open; its
+    texts go with it, and egui's undo copies of them, whichever way it closed; never kept), the
+    Quick diff tab, needing no repository: from the status bar, Home's card, the palette, or ⇧⌘D.
+    A page at a time: the texts, then what differs. The texts: a bar (Compare at its right,
+    ⌘Enter from anywhere, disabled saying why; Swap; a file's name, optional, its colours), and
+    Before and After beside each other (a narrow window: above each other), each its length and
+    Clear, typed into or pasted into. Two pastes need no click: with both empty the keys move on
+    to After, and a paste with no field having them lands in the first empty (`take_paste`, on
+    the frame's events before any field sees them). A field draws its whole text every frame
+    (0.03 ms a KiB, measured), so one holds at most `LONG` (64 KiB): a longer paste never reaches
+    it, and what is typed past it leaves it, measured in a job and shown on the grid (`Plain`),
+    read-only, cleared to paste another; what isn't drawn gives up the keys (AccessKit panics at
+    a focus on no node). What differs: `read_text_diff` (`text_diff`, then a `DiffDocument`, its
+    `name` the file's), drawn by the same grids as a file's (`file::show_sides`, shared; ⌘F,
+    selecting, copying), with Edit the texts (Escape too, after the grid's own), its lines added
+    and removed, Unified or Side by side (unified alone on a narrow window), Whole file, Ignore
+    whitespace, Wrap lines, each as a file's first look prefers; a read again shows what was read
+    meanwhile, a spinner in room of its own; other texts compared show nothing of the last. "The
+    two texts are the same."
     `views/preferences.rs` — the Preferences tab (⌘, or the status bar's): cards for how
     egit looks (theme, text size, commit dates), repositories (the background fetch, the
     sidebar), diffs and files (side by side, wrapped, tab width), agents (the accounts
@@ -2743,9 +2772,9 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     act on; signed in, as whom, a warning where no helper keeps it, and Done), `repo` (the history, or a page: the overview (with a Hooks card: where git looks for them
     (`core.hooksPath` said), those installed, where their output shows) or the settings table, under a bar
     going back to the history (or Escape) and switching between the two), `status_bar` (git's
-    version and path, the theme, Commands and Preferences (quiet buttons: framed only under the
-    pointer, drawn first, the words at the left cut to what they leave), a warning when questions
-    can't be relayed), `prompts` (git's and ssh's questions: the app starts an
+    version and path, Quick diff, the theme, Commands and Preferences (quiet buttons: framed only
+    under the pointer, drawn first, the words at the left cut to what they leave), a warning when
+    questions can't be relayed), `prompts` (git's and ssh's questions: the app starts an
     `AskpassServer` and an `SshSharing` at launch and gives git their environment; questions queue and show one
     at a time in a modal (`PromptKind` decides the field and buttons: Continue for what is
     typed; ssh's question about a host it hasn't met as "Trust this host?", its fingerprint in
@@ -3137,6 +3166,12 @@ behind `cfg(target_arch = "wasm32")`, or `desktop::IN_BROWSER` where both compil
     a commit's menu by a long press, a dialog from it, the palette (from Every command), the
     Overview from it, Preferences, the profile, and the tab bar's menu; each screen audited
     (and, narrow, nothing past the window's edges) and rendered.
+    `src/tests/quick_diff.rs` drives Quick diff with no repository open: reached from the status
+    bar, Home, the palette, and its keys; two texts pasted one after the other (the keys moving
+    on), compared by its keys, unified and side by side (rendered), back by Escape, swapped; the
+    same texts said to be (one stopping short of its last newline), whitespace ignored; texts too
+    long for a field on the grid (rendered), compared, cleared; nothing undrawn keeping the keys;
+    nothing left once its tab closes; and a phone's screen (stacked, unified; rendered).
     `src/tests/suggested.rs` opens two repositories of a folder (and one of another): the
     folder's others suggested by their reflogs' dates (commits at set times), one without a
     commit last, a plain folder and a file left out, nothing from the other folder (rendered);

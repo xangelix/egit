@@ -574,7 +574,7 @@ fn an_ssh_host_on_a_name_of_its_own_is_tied_to_its_gitlab_in_a_click() {
         .state_mut()
         .state
         .actions
-        .push(crate::app::Action::ShowProfile);
+        .push(crate::app::Action::Show(crate::tabs::Pane::Profile));
     wait_for_label(&mut harness, "    its ssh: git-ssh.example.invalid");
 }
 

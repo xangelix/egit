@@ -20,6 +20,7 @@ use crate::forge::{RepoForge, Resolved, SeenRemote, ssh_host_key};
 use crate::format;
 use crate::history::History;
 use crate::repo::RepoId;
+use crate::tabs::Pane;
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
@@ -210,7 +211,7 @@ fn unknown(ui: &mut Ui, seen: &SeenRemote, hosts: &[ForgeHost], actions: &mut Ve
             }
             _ => {
                 if widgets::secondary(ui, true, "Open Profile").clicked() {
-                    actions.push(Action::ShowProfile);
+                    actions.push(Action::Show(Pane::Profile));
                 }
             }
         }

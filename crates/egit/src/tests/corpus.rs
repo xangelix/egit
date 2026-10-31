@@ -16,7 +16,9 @@
 //! they are listed (and the longest frame meanwhile, as they are sorted), and frames scrolling
 //! through them, unfolding the tags, and typing in the filter. And a Markdown document of
 //! almost 1 MiB changed, previewed before and after: how soon it is read and drawn, and frames
-//! still and wheel-scrolling through it.
+//! still and wheel-scrolling through it. And Quick diff on two texts of 1,000,000 lines pasted,
+//! a line in fifty changed: how soon each shows, frames with both showing, how soon they are
+//! compared, and frames scrolling through what differs, unified and side by side.
 //!
 //! Not run by default, as it is only meaningful in a release build:
 //!
@@ -410,19 +412,7 @@ fn corpus_mass_rename() {
     let started = Instant::now();
     let repo = mass_rename(&sandbox);
     println!("  made in {:?}", started.elapsed());
-    let git = sandbox.git().clone();
-    let builder = Harness::builder().with_size([1400.0, 900.0]);
-    let builder = if rendering() { builder.wgpu() } else { builder };
-    let mut harness = builder.build_eframe(move |creation| {
-        EgitApp::with_git(
-            &creation.egui_ctx,
-            git,
-            Settings::default(),
-            None,
-            Prompts::none(),
-        )
-    });
-    harness.run_steps(2);
+    let mut harness = window(&sandbox);
     harness
         .state_mut()
         .state
@@ -1435,6 +1425,24 @@ fn document(bytes: usize, edition: &str) -> String {
     text
 }
 
+/// The whole application in a large window, up and running.
+fn window(sandbox: &Sandbox) -> Harness<'static, EgitApp> {
+    let git = sandbox.git().clone();
+    let builder = Harness::builder().with_size([1400.0, 900.0]);
+    let builder = if rendering() { builder.wgpu() } else { builder };
+    let mut harness = builder.build_eframe(move |creation| {
+        EgitApp::with_git(
+            &creation.egui_ctx,
+            git,
+            Settings::default(),
+            None,
+            Prompts::none(),
+        )
+    });
+    harness.run_steps(2);
+    harness
+}
+
 #[test]
 #[ignore = "a release-build measurement: see the module's documentation"]
 fn corpus_markdown() {
@@ -1521,6 +1529,101 @@ fn corpus_markdown() {
     });
     worst = worst.max(report("wheel scrolling", scrolling));
     snapshot(&mut harness, "markdown");
+    println!("  peak memory {} MB", peak_memory_mb());
+    assert!(worst < Duration::from_millis(8), "p99 {worst:?} past 8 ms");
+}
+
+#[test]
+#[ignore = "a release-build measurement: see the module's documentation"]
+fn corpus_quick_diff() {
+    const LINES: usize = 1_000_000;
+    let before = String::from_utf8(code(LINES)).unwrap();
+    let after: String = before
+        .lines()
+        .enumerate()
+        .flat_map(|(n, line)| [if n % 50 == 0 { "/* changed */" } else { line }, "\n"])
+        .collect();
+    println!(
+        "Quick diff on two texts of {LINES} lines ({} MB) pasted:",
+        before.len() / 1_000_000
+    );
+    let sandbox = Sandbox::new().unwrap();
+    let mut harness = window(&sandbox);
+    harness
+        .state_mut()
+        .state
+        .actions
+        .push(Action::Show(crate::tabs::Pane::QuickDiff));
+    harness.run_steps(4);
+    reset_peak_memory();
+    let mut worst = Duration::ZERO;
+    for (side, text) in [("before", before), ("after", after)] {
+        let started = Instant::now();
+        harness.event(egui::Event::Paste(text));
+        let frame = Instant::now();
+        harness.step();
+        println!("  {side} taken in a frame of {:?}", frame.elapsed());
+        step_until(&mut harness, Duration::from_secs(30), |app| {
+            app.state.quick_diff.as_mut().unwrap().is_read()
+        });
+        harness.run_steps(2);
+        println!("  {side} on the grid in {:?}", started.elapsed());
+    }
+    worst = worst.max(report(
+        "both showing",
+        measure_frames(&mut harness, 60, |_, _| {}),
+    ));
+    snapshot(&mut harness, "quick-diff");
+
+    let started = Instant::now();
+    harness.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Enter);
+    step_until(&mut harness, Duration::from_secs(120), |app| {
+        app.state
+            .quick_diff
+            .as_mut()
+            .unwrap()
+            .diff_lines()
+            .is_some()
+    });
+    println!(
+        "  compared in {:?}: {} lines",
+        started.elapsed(),
+        harness
+            .state_mut()
+            .state
+            .quick_diff
+            .as_mut()
+            .unwrap()
+            .diff_lines()
+            .unwrap()
+    );
+    harness.run_steps(2);
+    let wheel = |harness: &mut Harness<'_, EgitApp>, _: usize| {
+        harness.event(egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -600.0),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        });
+    };
+    harness.hover_at(egui::pos2(700.0, 500.0));
+    worst = worst.max(report(
+        "unified, wheel scrolling",
+        measure_frames(&mut harness, 300, wheel),
+    ));
+    snapshot(&mut harness, "quick-diff-compared");
+
+    let started = Instant::now();
+    harness.get_by_label("Side by side").click();
+    step_until(&mut harness, Duration::from_secs(120), |app| {
+        app.state.quick_diff.as_mut().unwrap().sides_shown()
+    });
+    println!("  lined up side by side in {:?}", started.elapsed());
+    harness.run_steps(2);
+    worst = worst.max(report(
+        "side by side, wheel scrolling",
+        measure_frames(&mut harness, 300, wheel),
+    ));
     println!("  peak memory {} MB", peak_memory_mb());
     assert!(worst < Duration::from_millis(8), "p99 {worst:?} past 8 ms");
 }

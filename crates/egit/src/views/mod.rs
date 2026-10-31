@@ -26,6 +26,7 @@ pub(crate) mod profile;
 pub(crate) mod prompts;
 mod pull_form;
 mod pulls;
+pub(crate) mod quick_diff;
 mod rebase;
 mod reflog;
 pub(crate) mod repo;

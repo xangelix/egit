@@ -199,11 +199,12 @@ fn is_egits(event: &web_sys::KeyboardEvent) -> bool {
     };
     if command {
         // Text's size (⌘+ ⌘− ⌘0), the palette, search, the sidebar and its filter, the output,
-        // the agents, reading again, undoing and redoing.
+        // the agents, reading again, undoing and redoing; Quick diff (⇧⌘D, not ⌘D: a bookmark).
+        let key = key.to_ascii_lowercase();
         return matches!(
-            key.to_ascii_lowercase().as_str(),
+            key.as_str(),
             "k" | "f" | "b" | "j" | "l" | "r" | "z" | "y" | "=" | "+" | "-" | "0"
-        );
+        ) || (key == "d" && event.shift_key());
     }
     // ⌥W and ⌥1 … ⌥9, by where they are (a Mac's ⌥ makes them other characters).
     event.alt_key() && !TYPING.load(Ordering::Relaxed) && {

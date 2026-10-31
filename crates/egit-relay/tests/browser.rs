@@ -2,8 +2,9 @@
 //! protocol (`EGIT_TEST_BROWSER` names it, `EGIT_TEST_WEB` the web build `scripts/build-web.sh`
 //! made; skipped without them). The page starts, opens the repository its address names
 //! (`?open=`), titled by it, and shows the history's statistics from the palette (each git
-//! through the relay); it is threaded (cross-origin isolated, its workers started), and nothing
-//! in it or its workers panics or says an error. And served by a proxy under a path of its own
+//! through the relay), then Quick diff from its keys, two texts pasted and compared; it is
+//! threaded (cross-origin isolated, its workers started), and nothing in it or its workers
+//! panics or says an error. And served by a proxy under a path of its own
 //! (as code-server's `/proxy/<port>`), opened without its last slash, it does the same. On a
 //! phone (its screen and touches emulated) it fits its screen, and a tap on a commit shows its
 //! details. Its screens are kept in `target/web-screens`.
@@ -343,6 +344,17 @@ impl Page {
         self.call("Input.insertText", json!({ "text": text })).await;
     }
 
+    /// Pastes `text`, as the browser tells the page of a paste.
+    async fn paste(&mut self, text: &str) {
+        let text = serde_json::to_string(text).unwrap();
+        self.evaluate(&format!(
+            "{{ const data = new DataTransfer(); data.setData('text', {text}); \
+             document.dispatchEvent(new ClipboardEvent('paste', \
+             {{ clipboardData: data, bubbles: true }})); }}"
+        ))
+        .await;
+    }
+
     /// Taps at `x`, `y`, as a finger does.
     async fn tap(&mut self, x: u32, y: u32) {
         self.call(
@@ -520,6 +532,18 @@ fn egit_starts_in_a_browser_and_opens_a_repository_through_its_relay() {
         page.press(("Enter", "Enter", 13), 0).await;
         page.idle(Duration::from_secs(5)).await;
         page.keep("browser-stats").await;
+
+        // Quick diff, from its keys: two texts pasted, compared by git through the relay.
+        page.press(("d", "KeyD", 68), 2 | 8).await;
+        page.idle(Duration::from_millis(500)).await;
+        for text in ["one\ntwo\nthree\n", "one\nTWO\nthree\nfour\n"] {
+            page.paste(text).await;
+            page.idle(Duration::from_millis(300)).await;
+        }
+        page.keep("browser-quick-diff").await;
+        page.press(("Enter", "Enter", 13), 2).await;
+        page.idle(Duration::from_secs(2)).await;
+        page.keep("browser-quick-diff-compared").await;
         assert!(
             page.wrong.is_empty(),
             "the page went wrong: {:?}",

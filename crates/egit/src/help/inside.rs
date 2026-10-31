@@ -952,6 +952,47 @@ pub(super) const TOPICS: &[Topic] = &[
         ],
     },
     Topic {
+        id: "quick-diff",
+        group: Group::Egit,
+        title: "Quick diff",
+        on: &[
+            "Quick diff",
+            "Compare two texts",
+            "Before",
+            "After",
+            "Compare",
+            "Swap",
+            "Clear the text *",
+            "File name",
+            "Edit the texts",
+        ],
+        what: "Any two texts compared, whether or not a repository is open: paste or type each, \
+               then Compare (⌘Enter), and they show as any file's diff does, with the same \
+               Unified and Side by side, Whole file, Ignore whitespace, and find. With both \
+               empty, a paste needs no click: the first lands in Before, the keys go to After, \
+               and the second lands there. A file name is optional, and only says what colours \
+               the differences take. The texts stay in the tab until it closes, and aren't saved.",
+        git: "git diff --no-index --text <a temporary copy of each>",
+        cases: &[
+            (
+                "Too long to edit here?",
+                "A paste over 64 KiB shows read-only, as a text field would slow every frame: it compares as well as any. Clear it to paste another.",
+            ),
+            (
+                "Where do the texts go?",
+                "git compares files, so each is written to a temporary folder only you can read, and removed as the diff ends. In a browser, that is on the relay's computer.",
+            ),
+            (
+                "A last line differs only by its ending?",
+                "A last line without a newline is given one first, so that a copy stopping short of it is no difference. Line endings are compared: CRLF against LF shows every line, unless Ignore whitespace is on.",
+            ),
+            (
+                "It compares differently from another tool?",
+                "It is git's diff, so diff.algorithm in your configuration applies. Lines moved show as removed and added.",
+            ),
+        ],
+    },
+    Topic {
         id: "pref-drawn-with",
         group: Group::Egit,
         title: "Drawn with",

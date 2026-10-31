@@ -26,6 +26,7 @@ mod picked;
 mod pictures;
 mod pipelines;
 mod polish;
+mod quick_diff;
 mod remote;
 mod reveal;
 mod scale;

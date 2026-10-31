@@ -1596,30 +1596,8 @@ fn show_diff(
         }
         Some(Ok(diff)) if file.split => {
             let diff = Arc::clone(diff);
-            // The sides shown are another diff's after a re-read (more context, say): split
-            // this one once it has landed, showing the old split meanwhile.
-            let stale = file.sides.ok_ref().is_some_and(|sides| !sides.is_of(&diff));
-            if (file.sides.is_idle() || stale) && !file.diff.is_pending() {
-                file.sides.request(split_diff(diff));
-            }
-            match file.sides.read_as_ref() {
-                Some(Ok(sides)) => {
-                    let sides = Arc::clone(sides);
-                    file.sides_grid
-                        .show_panes(ui, &[&sides.side(true), &sides.side(false)]);
-                }
-                Some(Err(problem)) => {
-                    let problem = problem.clone();
-                    Frame::new()
-                        .inner_margin(Margin::same(16))
-                        .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
-                }
-                None => {
-                    Frame::new()
-                        .inner_margin(Margin::same(16))
-                        .show(ui, |ui| widgets::working(ui, "Lining up the sides…"));
-                }
-            }
+            let reading = file.diff.is_pending();
+            show_sides(ui, diff, reading, &mut file.sides, &mut file.sides_grid);
         }
         Some(Ok(diff)) => {
             let diff = Arc::clone(diff);
@@ -1627,6 +1605,39 @@ fn show_diff(
             if let Some(work) = file.work().filter(|work| !work.conflict).cloned() {
                 lines_menu(&response, shared, file, (&work, &diff), actions);
             }
+        }
+    }
+}
+
+/// `diff` side by side, split in a job. The sides shown are another diff's after a re-read (more
+/// context, say): this one is split once it has landed (`reading` no more), the old split showing
+/// meanwhile.
+pub(super) fn show_sides(
+    ui: &mut Ui,
+    diff: Arc<DiffDocument>,
+    reading: bool,
+    sides: &mut Bind<Arc<SplitDiff>, Problem>,
+    grid: &mut TextGrid,
+) {
+    let stale = sides.ok_ref().is_some_and(|sides| !sides.is_of(&diff));
+    if (sides.is_idle() || stale) && !reading {
+        sides.request(split_diff(diff));
+    }
+    match sides.read_as_ref() {
+        Some(Ok(sides)) => {
+            let sides = Arc::clone(sides);
+            grid.show_panes(ui, &[&sides.side(true), &sides.side(false)]);
+        }
+        Some(Err(problem)) => {
+            let problem = problem.clone();
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::problem_box(ui, &problem, |_| {}));
+        }
+        None => {
+            Frame::new()
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| widgets::working(ui, "Lining up the sides…"));
         }
     }
 }

@@ -21,6 +21,7 @@ use crate::problem::{OpenProblem, Problem, Remedy};
 use crate::settings::{Location, StoredPath};
 use crate::suggested::{Suggestion, suggest};
 use crate::tables::{RecentRows, SuggestedRows};
+use crate::tabs::Pane;
 use crate::theme::Weighted as _;
 use crate::theme::{Palette, icon};
 use crate::widgets::{self, muted};
@@ -167,6 +168,27 @@ pub(crate) fn show(ui: &mut Ui, state: &mut AppState) {
             state.home_dir.as_deref(),
             &mut state.actions,
         );
+        ui.add_space(12.0);
+        quick_diff_card(ui, state);
+    });
+}
+
+/// The way to Quick diff: it needs no repository, so it starts here.
+fn quick_diff_card(ui: &mut Ui, state: &mut AppState) {
+    widgets::card(ui, |ui| {
+        widgets::heading(ui, "Quick diff");
+        ui.add_space(4.0);
+        ui.add(
+            egui::Label::new(muted(
+                ui,
+                "Paste any two texts and see what differs between them, no repository needed.",
+            ))
+            .wrap(),
+        );
+        ui.add_space(8.0);
+        if widgets::secondary(ui, true, "Compare two texts").clicked() {
+            state.actions.push(Action::Show(Pane::QuickDiff));
+        }
     });
 }
 
@@ -705,7 +727,7 @@ fn edit_profile(ui: &mut Ui, state: &mut AppState) {
     )
     .clicked()
     {
-        state.actions.push(Action::ShowProfile);
+        state.actions.push(Action::Show(Pane::Profile));
     }
 }
 
