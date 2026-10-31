@@ -3,6 +3,7 @@
 //! commits' changes combined into one diff; and the uncommitted changes as a diff `git apply`
 //! takes.
 
+use std::collections::HashSet;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -11,8 +12,9 @@ use bstr::ByteSlice as _;
 use crate::cancel::CancelToken;
 use crate::command::GitCommand;
 use crate::error::GitError;
+use crate::foresee::MAX_REPLAYED;
 use crate::git::Git;
-use crate::history::{ListedCommit, list_commits};
+use crate::history::{ListedCommit, count_between, list_commits};
 use crate::object_id::ObjectId;
 use crate::rebase::MAX_PLANNED;
 use crate::repo::Repository;
@@ -57,6 +59,9 @@ pub enum CombineError {
     /// The commit doesn't apply onto those before it: it needs a commit left out between them.
     #[error("{0} conflicts with the commits before it")]
     Conflict(ObjectId),
+    /// Too many commits apart to merge in turn unasked (past [`MAX_REPLAYED`]).
+    #[error("too many commits apart to merge in turn")]
+    TooMany,
     /// Running git failed.
     #[error(transparent)]
     Git(#[from] GitError),
@@ -270,13 +275,116 @@ fn names(commits: &[ObjectId]) -> Vec<u8> {
     names
 }
 
-/// `commits`' changes (any, the newest first) as one patch `git apply` takes, under a list of
-/// the commits (which `git apply` passes over).
+/// Where commits' changes, together, run from and to, as `git diff` takes them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Combined {
+    /// A commit, or the empty tree (from nothing: a root commit's changes among them).
+    pub from: ObjectId,
+    /// A commit: the newest of a range, or one made of commits apart, referred to by nothing.
+    pub to: ObjectId,
+}
+
+/// Who wants commits' changes together, which says how far working them out goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Combining {
+    /// The user, for this: as far as it takes (a partial clone's files fetched, its questions
+    /// asked).
+    Asked,
+    /// Nobody yet, as commits are picked: nothing fetched or asked, and at most
+    /// [`MAX_REPLAYED`] commits apart merged in turn.
+    Unasked,
+}
+
+/// Where `commits`' changes (any, the newest first), together, run from and to.
 ///
-/// The diff runs from the oldest one's parent (or nothing, for a root commit) to the newest,
-/// when each is the parent of the next; otherwise each commit's changes (against its first
-/// parent) are merged in turn onto those before it, the oldest first (`merge-tree
-/// --write-tree`, in the object store alone), as cherry-picking them one by one would.
+/// A range, every commit its newest reaches that what it started from doesn't (merges and all):
+/// from that to the newest, nothing worked out. Commits apart: each one's changes (against its
+/// first parent) are merged in turn onto those before it, the oldest first (`merge-tree
+/// --write-tree`, in the object store alone, referred to by nothing), as cherry-picking them
+/// one by one would.
+///
+/// # Errors
+///
+/// [`CombineError::Conflict`] when a commit doesn't apply onto those before it,
+/// [`CombineError::Nothing`] without commits, [`CombineError::TooMany`] past what is merged
+/// unasked, and otherwise when git fails or is cancelled.
+pub async fn combine_commits(
+    git: &Git,
+    repository: &Repository,
+    commits: &[ObjectId],
+    how: Combining,
+    cancel: &CancelToken,
+) -> Result<Combined, CombineError> {
+    let listed = list_commits(git, repository, commits, cancel).await?;
+    combine_listed(git, repository, &listed, how, cancel).await
+}
+
+/// [`combine_commits`] of those `listed`, the newest first.
+async fn combine_listed(
+    git: &Git,
+    repository: &Repository,
+    listed: &[ListedCommit],
+    how: Combining,
+    cancel: &CancelToken,
+) -> Result<Combined, CombineError> {
+    let Some(oldest) = listed.last() else {
+        return Err(CombineError::Nothing);
+    };
+    if let Some(range) = range_of(git, repository, listed, cancel).await? {
+        return Ok(range);
+    }
+    if how == Combining::Unasked && listed.len() > MAX_REPLAYED {
+        return Err(CombineError::TooMany);
+    }
+    let start = oldest.parents.first().copied();
+    let from = match start {
+        Some(parent) => parent,
+        None => empty_tree(git, repository, cancel).await?,
+    };
+    let to = replay(git, repository, listed, start, how, cancel).await?;
+    Ok(Combined { from, to })
+}
+
+/// The range `listed` are, if they are one: one that none of them has as a parent (its newest),
+/// at most one parent outside them (what it started from), and every commit the newest reaches
+/// that that doesn't among them.
+async fn range_of(
+    git: &Git,
+    repository: &Repository,
+    listed: &[ListedCommit],
+    cancel: &CancelToken,
+) -> Result<Option<Combined>, CombineError> {
+    let picked: HashSet<ObjectId> = listed.iter().map(|commit| commit.id).collect();
+    let parents = || listed.iter().flat_map(|commit| commit.parents.iter());
+    let inside: HashSet<ObjectId> = parents().filter(|p| picked.contains(p)).copied().collect();
+    let outside: HashSet<ObjectId> = parents().filter(|p| !picked.contains(p)).copied().collect();
+    let mut newest = listed.iter().filter(|commit| !inside.contains(&commit.id));
+    let (Some(newest), None) = (newest.next(), newest.next()) else {
+        return Ok(None);
+    };
+    let mut outside = outside.into_iter();
+    let (from, None) = (outside.next(), outside.next()) else {
+        return Ok(None);
+    };
+    let Some(from) = from else {
+        // Every parent among them: all of its history, from nothing.
+        let from = empty_tree(git, repository, cancel).await?;
+        return Ok(Some(Combined {
+            from,
+            to: newest.id,
+        }));
+    };
+    let reached = count_between(git, repository, from, newest.id, cancel).await?;
+    let all = u64::try_from(listed.len()).is_ok_and(|all| all == reached);
+    Ok(all.then_some(Combined {
+        from,
+        to: newest.id,
+    }))
+}
+
+/// `commits`' changes (any, the newest first) as one patch `git apply` takes, under a list of
+/// the commits (which `git apply` passes over): the diff [`combine_commits`] says, as far as it
+/// takes.
 ///
 /// # Errors
 ///
@@ -289,34 +397,13 @@ pub async fn combined_patch(
     cancel: &CancelToken,
 ) -> Result<Vec<u8>, CombineError> {
     let listed = list_commits(git, repository, commits, cancel).await?;
-    let (Some(newest), Some(oldest)) = (listed.first(), listed.last()) else {
-        return Err(CombineError::Nothing);
-    };
-    let base = match oldest.parents.first() {
-        Some(parent) => *parent,
-        None => empty_tree(git, repository, cancel).await?,
-    };
-    let follows = listed
-        .iter()
-        .zip(listed.iter().skip(1))
-        .all(|(newer, older)| newer.parents.first() == Some(&older.id));
-    let result = if follows {
-        newest.id
-    } else {
-        replay(
-            git,
-            repository,
-            &listed,
-            oldest.parents.first().copied(),
-            cancel,
-        )
-        .await?
-    };
+    let Combined { from, to } =
+        combine_listed(git, repository, &listed, Combining::Asked, cancel).await?;
     let diff = git
         .read("diff")
         .args(PATCH_DIFF)
-        .arg(base.to_string())
-        .arg(result.to_string())
+        .arg(from.to_string())
+        .arg(to.to_string())
         .current_dir(repository.work_tree())
         .cancel_token(cancel)
         .output()
@@ -335,6 +422,7 @@ async fn replay(
     repository: &Repository,
     listed: &[ListedCommit],
     start: Option<ObjectId>,
+    how: Combining,
     cancel: &CancelToken,
 ) -> Result<ObjectId, CombineError> {
     let mut onto = start;
@@ -349,15 +437,17 @@ async fn replay(
             // A root commit after others has nothing to be replayed against.
             _ => return Err(CombineError::Conflict(commit.id)),
         };
-        let merged = git
+        let mut merging = git
             .write("merge-tree")
             .args(["--write-tree", &format!("--merge-base={parent}")])
             .arg(at.to_string())
             .arg(commit.id.to_string())
             .current_dir(repository.work_tree())
-            .cancel_token(cancel)
-            .output_unchecked()
-            .await?;
+            .cancel_token(cancel);
+        if how == Combining::Unasked {
+            merging = merging.env("GIT_NO_LAZY_FETCH", "1").non_interactive();
+        }
+        let merged = merging.output_unchecked().await?;
         match merged.status.code() {
             Some(0) => {}
             Some(1) => return Err(CombineError::Conflict(commit.id)),

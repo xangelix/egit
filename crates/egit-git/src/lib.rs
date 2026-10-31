@@ -123,8 +123,9 @@ pub use exec::{Wait, block_on};
 pub use files::{Entry, Files, Put, TempDir, is_absolute};
 pub use foresee::{Foreseen, MAX_REPLAYED, foresee_merge, foresee_pick, foresee_rebase};
 pub use format_patch::{
-    Changes, CombineError, Series, changes_patch, combined_patch, format_patch, format_patches,
-    format_series, format_series_into, patch_file_name,
+    Changes, CombineError, Combined, Combining, Series, changes_patch, combine_commits,
+    combined_patch, format_patch, format_patches, format_series, format_series_into,
+    patch_file_name,
 };
 pub use forward::{ForwardFrom, Forwarded, fast_forward_branch, fast_forward_current};
 pub use git::{Git, GitOptions};

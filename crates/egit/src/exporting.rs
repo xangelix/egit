@@ -167,6 +167,8 @@ fn combine_failed(error: CombineError) -> Result<Outcome, Problem> {
         CombineError::Git(GitError::Cancelled { .. }) => Ok(Outcome::Cancelled),
         CombineError::Git(error) => Err(Problem::git(TITLE, &error)),
         CombineError::Nothing => Err(Problem::new(TITLE, "No commits were picked.")),
+        // Only working them out unasked gives up so.
+        CombineError::TooMany => Err(Problem::new(TITLE, "Too many commits apart.")),
         CombineError::Conflict(commit) => Err(Problem::new(
             TITLE,
             format!(

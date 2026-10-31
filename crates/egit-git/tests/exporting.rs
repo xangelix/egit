@@ -1,7 +1,8 @@
 //! Commits picked anywhere in a history, with the real git: listed in the order given; made
 //! into a series of patches (one text, or a folder; merges left out) that `git am` applies; and
 //! their changes combined into one patch `git apply` takes, whether they follow each other or
-//! not (a conflict refused), from a root commit too.
+//! not (a conflict refused), from a root commit too; and where those changes run from and to: a
+//! range, merges and all, as it stands; commits apart through a commit made of them.
 
 // The relaxations `clippy.toml` gives `#[test]` functions, for this test-only crate's helpers.
 #![allow(
@@ -16,8 +17,8 @@ use std::path::{Path, PathBuf};
 
 use egit_git::testing::Sandbox;
 use egit_git::{
-    CancelToken, CombineError, ObjectId, Repository, Wait as _, combined_patch, format_series,
-    format_series_into, list_commits,
+    CancelToken, CombineError, Combined, Combining, MAX_REPLAYED, ObjectId, Repository, Wait as _,
+    combine_commits, combined_patch, format_series, format_series_into, list_commits,
 };
 
 fn rev(sandbox: &Sandbox, repo: &Path, name: &str) -> ObjectId {
@@ -232,5 +233,112 @@ fn commits_combine_into_one_patch() {
     assert!(matches!(
         combined_patch(sandbox.git(), &repository, &[], &cancel).wait(),
         Err(CombineError::Nothing)
+    ));
+}
+
+#[test]
+fn commits_together_run_from_what_they_started_from_to_the_newest() {
+    let sandbox = Sandbox::new().unwrap();
+    let h = history(&sandbox);
+    let repository = Repository::discover(sandbox.git(), &h.repo).wait().unwrap();
+    let cancel = CancelToken::new();
+    let side = rev(&sandbox, &h.repo, "side");
+    let combined = |commits: &[ObjectId]| {
+        combine_commits(
+            sandbox.git(),
+            &repository,
+            commits,
+            Combining::Unasked,
+            &cancel,
+        )
+        .wait()
+    };
+    let files = |run: Combined| {
+        let names = sandbox
+            .run(
+                &h.repo,
+                "diff",
+                &["--name-only", &run.from.to_string(), &run.to.to_string()],
+            )
+            .unwrap();
+        String::from_utf8(names.stdout).unwrap()
+    };
+
+    // Following each other.
+    let run = combined(&[h.four, h.three, h.two]).unwrap();
+    assert_eq!((run.from, run.to), (h.one, h.four));
+    assert_eq!(files(run), "f\ng\n");
+
+    // A range holding a merge, both its sides picked: nothing worked out.
+    let run = combined(&[h.merge, side, h.five]).unwrap();
+    assert_eq!((run.from, run.to), (h.four, h.merge));
+    assert_eq!(files(run), "h\nside\n");
+
+    // From the root: all of its history, from nothing.
+    let run = combined(&[h.two, h.one]).unwrap();
+    assert_eq!(run.to, h.two);
+    let from = sandbox
+        .run(&h.repo, "cat-file", &["-t", &run.from.to_string()])
+        .unwrap();
+    assert_eq!(from.stdout.trim_ascii(), b"tree");
+    assert_eq!(files(run), "f\n");
+
+    // Apart: a commit made of them, referred to by nothing, and nothing here moved.
+    let head = rev(&sandbox, &h.repo, "HEAD");
+    let run = combined(&[h.five, h.three]).unwrap();
+    assert_eq!(run.from, h.two);
+    assert!(![h.five, h.three].contains(&run.to));
+    assert_eq!(files(run), "g\nh\n");
+    assert_eq!(rev(&sandbox, &h.repo, "HEAD"), head);
+    let referred = sandbox
+        .run(
+            &h.repo,
+            "for-each-ref",
+            &["--contains", &run.to.to_string()],
+        )
+        .unwrap();
+    assert_eq!(referred.stdout, b"");
+
+    // A conflict is named; none at all is none.
+    assert!(matches!(
+        combined(&[h.four, h.one]),
+        Err(CombineError::Conflict(commit)) if commit == h.four
+    ));
+    assert!(matches!(combined(&[]), Err(CombineError::Nothing)));
+}
+
+#[test]
+fn too_many_commits_apart_aren_t_merged_unasked() {
+    let sandbox = Sandbox::new().unwrap();
+    let repo = sandbox.init("repo").unwrap();
+    sandbox.commit_file(&repo, "f", "one\n", "One").unwrap();
+    let repository = Repository::discover(sandbox.git(), &repo).wait().unwrap();
+    let tree = rev(&sandbox, &repo, "HEAD:").to_string();
+    let mut tip = rev(&sandbox, &repo, "HEAD");
+    let mut apart = Vec::new();
+    for at in 0..(MAX_REPLAYED + 1) * 2 {
+        let made = sandbox
+            .run(
+                &repo,
+                "commit-tree",
+                &[&tree, "-p", &tip.to_string(), "-m", "Empty"],
+            )
+            .unwrap();
+        tip = ObjectId::from_hex(made.stdout.trim_ascii()).unwrap();
+        if at % 2 == 0 {
+            apart.insert(0, tip);
+        }
+    }
+    let cancel = CancelToken::new();
+    assert!(matches!(
+        combine_commits(
+            sandbox.git(),
+            &repository,
+            &apart,
+            Combining::Unasked,
+            &cancel,
+        )
+        .wait(),
+        Err(CombineError::TooMany)
     ));
 }
