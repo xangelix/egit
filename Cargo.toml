@@ -35,19 +35,19 @@ egit-text = { path = "crates/egit-text" }
 
 base64 = { version = "0.23.1", default-features = false, features = ["alloc"] }
 bstr = { version = "1.13.1", default-features = false, features = ["std"] }
-eframe = { version = "0.36.2", default-features = false }
-egui = "0.36.2"
-egui-async = "0.7.0"
+eframe = { version = "0.37.0", default-features = false }
+egui = "0.37.0"
+egui-async = "0.8.0"
 egui-phosphor = "0.14.0"
 # Ahead of crates.io: rows stay exact past f32 precision (Linux's 1.5M commits).
 egui-table-kit = { git = "https://github.com/xangelix/egui-table-kit", rev = "2d847a64da9b468f615527464149639230ab4eb8" }
-egui_kittest = "0.36.2"
+egui_kittest = "0.37.0"
 # egui's own charts, for the Stats page (the release made for egui 0.36).
-egui_plot = "0.37.0"
-egui_tiles = "0.17.1"
+egui_plot = "0.38.0"
+egui_tiles = "0.18.0"
 # Markdown previewed (the release made for egui 0.36): no images loaded by it, so nothing is
 # read from disk or fetched for a document.
-egui_commonmark = { version = "0.25.0", default-features = false, features = ["pulldown_cmark"] }
+egui_commonmark = { version = "0.26.0", default-features = false, features = ["pulldown_cmark"] }
 # Markdown read where egit makes a document ready to preview (the version egui_commonmark reads).
 pulldown-cmark = { version = "0.13.0", default-features = false }
 # Local reads only: no network, no TLS (never `ring`).
